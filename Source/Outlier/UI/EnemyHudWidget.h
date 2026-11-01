@@ -2,14 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "Enemy/EnemyHackEffectTypes.h"
 #include "EnemyHudWidget.generated.h"
 
 class AEnemyBase;
 class UAbilitySystemComponent;
 class ULocalPlayerPostProcessSubsystem;
 class UTexture2D;
-class UTextBlock;
+class UHackEffectTimerWidget;
 struct FOnAttributeChangeData;
 
 // Partner가 Enemy를 빙의한 동안 Partner MainWidget 대신 띄우는 HUD.
@@ -33,7 +32,7 @@ public:
 
 	// 서버의 복귀 통보가 Enemy 상태 복제보다 먼저 도착해도 마지막 숫자를 준비한다.
 	void ShowHackTimerExpiry(AEnemyBase* Target);
-	bool IsShowingHackTimerExpiry() const { return bHackTimerShowingExpiry; }
+	bool IsShowingHackTimerExpiry() const;
 	FSimpleDelegate OnHackTimerExpiryDisplayFinished;
 
 	// 사망 연출로 HUD가 숨겨진 동안 마스크 글리치도 멈춘다. 드러난 상태는 유지한다.
@@ -42,19 +41,8 @@ public:
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
-	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
-		const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId,
-		const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
-
-	// WBP에서 두 TextBlock을 같은 이름으로 만들고 그 사이에 ':'를 배치한다.
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Enemy HUD|Hack Timer")
-	TObjectPtr<UTextBlock> HackEffectMinutesText;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Enemy HUD|Hack Timer")
-	TObjectPtr<UTextBlock> HackEffectSecondsText;
-
-	UPROPERTY(BlueprintReadOnly, Transient, Category = "Enemy HUD|Hack Timer")
-	FEnemyHackEffectTime HackEffectTime;
+	TObjectPtr<UHackEffectTimerWidget> HackEffectTimerWidget;
 
 	// 화면 다섯 위치의 텍스처. Image 배치와 바인딩은 WBP에서 한다.
 	// Middle을 뺀 4장은 화면 해상도에 맞춘 마스크(.r × .a)로 Drone Damage Feedback에도 쓰인다.
@@ -77,29 +65,8 @@ private:
 	friend class FEnemyHackEffectHUDTest;
 	friend class FEnemyHackEffectAssetBindingTest;
 
-	void BindHackTimer();
-	void ReleaseHackTimer();
-	void RefreshHackTimer();
-	void SetHackTimerTime(const FEnemyHackEffectTime& Time);
-	void SetHackTimerVisible(bool bVisible);
-	void HideExpiredHackTimer();
-
-	UFUNCTION()
-	void HandleHackEffectStarted(AEnemyBase* Target, float Duration);
-
-	UFUNCTION()
-	void HandleHackEffectEnded(AEnemyBase* Target, EEnemyHackEffectEndReason EndReason);
-
-	UFUNCTION()
-	void HandleHackTargetEndPlay(AActor* Actor, EEndPlayReason::Type EndPlayReason);
-
-	FTimerHandle HackTimerRefreshHandle;
-	FTimerHandle HackTimerHideHandle;
-	uint64 HackTimerZeroFrame = 0;
-	mutable bool bHackTimerExpiryPainted = false;
-	bool bHackTimerBound = false;
-	bool bHackTimerShowingExpiry = false;
-	bool bHackTimerTimeInitialized = false;
+	void InitializeHackTimer();
+	void HandleHackTimerExpiryDisplayFinished();
 
 	void BindDamageFeedback();
 	void HandleVitalAttributeChanged(const FOnAttributeChangeData& ChangeData);

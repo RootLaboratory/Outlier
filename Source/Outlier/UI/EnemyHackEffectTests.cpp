@@ -8,7 +8,16 @@
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "UI/EnemyHudWidget.h"
+#include "UI/HackEffectTimerWidget.h"
+#include "UI/BreathingWidget.h"
 #include "Components/TextBlock.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/Image.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include <limits>
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Engine.h"
@@ -365,83 +374,406 @@ bool FEnemyHackEffectHUDTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	UEnemyHudWidget* Hud = NewObject<UEnemyHudWidget>(Fixture.World, Blueprint->GeneratedClass);
-	Hud->HackEffectMinutesText = NewObject<UTextBlock>(Hud);
-	Hud->HackEffectSecondsText = NewObject<UTextBlock>(Hud);
-	Hud->OwningEnemy = FirstEnemy;
-	Hud->BindHackTimer();
-	TestTrue(TEXT("Inactive binding is hidden"), Hud->HackEffectMinutesText->GetVisibility() == ESlateVisibility::Collapsed);
+	UHackEffectTimerWidget* Timer = NewObject<UHackEffectTimerWidget>(Fixture.World);
+	Hud->HackEffectTimerWidget = Timer;
+	TestTrue(TEXT("Seconds keep their existing white default"), Timer->HackTimerNormalColor.Equals(FLinearColor::White));
+	TestTrue(TEXT("Frame glow defaults decode cyan from sRGB"),
+		Timer->HackTimerPulseNormalColor.Equals(FLinearColor(FColor(105, 241, 223))));
+	TestTrue(TEXT("Frame glow warning defaults decode red from sRGB"),
+		Timer->HackTimerPulseWarningColor.Equals(FLinearColor(FColor(255, 100, 108))));
+	Timer->HackEffectMinutesText = NewObject<UTextBlock>(Hud);
+	Timer->HackEffectSecondsText = NewObject<UTextBlock>(Hud);
+	Timer->Colon = NewObject<UTextBlock>(Hud);
+	Timer->TimerFrame = NewObject<UImage>(Hud);
+	for (const auto& Case : {TPair<float, float>(60.0f, 0.0f), {30.0f, 0.0f}, {19.5f, 0.5f}, {9.0f, 1.0f}, {0.0f, 1.0f}})
+	{
+		TestTrue(TEXT("Warning blend follows remaining time boundaries"),
+			FMath::IsNearlyEqual(Timer->GetHackTimerBlendAlpha(Case.Key, 60.0f), Case.Value, KINDA_SMALL_NUMBER));
+	}
+	for (float InvalidDuration : {0.0f, -1.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+	{
+		TestEqual(TEXT("Invalid duration keeps the normal color"), Timer->GetHackTimerBlendAlpha(0.0f, InvalidDuration), 0.0f);
+	}
+	for (const auto& Invalid : {TPair<float, float>(0.2f, 0.5f), {0.5f, 0.5f}, {1.1f, 0.1f}, {0.5f, -0.1f},
+		{std::numeric_limits<float>::quiet_NaN(), 0.1f}, {0.5f, std::numeric_limits<float>::infinity()}})
+	{
+		Timer->HackTimerColorBlendStartRatio = Invalid.Key;
+		Timer->HackTimerColorBlendEndRatio = Invalid.Value;
+		TestTrue(TEXT("Invalid ratios use both default thresholds"),
+			FMath::IsNearlyEqual(Timer->GetHackTimerBlendAlpha(19.5f, 60.0f), 0.5f, KINDA_SMALL_NUMBER));
+	}
+	Timer->HackTimerColorBlendStartRatio = 0.5f;
+	Timer->HackTimerColorBlendEndRatio = 0.15f;
+	TestEqual(TEXT("Slow pulse period is two seconds"), Timer->GetHackTimerPulsePeriod(0.0f), 2.0f);
+	TestEqual(TEXT("Urgent pulse period is six tenths of a second"), Timer->GetHackTimerPulsePeriod(1.0f), 0.6f);
+	UBreathingWidget* Pulse = NewObject<UBreathingWidget>(Fixture.World);
+	Pulse->BreathingImage = NewObject<UImage>(Pulse);
+	Timer->HackEffectPulseWidget = Pulse;
+	Pulse->ApplyBreathingSettings();
+	TestNull(TEXT("Missing material does not create a pulse MID"), Pulse->DynamicMaterial.Get());
+	Hud->InitializeForEnemy(FirstEnemy);
+	TestTrue(TEXT("Inactive binding is hidden"), Timer->GetVisibility() == ESlateVisibility::Collapsed);
+
+	// 실제 HUD처럼 연출 중에 Construct가 호출되어도 이후 시작 이벤트를 받아야 한다.
+	Hud->NativeConstruct();
+	TestTrue(TEXT("Construct before effect start preserves the event binding"), Timer->bHackTimerBound);
+	TestFalse(TEXT("Construct before effect start keeps the pulse inactive"), Pulse->bPlaying);
+	TestTrue(TEXT("Construct before effect start keeps the timer hidden"),
+		Timer->GetVisibility() == ESlateVisibility::Collapsed);
+	TestTrue(TEXT("Possession presentation keeps the frame hidden"),
+		Timer->GetVisibility() == ESlateVisibility::Collapsed);
 
 	FirstEnemy->BeginHackEffect();
-	TestEqual(TEXT("Minutes have two digits"), Hud->HackEffectMinutesText->GetText().ToString(), FString(TEXT("01")));
-	TestEqual(TEXT("Seconds have two digits"), Hud->HackEffectSecondsText->GetText().ToString(), FString(TEXT("00")));
+	TestTrue(TEXT("Effect start after Construct shows the timer"),
+		Timer->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	TestTrue(TEXT("Effect start shows the frame together with the timer"),
+		Timer->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	TestTrue(TEXT("Frame starts with its own cyan color"), Pulse->PulseColor.Equals(Timer->HackTimerPulseNormalColor));
+	TestEqual(TEXT("Minutes have two digits"), Timer->HackEffectMinutesText->GetText().ToString(), FString(TEXT("01")));
+	TestEqual(TEXT("Seconds have two digits"), Timer->HackEffectSecondsText->GetText().ToString(), FString(TEXT("00")));
 	Fixture.AdvanceTime(1.0f);
-	Hud->RefreshHackTimer();
-	TestEqual(TEXT("Minute rollover updates minutes"), Hud->HackEffectMinutesText->GetText().ToString(), FString(TEXT("00")));
-	TestEqual(TEXT("Minute rollover updates seconds"), Hud->HackEffectSecondsText->GetText().ToString(), FString(TEXT("59")));
+	Timer->RefreshHackTimer();
+	TestEqual(TEXT("Minute rollover updates minutes"), Timer->HackEffectMinutesText->GetText().ToString(), FString(TEXT("00")));
+	TestEqual(TEXT("Minute rollover updates seconds"), Timer->HackEffectSecondsText->GetText().ToString(), FString(TEXT("59")));
+	const float MidUrgency = FMath::Square(1.0f - 19.5f / 60.0f);
+	for (const auto& Sample : {TPair<float, float>(0.0f, 0.0f), {0.25f, 0.5f}, {0.5f, 1.0f}, {0.75f, 0.5f}, {1.0f, 0.0f}})
+	{
+		Timer->TextColorPhase = Sample.Key;
+		TestTrue(TEXT("Seconds breathe within the current warning intensity"),
+			FMath::IsNearlyEqual(Timer->GetHackTimerTextColorAlpha(19.5f, 60.0f), Sample.Value * MidUrgency, KINDA_SMALL_NUMBER));
+	}
+	Timer->TextColorPhase = 0.5f;
+	for (const auto& Sample : {TPair<float, float>(60.0f, 0.0f), {54.0f, 0.01f}, {45.0f, 0.0625f},
+		{30.0f, 0.25f}, {15.0f, 0.5625f}, {6.0f, 0.81f}, {0.0f, 1.0f}})
+	{
+		const float Peak = Timer->GetHackTimerTextColorAlpha(Sample.Key, 60.0f);
+		TestTrue(TEXT("Warning intensity grows nonlinearly from full duration"), FMath::IsNearlyEqual(Peak, Sample.Value, KINDA_SMALL_NUMBER));
+		TestTrue(TEXT("Color intensity and speed follow the same curve"),
+			FMath::IsNearlyEqual(Timer->GetHackTimerPulsePeriod(Peak), FMath::Lerp(2.0f, 0.6f, Sample.Value), KINDA_SMALL_NUMBER));
+	}
+	TestEqual(TEXT("Invalid duration keeps seconds at their normal color"), Timer->GetHackTimerTextColorAlpha(0.0f, 0.0f), 0.0f);
+	TestEqual(TEXT("Zero seconds always use the warning color"), Timer->GetHackTimerTextColorAlpha(0.0f, 60.0f), 1.0f);
+	Timer->TextColorPhase = 0.25f;
+	Timer->UpdateHackTimerColor(19.5f, 60.0f);
+	TestTrue(TEXT("Seconds use the interpolated warning color"), Timer->HackEffectSecondsText->GetColorAndOpacity().GetSpecifiedColor()
+		.Equals(FMath::Lerp(Timer->HackTimerNormalColor, Timer->HackTimerWarningColor, MidUrgency * 0.5f)));
+	TestTrue(TEXT("Frame independently interpolates its configured colors"),
+		Pulse->PulseColor.Equals(FMath::Lerp(Timer->HackTimerPulseNormalColor, Timer->HackTimerPulseWarningColor, 0.5f)));
+	// WBP에서 프레임 색만 바꾸어도 초 텍스트의 보간색은 그대로 유지해야 한다.
+	const FLinearColor DefaultPulseNormal = Timer->HackTimerPulseNormalColor;
+	const FLinearColor DefaultPulseWarning = Timer->HackTimerPulseWarningColor;
+	Timer->HackTimerPulseNormalColor = FLinearColor::Blue;
+	Timer->HackTimerPulseWarningColor = FLinearColor::Green;
+	Timer->UpdateHackTimerColor(19.5f, 60.0f);
+	TestTrue(TEXT("Frame color settings accept independent WBP overrides"),
+		Pulse->PulseColor.Equals(FMath::Lerp(FLinearColor::Blue, FLinearColor::Green, 0.5f)));
+	TestTrue(TEXT("Frame overrides never change seconds colors"), Timer->HackEffectSecondsText->GetColorAndOpacity().GetSpecifiedColor()
+		.Equals(FMath::Lerp(Timer->HackTimerNormalColor, Timer->HackTimerWarningColor, MidUrgency * 0.5f)));
+	Timer->HackTimerPulseNormalColor = DefaultPulseNormal;
+	Timer->HackTimerPulseWarningColor = DefaultPulseWarning;
+	const FLinearColor MidColor = Timer->HackEffectSecondsText->GetColorAndOpacity().GetSpecifiedColor();
+	Timer->TextColorPhase = 0.5f;
+	Timer->UpdateHackTimerColor(19.4f, 60.0f);
+	TestFalse(TEXT("Color advances without changing the displayed second"),
+		Timer->HackEffectSecondsText->GetColorAndOpacity().GetSpecifiedColor().Equals(MidColor));
+	TestEqual(TEXT("Color refresh never rewrites the seconds"), Timer->HackEffectSecondsText->GetText().ToString(), FString(TEXT("59")));
+	const FLinearColor TextColor = Timer->HackEffectSecondsText->GetColorAndOpacity().GetSpecifiedColor();
+	TestTrue(TEXT("Minutes share the seconds breathing color"),
+		Timer->HackEffectMinutesText->GetColorAndOpacity().GetSpecifiedColor().Equals(TextColor));
+	TestTrue(TEXT("Colon shares the seconds breathing color"), Timer->Colon->GetColorAndOpacity().GetSpecifiedColor().Equals(TextColor));
+	// 색상 최고점과 속도를 따로 편집해도 서로의 커브를 덮어쓰지 않는다.
+	const FRuntimeFloatCurve DefaultColorCurve = Timer->HackTimerTextColorAmountCurve;
+	const FRuntimeFloatCurve DefaultSpeedCurve = Timer->HackTimerTextPulseSpeedCurve;
+	Timer->HackTimerTextColorAmountCurve.GetRichCurve()->Reset();
+	TestTrue(TEXT("An empty curve falls back to the original nonlinear intensity"), FMath::IsNearlyEqual(Timer->GetHackTimerTextColorAlpha(30.0f, 60.0f), 0.25f));
+	Timer->HackTimerTextColorAmountCurve.GetRichCurve()->AddKey(0.0f, 0.2f);
+	TestTrue(TEXT("An edited color curve sets the pulse peak"), FMath::IsNearlyEqual(Timer->GetHackTimerTextColorAlpha(30.0f, 60.0f), 0.2f));
+	UCurveFloat* ExternalColorCurve = NewObject<UCurveFloat>(Timer);
+	ExternalColorCurve->FloatCurve.AddKey(0.0f, 0.7f);
+	Timer->HackTimerTextColorAmountCurve.ExternalCurve = ExternalColorCurve;
+	TestTrue(TEXT("An external curve can drive text color"), FMath::IsNearlyEqual(Timer->GetHackTimerTextColorAlpha(30.0f, 60.0f), 0.7f));
+	Timer->HackTimerTextColorAmountCurve = DefaultColorCurve;
 
-	Hud->ReleaseHackTimer();
+	// 머티리얼 에셋 없이 실제 파라미터 조회와 위젯별 MID 분리까지 검사한다. 패키지는 저장하지 않는다.
+	UMaterial* PulseMaterial = NewObject<UMaterial>();
+	for (FName Name : {FName(TEXT("PulsePhase")), FName(TEXT("PulseAmount")), FName(TEXT("AspectRatio")), FName(TEXT("BaseOpacity")),
+		FName(TEXT("SlowPeakOpacity")), FName(TEXT("FastPeakOpacity")), FName(TEXT("Padding")),
+		FName(TEXT("Feather")), FName(TEXT("CornerRadius")), FName(TEXT("Shape"))})
+	{
+		UMaterialExpressionScalarParameter* Parameter = NewObject<UMaterialExpressionScalarParameter>(PulseMaterial);
+		Parameter->ParameterName = Name;
+		PulseMaterial->GetExpressionCollection().AddExpression(Parameter);
+	}
+	UMaterialExpressionVectorParameter* ColorParameter = NewObject<UMaterialExpressionVectorParameter>(PulseMaterial);
+	ColorParameter->ParameterName = TEXT("PulseColor");
+	PulseMaterial->GetExpressionCollection().AddExpression(ColorParameter);
+	PulseMaterial->UpdateCachedExpressionData();
+	Pulse->BreathingImage->SetBrushFromMaterial(NewObject<UMaterial>());
+	Pulse->ApplyBreathingSettings();
+	TestNull(TEXT("A material without pulse parameters is safely ignored"), Pulse->DynamicMaterial.Get());
+	UMaterialInstanceDynamic* SharedMID = UMaterialInstanceDynamic::Create(PulseMaterial, GetTransientPackage());
+	Pulse->BreathingMaterial = SharedMID;
+	Pulse->ApplyBreathingSettings();
+	if (!TestNotNull(TEXT("Pulse material is prepared"), Pulse->DynamicMaterial.Get()))
+	{
+		return false;
+	}
+	UBreathingWidget* OtherPulse = NewObject<UBreathingWidget>(Fixture.World);
+	OtherPulse->BreathingImage = NewObject<UImage>(OtherPulse);
+	OtherPulse->BreathingMaterial = SharedMID;
+	OtherPulse->ApplyBreathingSettings();
+	if (!TestNotNull(TEXT("Other HUD also prepares its material"), OtherPulse->DynamicMaterial.Get()))
+	{
+		return false;
+	}
+	TestTrue(TEXT("HUDs never modify a shared MID"), Pulse->DynamicMaterial != OtherPulse->DynamicMaterial
+		&& Pulse->DynamicMaterial != SharedMID && OtherPulse->DynamicMaterial != SharedMID);
+	Pulse->BaseOpacity = 0.2f;
+	Pulse->Shape = EBreathingShape::Circle;
+	UMaterialInstanceDynamic* OriginalMID = Pulse->DynamicMaterial;
+	Pulse->ApplyBreathingSettings();
+	TestTrue(TEXT("Reapplying WBP settings reuses the existing MID"), Pulse->DynamicMaterial == OriginalMID);
+	float SettingValue = -1.0f;
+	Pulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("BaseOpacity")), SettingValue);
+	TestEqual(TEXT("WBP opacity settings reach the private MID"), SettingValue, 0.2f);
+	Pulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Shape")), SettingValue);
+	TestEqual(TEXT("WBP shape selects the UV circle"), SettingValue, 0.0f);
+	Pulse->Shape = EBreathingShape::Ellipse;
+	Pulse->ApplyBreathingSettings();
+	Pulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Shape")), SettingValue);
+	TestEqual(TEXT("WBP ellipse reaches the material without falling back to rounded rectangle"), SettingValue, 2.0f);
+	OtherPulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("BaseOpacity")), SettingValue);
+	TestEqual(TEXT("WBP settings never affect another instance"), SettingValue, 0.08f);
+	Pulse->Feather = std::numeric_limits<float>::quiet_NaN();
+	Pulse->ApplyBreathingSettings();
+	Pulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Feather")), SettingValue);
+	TestEqual(TEXT("Invalid WBP softness uses a finite default"), SettingValue, 0.12f);
+	Pulse->SetBreathingState(FLinearColor::Green, 0.75f, 1.0f);
+	TestTrue(TEXT("Standalone effects accept their own color"), Pulse->PulseColor.Equals(FLinearColor::Green));
+	TestEqual(TEXT("Standalone effects accept their own amount"), Pulse->PulseAmount, 0.75f);
+	Pulse->SetBreathingState(FLinearColor::White, 0.0f, 2.0f);
+	Pulse->UpdateAspectRatio(FVector2D(0.0, 0.0));
+	TestEqual(TEXT("Pre-layout geometry preserves the unset ratio"), Pulse->CachedAspectRatio, -1.0f);
+	Pulse->UpdateAspectRatio(FVector2D(300.0, 100.0));
+	float MaterialAspectRatio = -1.0f;
+	Pulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("AspectRatio")), MaterialAspectRatio);
+	TestEqual(TEXT("Wide images pass their actual aspect ratio"), MaterialAspectRatio, 3.0f);
+	Pulse->UpdateAspectRatio(FVector2D(300.0, 100.0));
+	TestEqual(TEXT("An unchanged size preserves the cached ratio"), Pulse->CachedAspectRatio, 3.0f);
+	Pulse->UpdateAspectRatio(FVector2D(100.0, 200.0));
+	Pulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("AspectRatio")), MaterialAspectRatio);
+	TestEqual(TEXT("Resizing to portrait updates the ratio"), MaterialAspectRatio, 0.5f);
+	for (const FVector2D& InvalidSize : {FVector2D(-1.0, 100.0), FVector2D(100.0, 0.0),
+		FVector2D(std::numeric_limits<double>::quiet_NaN(), 100.0),
+		FVector2D(100.0, std::numeric_limits<double>::infinity())})
+	{
+		Pulse->UpdateAspectRatio(InvalidSize);
+		TestEqual(TEXT("Invalid geometry preserves the last valid ratio"), Pulse->CachedAspectRatio, 0.5f);
+	}
+	OtherPulse->UpdateAspectRatio(FVector2D(200.0, 100.0));
+	float OtherAspectRatio = -1.0f;
+	OtherPulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("AspectRatio")), OtherAspectRatio);
+	TestEqual(TEXT("Resizing one HUD never changes the other MID"), OtherAspectRatio, 2.0f);
+	Timer->UpdateHackTimerColor(19.5f, 60.0f);
+	FLinearColor MaterialPulseColor;
+	Pulse->DynamicMaterial->GetVectorParameterValue(FMaterialParameterInfo(TEXT("PulseColor")), MaterialPulseColor);
+	TestTrue(TEXT("Frame interpolation reaches the private MID"),
+		MaterialPulseColor.Equals(FMath::Lerp(Timer->HackTimerPulseNormalColor, Timer->HackTimerPulseWarningColor, 0.5f)));
+	float OtherAmount = -1.0f;
+	OtherPulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("PulseAmount")), OtherAmount);
+	TestEqual(TEXT("Updating one HUD preserves the other HUD's amount"), OtherAmount, 1.0f);
+	Pulse->bPlaying = true;
+	Pulse->LastGameTime = Pulse->GetGameTime();
+	Fixture.AdvanceTime(0.25f);
+	Timer->UpdateHackTimerPulse();
+	Pulse->UpdatePlayback();
+	TestTrue(TEXT("Per-frame pulse updates preserve the independent normal color"),
+		Pulse->PulseColor.Equals(Timer->HackTimerPulseNormalColor));
+	TestTrue(TEXT("Slow pulse accumulates fractional cycles"), FMath::IsNearlyEqual(Pulse->Phase, 0.125f));
+	const float PausedPhase = Pulse->Phase;
+	Timer->UpdateHackTimerPulse();
+	Pulse->UpdatePlayback();
+	TestEqual(TEXT("A stopped game clock preserves the phase"), Pulse->Phase, PausedPhase);
+	Timer->HackTimerPulseSlowPeriod = 0.6f;
+	Timer->HackTimerPulseFastPeriod = 0.6f;
+	Fixture.AdvanceTime(0.25f);
+	Timer->UpdateHackTimerPulse();
+	Pulse->UpdatePlayback();
+	TestTrue(TEXT("Changing the period continues the previous phase"),
+		FMath::IsNearlyEqual(Pulse->Phase, PausedPhase + 0.25f / 0.6f));
+	for (const auto& Invalid : {TPair<float, float>(0.5f, 2.0f), {2.0f, 0.0f},
+		{std::numeric_limits<float>::infinity(), 0.6f}, {2.0f, std::numeric_limits<float>::quiet_NaN()}})
+	{
+		Timer->HackTimerPulseSlowPeriod = Invalid.Key;
+		Timer->HackTimerPulseFastPeriod = Invalid.Value;
+		TestTrue(TEXT("Invalid periods use defaults"), FMath::IsNearlyEqual(Timer->GetHackTimerPulsePeriod(0.5f), 1.3f));
+	}
+	Timer->HackTimerPulseSlowPeriod = 2.0f;
+	Timer->HackTimerPulseFastPeriod = 0.6f;
+
+	Timer->ReleaseHackTimer();
+	TestFalse(TEXT("Unbinding disables pulse work"), Pulse->bPlaying);
+	TestEqual(TEXT("Unbinding resets the phase"), Pulse->Phase, 0.0f);
+	TestTrue(TEXT("Unbinding restores the normal color"), Timer->HackEffectSecondsText->GetColorAndOpacity().GetSpecifiedColor()
+		.Equals(Timer->HackTimerNormalColor));
+	TestTrue(TEXT("Unbinding restores the independent frame color"), Pulse->PulseColor.Equals(Timer->HackTimerPulseNormalColor));
 	Fixture.AdvanceTime(10.0f);
-	Hud->BindHackTimer();
-	TestEqual(TEXT("Late binding resumes current server time"), Hud->HackEffectTime.Seconds, 49);
+	Hud->InitializeHackTimer();
+	TestEqual(TEXT("Late binding resumes current server time"), Timer->HackEffectTime.Seconds, 49);
 	APartnerPlayerController* Controller = Fixture.World->SpawnActor<APartnerPlayerController>();
 	if (!TestNotNull(TEXT("HUD owner controller spawns"), Controller))
 	{
 		return false;
 	}
 	Controller->EnemyHudInstance = Hud;
+	Fixture.AdvanceTime(29.0f);
+	Timer->UpdateHackTimerPulse();
+	Pulse->UpdatePlayback();
+	float FinalAmount = -1.0f;
+	Pulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("PulseAmount")), FinalAmount);
 	// 소유 Controller 통보 -> Partner 복귀 -> Enemy 종료 복제 순서도 마지막 숫자를 유지한다.
 	Controller->ClientPrepareExpiredEnemyHud_Implementation(FirstEnemy);
+	const float FinalPhase = Pulse->Phase;
+	Timer->UpdateHackTimerPulse();
+	Pulse->UpdatePlayback();
+	TestEqual(TEXT("Expiry freezes the last background phase"), Pulse->Phase, FinalPhase);
+	TestFalse(TEXT("Expiry stops pulse work"), Pulse->bPlaying);
+	float ExpiredAmount = -1.0f;
+	Pulse->DynamicMaterial->GetScalarParameterValue(FMaterialParameterInfo(TEXT("PulseAmount")), ExpiredAmount);
+	TestEqual(TEXT("Expiry preserves amplitude for the final brightness"), ExpiredAmount, FinalAmount);
+	TestTrue(TEXT("Terminal zero uses the warning color"), Timer->HackEffectSecondsText->GetColorAndOpacity().GetSpecifiedColor()
+		.Equals(Timer->HackTimerWarningColor));
+	TestTrue(TEXT("Expiry freezes the frame with its own warning color"), Pulse->PulseColor.Equals(Timer->HackTimerPulseWarningColor));
+	Pulse->DynamicMaterial->GetVectorParameterValue(FMaterialParameterInfo(TEXT("PulseColor")), MaterialPulseColor);
+	TestTrue(TEXT("Expiry forwards the frame warning color to its MID"), MaterialPulseColor.Equals(Timer->HackTimerPulseWarningColor));
 	Controller->RequestPopEnemyHud();
 	TestTrue(TEXT("Partner return defers only the expiring HUD removal"), Controller->bEnemyHudPopPending);
 	TestTrue(TEXT("Expiring HUD remains until its final display"), Controller->EnemyHudInstance == Hud);
-	Hud->RefreshHackTimer();
-	Hud->HandleHackEffectStarted(FirstEnemy, 60.0f);
-	TestEqual(TEXT("Late active state cannot overwrite terminal zero"), Hud->HackEffectTime.Seconds, 0);
+	Timer->RefreshHackTimer();
+	Timer->HandleHackEffectStarted(FirstEnemy, 60.0f);
+	TestEqual(TEXT("Late active state cannot overwrite terminal zero"), Timer->HackEffectTime.Seconds, 0);
 	FirstEnemy->EndHackEffect(EEnemyHackEffectEndReason::Expired);
-	TestTrue(TEXT("Duplicate expiry retains the hide callback"), Fixture.World->GetTimerManager().TimerExists(Hud->HackTimerHideHandle));
-	TestEqual(TEXT("Natural expiry shows zero"), Hud->HackEffectTime.Seconds, 0);
-	TestTrue(TEXT("Zero remains visible in the terminal frame"), Hud->HackEffectMinutesText->GetVisibility() == ESlateVisibility::HitTestInvisible);
-	Fixture.World->GetTimerManager().ClearTimer(Hud->HackTimerHideHandle);
-	Hud->HideExpiredHackTimer();
-	TestTrue(TEXT("A same-frame callback cannot hide zero"), Hud->bHackTimerShowingExpiry);
-	// 실제 렌더러 대신 Slate 구성과 Paint 완료 표식 사이의 제거 경계를 검사한다.
-	const TSharedRef<SWidget> HudSlate = Hud->TakeWidget();
+	TestTrue(TEXT("Duplicate expiry retains the hide callback"), Fixture.World->GetTimerManager().TimerExists(Timer->HackTimerHideHandle));
+	TestEqual(TEXT("Natural expiry shows zero"), Timer->HackEffectTime.Seconds, 0);
+	TestTrue(TEXT("Zero remains visible in the terminal frame"), Timer->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	TestTrue(TEXT("The terminal zero retains its frame"), Timer->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	Fixture.World->GetTimerManager().ClearTimer(Timer->HackTimerHideHandle);
+	Timer->HideExpiredHackTimer();
+	TestTrue(TEXT("A same-frame callback cannot hide zero"), Timer->bHackTimerShowingExpiry);
+	// Slate 객체가 캐시되어 있어도 화면에 붙지 않은 위젯은 Paint를 무한히 기다리지 않는다.
+	const TSharedRef<SWidget> TimerSlate = Timer->TakeWidget();
 	Fixture.AdvanceTime(0.1f);
-	TestTrue(TEXT("A mounted HUD waits for its terminal Paint"), Hud->bHackTimerShowingExpiry);
-	Hud->bHackTimerExpiryPainted = true;
-	Fixture.AdvanceTime(0.1f);
-	TestTrue(TEXT("Zero is hidden after the terminal frame"), Hud->HackEffectMinutesText->GetVisibility() == ESlateVisibility::Collapsed);
+	TestFalse(TEXT("An unmounted timer finishes expiry without waiting for Paint"), Timer->bHackTimerShowingExpiry);
+	TestTrue(TEXT("Expiry hides the complete timer module"), Timer->GetVisibility() == ESlateVisibility::Collapsed);
 	TestNull(TEXT("Final display removes the old Enemy HUD"), Controller->EnemyHudInstance.Get());
 	TestFalse(TEXT("Final display clears the pending Pop state"), Controller->bEnemyHudPopPending);
 
 	// 다음 대상에 연결한 뒤 이전 대상의 종료/숨김 콜백을 재현한다.
 	NextEnemy->BeginHackEffect();
 	Hud->InitializeForEnemy(NextEnemy);
-	Hud->HandleHackEffectEnded(FirstEnemy, EEnemyHackEffectEndReason::Expired);
-	Hud->HideExpiredHackTimer();
-	TestEqual(TEXT("Old callbacks preserve the new target's minute"), Hud->HackEffectTime.Minutes, 1);
-	TestTrue(TEXT("Old callbacks preserve the new timer's visibility"), Hud->HackEffectMinutesText->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	TestEqual(TEXT("New target begins at a fresh phase"), Pulse->Phase, 0.0f);
+	TestTrue(TEXT("New target immediately uses its current color"), Timer->HackEffectSecondsText->GetColorAndOpacity().GetSpecifiedColor()
+		.Equals(Timer->HackTimerNormalColor));
+	TestTrue(TEXT("New target restores the frame's own normal color"), Pulse->PulseColor.Equals(Timer->HackTimerPulseNormalColor));
+	Timer->HandleHackEffectEnded(FirstEnemy, EEnemyHackEffectEndReason::Expired);
+	Timer->HideExpiredHackTimer();
+	TestEqual(TEXT("Old callbacks preserve the new target's minute"), Timer->HackEffectTime.Minutes, 1);
+	TestTrue(TEXT("Old callbacks preserve the new timer's visibility"), Timer->GetVisibility() == ESlateVisibility::HitTestInvisible);
 	NextEnemy->EndHackEffect(EEnemyHackEffectEndReason::ManualRelease);
-	TestTrue(TEXT("Manual release hides the timer immediately"), Hud->HackEffectMinutesText->GetVisibility() == ESlateVisibility::Collapsed);
-	TestFalse(TEXT("Manual release stops UI refresh"), Fixture.World->GetTimerManager().TimerExists(Hud->HackTimerRefreshHandle));
-	TestFalse(TEXT("Manual release unsubscribes the HUD"), Hud->bHackTimerBound);
+	TestTrue(TEXT("Manual release hides the timer immediately"), Timer->GetVisibility() == ESlateVisibility::Collapsed);
+	TestTrue(TEXT("Manual release also hides the frame"), Timer->GetVisibility() == ESlateVisibility::Collapsed);
+	TestFalse(TEXT("Manual release stops UI refresh"), Fixture.World->GetTimerManager().TimerExists(Timer->HackTimerRefreshHandle));
+	TestFalse(TEXT("Manual release unsubscribes the HUD"), Timer->bHackTimerBound);
 	Controller->EnemyHudInstance = Hud;
 	Controller->RequestPopEnemyHud();
 	TestNull(TEXT("Manual release removes the HUD immediately"), Controller->EnemyHudInstance.Get());
 	NextEnemy->ResetHackEffectForPool();
 	NextEnemy->BeginHackEffect();
-	Hud->BindHackTimer();
+	Hud->InitializeHackTimer();
 	Hud->ReleaseDamageFeedback();
-	TestFalse(TEXT("The existing HUD Pop path also unsubscribes time"), Hud->bHackTimerBound);
-	TestFalse(TEXT("The existing HUD Pop path clears refresh"), Fixture.World->GetTimerManager().TimerExists(Hud->HackTimerRefreshHandle));
-	Hud->BindHackTimer();
+	TestFalse(TEXT("The existing HUD Pop path also unsubscribes time"), Timer->bHackTimerBound);
+	TestFalse(TEXT("The existing HUD Pop path clears refresh"), Fixture.World->GetTimerManager().TimerExists(Timer->HackTimerRefreshHandle));
+	Timer->BindHackTimer();
 	NextEnemy->Destroy();
 	TestFalse(TEXT("Target loss stops refresh even outside BeginPlay"), Hud->GetOwningEnemy() && IsValid(Hud->GetOwningEnemy()));
-	Hud->RefreshHackTimer();
-	TestTrue(TEXT("Target loss hides stale numbers"), Hud->HackEffectMinutesText->GetVisibility() == ESlateVisibility::Collapsed);
+	Timer->RefreshHackTimer();
+	TestTrue(TEXT("Target loss hides stale numbers"), Timer->GetVisibility() == ESlateVisibility::Collapsed);
 	Hud->InitializeForEnemy(nullptr);
 	TestNull(TEXT("Blueprint-style null binding releases the target"), Hud->GetOwningEnemy());
-	TestFalse(TEXT("Null binding has no live timer subscription"), Hud->bHackTimerBound);
+	TestFalse(TEXT("Null binding has no live timer subscription"), Timer->bHackTimerBound);
+	// 모듈 누락은 종료 표시 대기를 만들지 않는다.
+	Hud->HackEffectTimerWidget = nullptr;
+	Controller->EnemyHudInstance = Hud;
+	Controller->RequestPopEnemyHud();
+	TestNull(TEXT("A HUD without a timer returns immediately"), Controller->EnemyHudInstance.Get());
+	Hud->HackEffectTimerWidget = Timer;
+
+	AEnemyBase* LastEnemy = Fixture.SpawnEnemy();
+	if (!TestNotNull(TEXT("Lifecycle target spawns"), LastEnemy))
+	{
+		return false;
+	}
+	Timer->HackEffectPulseWidget = nullptr;
+	Hud->InitializeForEnemy(LastEnemy);
+	LastEnemy->BeginHackEffect();
+	Timer->NativeConstruct();
+	TestEqual(TEXT("Construct after binding preserves the current minute"), Timer->HackEffectTime.Minutes, 1);
+	TestTrue(TEXT("Missing breathing child still shows the timer"), Timer->IsVisible());
+	Timer->HackTimerTextPulseSpeedCurve.GetRichCurve()->Reset();
+	Timer->HackTimerTextPulseSpeedCurve.GetRichCurve()->AddKey(0.0f, 1.0f);
+	Timer->HackTimerPulseFastPeriod = 0.5f;
+	Timer->TextColorPhase = 0.0f;
+	Timer->LastTextColorTime = Fixture.World->GetTimeSeconds();
+	Fixture.AdvanceTime(0.125f);
+	Timer->UpdateHackTimerPulse();
+	TestTrue(TEXT("The speed curve independently selects the fast period"), FMath::IsNearlyEqual(Timer->TextColorPhase, 0.25f, KINDA_SMALL_NUMBER));
+	Timer->HackTimerTextPulseSpeedCurve = DefaultSpeedCurve;
+	Timer->HackTimerPulseFastPeriod = 0.6f;
+	Fixture.AdvanceTime(40.0f);
+	Timer->UpdateHackTimerPulse();
+	const float ColorPhase = Timer->TextColorPhase;
+	Fixture.AdvanceTime(0.1f);
+	Timer->UpdateHackTimerPulse();
+	TestFalse(TEXT("Seconds color animates without a breathing child"), FMath::IsNearlyEqual(Timer->TextColorPhase, ColorPhase));
+	const float ResumedColorPhase = Timer->TextColorPhase;
+	Timer->UpdateHackTimerPulse();
+	TestEqual(TEXT("A paused game clock also freezes the seconds color"), Timer->TextColorPhase, ResumedColorPhase);
+
+	int32 FinishedCount = 0;
+	Timer->OnHackTimerExpiryDisplayFinished.BindLambda([&FinishedCount]() { ++FinishedCount; });
+	Timer->ShowHackTimerExpiry(LastEnemy);
+	TestTrue(TEXT("Expiry fixes minutes at warning color"), Timer->HackEffectMinutesText->GetColorAndOpacity().GetSpecifiedColor().Equals(Timer->HackTimerWarningColor));
+	TestTrue(TEXT("Expiry fixes colon at warning color"), Timer->Colon->GetColorAndOpacity().GetSpecifiedColor().Equals(Timer->HackTimerWarningColor));
+	Timer->SetVisibility(ESlateVisibility::Hidden);
+	Fixture.AdvanceTime(0.1f);
+	Timer->FinishExpiryDisplay();
+	TestEqual(TEXT("Hidden expiry completes exactly once"), FinishedCount, 1);
+	TestTrue(TEXT("Hidden expiry collapses the whole module"), Timer->GetVisibility() == ESlateVisibility::Collapsed);
+
+	Hud->InitializeForEnemy(LastEnemy);
+	Timer->OnHackTimerExpiryDisplayFinished.BindLambda([&FinishedCount]() { ++FinishedCount; });
+	Timer->ShowHackTimerExpiry(LastEnemy);
+	Timer->NativeDestruct();
+	Timer->NativeDestruct();
+	TestEqual(TEXT("Destruction completes pending expiry exactly once"), FinishedCount, 2);
+	Hud->InitializeForEnemy(LastEnemy);
+	Controller->EnemyHudInstance = Hud;
+	Hud->ShowHackTimerExpiry(LastEnemy);
+	Controller->RequestPopEnemyHud();
+	TestTrue(TEXT("Parent destruction starts with a pending Pop"), Controller->bEnemyHudPopPending);
+	Hud->NativeDestruct();
+	TestNull(TEXT("External parent destruction completes the pending Pop"), Controller->EnemyHudInstance.Get());
+	TestFalse(TEXT("External parent destruction clears pending state"), Controller->bEnemyHudPopPending);
+	Hud->InitializeForEnemy(nullptr);
+	{
+		// 공통 위젯은 해킹 HUD나 별도의 Graph 없이도 Image와 MID를 준비해야 한다.
+		UBreathingWidget* Standalone = NewObject<UBreathingWidget>(Fixture.World);
+		Standalone->BreathingMaterial = PulseMaterial;
+		const TSharedRef<SWidget> StandaloneSlate = Standalone->TakeWidget();
+		TestNotNull(TEXT("An empty common widget builds its own image"), Standalone->BreathingImage.Get());
+		TestNotNull(TEXT("A standalone common widget prepares its configured material"), Standalone->DynamicMaterial.Get());
+		TestTrue(TEXT("A standalone common widget uses WBP autoplay defaults"), Standalone->bPlaying);
+	}
 	return true;
 }
 
@@ -472,8 +804,59 @@ bool FEnemyHackEffectAssetBindingTest::RunTest(const FString& Parameters)
 			continue;
 		}
 		// 이름 문자열 존재만으로는 바인딩 성공이 아니다. 생성된 네이티브 TextBlock 참조를 검사한다.
-		TestNotNull(FString::Printf(TEXT("Minutes TextBlock binds: %s"), Path), Hud->HackEffectMinutesText.Get());
-		TestNotNull(FString::Printf(TEXT("Seconds TextBlock binds: %s"), Path), Hud->HackEffectSecondsText.Get());
+		UHackEffectTimerWidget* Timer = Hud->HackEffectTimerWidget;
+		if (TestNotNull(FString::Printf(TEXT("Common timer child binds: %s"), Path), Timer))
+		{
+			TestNotNull(TEXT("Minutes binds inside timer"), Timer->HackEffectMinutesText.Get());
+			TestNotNull(TEXT("Seconds binds inside timer"), Timer->HackEffectSecondsText.Get());
+			TestNotNull(TEXT("Colon binds inside timer"), Timer->Colon.Get());
+			TestNotNull(TEXT("Frame binds inside timer"), Timer->TimerFrame.Get());
+			TestNotNull(TEXT("Breathing widget binds inside timer"), Timer->HackEffectPulseWidget.Get());
+			// 범용 숨쉬기 배경을 프레임 뒤에 겹친다. 배경의 크기와 위치는 WBP에서 독립 조절한다.
+			if (UBreathingWidget* Pulse = Timer->HackEffectPulseWidget)
+			{
+				const TSharedRef<SWidget> PulseSlate = Pulse->TakeWidget();
+				Pulse->ApplyBreathingSettings();
+				UImage* PulseImage = Cast<UImage>(Pulse->GetWidgetFromName(TEXT("BreathingImage")));
+				if (TestNotNull(TEXT("Common WBP has its real breathing image"), PulseImage))
+				{
+					TestTrue(TEXT("Frame breathing image is visible"), PulseImage->IsVisible());
+					TestNotNull(TEXT("Frame image receives a dynamic material"),
+						Cast<UMaterialInstanceDynamic>(PulseImage->GetBrush().GetResourceObject()));
+				}
+				UMaterialInterface* Material = Pulse->BreathingMaterial;
+				if (TestNotNull(TEXT("Frame breathing material is assigned"), Material))
+				{
+					TestEqual(TEXT("Timer uses the reusable breathing material"), Material->GetPathName(),
+						FString(TEXT("/Game/Material/Widget/MI_UI_Breathing_RoundedRectangle.MI_UI_Breathing_RoundedRectangle")));
+					TestEqual(TEXT("Timer background uses the ellipse shape"), Pulse->Shape, EBreathingShape::Ellipse);
+				}
+				UCanvasPanelSlot* PulseSlot = Cast<UCanvasPanelSlot>(Pulse->Slot);
+				UCanvasPanelSlot* FrameSlot = Timer->TimerFrame ? Cast<UCanvasPanelSlot>(Timer->TimerFrame->Slot) : nullptr;
+				UCanvasPanelSlot* SecondsSlot = Timer->HackEffectSecondsText ? Cast<UCanvasPanelSlot>(Timer->HackEffectSecondsText->Slot) : nullptr;
+				if (TestNotNull(TEXT("Frame glow has a canvas slot"), PulseSlot)
+					&& TestNotNull(TEXT("Frame has a canvas slot"), FrameSlot)
+					&& TestNotNull(TEXT("Seconds have a canvas slot"), SecondsSlot))
+				{
+					TestTrue(TEXT("Breathing background has a positive size"), PulseSlot->GetSize().X > 0.0f && PulseSlot->GetSize().Y > 0.0f);
+					TestTrue(TEXT("Breathing background is behind frame and numbers"), PulseSlot->GetZOrder() < FrameSlot->GetZOrder()
+						&& PulseSlot->GetZOrder() < SecondsSlot->GetZOrder());
+				}
+			}
+			for (const FName LegacyName : {FName(TEXT("TimerFrame")), FName(TEXT("HackEffectMinutesText")),
+				FName(TEXT("Colon")), FName(TEXT("HackEffectSecondsText")), FName(TEXT("HackEffectPulseImage"))})
+			{
+				TestNull(TEXT("Parent HUD has no duplicate timer elements"), Hud->GetWidgetFromName(LegacyName));
+			}
+			UCanvasPanelSlot* TimerSlot = Cast<UCanvasPanelSlot>(Timer->Slot);
+			if (TestNotNull(TEXT("Timer remains on the HUD canvas"), TimerSlot))
+			{
+				TestTrue(TEXT("Timer keeps the original frame size"), TimerSlot->GetSize().Equals(FVector2D(316.0f, 122.0f)));
+				TestTrue(TEXT("Timer keeps the original position"), TimerSlot->GetPosition().Equals(FVector2D(0.0f, 56.0f)));
+				TestTrue(TEXT("Timer keeps centered alignment"), TimerSlot->GetAlignment().Equals(FVector2D(0.5f, 0.0f)));
+				TestFalse(TEXT("Timer uses explicit frame size"), TimerSlot->GetAutoSize());
+			}
+		}
 		Hud->InitializeForEnemy(nullptr);
 	}
 	return true;
