@@ -17,6 +17,7 @@
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
 #include "InputMappingContext.h"
+#include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "InputAction.h"
 #include "FirstPersonCharacter.h"
 #include "FirstPersonPlayerCameraManager.h"
@@ -2080,6 +2081,13 @@ void AFirstPersonPlayerController::BindPostProcessSubSystem()
 
 void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 {
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer(); LocalPlayer && LocalPlayer->PlayerController == this)
+	{
+		if (ULocalPlayerSettingsSubsystem* Settings = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>())
+		{
+			Settings->RefreshInputSettingsContext();
+		}
+	}
 	if (!HasAuthority())
 	{
 		return;

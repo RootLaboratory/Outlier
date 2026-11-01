@@ -3,6 +3,10 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Components/PanelWidget.h"
 #include "Components/TextBlock.h"
+#include "UI/SprintInputModeWidget.h"
+#include "Blueprint/WidgetTree.h"
+#include "GameFramework/Character.h"
+#include "OutlierPlayerState.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "Input/OutlierInputBindingTable.h"
@@ -50,17 +54,42 @@ void USettingInputPageWidget::NativePreConstruct()
 {
 	Super::NativePreConstruct();
 	if (IsDesignTime()) RebuildInputBindingList();
+	RefreshSprintInputModeRow();
+}
+
+void USettingInputPageWidget::NativeConstruct()
+{
+	Super::NativeConstruct();
+	BoundSettingsSubsystem = GetSettingsSubsystem();
+	if (BoundSettingsSubsystem)
+	{
+		BoundSettingsSubsystem->OnInputSettingsContextChanged.AddUObject(this, &ThisClass::HandleInputSettingsContextChanged);
+		BoundSettingsSubsystem->RefreshInputSettingsContext();
+		DisplayedRole = BoundSettingsSubsystem->GetInputSettingsRole();
+	}
+	if (InputBindingTable) InputBindingTable->OnRowsChanged.AddUObject(this, &ThisClass::RebuildInputBindingList);
+	RefreshSprintInputModeRow();
 }
 
 void USettingInputPageWidget::ActivatePage()
 {
+	bInputPageActive = true;
 	ClearInputBindingInteractionState(true);
-	RebuildInputBindingList();
+	if (BoundSettingsSubsystem)
+	{
+		BoundSettingsSubsystem->RefreshInputSettingsContext();
+		DisplayedRole = BoundSettingsSubsystem->GetInputSettingsRole();
+	}
+	if (!bInputBindingListBuilt) RebuildInputBindingList();
+	else RefreshDisplayedInputRows();
+	RefreshSprintInputModeRow();
 	Super::ActivatePage();
 }
 
 void USettingInputPageWidget::DeactivatePage()
 {
+	bInputPageActive = false;
+	RefreshSprintInputModeRow();
 	if (MouseSensitivityWidget) MouseSensitivityWidget->ConfirmPendingValue();
 	ClearInputBindingInteractionState(true);
 	Super::DeactivatePage();
@@ -68,6 +97,14 @@ void USettingInputPageWidget::DeactivatePage()
 
 void USettingInputPageWidget::NativeDestruct()
 {
+	bInputPageActive = false;
+	if (SprintModeRow) SprintModeRow->SetSettingsContext(nullptr, EOutlierPlayerRole::None, false);
+	if (BoundSettingsSubsystem)
+	{
+		BoundSettingsSubsystem->OnInputSettingsContextChanged.RemoveAll(this);
+	}
+	if (InputBindingTable) InputBindingTable->OnRowsChanged.RemoveAll(this);
+	BoundSettingsSubsystem = nullptr;
 	ClearInputBindingInteractionState(false);
 	Super::NativeDestruct();
 }
@@ -76,7 +113,11 @@ void USettingInputPageWidget::RebuildKeyboardFocusTargets()
 {
 	KeyboardFocusTargets.Reset();
 	if (MouseSensitivityWidget) KeyboardFocusTargets.Add(MouseSensitivityWidget);
-	for (UInputBindingRowWidget* Row : ActiveInputBindingRows)
+	if (SprintModeRow)
+	{
+		if (UWidget* Target = SprintModeRow->GetKeyboardFocusTarget()) KeyboardFocusTargets.Add(Target);
+	}
+	for (UInputBindingRowWidget* Row : DisplayedInputBindingRows)
 	{
 		if (Row && Row->GetInputBindingRow().bRebindable)
 		{
@@ -99,6 +140,13 @@ bool USettingInputPageWidget::HandlePageInput(ESettingPageInput Input)
 	{
 		if (Input == ESettingPageInput::Escape) ClearInputBindingInteractionState(true);
 		return true;
+	}
+	if (Input == ESettingPageInput::Confirm || Input == ESettingPageInput::Left || Input == ESettingPageInput::Right)
+	{
+		UWidget* Target = KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex)
+			? KeyboardFocusTargets[CurrentFocusedIndex].Get() : nullptr;
+		if (Target && SprintModeRow && Target == SprintModeRow->GetKeyboardFocusTarget())
+			return SprintModeRow->CycleMode();
 	}
 	if (Input == ESettingPageInput::Confirm)
 	{
@@ -129,6 +177,11 @@ bool USettingInputPageWidget::HandlePageKeyDown(const FKeyEvent& KeyEvent)
 void USettingInputPageWidget::HandlePagePointerDown(const FPointerEvent& PointerEvent)
 {
 	Super::HandlePagePointerDown(PointerEvent);
+	if (SprintModeRow && SprintModeRow->IsVisible()
+		&& SprintModeRow->GetCachedGeometry().IsUnderLocation(PointerEvent.GetScreenSpacePosition()))
+	{
+		CurrentFocusedIndex = KeyboardFocusTargets.IndexOfByKey(SprintModeRow->GetKeyboardFocusTarget());
+	}
 	if (!IsPointerOverInputBindingRow(PointerEvent)) ClearInputBindingInteractionState(true);
 	else if (KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex))
 		HoveredInputBindingRow = Cast<UInputBindingRowWidget>(KeyboardFocusTargets[CurrentFocusedIndex]);
@@ -136,76 +189,60 @@ void USettingInputPageWidget::HandlePagePointerDown(const FPointerEvent& Pointer
 
 void USettingInputPageWidget::RebuildInputBindingList()
 {
-	if (!IsDesignTime() && bInputBindingListBuilt && !ActiveInputBindingRows.IsEmpty())
-	{
-		ApplyInputBindingRowPadding();
-		RefreshInputBindingDisplayedKeys();
-		return;
-	}
-
-	if (!InputBindingListHost)
-	{
-		return;
-	}
-
+	if (!InputBindingListHost || !WidgetTree) return;
+	ClearInputBindingInteractionState(true);
 	InputBindingListHost->ClearChildren();
-	ActiveInputBindingRows.Reset();
+	CachedInputBindingRows.Reset();
+	DisplayedInputBindingRows.Reset();
 	bInputBindingListBuilt = false;
 
-	if (!InputBindingTable || !InputBindingRowWidgetClass)
+	if (InputBindingTable && InputBindingRowWidgetClass && (IsDesignTime() || GetOwningPlayer()))
 	{
-		return;
-	}
-
-	APlayerController* OwningPlayer = GetOwningPlayer();
-	if (!IsDesignTime() && !OwningPlayer)
-	{
-		return;
-	}
-
-	const TArray<FOutlierInputBindingTableRow> VisibleRows =
-		InputBindingTable->GetVisibleRowsSorted();
-
-	for (int32 RowIndex = 0; RowIndex < VisibleRows.Num(); ++RowIndex)
-	{
-		// Owning the preview rows through this widget propagates designer flags without a player.
-		UInputBindingRowWidget* RowWidget = IsDesignTime()
-			? CreateWidget<UInputBindingRowWidget>(this, InputBindingRowWidgetClass)
-			: CreateWidget<UInputBindingRowWidget>(OwningPlayer, InputBindingRowWidgetClass);
-		if (!RowWidget)
+		const TArray<FOutlierInputBindingTableRow> Rows = InputBindingTable->GetVisibleRowsSorted();
+		for (int32 Index = 0; Index < Rows.Num(); ++Index)
 		{
-			continue;
-		}
-
-		RowWidget->InitializeInputBindingRow(VisibleRows[RowIndex], RowIndex);
-		RowWidget->SetDisplayedKey(ResolveInputBindingCurrentKey(VisibleRows[RowIndex]));
-		if (!IsDesignTime())
-		{
-			RowWidget->OnRowHovered.AddUniqueDynamic(
-				this,
-				&USettingInputPageWidget::HandleInputBindingRowHovered);
-			RowWidget->OnRebindRequested.AddUniqueDynamic(
-				this,
-				&USettingInputPageWidget::HandleInputBindingRebindRequested);
-		}
-		ActiveInputBindingRows.Add(RowWidget);
-
-		if (UCanvasPanel* CanvasPanel = Cast<UCanvasPanel>(InputBindingListHost))
-		{
-			if (UCanvasPanelSlot* CanvasSlot = CanvasPanel->AddChildToCanvas(RowWidget))
+			UInputBindingRowWidget* Row = IsDesignTime()
+				? CreateWidget<UInputBindingRowWidget>(this, InputBindingRowWidgetClass)
+				: CreateWidget<UInputBindingRowWidget>(GetOwningPlayer(), InputBindingRowWidgetClass);
+			if (!Row) continue;
+			Row->InitializeInputBindingRow(Rows[Index], Index);
+			Row->SetDisplayedKey(ResolveInputBindingCurrentKey(Rows[Index]));
+			if (!IsDesignTime())
 			{
-				CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f));
-				CanvasSlot->SetAlignment(FVector2D::ZeroVector);
-				CanvasSlot->SetAutoSize(true);
+				Row->OnRowHovered.AddUniqueDynamic(this, &ThisClass::HandleInputBindingRowHovered);
+				Row->OnRebindRequested.AddUniqueDynamic(this, &ThisClass::HandleInputBindingRebindRequested);
 			}
-			continue;
+			CachedInputBindingRows.Add(Row);
 		}
-
-		InputBindingListHost->AddChild(RowWidget);
 	}
+	bInputBindingListBuilt = true;
+	RefreshDisplayedInputRows();
+}
 
-	bInputBindingListBuilt = !IsDesignTime() && !ActiveInputBindingRows.IsEmpty();
+void USettingInputPageWidget::RefreshDisplayedInputRows()
+{
+	if (!InputBindingListHost) return;
+	UWidget* PreviousFocus = KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex)
+		? KeyboardFocusTargets[CurrentFocusedIndex].Get() : nullptr;
+	InputBindingListHost->ClearChildren();
+	DisplayedInputBindingRows.Reset();
+
+	// 제거하는 것은 표시 Host의 자식 관계뿐이다. 숨긴 행도 캐시와 키 충돌 검사에는 남긴다.
+	for (UInputBindingRowWidget* Row : CachedInputBindingRows)
+	{
+		if (Row && Row->GetInputBindingRow().IsVisibleForRole(DisplayedRole))
+		{
+			InputBindingListHost->AddChild(Row);
+			DisplayedInputBindingRows.Add(Row);
+		}
+	}
 	ApplyInputBindingRowPadding();
+	RefreshSprintInputModeRow();
+	RefreshInputBindingDisplayedKeys();
+	RebuildKeyboardFocusTargets();
+	CurrentFocusedIndex = KeyboardFocusTargets.IndexOfByKey(PreviousFocus);
+	if (CurrentFocusedIndex == INDEX_NONE && !KeyboardFocusTargets.IsEmpty()) CurrentFocusedIndex = 0;
+	if (bInputPageActive) FocusCurrentKeyboardTarget();
 }
 
 void USettingInputPageWidget::SetInputBindingRowPadding(FMargin NewPadding)
@@ -216,23 +253,33 @@ void USettingInputPageWidget::SetInputBindingRowPadding(FMargin NewPadding)
 
 void USettingInputPageWidget::ApplyInputBindingRowPadding()
 {
-	const float CanvasRowStride = InputBindingRowYOffset
-		+ InputBindingRowPadding.Top + InputBindingRowPadding.Bottom;
-	for (UInputBindingRowWidget* RowWidget : ActiveInputBindingRows)
+	if (!InputBindingListHost) return;
+	const float Stride = InputBindingRowYOffset + InputBindingRowPadding.Top + InputBindingRowPadding.Bottom;
+	for (int32 Index = 0; Index < InputBindingListHost->GetChildrenCount(); ++Index)
 	{
-		if (!RowWidget)
+		UWidget* Row = InputBindingListHost->GetChildAt(Index);
+		if (UInputBindingRowWidget* BindingRow = Cast<UInputBindingRowWidget>(Row)) BindingRow->SetPadding(InputBindingRowPadding);
+		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Row->Slot))
 		{
-			continue;
-		}
-
-		RowWidget->SetPadding(InputBindingRowPadding);
-		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(RowWidget->Slot))
-		{
-			// Canvas children use fixed positions, so include padding in the stride too.
-			CanvasSlot->SetPosition(FVector2D(
-				0.0f, CanvasRowStride * RowWidget->GetInputBindingRowIndex()));
+			// 원본 행 번호 대신 현재 표시 순서를 사용해 필터 뒤의 빈 공간을 없앤다.
+			CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f));
+			CanvasSlot->SetAlignment(FVector2D::ZeroVector);
+			CanvasSlot->SetPosition(FVector2D(0.0f, Stride * Index));
+			CanvasSlot->SetAutoSize(true);
 		}
 	}
+}
+
+void USettingInputPageWidget::RefreshSprintInputModeRow()
+{
+	if (SprintModeRow) SprintModeRow->SetSettingsContext(BoundSettingsSubsystem, DisplayedRole, bInputPageActive);
+}
+void USettingInputPageWidget::HandleInputSettingsContextChanged(EOutlierPlayerRole Role)
+{
+	ClearInputBindingInteractionState(true);
+	DisplayedRole = Role;
+	if (bInputBindingListBuilt) RefreshDisplayedInputRows();
+	else RefreshSprintInputModeRow();
 }
 
 void USettingInputPageWidget::HandleInputBindingRowHovered(
@@ -240,6 +287,7 @@ void USettingInputPageWidget::HandleInputBindingRowHovered(
 	int32 RowIndex)
 {
 	(void)RowIndex;
+	if (!DisplayedInputBindingRows.Contains(RowWidget)) return;
 	HoveredInputBindingRow = RowWidget;
 	CurrentFocusedIndex = KeyboardFocusTargets.IndexOfByKey(RowWidget);
 }
@@ -254,7 +302,7 @@ void USettingInputPageWidget::HandleInputBindingRebindRequested(
 
 bool USettingInputPageWidget::StartInputRebind(UInputBindingRowWidget* RowWidget)
 {
-	if (!RowWidget)
+	if (!RowWidget || !bInputPageActive || !DisplayedInputBindingRows.Contains(RowWidget))
 	{
 		return false;
 	}
@@ -266,6 +314,7 @@ bool USettingInputPageWidget::StartInputRebind(UInputBindingRowWidget* RowWidget
 	}
 
 	PendingRebindInputBindingRow = RowWidget;
+	RebindContextRevision = BoundSettingsSubsystem ? BoundSettingsSubsystem->GetInputSettingsContextRevision() : 0;
 	HoveredInputBindingRow = RowWidget;
 	CurrentFocusedIndex = KeyboardFocusTargets.IndexOfByKey(RowWidget);
 	bWaitingForInputRebind = true;
@@ -303,7 +352,8 @@ void USettingInputPageWidget::EndInputRebind()
 bool USettingInputPageWidget::TryCommitInputRebind(FKey NewKey)
 {
 	UInputBindingRowWidget* RowWidget = PendingRebindInputBindingRow.Get();
-	if (!RowWidget)
+	if (!RowWidget || !bInputPageActive || !DisplayedInputBindingRows.Contains(RowWidget)
+		|| (BoundSettingsSubsystem && RebindContextRevision != BoundSettingsSubsystem->GetInputSettingsContextRevision()))
 	{
 		SetInputResult(InputRebindFailedText, InputResultFailureColor);
 		EndInputRebind();
@@ -523,7 +573,7 @@ bool USettingInputPageWidget::IsPointerOverInputBindingRow(
 	const FPointerEvent& InMouseEvent) const
 {
 	const FVector2D ScreenSpacePosition = InMouseEvent.GetScreenSpacePosition();
-	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : ActiveInputBindingRows)
+	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : DisplayedInputBindingRows)
 	{
 		const UInputBindingRowWidget* RowWidget = RowWidgetPtr.Get();
 		if (RowWidget && RowWidget->GetCachedGeometry().IsUnderLocation(ScreenSpacePosition))
@@ -638,7 +688,7 @@ bool USettingInputPageWidget::IsInputKeyDuplicate(
 		? IgnoredRowWidget->GetInputBindingRow().MappingName
 		: NAME_None;
 
-	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : ActiveInputBindingRows)
+	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : CachedInputBindingRows)
 	{
 		const UInputBindingRowWidget* RowWidget = RowWidgetPtr.Get();
 		if (!RowWidget || RowWidget == IgnoredRowWidget)
@@ -675,7 +725,7 @@ bool USettingInputPageWidget::IsInputKeyDuplicate(
 
 void USettingInputPageWidget::RefreshInputBindingDisplayedKeys()
 {
-	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : ActiveInputBindingRows)
+	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : CachedInputBindingRows)
 	{
 		UInputBindingRowWidget* RowWidget = RowWidgetPtr.Get();
 		if (!RowWidget)

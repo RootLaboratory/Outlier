@@ -7,6 +7,18 @@
 
 class UInputAction;
 class UInputMappingContext;
+enum class EOutlierPlayerRole : uint8;
+
+UENUM(BlueprintType, meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
+enum class EOutlierInputSettingScope : uint8
+{
+	ContextDefault = 0 UMETA(Hidden),
+	Common = 1,
+	BeforeRoleSelection = 2,
+	Shooter = 4,
+	Partner = 8
+};
+ENUM_CLASS_FLAGS(EOutlierInputSettingScope);
 
 enum class EOutlierInputBindingValidation : uint8
 {
@@ -24,6 +36,13 @@ struct FOutlierInputBindingTableRow
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input Binding")
 	FText DisplayName;
+
+	// 0은 명시적인 IMC 기본 범위를 사용하고, 기본 규칙도 없으면 Common이다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input Binding", meta = (Bitmask, BitmaskEnum = "/Script/Outlier.EOutlierInputSettingScope"))
+	int32 DisplayScopes = 0;
+
+	int32 GetEffectiveDisplayScopes() const;
+	bool IsVisibleForRole(EOutlierPlayerRole Role) const;
 
 	// Opt in only for instantaneous actions. Hold/release-dependent actions must leave this off.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input Binding")
@@ -82,6 +101,12 @@ class OUTLIER_API UOutlierInputBindingTable : public UDataAsset
 	GENERATED_BODY()
 
 public:
+	FSimpleMulticastDelegate OnRowsChanged;
+	static bool IsScopeVisibleForRole(int32 Scopes, EOutlierPlayerRole Role);
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 	UFUNCTION(BlueprintPure, Category = "Input Binding")
 	TArray<FOutlierInputBindingTableRow> GetVisibleRowsSorted() const;
 

@@ -6,6 +6,8 @@
 #include "InputMappingContext.h"
 #include "PlayerMappableKeySettings.h"
 #include "UObject/UnrealType.h"
+#include "GameFramework/Character.h"
+#include "OutlierPlayerState.h"
 
 #if WITH_EDITOR
 #include "AssetRegistry/AssetData.h"
@@ -153,6 +155,33 @@ namespace
 				return Left.DisplayName.ToString() < Right.DisplayName.ToString();
 			});
 	}
+}
+
+int32 FOutlierInputBindingTableRow::GetEffectiveDisplayScopes() const
+{
+	if (DisplayScopes != 0) return DisplayScopes;
+	const UOutlierInputBindingSettings* Settings = GetDefault<UOutlierInputBindingSettings>();
+	for (const FOutlierInputMappingContextDisplayRule& Rule : Settings->MappingContextDisplayRules)
+	{
+		if (!MappingContext.IsNull() && Rule.MappingContext.ToSoftObjectPath() == MappingContext.ToSoftObjectPath())
+		{
+			return Rule.DisplayScopes;
+		}
+	}
+	return static_cast<int32>(EOutlierInputSettingScope::Common);
+}
+
+bool FOutlierInputBindingTableRow::IsVisibleForRole(EOutlierPlayerRole Role) const
+{
+	return UOutlierInputBindingTable::IsScopeVisibleForRole(GetEffectiveDisplayScopes(), Role);
+}
+
+bool UOutlierInputBindingTable::IsScopeVisibleForRole(int32 Scopes, EOutlierPlayerRole Role)
+{
+	const EOutlierInputSettingScope RoleScope = Role == EOutlierPlayerRole::Shooter
+		? EOutlierInputSettingScope::Shooter : Role == EOutlierPlayerRole::Partner
+		? EOutlierInputSettingScope::Partner : EOutlierInputSettingScope::BeforeRoleSelection;
+	return (Scopes & static_cast<int32>(EOutlierInputSettingScope::Common | RoleScope)) != 0;
 }
 
 EOutlierInputBindingValidation FOutlierInputBindingTableRow::ValidateReplacementKey(FKey NewKey) const
@@ -323,6 +352,7 @@ void UOutlierInputBindingTable::RebuildRowsFromConfiguredIMCs()
 				NewRow.SortOrder = ExistingRow->SortOrder;
 				NewRow.bRebindable = ExistingRow->bRebindable;
 				NewRow.bAllowMouseWheel = ExistingRow->bAllowMouseWheel;
+				NewRow.DisplayScopes = ExistingRow->DisplayScopes;
 			}
 
 			if (Mapping.Key.IsMouseButton())
@@ -342,6 +372,7 @@ void UOutlierInputBindingTable::RebuildRowsFromConfiguredIMCs()
 	SortInputBindingRows(MouseRows);
 	Modify();
 	MarkPackageDirty();
+	OnRowsChanged.Broadcast();
 }
 
 void UOutlierInputBindingTable::SortRowsByMappingContext()
@@ -350,5 +381,12 @@ void UOutlierInputBindingTable::SortRowsByMappingContext()
 	SortInputBindingRows(KeyboardRows);
 	SortInputBindingRows(MouseRows);
 	MarkPackageDirty();
+	OnRowsChanged.Broadcast();
+}
+
+void UOutlierInputBindingTable::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	OnRowsChanged.Broadcast();
 }
 #endif
