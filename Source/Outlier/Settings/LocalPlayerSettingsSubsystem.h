@@ -4,9 +4,16 @@
 #include "Audio/OutlierAudioTypes.h"
 #include "InputCoreTypes.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
+#include "Settings/OutlierInputUserSettings.h"
 #include "LocalPlayerSettingsSubsystem.generated.h"
 
 class UInputAction;
+class AOutlierPlayerState;
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnOutlierInputSettingsContextChanged, EOutlierPlayerRole);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnOutlierSprintInputModeChanged,
+	EOutlierPlayerRole, Role, EOutlierSprintInputMode, Mode);
 
 UENUM(BlueprintType)
 enum class EOutlierResolutionPreset : uint8
@@ -79,6 +86,22 @@ class OUTLIER_API ULocalPlayerSettingsSubsystem : public ULocalPlayerSubsystem
 
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
+	virtual void PlayerControllerChanged(APlayerController* NewPlayerController) override;
+
+	void RefreshInputSettingsContext();
+	EOutlierPlayerRole GetInputSettingsRole() const { return InputSettingsRole; }
+	uint32 GetInputSettingsContextRevision() const { return InputSettingsContextRevision; }
+	FOnOutlierInputSettingsContextChanged OnInputSettingsContextChanged;
+
+	UFUNCTION(BlueprintPure, Category = "Settings|Input")
+	EOutlierSprintInputMode GetSprintInputMode(EOutlierPlayerRole Role) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Settings|Input")
+	bool SetSprintInputMode(EOutlierPlayerRole Role, EOutlierSprintInputMode Mode);
+
+	UPROPERTY(BlueprintAssignable, Category = "Settings|Input")
+	FOnOutlierSprintInputModeChanged OnSprintInputModeChanged;
 
 	UFUNCTION(BlueprintPure, Category = "Settings|Graphics")
 	EOutlierResolutionPreset GetResolutionPreset() const;
@@ -131,6 +154,21 @@ public:
 	FOnOutlierInputActionKeyChanged OnInputActionKeyChanged;
 
 private:
+	friend class FShooterSprintInputModeTest;
+	friend struct FInputSettingsPresentationTestAccess;
+	void HandleInputSettingsRoleChanged(AOutlierPlayerState* PlayerState);
+	void UnbindInputSettingsPlayerState();
+	TWeakObjectPtr<AOutlierPlayerState> InputSettingsPlayerState;
+	TWeakObjectPtr<APlayerController> InputSettingsController;
+	EOutlierPlayerRole InputSettingsRole = static_cast<EOutlierPlayerRole>(0);
+	uint32 InputSettingsContextRevision = 0;
+
+	UFUNCTION()
+	void HandleInputUserSettingsInitialized(const UEnhancedInputUserSettings* Settings);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UOutlierInputUserSettings> InputUserSettings;
+
 	void InitializeResolutionOptions();
 	void InitializeSoundVolumeOptions();
 	void SyncResolutionPresetFromGameUserSettings();

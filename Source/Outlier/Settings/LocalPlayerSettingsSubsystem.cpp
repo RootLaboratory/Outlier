@@ -2,15 +2,117 @@
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "GameFramework/GameUserSettings.h"
+#include "EnhancedInputSubsystems.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "GameFramework/Character.h"
+#include "FrontendPlayerController.h"
+#include "OutlierPlayerState.h"
 
 void ULocalPlayerSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	Collection.InitializeDependency<UEnhancedInputLocalPlayerSubsystem>();
+	if (UEnhancedInputLocalPlayerSubsystem* InputSubsystem = GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+	{
+		// 입력 설정은 PlayerInput 생성 후 로드되므로 Subsystem 초기화 순서만으로 준비를 가정하지 않는다.
+		InputSubsystem->OnPostUserSettingsInitialized.AddUniqueDynamic(this, &ThisClass::HandleInputUserSettingsInitialized);
+		if (InputSubsystem->GetUserSettings()) HandleInputUserSettingsInitialized(InputSubsystem->GetUserSettings());
+	}
 
 	InitializeResolutionOptions();
 	InitializeSoundVolumeOptions();
 	SyncResolutionPresetFromGameUserSettings();
 	ApplySoundVolumeOptions();
+}
+
+void ULocalPlayerSettingsSubsystem::Deinitialize()
+{
+	UnbindInputSettingsPlayerState();
+	if (UEnhancedInputLocalPlayerSubsystem* InputSubsystem = GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+	{
+		InputSubsystem->OnPostUserSettingsInitialized.RemoveAll(this);
+	}
+	InputUserSettings = nullptr;
+	Super::Deinitialize();
+}
+
+void ULocalPlayerSettingsSubsystem::PlayerControllerChanged(APlayerController* NewPlayerController)
+{
+	Super::PlayerControllerChanged(NewPlayerController);
+	RefreshInputSettingsContext();
+}
+
+void ULocalPlayerSettingsSubsystem::UnbindInputSettingsPlayerState()
+{
+	if (AOutlierPlayerState* PlayerState = InputSettingsPlayerState.Get())
+	{
+		PlayerState->OnPlayerRoleChanged.RemoveAll(this);
+		PlayerState->OnPendingLobbyStateChanged.RemoveAll(this);
+	}
+	InputSettingsPlayerState.Reset();
+}
+
+void ULocalPlayerSettingsSubsystem::RefreshInputSettingsContext()
+{
+	APlayerController* Controller = GetLocalPlayer()->PlayerController;
+	AOutlierPlayerState* PlayerState = Controller ? Controller->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	const bool bOwnerChanged = InputSettingsController.Get() != Controller || InputSettingsPlayerState.Get() != PlayerState;
+	if (InputSettingsPlayerState.Get() != PlayerState)
+	{
+		UnbindInputSettingsPlayerState();
+		InputSettingsPlayerState = PlayerState;
+		if (PlayerState)
+		{
+			PlayerState->OnPlayerRoleChanged.AddUObject(this, &ThisClass::HandleInputSettingsRoleChanged);
+			PlayerState->OnPendingLobbyStateChanged.AddUObject(this, &ThisClass::HandleInputSettingsRoleChanged);
+		}
+	}
+	InputSettingsController = Controller;
+	// 로비 선택 역할은 Pawn/게임 역할보다 먼저 확정된다. 표시 컨텍스트만 변경한다.
+	const EOutlierPlayerRole NewRole = !PlayerState ? EOutlierPlayerRole::None
+		: Controller->IsA<AFrontendPlayerController>() ? PlayerState->GetPendingLobbyRole() : PlayerState->GetPlayerRole();
+	if (bOwnerChanged || InputSettingsRole != NewRole)
+	{
+		InputSettingsRole = NewRole;
+		++InputSettingsContextRevision;
+		OnInputSettingsContextChanged.Broadcast(NewRole);
+	}
+}
+
+void ULocalPlayerSettingsSubsystem::HandleInputSettingsRoleChanged(AOutlierPlayerState* PlayerState)
+{
+	if (PlayerState == InputSettingsPlayerState.Get()) RefreshInputSettingsContext();
+}
+
+void ULocalPlayerSettingsSubsystem::HandleInputUserSettingsInitialized(const UEnhancedInputUserSettings* Settings)
+{
+	// 알림 인자는 읽기 전용이므로, 변경 가능한 설정은 소유 Subsystem의 접근자로 가져온다.
+	UEnhancedInputLocalPlayerSubsystem* InputSubsystem = GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+	InputUserSettings = InputSubsystem ? Cast<UOutlierInputUserSettings>(InputSubsystem->GetUserSettings()) : nullptr;
+	if (!InputUserSettings)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Sprint settings unavailable: Enhanced Input UserSettingsClass must be OutlierInputUserSettings."));
+	}
+}
+
+EOutlierSprintInputMode ULocalPlayerSettingsSubsystem::GetSprintInputMode(EOutlierPlayerRole Role) const
+{
+	return InputUserSettings ? InputUserSettings->GetSprintInputMode(Role) : EOutlierSprintInputMode::Toggle;
+}
+
+bool ULocalPlayerSettingsSubsystem::SetSprintInputMode(EOutlierPlayerRole Role, EOutlierSprintInputMode Mode)
+{
+	if (!InputUserSettings) return false;
+	const EOutlierSprintInputMode PreviousMode = InputUserSettings->GetSprintInputMode(Role);
+	if (!InputUserSettings->SetSprintInputMode(Role, Mode)) return false;
+	if (PreviousMode == Mode) return true;
+
+	// 키 설정과 동일한 저장 경로를 사용하며, 구독자는 변경된 역할만 재평가한다.
+	InputUserSettings->SaveSettings();
+	OnSprintInputModeChanged.Broadcast(Role, Mode);
+	return true;
 }
 
 EOutlierResolutionPreset ULocalPlayerSettingsSubsystem::GetResolutionPreset() const
