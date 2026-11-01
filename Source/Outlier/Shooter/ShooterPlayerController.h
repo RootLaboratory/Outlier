@@ -93,6 +93,7 @@ protected:
 public:
 	AShooterPlayerController();
 	virtual void FlushPressedKeys() override;
+	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
 	// 슈트 HUD 표시는 Pawn 연결 순서와 무관하게 자기 PS에서 읽어 적용한다.
 	void RefreshShooterSuitHUDFromPlayerState();

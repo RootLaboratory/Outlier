@@ -232,6 +232,9 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 
 	// 뒤의 근접 정책 검증은 다시 Slide 상태에서 수행한다.
 	Movement->Velocity = FVector(400.0, 0.0, 0.0);
+	// 첫 Slide의 Shift가 아직 눌린 상태다. 새 Press 전에 실제 Release 경계를 소비한다.
+	Input->HandleSprintReleased();
+	Shooter->CheckJumpInput(0.0f);
 	Input->HandleSprintPressed();
 	Shooter->CheckJumpInput(0.0f);
 	Input->HandleCrouchPressed();

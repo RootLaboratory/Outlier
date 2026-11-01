@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "InputCoreTypes.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameplayTagContainer.h"
 #include "AbilitySystemInterface.h"
@@ -12,10 +13,13 @@
 #include "UI/UILayerTypes.h"
 #include "Interface/JumperAffectableInterface.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
+#include "Settings/OutlierInputUserSettings.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
 class UEnhancedInputLocalPlayerSubsystem;
+class UEnhancedInputUserSettings;
+class ULocalPlayerSettingsSubsystem;
 struct FInputActionValue;
 class AWeaponBase;
 class UShooterHealthComponent;
@@ -243,6 +247,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend struct ShooterSlideSimulationTests::FFixture;
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
+	friend class FShooterSprintInputModeTest;
 	friend class FShooterCoyoteTimeTest;
 	friend class FShooterSlidePredictionTest;
 	friend class FShooterSlideFireTest;
@@ -552,7 +557,15 @@ protected:
 	uint32 EquipActionGeneration = 0;
 	int32 FailedProceduralSwitchId = 0;
 	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> ActionInputSubsystem;
+	TWeakObjectPtr<ULocalPlayerSettingsSubsystem> SprintSettingsSubsystem;
+	TArray<FKey> SprintInputKeys;
 	void BindActionInputReset();
+	void UnbindSprintSettings();
+	void HandleSprintSettingsContextChanged(EOutlierPlayerRole SettingsRole);
+	UFUNCTION()
+	void HandleSprintInputModeChanged(EOutlierPlayerRole SettingsRole, EOutlierSprintInputMode Mode);
+	UFUNCTION()
+	void HandleSprintSettingsLoaded(const UEnhancedInputUserSettings* Settings);
 	UFUNCTION()
 	void HandleControlMappingsRebuilt();
 	void FinishEquipAction(uint32 Generation);
@@ -809,6 +822,7 @@ public:
 	bool IsAiming() const;
 	bool IsWeaponSwitchInProgress() const;
 	void ResetActionInput();
+	void NotifySprintKeyPressed(FKey Key);
 	bool IsSliding() const;
 	bool AllowsMeleeAttackWhileSliding() const { return bAllowMeleeAttackWhileSliding; }
 	bool IsSprinting() const;
@@ -1058,7 +1072,7 @@ protected:
 	void MulticastPlayThirdPersonSwitchRaise(EWeaponType WeaponType, FName SectionName);
 
 	UFUNCTION(Server, Reliable)
-	void ServerSetAimState(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId);
+	void ServerSetAimState(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId, bool bHoldSprint = false, bool bFireHeld = false);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetSprintState(bool bNewSprinting, uint32 InputRequest, uint32 InputEpoch);
