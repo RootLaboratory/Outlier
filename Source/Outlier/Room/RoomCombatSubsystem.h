@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
+#include "GameplayEffectTypes.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "TimerManager.h"
 #include "RoomCombatSubsystem.generated.h"
@@ -14,6 +15,8 @@ class ARoomCombatBarrier;
 class ARoomVolume;
 class AFirstPersonCharacter;
 class URoomCombatDefinition;
+class UOutlierAbilitySystemComponent;
+class AOutlierPlayerState;
 struct FOutlierRoomPhaseProgress;
 enum class ERoomJoinRejection : uint8;
 // 요청 동안 확보하는 약한 공간 문맥이며 Room 등록 변경 시 다시 만든다.
@@ -361,6 +364,26 @@ public:
 #endif
 
 private:
+	// 합류 시도별 효과만 소유한다. 같은 태그를 쓰는 스킬 무적은 이 문맥에서 제거하지 않는다.
+	struct FForcedJoinProtection
+	{
+		FGameplayTag RoomTag;
+		FGameplayTag DestinationRoomTag;
+		TWeakObjectPtr<AFirstPersonCharacter> Player;
+		TWeakObjectPtr<AOutlierPlayerState> PlayerState;
+		TWeakObjectPtr<UOutlierAbilitySystemComponent> AbilitySystem;
+		FActiveGameplayEffectHandle EffectHandle;
+		FDelegateHandle DeathHandle;
+		FDelegateHandle PawnInvalidatedHandle;
+		FDelegateHandle CharactersChangedHandle;
+		FDelegateHandle EffectRemovedHandle;
+	};
+	bool ApplyForcedJoinProtection(const FRoomCombatPreparationContext& Context,
+		AFirstPersonCharacter* Player, AOutlierPlayerState* PlayerState, FGameplayTag DestinationRoomTag);
+	void ClearForcedJoinProtection(FGuid PreparationId, bool bRemoveEffect = true);
+	void ClearForcedJoinProtectionsForRoom(FGameplayTag RoomTag);
+	TMap<FGuid, FForcedJoinProtection> ForcedJoinProtections;
+
 	struct FRoomStartHold
 	{
 		FGuid ExecutionId;

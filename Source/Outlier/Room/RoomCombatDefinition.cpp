@@ -163,6 +163,11 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 		Result = EDataValidationResult::Invalid;
 	};
 
+	if (!FMath::IsFinite(ForcedJoinInvulnerabilitySeconds) || ForcedJoinInvulnerabilitySeconds < 0.0f)
+	{
+		AddValidationError(TEXT("ForcedJoinInvulnerabilitySeconds must be finite and nonnegative."));
+	}
+
 	if (RoomDefinitions.IsEmpty())
 	{
 		AddValidationError(TEXT("Room Combat Definition requires at least one RoomDefinition."));

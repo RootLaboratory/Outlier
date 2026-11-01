@@ -28,6 +28,9 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Effects/OutlierGameplayEffects.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 
 // 안전 판정의 반환값은 유지하고, 실패한 최초 조건만 진단용으로 전달한다.
 enum class ERoomJoinRejection : uint8
@@ -742,6 +745,16 @@ void URoomCombatSubsystem::BroadcastCombatEvent(
 		}
 	}
 	const FRoomCombatLifecycleEvent Context{RoomTag, Event, PhaseIndex, Generation, RegistrationId, ExecutionId};
+	if (Event == ERoomCombatEvent::RoomCleared || Event == ERoomCombatEvent::Cancelled)
+	{
+		const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+		if (Runtime && Runtime->RegistrationId == RegistrationId && Runtime->GameplayGeneration == Generation)
+		{
+			// 상태 확정 뒤의 알림 경계에서 정리한다. 효과 제거 콜백이 Reset해도
+			// 호출자가 보관한 Runtime 포인터로 후속 상태를 변경하지 않는다.
+			ClearForcedJoinProtectionsForRoom(RoomTag);
+		}
+	}
 	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Event=%d Room=%s Phase=%d Generation=%d"),
 		static_cast<int32>(Event), *RoomTag.ToString(), PhaseIndex, Generation);
 	PublishCombatMusicState(Event != ERoomCombatEvent::Cancelled);
@@ -1048,6 +1061,13 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 	const int32 CancelledGeneration = Runtime->GameplayGeneration;
 	const FGuid CancelledRegistrationId = Runtime->RegistrationId;
 	const FGuid CancelledExecutionId = Runtime->CheckpointHoldExecutionId;
+	// 목적지 방은 전투 소속 방과 다를 수 있다. 어느 쪽이 언로드돼도 합류 보호를 끝낸다.
+	ClearForcedJoinProtectionsForRoom(RoomTag);
+	Runtime = RoomRuntimes.Find(RoomTag);
+	if (!Runtime || Runtime->RegistrationId != CancelledRegistrationId)
+	{
+		return;
+	}
 	RoomStartHolds.Remove(RoomTag);
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->InitialSpawnDelayTimer);
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->PhaseDelayTimer);
@@ -2184,6 +2204,7 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 	AGameStateBase* GameState = GetWorld()->GetGameState();
 	AShooterCharacter* Shooter = nullptr;
 	APartnerCharacter* Partner = nullptr;
+	AOutlierPlayerState* PairState = nullptr;
 	if (GameState)
 	{
 		for (APlayerState* PlayerState : GameState->PlayerArray)
@@ -2194,6 +2215,7 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 				Partner = OutlierState->GetPartnerCharacter();
 				if (IsValid(Shooter) && IsValid(Partner))
 				{
+					PairState = OutlierState;
 					break;
 				}
 			}
@@ -2341,15 +2363,139 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 			CancelInitialDetectionPreparation(Context);
 			return false;
 		}
+		// 이동/Room 검증이 끝난 대상만 보호한 뒤 차단막과 공격을 재개한다.
+		// 효과 적용 중 콜백이 Reset할 수도 있으므로 완료 API가 문맥을 다시 검사한다.
+		if (!ApplyForcedJoinProtection(Context, MovingPlayer, PairState, JoinRoomTag))
+		{
+			CancelInitialDetectionPreparation(Context);
+			return false;
+		}
 	}
 	if (!CompleteInitialDetectionPreparation(Context, ArePlayersJoined))
 	{
+		ClearForcedJoinProtection(Context.PreparationId);
 		CancelInitialDetectionPreparation(Context);
 		return false;
 	}
 	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Players joined. Room=%s Anchor=%s Moved=%s Generation=%d"),
 		*RoomTag.ToString(), *GetNameSafe(Anchor), *GetNameSafe(MovingPlayer), Context.GameplayGeneration);
 	return true;
+}
+
+bool URoomCombatSubsystem::ApplyForcedJoinProtection(
+	const FRoomCombatPreparationContext& Context, AFirstPersonCharacter* Player,
+	AOutlierPlayerState* PlayerState, FGameplayTag DestinationRoomTag)
+{
+	if (!IsPreparationContextCurrent(Context) || !IsValid(Player) || !IsValid(PlayerState))
+	{
+		return false;
+	}
+	const float Duration = CombatDefinition ? CombatDefinition->ForcedJoinInvulnerabilitySeconds : 0.0f;
+	if (!FMath::IsFinite(Duration) || Duration < 0.0f)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Invalid ForcedJoinInvulnerabilitySeconds: %f"), Duration);
+		return false;
+	}
+	if (Duration == 0.0f || ForcedJoinProtections.Contains(Context.PreparationId))
+	{
+		return true;
+	}
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(Player);
+	APartnerCharacter* Partner = Cast<APartnerCharacter>(Player);
+	UOutlierAbilitySystemComponent* AbilitySystem = Shooter ? Shooter->GetOutlierAbilitySystemComponent()
+		: (Partner ? Partner->GetOutlierAbilitySystemComponent() : nullptr);
+	if (!AbilitySystem || AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return false;
+	}
+
+	const FActiveGameplayEffectHandle Effect = AbilitySystem->ApplyTimedGameplayEffectToSelf(
+		UOutlierDamageImmuneGameplayEffect::StaticClass(), Duration, Player);
+	// 효과 적용의 태그 콜백에서 사망/Reset/교체될 수 있다. 실패한 시도의 효과만 되돌린다.
+	if (!Effect.IsValid() || !IsPreparationContextCurrent(Context) || !IsValid(Player)
+		|| !IsValid(PlayerState) || AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead())
+		|| (PlayerState->GetShooterCharacter() != Player && PlayerState->GetPartnerCharacter() != Player))
+	{
+		AbilitySystem->RemoveActiveEffectFromSelf(Effect);
+		return false;
+	}
+
+	const FGuid Id = Context.PreparationId;
+	FForcedJoinProtection& Protection = ForcedJoinProtections.Add(Id);
+	Protection.RoomTag = Context.RoomTag;
+	Protection.DestinationRoomTag = DestinationRoomTag;
+	Protection.Player = Player;
+	Protection.PlayerState = PlayerState;
+	Protection.AbilitySystem = AbilitySystem;
+	Protection.EffectHandle = Effect;
+	Protection.DeathHandle = AbilitySystem->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Dead(), EGameplayTagEventType::NewOrRemoved)
+		.AddWeakLambda(this, [this, Id](FGameplayTag, int32 Count)
+		{
+			if (Count > 0) ClearForcedJoinProtection(Id);
+		});
+	// 기존 Pawn 무효화 알림은 UnPossessed와 EndPlay 양쪽에서 발생한다.
+	// 별도 Tick 없이 제어권 교체/종료 순간에 보호와 구독을 함께 정리한다.
+	Protection.PawnInvalidatedHandle = Player->OnSuitTransitionParticipantInvalidated.AddWeakLambda(
+		this, [this, Id](AFirstPersonCharacter*) { ClearForcedJoinProtection(Id); });
+	Protection.CharactersChangedHandle = PlayerState->OnPlayerCharactersChanged.AddWeakLambda(
+		this, [this, Id](AOutlierPlayerState* State)
+		{
+			const FForcedJoinProtection* Current = ForcedJoinProtections.Find(Id);
+			if (Current && State->GetShooterCharacter() != Current->Player.Get()
+				&& State->GetPartnerCharacter() != Current->Player.Get())
+			{
+				ClearForcedJoinProtection(Id);
+			}
+		});
+	if (auto* Removed = AbilitySystem->OnGameplayEffectRemoved_InfoDelegate(Effect))
+	{
+		// 자연 만료도 같은 정리 경로로 보낸다. 별도 만료 Timer는 만들지 않는다.
+		Protection.EffectRemovedHandle = Removed->AddWeakLambda(this,
+			[this, Id](const FGameplayEffectRemovalInfo&) { ClearForcedJoinProtection(Id, false); });
+	}
+	return true;
+}
+
+void URoomCombatSubsystem::ClearForcedJoinProtection(FGuid PreparationId, bool bRemoveEffect)
+{
+	FForcedJoinProtection Protection;
+	// 제거 이벤트가 재진입해도 같은 효과를 두 번 정리하지 않도록 소유 기록부터 분리한다.
+	if (!ForcedJoinProtections.RemoveAndCopyValue(PreparationId, Protection))
+	{
+		return;
+	}
+	if (AFirstPersonCharacter* Player = Protection.Player.Get())
+	{
+		Player->OnSuitTransitionParticipantInvalidated.Remove(Protection.PawnInvalidatedHandle);
+	}
+	if (AOutlierPlayerState* State = Protection.PlayerState.Get())
+	{
+		State->OnPlayerCharactersChanged.Remove(Protection.CharactersChangedHandle);
+	}
+	if (UOutlierAbilitySystemComponent* AbilitySystem = Protection.AbilitySystem.Get())
+	{
+		AbilitySystem->RegisterGameplayTagEvent(OutlierGameplayTags::State::Dead(),
+			EGameplayTagEventType::NewOrRemoved).Remove(Protection.DeathHandle);
+		if (auto* Removed = AbilitySystem->OnGameplayEffectRemoved_InfoDelegate(Protection.EffectHandle))
+		{
+			Removed->Remove(Protection.EffectRemovedHandle);
+		}
+		if (bRemoveEffect) AbilitySystem->RemoveActiveEffectFromSelf(Protection.EffectHandle);
+	}
+}
+
+void URoomCombatSubsystem::ClearForcedJoinProtectionsForRoom(FGameplayTag RoomTag)
+{
+	TArray<FGuid> ToRemove;
+	for (const auto& Entry : ForcedJoinProtections)
+	{
+		if (Entry.Value.RoomTag == RoomTag || Entry.Value.DestinationRoomTag == RoomTag)
+		{
+			ToRemove.Add(Entry.Key);
+		}
+	}
+	for (FGuid Id : ToRemove) ClearForcedJoinProtection(Id);
 }
 
 bool URoomCombatSubsystem::BeginInitialDetectionPreparation(
@@ -2454,6 +2600,8 @@ bool URoomCombatSubsystem::CancelInitialDetectionPreparation(
 	{
 		return false;
 	}
+	ClearForcedJoinProtection(Context.PreparationId);
+	if (!IsPreparationContextCurrent(Context)) return false;
 	FRoomCombatRuntime& Runtime = RoomRuntimes.FindChecked(Context.RoomTag);
 	const bool bWasExitBlocked = Runtime.bExitBlockActive;
 	const int32 PhaseIndex = Runtime.CurrentCombatPhaseIndex;
@@ -3235,6 +3383,9 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	}
 	// 취소 통보에서 Reset이 재진입하거나 새 전투를 시작하지 못하게 정리 전체를 하나의 경계로 묶는다.
 	TGuardValue<bool> ResetGuard(bResettingRuntime, true);
+	TArray<FGuid> ProtectionIds;
+	ForcedJoinProtections.GetKeys(ProtectionIds);
+	for (FGuid Id : ProtectionIds) ClearForcedJoinProtection(Id);
 	++MovementRoomRevision;
 	RoomStartHolds.Reset();
 	bRestoredAutomaticStartAllowed = false;

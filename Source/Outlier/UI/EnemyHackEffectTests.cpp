@@ -504,9 +504,9 @@ bool FEnemyHackEffectHUDTest::RunTest(const FString& Parameters)
 		Parameter->ParameterName = Name;
 		PulseMaterial->GetExpressionCollection().AddExpression(Parameter);
 	}
-	UMaterialExpressionVectorParameter* ColorParameter = NewObject<UMaterialExpressionVectorParameter>(PulseMaterial);
-	ColorParameter->ParameterName = TEXT("PulseColor");
-	PulseMaterial->GetExpressionCollection().AddExpression(ColorParameter);
+	UMaterialExpressionVectorParameter* PulseColorExpression = NewObject<UMaterialExpressionVectorParameter>(PulseMaterial);
+	PulseColorExpression->ParameterName = TEXT("PulseColor");
+	PulseMaterial->GetExpressionCollection().AddExpression(PulseColorExpression);
 	PulseMaterial->UpdateCachedExpressionData();
 	Pulse->BreathingImage->SetBrushFromMaterial(NewObject<UMaterial>());
 	Pulse->ApplyBreathingSettings();
