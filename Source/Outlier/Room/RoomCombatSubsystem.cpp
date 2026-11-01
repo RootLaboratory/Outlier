@@ -26,6 +26,7 @@
 #include "Save/OutlierSaveSubSystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Team/OutlierTeamIds.h"
 #include "Drone/Partner/PartnerCharacter.h"
 
 // 안전 판정의 반환값은 유지하고, 실패한 최초 조건만 진단용으로 전달한다.
@@ -1077,17 +1078,19 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 		}
 	}
 	TArray<AEnemyBase*> PooledEnemiesToReturn;
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Runtime->TrackedAliveEnemies)
+	// 아군화로 생존 집계에서 빠진 개체도 방 소유권 기준으로 정리한다.
+	for (const auto& Entry : RegisteredEnemies)
 	{
-		const FRoomCombatEnemyRegistration* Registration = RegisteredEnemies.Find(EnemyPtr);
-		if (!EnemyPtr.IsValid() || !Registration)
+		const TWeakObjectPtr<AEnemyBase> EnemyPtr = Entry.Key;
+		const FRoomCombatEnemyRegistration* Registration = &Entry.Value;
+		if (!EnemyPtr.IsValid() || Registration->RoomTag != RoomTag)
 		{
 			continue;
 		}
 
 		if (!Registration->bPoolManaged)
 		{
-			if (Registration->bPreplaced)
+			if (Registration->bPreplaced && !Registration->bExcludedAsAlly)
 			{
 				PendingPreplacedEnemies.FindOrAdd(RoomTag).Add(EnemyPtr);
 			}
@@ -1530,6 +1533,7 @@ void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
 
 	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
 	FRoomCombatEnemyRegistration& Registration = RegisteredEnemies.FindOrAdd(EnemyPtr);
+	if (Registration.bExcludedAsAlly) return;
 	Registration.RoomTag = RoomTag;
 	Registration.CombatPhaseIndex = 0;
 	Registration.WaveIndex = 0;
@@ -1591,6 +1595,41 @@ void URoomCombatSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 	RegisteredEnemies.Remove(EnemyPtr);
 }
 
+void URoomCombatSubsystem::NotifyEnemyAllied(AEnemyBase* Enemy)
+{
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || Enemy->IsDead()
+		|| Enemy->GetGenericTeamId() != FGenericTeamId(OutlierTeamIds::Player))
+	{
+		return;
+	}
+	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
+	FRoomCombatEnemyRegistration* Registration = RegisteredEnemies.Find(EnemyPtr);
+	if (!Registration) return;
+	const FGameplayTag RoomTag = Registration->RoomTag;
+	Registration->bExcludedAsAlly = true;
+	// 아군화는 처치가 아니다. 후속 사망과 풀 반환을 위해 원래 등록 정보는 유지한다.
+	if (TSet<TWeakObjectPtr<AEnemyBase>>* Pending = PendingPreplacedEnemies.Find(RoomTag))
+	{
+		Pending->Remove(EnemyPtr);
+	}
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	if (!Runtime || Runtime->TrackedAliveEnemies.Remove(EnemyPtr) == 0) return;
+	if (Runtime->State == ERoomCombatState::Dormant)
+	{
+		// 발각 전 마지막 배치 적을 빙의한 경우에도 현재 차수의 완료를 판정한다.
+		if (Registration->bPreplaced && Runtime->bHadPreplacedEnemy && !Runtime->bInitialDetectionPendingJoin
+			&& !Runtime->bSavedCurrentPhasePending && Runtime->TrackedAliveEnemies.IsEmpty())
+		{
+			CompleteCurrentPhase(RoomTag, true);
+		}
+		return;
+	}
+	if (Runtime->State == ERoomCombatState::Combat)
+	{
+		EvaluateWaveProgress(RoomTag, *Runtime);
+	}
+}
+
 void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 {
 	if (!Enemy || !Enemy->HasAuthority())
@@ -1619,7 +1658,8 @@ void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 		return;
 	}
 
-	Runtime->TrackedAliveEnemies.Remove(EnemyPtr);
+	// 아군화 때 이미 생존 집계에서 제외됐으면 후속 사망은 등록 정보만 정리한다.
+	if (Runtime->TrackedAliveEnemies.Remove(EnemyPtr) == 0) return;
 	CompactAliveEnemies(*Runtime);
 	if (Runtime->State == ERoomCombatState::Preparing)
 	{

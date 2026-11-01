@@ -1425,6 +1425,10 @@ void AAutoTurret::HandleHackEffect(FGameplayTag EffectTag, const FHackResultCont
 	{
 		HackableComponent->MarkAsHackedOnce();
 	}
+	if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+	{
+		Combat->NotifyEnemyAllied(this);
+	}
 }
 
 void AAutoTurret::HandleHackCompleted(const FHackResultContext& Context)

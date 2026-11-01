@@ -172,6 +172,7 @@ struct FRoomCombatEnemyRegistration
 	int32 GameplayGeneration = 0;
 	bool bPreplaced = false;
 	bool bPoolManaged = false;
+	bool bExcludedAsAlly = false;
 };
 
 struct FRoomCombatPendingSpawn
@@ -305,6 +306,7 @@ public:
 	void RegisterPreplacedEnemy(AEnemyBase* Enemy);
 	void UnregisterEnemy(AEnemyBase* Enemy);
 	void NotifyEnemyDefeated(AEnemyBase* Enemy);
+	void NotifyEnemyAllied(AEnemyBase* Enemy);
 	// 감지 진입과 재접속은 서버의 현재 Room 수명으로 검증한 뒤에만 Combat/합류를 확정한다.
 	bool BeginInitialDetectionPreparation(FGameplayTag RoomTag, AActor* AnchorPlayer,
 		FRoomCombatPreparationContext& OutContext);

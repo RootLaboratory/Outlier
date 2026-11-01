@@ -2849,4 +2849,113 @@ bool FRoomCombatStartHoldTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCombatAlliedEnemyTest,
+	"Outlier.Room.AlliedEnemyProgress",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatAlliedEnemyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("AlliedEnemyTest")));
+	if (!TestNotNull(TEXT("World"), World)) return false;
+	World->AddToRoot();
+	Context.SetCurrentWorld(World);
+	UGameInstance* GI = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GI);
+	GI->Init();
+	World->InitializeActorsForPlay(FURL());
+	ON_SCOPE_EXIT
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		GI->Shutdown();
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.1"));
+	const FGameplayTag StealthTag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.2"));
+	const FGameplayTag PoolTag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.3"));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddSingleWaveDefinition(Definition, Tag);
+	AddSingleWaveDefinition(Definition, StealthTag);
+	AddSpawnWaveDefinition(Definition, PoolTag, 1);
+	Combat->SetCombatDefinitionForTesting(Definition);
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	AEnemyBase* First = SpawnTestEnemy(World, Tag);
+	AEnemyBase* Last = SpawnTestEnemy(World, Tag);
+	if (!TestNotNull(TEXT("Room"), Room) || !TestNotNull(TEXT("First"), First)
+		|| !TestNotNull(TEXT("Last"), Last)) return false;
+	TestTrue(TEXT("Register Room"), Combat->RegisterRoom(Room, Tag));
+	Combat->RegisterPreplacedEnemy(First);
+	Combat->RegisterPreplacedEnemy(Last);
+	TestTrue(TEXT("Start combat"), Combat->NotifyRoomCombatStarted(Tag));
+	Combat->NotifyEnemyAllied(First);
+	TestEqual(TEXT("An unsuccessful hack cannot remove an enemy"), Combat->GetAliveEnemyCount(Tag), 2);
+	First->SetEnemyPossessed(true);
+	Combat->NotifyEnemyAllied(First);
+	TestEqual(TEXT("A committed ally leaves the hostile count"), Combat->GetAliveEnemyCount(Tag), 1);
+	Combat->RegisterPreplacedEnemy(First);
+	TestEqual(TEXT("Repeated registration does not count an ally again"), Combat->GetAliveEnemyCount(Tag), 1);
+	TestFalse(TEXT("Alliance does not kill"), First->IsDead());
+	Combat->NotifyEnemyAllied(First);
+	Combat->NotifyEnemyDefeated(First);
+	TestEqual(TEXT("Duplicate notification and later death cannot remove another enemy"),
+		Combat->GetAliveEnemyCount(Tag), 1);
+	TestEqual(TEXT("A remaining hostile keeps combat active"), Combat->GetRoomState(Tag), ERoomCombatState::Combat);
+	Last->SetEnemyPossessed(true);
+	Combat->NotifyEnemyAllied(Last);
+	TestEqual(TEXT("Last ally clears the hostile count"), Combat->GetAliveEnemyCount(Tag), 0);
+	TestEqual(TEXT("Last ally completes the Room without waiting for death"),
+		Combat->GetRoomState(Tag), ERoomCombatState::Cleared);
+	Combat->NotifyEnemyDefeated(Last);
+	TestEqual(TEXT("Later death keeps the completed state"), Combat->GetRoomState(Tag), ERoomCombatState::Cleared);
+	ARoomVolume* StealthRoom = World->SpawnActor<ARoomVolume>();
+	AEnemyBase* StealthEnemy = SpawnTestEnemy(World, StealthTag);
+	if (!TestNotNull(TEXT("Stealth Room"), StealthRoom) || !TestNotNull(TEXT("Stealth Enemy"), StealthEnemy)) return false;
+	TestTrue(TEXT("Register stealth Room"), Combat->RegisterRoom(StealthRoom, StealthTag));
+	Combat->RegisterPreplacedEnemy(StealthEnemy);
+	TestEqual(TEXT("Undetected Room starts dormant"), Combat->GetRoomState(StealthTag), ERoomCombatState::Dormant);
+	StealthEnemy->SetEnemyPossessed(true);
+	Combat->NotifyEnemyAllied(StealthEnemy);
+	TestEqual(TEXT("Last stealth ally completes the current phase"), Combat->GetRoomState(StealthTag), ERoomCombatState::Cleared);
+	Combat->NotifyEnemyDefeated(StealthEnemy);
+	TestEqual(TEXT("Stealth ally death cannot repeat completion"), Combat->GetRoomState(StealthTag), ERoomCombatState::Cleared);
+	UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
+	UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
+	FEnemyPoolEntry& PoolEntry = PoolDefinition->Entries.AddDefaulted_GetRef();
+	PoolEntry.EnemyClass = AEnemyBase::StaticClass();
+	PoolEntry.PrewarmCount = 1;
+	PoolEntry.MaxCount = 1;
+	TestTrue(TEXT("Prewarm ally cleanup pool"), Pool->PrewarmPool(PoolDefinition));
+	ARoomVolume* PoolRoom = World->SpawnActor<ARoomVolume>();
+	ARoomCombatSpawnPoint* Point = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(), FTransform(FVector(5000.0f, 0.0f, 0.0f)));
+	if (!TestNotNull(TEXT("Pool Room"), PoolRoom) || !TestNotNull(TEXT("SpawnPoint"), Point)) return false;
+	TestTrue(TEXT("Register pool Room"), Combat->RegisterRoom(PoolRoom, PoolTag));
+	AEnemyBase* PoolPreplaced = SpawnTestEnemy(World, PoolTag);
+	if (!TestNotNull(TEXT("Pool preplaced Enemy"), PoolPreplaced)) return false;
+	Combat->RegisterPreplacedEnemy(PoolPreplaced);
+	TestTrue(TEXT("Register pool SpawnPoint"), Combat->RegisterSpawnPoint(Point, PoolTag, FGameplayTagContainer(), FGameplayTag()));
+	TestTrue(TEXT("Start pool Room"), Combat->NotifyRoomCombatStarted(PoolTag));
+	TestTrue(TEXT("Start pool Wave"), Combat->StartWaveSpawning(PoolTag, 0, 1));
+	AEnemyBase* Leased = nullptr;
+	for (TActorIterator<AEnemyBase> It(World); It; ++It)
+	{
+		if (It->IsPoolManaged() && It->GetDefaultRoomTag() == PoolTag) Leased = *It;
+	}
+	if (!TestNotNull(TEXT("Leased Enemy"), Leased)) return false;
+	Leased->CompletePoolSpawnPresentation(Leased->GetPoolGameplayGeneration(), Leased->GetPoolLeaseSerial());
+	Combat->NotifyEnemyDefeated(PoolPreplaced);
+	Leased->SetEnemyPossessed(true);
+	Combat->NotifyEnemyAllied(Leased);
+	TestEqual(TEXT("Pool ally is excluded"), Combat->GetAliveEnemyCount(PoolTag), 0);
+	Combat->UnregisterRoom(PoolRoom);
+	TestEqual(TEXT("Room unregister still returns its allied lease"), Leased->GetEnemyPoolState(), EEnemyPoolState::Idle);
+	return true;
+}
+
 #endif
