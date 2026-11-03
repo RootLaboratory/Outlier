@@ -50,6 +50,7 @@
 #include "GameplayEffect.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Engine/LocalPlayer.h"
+#include "Templates/UnrealTemplate.h"
 
 namespace
 {
@@ -172,12 +173,26 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	{
 		return 0.0f;
 	}
+	const AOutlierPlayerState* PartnerState = GetPlayerState<AOutlierPlayerState>();
+	const TWeakObjectPtr<AShooterCharacter> ShooterAtHit = CachedShooterCharacter.Get();
+	const bool bTriggerPairGameOver = PartnerState && !PartnerState->IsPairSuitAcquired()
+		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())
+		&& ShooterAtHit.IsValid();
+	if (bTriggerPairGameOver && ShooterAtHit->IsDead())
+	{
+		return 0.0f;
+	}
 	const float HealthBefore = OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
-	const bool bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
-		Request.DamageAmount,
-		Request.EventInstigator,
-		Request.DamageCauser,
-		Request.DamageTag);
+	bool bApplied = false;
+	{
+		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 슈트 전 사격은 Reboot를 먼저 시작하지 않는다.
+		TGuardValue<bool> RebootGuard(PartnerVitalityComponent->bSuppressRebootForDamage, bTriggerPairGameOver);
+		bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
+			Request.DamageAmount,
+			Request.EventInstigator,
+			Request.DamageCauser,
+			Request.DamageTag);
+	}
 	UE_LOG(LogTemp, Display,
 		TEXT("[PartnerHP][Damage] Actor=%s World=%s Amount=%.2f Applied=%d HP=%.2f->%.2f"),
 		*GetNameSafe(this), *GetNameSafe(GetWorld()), Request.DamageAmount, bApplied,
@@ -202,6 +217,12 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		ClientShowDamageFeedback(Request.DamageOrigin);
 	}
 
+	if (bApplied && bTriggerPairGameOver && ShooterAtHit.IsValid()
+		&& CachedShooterCharacter == ShooterAtHit.Get())
+	{
+		// 피해 콜백 중 교체된 페어에는 사망을 전달하지 않고, 피격 당시 Shooter의 기존 경로만 사용한다.
+		ShooterAtHit->Die();
+	}
 	return bApplied ? Request.DamageAmount : 0.0f;
 }
 

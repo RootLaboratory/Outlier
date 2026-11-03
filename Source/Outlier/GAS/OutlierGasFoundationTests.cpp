@@ -812,6 +812,102 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 		AbilitySystem->GetGameplayTagCount(OutlierGameplayTags::State::DamageImmune()),
 		0);
 
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	FActorSpawnParameters ShooterSpawnParameters;
+	ShooterSpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AShooterCharacter* Shooter = ShooterClass
+		? World->SpawnActor<AShooterCharacter>(ShooterClass, FTransform::Identity, ShooterSpawnParameters)
+		: nullptr;
+	AOutlierPlayerState* ShooterState = World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Partner pre-suit damage fixture spawns its Shooter"), Shooter)
+		|| !TestNotNull(TEXT("Partner pre-suit damage fixture spawns Shooter state"), ShooterState))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay()) Shooter->DispatchBeginPlay();
+	Shooter->SetPlayerState(ShooterState);
+	ShooterState->SetShooterCharacter(Shooter);
+	PartnerState->SetShooterCharacter(Shooter);
+	Partner->SetShooterCharacter(Shooter);
+	Shooter->SetPartnerCharacter(Partner);
+	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	ShooterASC->InitializeForPawn(Shooter);
+
+	FOutlierDamageRequest RangedDamage;
+	RangedDamage.DamageTag = OutlierGameplayTags::Damage::Ranged();
+	TestEqual(TEXT("Acquired-suit ranged damage still follows ordinary damage"),
+		ApplyDamageRequest(Partner, 100.0f, RangedDamage, nullptr, Partner), 100.0f);
+	TestTrue(TEXT("Acquired-suit lethal shot keeps Partner Reboot"), VitalityComponent->IsRebooting());
+	TestFalse(TEXT("Acquired-suit Partner shot does not kill its Shooter"), Shooter->IsDead());
+	TestTrue(TEXT("Acquired-suit shot Reboot can complete normally"), VitalityComponent->RemoveRebootEffect());
+
+	PartnerState->SetAcquiredSuit(false);
+	ShooterState->SetAcquiredSuit(true);
+	TestEqual(TEXT("Partner uses its paired Shooter acquired-suit state"),
+		ApplyDamageRequest(Partner, 1.0f, RangedDamage, nullptr, Partner), 1.0f);
+	TestFalse(TEXT("Paired acquired suit prevents pre-suit death policy"), Shooter->IsDead());
+	ShooterState->SetAcquiredSuit(false);
+	TestEqual(TEXT("Zero pre-suit shot is rejected"),
+		ApplyDamageRequest(Partner, 0.0f, RangedDamage, nullptr, Partner), 0.0f);
+	Partner->SetCanBeDamaged(false);
+	TestEqual(TEXT("Actor damage gate rejects pre-suit shot"),
+		ApplyDamageRequest(Partner, 1.0f, RangedDamage, nullptr, Partner), 0.0f);
+	Partner->SetCanBeDamaged(true);
+	const FActiveGameplayEffectHandle PreSuitImmunity = AbilitySystem->ApplyDamageImmuneStateToSelf();
+	TestTrue(TEXT("Pre-suit damage immunity applies"), PreSuitImmunity.IsValid());
+	TestEqual(TEXT("GAS immunity rejects pre-suit shot"),
+		ApplyDamageRequest(Partner, 1.0f, RangedDamage, nullptr, Partner), 0.0f);
+	TestFalse(TEXT("Rejected shots do not enter the paired death path"), Shooter->IsDead());
+	TestFalse(TEXT("Rejected shots do not start Reboot"), VitalityComponent->IsRebooting());
+	AbilitySystem->RemoveActiveGameplayEffect(PreSuitImmunity);
+
+	for (const FGameplayTag& DamageTag : { OutlierGameplayTags::Damage::Melee(),
+		OutlierGameplayTags::Damage::Explosion(), OutlierGameplayTags::Damage::Environment() })
+	{
+		FOutlierDamageRequest OtherDamage;
+		OtherDamage.DamageTag = DamageTag;
+		TestEqual(TEXT("Non-ranged pre-suit damage remains ordinary damage"),
+			ApplyDamageRequest(Partner, 1.0f, OtherDamage, nullptr, Partner), 1.0f);
+		TestFalse(TEXT("Non-ranged pre-suit damage does not kill its Shooter"), Shooter->IsDead());
+	}
+	TestTrue(TEXT("Pre-suit fixture restores health before first shot"), AbilitySystem->RestoreHealthToMax());
+	TestEqual(TEXT("One non-lethal pre-suit shot is accepted"),
+		ApplyDamageRequest(Partner, 1.0f, RangedDamage, nullptr, Partner), 1.0f);
+	TestEqual(TEXT("Pre-suit GameOver does not require Partner health depletion"),
+		Partner->GetVitalAttributeSet()->GetHealth(), 99.0f);
+	TestTrue(TEXT("One pre-suit shot enters the existing paired Shooter death path"), Shooter->IsDead());
+	TestFalse(TEXT("Pre-suit shot does not start Reboot"), VitalityComponent->IsRebooting());
+	TestEqual(TEXT("Repeated pre-suit shot is rejected after paired death"),
+		ApplyDamageRequest(Partner, 1.0f, RangedDamage, nullptr, Partner), 0.0f);
+	TestEqual(TEXT("Repeated pre-suit shot does not apply more Partner damage"),
+		Partner->GetVitalAttributeSet()->GetHealth(), 99.0f);
+	TestEqual(TEXT("Repeated pre-suit shot does not duplicate the Shooter Dead effect"),
+		ShooterASC->GetGameplayTagCount(OutlierGameplayTags::State::Dead()), 1);
+
+	// 같은 피해 경계에서 치명 사격의 동기 콜백도 Reboot를 만들지 않는지 확인한다.
+	FGameplayTagContainer DeadTags;
+	DeadTags.AddTag(OutlierGameplayTags::State::Dead());
+	ShooterASC->RemoveActiveEffectsWithGrantedTags(DeadTags);
+	TestFalse(TEXT("Lethal-shot fixture clears the preceding Shooter death"), Shooter->IsDead());
+	TestEqual(TEXT("Lethal pre-suit shot is accepted"),
+		ApplyDamageRequest(Partner, 200.0f, RangedDamage, nullptr, Partner), 200.0f);
+	TestEqual(TEXT("Lethal pre-suit shot exhausts Partner health"), Partner->GetVitalAttributeSet()->GetHealth(), 0.0f);
+	TestFalse(TEXT("Lethal pre-suit shot bypasses the synchronous Reboot callback"), VitalityComponent->IsRebooting());
+	TestTrue(TEXT("Lethal pre-suit shot enters the same paired death path"), Shooter->IsDead());
+	ShooterASC->RemoveActiveEffectsWithGrantedTags(DeadTags);
+	TestTrue(TEXT("Lethal pre-suit shot fixture restores Partner health"), AbilitySystem->RestoreHealthToMax());
+	FOutlierDamageRequest MeleeDamage;
+	MeleeDamage.DamageTag = OutlierGameplayTags::Damage::Melee();
+	TestEqual(TEXT("Later non-ranged lethal damage still applies"),
+		ApplyDamageRequest(Partner, 100.0f, MeleeDamage, nullptr, Partner), 100.0f);
+	TestTrue(TEXT("Shot-scoped suppression does not leak into later Reboot"), VitalityComponent->IsRebooting());
+	TestFalse(TEXT("Non-ranged lethal damage does not use pre-suit GameOver"), Shooter->IsDead());
+
 	Controller->UnPossess();
 	Controller->Destroy(true);
 	Partner->Destroy(true);
