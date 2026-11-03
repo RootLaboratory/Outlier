@@ -10,6 +10,36 @@ class USoundBase;
 class USoundDefinition;
 class AActor;
 
+// 사운드와 발광이 공유하는 서버 시간축. 로드 지연 뒤에도 원본 사운드의 현재 위치를 계산한다.
+USTRUCT()
+struct OUTLIER_API FOutlierAudioPlaybackWindow
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	double ServerStartTime = 0.0;
+	UPROPERTY()
+	float Duration = 0.0f;
+	UPROPERTY()
+	float SoundDuration = 0.0f;
+
+	bool IsValid() const
+	{
+		return FMath::IsFinite(ServerStartTime) && FMath::IsFinite(Duration)
+			&& FMath::IsFinite(SoundDuration) && Duration > 0.0f && Duration <= SoundDuration;
+	}
+
+	bool GetPlaybackTime(double ServerNow, float& OutTime) const
+	{
+		OutTime = 0.0f;
+		if (!IsValid() || !FMath::IsFinite(ServerNow)) return false;
+		const double Elapsed = FMath::Max(0.0, ServerNow - ServerStartTime);
+		if (Elapsed >= Duration) return false;
+		OutTime = static_cast<float>(SoundDuration - Duration + Elapsed);
+		return true;
+	}
+};
+
 UENUM(BlueprintType)
 enum class EOutlierAudioPlaybackPolicy : uint8
 {
