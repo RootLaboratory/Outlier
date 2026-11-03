@@ -176,6 +176,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestCloseInGameSetting();
+	void ShowInGameSettingFromServer(AActor* LayerOwner, bool bShowSettings);
 
 	void RequestLeaveGame(bool bQuitAfterLeave = false);
 	bool HasRequestedExplicitLeave() const { return bExplicitLeaveRequested; }

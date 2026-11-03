@@ -2,26 +2,18 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "Save/OutlierCheckpointRestartVote.h"
-#include "UI/UILayerContextReceiver.h"
 #include "UI/UILayerInputReceiver.h"
 #include "InGamePauseWidget.generated.h"
 
 class UBackgroundBlur;
-class UTextBlock;
 
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API UInGamePauseWidget : public UUserWidget,
-	public IUILayerContextReceiver,
 	public IUILayerInputReceiver
 {
 	GENERATED_BODY()
 
 protected:
-	virtual void NativeConstruct() override;
-	virtual void NativeDestruct() override;
-	virtual void InitializeUILayerContext_Implementation(
-		const TArray<AActor*>& ContextActors) override;
 	virtual bool HandleUILayerEscape_Implementation() override;
 	virtual bool HandleUILayerConfirmed_Implementation() override;
 	virtual bool HandleUILayerUp_Implementation() override;
@@ -31,28 +23,4 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "InGame Pause")
 	TObjectPtr<UBackgroundBlur> PauseBlurPanel;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "InGame Pause")
-	TObjectPtr<UTextBlock> PauseText;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "InGame Pause|Text")
-	FText ShooterPausedText = FText::FromString(TEXT("Shooter가 일시정지를 눌렀습니다"));
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "InGame Pause|Text")
-	FText PartnerPausedText = FText::FromString(TEXT("Partner가 일시정지를 눌렀습니다"));
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "InGame Pause|Text")
-	FText UnknownPausedText = FText::FromString(TEXT("상대가 일시정지를 눌렀습니다"));
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "InGame Pause|Text")
-	FText CheckpointRestartPromptText = FText::FromString(
-		TEXT("체크포인트에서 다시 시작하시겠습니까?\n확인: 찬성 / 취소: 반대"));
-
-private:
-	void SetPauseTextFromPauser(AActor* PauserActor);
-	void SetPauseText(const FText& NewPauseText);
-	void RefreshCheckpointRestartState(EOutlierCheckpointRestartVoteView VoteView);
-
-	FText CurrentPauseText;
-	FText PauserPauseText;
 };
