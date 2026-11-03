@@ -125,7 +125,7 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	TArray<FAIDynamicParam> QueryConfig;
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	TEnumAsByte<EEnvQueryRunMode::Type> RunMode = EEnvQueryRunMode::SingleResult;
-	// 수색/고정 위치 질의에서는 끈다. 직접 교전 질의는 시야 상실/타깃 변경 시 폐기한다.
+	// 수색/고정 위치 질의에서는 끈다. 기존 에셋 이름을 유지하며 교전 질의는 추적 만료/타깃 변경 시 폐기한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bRequireVisibleTarget = true;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))

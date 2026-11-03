@@ -32,6 +32,7 @@ class UInputAction;
 class USphereComponent;
 struct FInputActionValue;
 class URoomTagComponent;
+class UEnemyRoomSubsystem;
 class ARangedWeaponBase;
 class APartnerCharacter;
 class UGeometryCollection;
@@ -40,6 +41,7 @@ class UOutlierVitalAttributeSet;
 class UEnemyAdaptationSubsystem;
 class UEnemyHudWidget;
 class AEnemyBase;
+class AEnemyAIController;
 class UEnemyPoolSubsystem;
 class UMeshComponent;
 class UPrimitiveComponent;
@@ -585,6 +587,15 @@ public:
 	// AI/StateTree용 서버 권한 공격 API.
 	// Target 버전은 Actor의 현재 위치를 사용하고 Location 버전은 LKP 위협 사격처럼 좌표만 조준한다.
 	bool StartAttackTarget(AActor* TargetActor);
+	bool CanAttackTrackedTarget(const AActor* TargetActor) const;
+	bool HasActiveTargetAttack() const { return bTargetAttackActive; }
+	bool RefreshTargetAttackForShot();
+	void PauseTargetAttack();
+	void ResetTargetAttackContinuity();
+	bool ConsumeTargetAttackResume();
+	void RememberTargetAttackPreparation();
+	void RememberTargetAttackRecovery(float Duration);
+	float GetTargetAttackRecoveryRemaining() const;
 	bool StartAttackLocation(const FVector& TargetLocation);
 	bool StartPossessedAttackBurst();
 
@@ -631,6 +642,14 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsPlayerCurrentlyVisible() const { return bPlayerCurrentlyVisible; }
+
+	// 직접 시야·같은 Room 공유·관측 유예를 합친 전투 대상이다. 실제 시야 플래그는 변경하지 않는다.
+	AActor* GetTrackedTarget() const;
+	bool HasTrackableTarget() const { return GetTrackedTarget() != nullptr; }
+	bool ShouldSkipTrackingLossWait() const { return bTrackingExpiredForSearch; }
+	void ObserveTrackedTarget(AActor* Target);
+	void RefreshTargetTracking();
+	void ClearTargetTracking();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool HasSharedTargetContact() const { return bHasSharedTargetContact; }
@@ -769,6 +788,24 @@ protected:
 	uint64 NextSearchEpisodeSerial = 0;
 	bool bHasLastKnownPlayerLocation = false;
 	FEnemySearchEpisode SearchEpisode;
+	TWeakObjectPtr<AActor> TrackedTarget;
+	TWeakObjectPtr<AEnemyAIController> TrackingController;
+	TWeakObjectPtr<UEnemyRoomSubsystem> TrackingRooms;
+	FGameplayTag TrackingRoomTag;
+	FTimerHandle TargetTrackingTimer;
+	double TargetTrackingExpiresAt = 0.0;
+	bool bTrackingFromRoom = false;
+	bool bTrackingAnnounced = false;
+	bool bTrackingWasDirectlyVisible = false;
+	bool bTrackingExpiredForSearch = false;
+	TWeakObjectPtr<AActor> ActiveAttackTarget;
+	TWeakObjectPtr<AActor> PreparedAttackTarget;
+	TWeakObjectPtr<ARangedWeaponBase> PreparedAttackWeapon;
+	TWeakObjectPtr<AEnemyAIController> PreparedAttackController;
+	bool bResumeTargetAttackPreparation = false;
+	bool bTargetAttackActive = false;
+	double TargetAttackRecoveryEndsAt = 0.0;
+	void FinishTargetTracking();
 
 	void InitializeGasVitality();
 	void BindGasVitalityObservers();

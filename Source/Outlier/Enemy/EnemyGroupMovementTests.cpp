@@ -5,6 +5,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Curves/CurveFloat.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -111,6 +112,15 @@ struct FGroupMovementWorld
 		return Data;
 	}
 };
+
+bool CheckFlightPathReady(FAutomationTestBase& Test, const FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	// Running은 경로 준비 완료뿐 아니라 재탐색 대기도 뜻한다. 배열을 읽기 전에 둘을 구분한다.
+	return Test.TestTrue(FString::Printf(TEXT("Flight path ready: Status=%s Waiting=%d Points=%d SpeedLimits=%d"),
+		*UEnum::GetValueAsString(Data.PathStatus), Data.bWaitingForPath, Data.PathWaypoints.Num(), Data.WaypointSpeedLimits.Num()),
+		!Data.bWaitingForPath && Data.PathStatus == EFlightPathStatus::Success
+		&& Data.PathWaypoints.IsValidIndex(1) && Data.WaypointSpeedLimits.IsValidIndex(1));
+}
 
 FEnvQueryInstance GroupPointResult(AEnemyBase* Enemy, FVector Point)
 {
@@ -232,6 +242,187 @@ bool FEnemyGroupReturnMovementTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Only physical home arrival completes return"), Fixture.Enemy->CompleteReturnHome());
 	TestEqual(TEXT("Arrival restores noncombat state"), Fixture.Enemy->GetCombatState(), EEnemyCombatState::NonCombat);
 	TestEqual(TEXT("Movement retains original combat ownership"), Fixture.Enemy->GetDefaultRoomTag(), FGameplayTag(GroupMovementHome));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightCornerContinuityTest, "Outlier.Enemy.Flight.CornerContinuity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyFlightCornerContinuityTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("RightAngle"), TEXT("LowFPS"), TEXT("ShortSegments"), TEXT("Reversal"), TEXT("WithCurves")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyFlightCornerContinuityTest::RunTest(const FString& Parameters)
+{
+	FGroupMovementWorld Fixture;
+	FEnemyStat* Stat = FindFProperty<FStructProperty>(AEnemyBase::StaticClass(), TEXT("RuntimeStat"))
+		->ContainerPtrToValuePtr<FEnemyStat>(Fixture.Enemy);
+	Stat->MoveSpeed = 250;
+	UCharacterMovementComponent* Movement = Fixture.Enemy->GetCharacterMovement();
+	Movement->SetMovementMode(MOVE_Flying);
+	Movement->MaxAcceleration = 500;
+	Movement->BrakingDecelerationFlying = 500;
+	auto Data = Fixture.Flight(FVector(-100, 150, 0));
+	Data.bUseInitialPath = true;
+	Data.AcceptanceRadius = 5;
+	Data.PlannedWaypoints = {FVector(-250, 0, 0), FVector(-100, 0, 0), Data.Destination};
+	if (Parameters == TEXT("ShortSegments"))
+	{
+		// NonCombat 경로는 Home 내부만 허용한다. X=0 경계까지 가면 캡슐 일부가 이웃 방에 걸친다.
+		Data.Destination = Data.LastDestination = FVector(-50, 20, 0);
+		Data.PlannedWaypoints = {FVector(-250, 0, 0), FVector(-100, 0, 0), FVector(-100, 20, 0), Data.Destination};
+	}
+	else if (Parameters == TEXT("Reversal"))
+	{
+		Data.Destination = Data.LastDestination = FVector(-230, 0, 0);
+		Data.PlannedWaypoints.Last() = Data.Destination;
+	}
+	else if (Parameters == TEXT("WithCurves"))
+	{
+		UCurveFloat* Curve = NewObject<UCurveFloat>();
+		Curve->FloatCurve.AddKey(0, 0);
+		Curve->FloatCurve.AddKey(1, 1);
+		Data.SpeedProfile.AccelerationCurve = Curve;
+		Data.SpeedProfile.DecelerationCurve = Curve;
+	}
+	if (!TestEqual(TEXT("Validated corner path starts"), EnemyFlightTesting::StartPath(Data), EStateTreeRunStatus::Running)) return false;
+	if (!CheckFlightPathReady(*this, Data)) return false;
+	TestTrue(TEXT("Path prepares a finite corner speed"), FMath::IsFinite(Data.WaypointSpeedLimits[1]));
+	const float Step = Parameters == TEXT("LowFPS") ? 1.0f / 15.0f : 1.0f / 60.0f;
+	Movement->Velocity = FVector(250, 0, 0);
+	bool bBrakedBeforeCorner = false;
+	bool bCrossedWithMomentum = false;
+	EStateTreeRunStatus Status = EStateTreeRunStatus::Running;
+	for (int32 Tick = 0; Tick < 1200 && Status == EStateTreeRunStatus::Running; ++Tick)
+	{
+		const int32 BeforeIndex = Data.WaypointIndex;
+		Status = EnemyFlightTesting::TickPath(Data, Step);
+		if (Data.WaypointIndex == 1 && Fixture.Enemy->GetActorLocation().X < -120)
+			bBrakedBeforeCorner |= Movement->Velocity.Size() < 200;
+		if (BeforeIndex == 1 && Data.WaypointIndex == 2)
+			bCrossedWithMomentum = !Movement->Velocity.IsNearlyZero();
+		Movement->TickComponent(Step, LEVELTICK_All, nullptr);
+		if (!TestTrue(TEXT("Corner stays within the permitted room"), Fixture.Enemy->IsInsideDefaultRoom())) break;
+	}
+	TestTrue(TEXT("Physical speed decreases before reaching the corner"), bBrakedBeforeCorner);
+	TestTrue(TEXT("Passing the corner does not clear velocity"), bCrossedWithMomentum);
+	TestEqual(TEXT("Physical movement reaches final destination"), Status, EStateTreeRunStatus::Succeeded);
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightWaypointCaptureTest, "Outlier.Enemy.Flight.WaypointCapture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyFlightWaypointCaptureTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Rate : {TEXT("15"), TEXT("30"), TEXT("60"), TEXT("120")})
+	{
+		Names.Add(Rate);
+		Commands.Add(Rate);
+	}
+}
+
+bool FEnemyFlightWaypointCaptureTest::RunTest(const FString& Parameters)
+{
+	FGroupMovementWorld Fixture;
+	FEnemyStat* Stat = FindFProperty<FStructProperty>(AEnemyBase::StaticClass(), TEXT("RuntimeStat"))
+		->ContainerPtrToValuePtr<FEnemyStat>(Fixture.Enemy);
+	Stat->MoveSpeed = 400;
+	UCharacterMovementComponent* Movement = Fixture.Enemy->GetCharacterMovement();
+	Movement->SetMovementMode(MOVE_Flying);
+	Movement->MaxAcceleration = 2048;
+	Movement->BrakingDecelerationFlying = 2048;
+	auto Data = Fixture.Flight(FVector(-100, -100, 0));
+	Data.bUseInitialPath = true;
+	Data.AcceptanceRadius = 10;
+	Data.MoveTimeout = 10;
+	Data.PlannedWaypoints = {FVector(-250, 0, 0), FVector(-200, 0, 0),
+		FVector(-150, -50, 0), Data.Destination};
+	if (!TestEqual(TEXT("Capture path starts"), EnemyFlightTesting::StartPath(Data), EStateTreeRunStatus::Running)
+		|| !CheckFlightPathReady(*this, Data)) return false;
+
+	// 목표 방향과 직교하는 실제 관성으로 시작한다. 방향만 입력하면 작은 경유점 주위를 돌 수 있다.
+	// Task와 CharacterMovement를 함께 실행해 벡터 계산만 맞는 가짜 회귀 검증을 피한다.
+	Movement->Velocity = FVector(0, 400, 0);
+	const float Step = 1.0f / FCString::Atof(*Parameters);
+	EStateTreeRunStatus Status = EStateTreeRunStatus::Running;
+	bool bRepathed = false;
+	for (int32 Tick = 0; Tick < FMath::CeilToInt(10.0f / Step) && Status == EStateTreeRunStatus::Running; ++Tick)
+	{
+		Status = EnemyFlightTesting::TickPath(Data, Step);
+		bRepathed |= Data.bWaitingForPath || Data.bRepathEpisode;
+		Movement->TickComponent(Step, LEVELTICK_All, nullptr);
+		if (!TestTrue(TEXT("Capture stays inside its room"), Fixture.Enemy->IsInsideDefaultRoom())) return false;
+	}
+	TestFalse(TEXT("Turning inertia alone does not trigger a path retry"), bRepathed);
+	TestEqual(TEXT("Physical movement captures small waypoints before timeout"), Status, EStateTreeRunStatus::Succeeded);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightRepathContinuityTest, "Outlier.Enemy.Flight.RepathContinuity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyFlightRepathContinuityTest::RunTest(const FString& Parameters)
+{
+	FGroupMovementWorld Fixture;
+	FindFProperty<FStructProperty>(AEnemyBase::StaticClass(), TEXT("RuntimeStat"))
+		->ContainerPtrToValuePtr<FEnemyStat>(Fixture.Enemy)->MoveSpeed = 200;
+	UCharacterMovementComponent* Movement = Fixture.Enemy->GetCharacterMovement();
+	Movement->SetMovementMode(MOVE_Flying);
+	auto Data = Fixture.Flight(FVector(-50, 0, 0));
+	if (!TestEqual(TEXT("Original route starts"), EnemyFlightTesting::StartPath(Data), EStateTreeRunStatus::Running)) return false;
+	if (!CheckFlightPathReady(*this, Data)) return false;
+	Movement->Velocity = FVector(100, 0, 0);
+	Fixture.Enemy->SetNextFlightPathRequestTime(Fixture.World->GetTimeSeconds() + 0.4);
+	Data.Destination = FVector(-25, 100, 0);
+	TestEqual(TEXT("Throttled retarget keeps running"), EnemyFlightTesting::TickPath(Data, 0.01f), EStateTreeRunStatus::Running);
+	TestTrue(TEXT("Retarget keeps a validated path while waiting"), Data.bWaitingForPath && !Data.PathWaypoints.IsEmpty());
+	TestTrue(TEXT("Request interval does not hard-stop physical velocity"), !Movement->Velocity.IsNearlyZero());
+	const float Deadline = Data.RetryElapsed;
+	Fixture.Enemy->SetActorLocation(FVector(-100, 0, 0));
+	EnemyFlightTesting::TickPath(Data, 0.01f);
+	TestTrue(TEXT("Progress on old route cannot reset retry deadline"), Data.bRepathEpisode && Data.RetryElapsed > Deadline);
+	Fixture.Enemy->SetActorLocation(FVector(-50, 0, 0));
+	TestEqual(TEXT("Old endpoint is not new destination success"), EnemyFlightTesting::TickPath(Data, 0.01f), EStateTreeRunStatus::Running);
+	TestTrue(TEXT("Exhausted old route stops safely while retry remains pending"),
+		Data.bWaitingForPath && Data.PathWaypoints.IsEmpty() && Movement->Velocity.IsNearlyZero());
+	Data.RetryElapsed = Data.RepathTimeout;
+	TestEqual(TEXT("Retry deadline still ends pending movement"), EnemyFlightTesting::TickPath(Data, 0.01f), EStateTreeRunStatus::Failed);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightRepathBlockedTest, "Outlier.Enemy.Flight.RepathBlocked",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyFlightRepathBlockedTest::RunTest(const FString& Parameters)
+{
+	FGroupMovementWorld Fixture;
+	FindFProperty<FStructProperty>(AEnemyBase::StaticClass(), TEXT("RuntimeStat"))
+		->ContainerPtrToValuePtr<FEnemyStat>(Fixture.Enemy)->MoveSpeed = 200;
+	UCharacterMovementComponent* Movement = Fixture.Enemy->GetCharacterMovement();
+	Movement->SetMovementMode(MOVE_Flying);
+	auto Data = Fixture.Flight(FVector(-50, 0, 0));
+	if (!TestEqual(TEXT("Original route starts before wall exists"), EnemyFlightTesting::StartPath(Data), EStateTreeRunStatus::Running)) return false;
+	if (!CheckFlightPathReady(*this, Data)) return false;
+	Movement->Velocity = FVector(100, 0, 0);
+	Fixture.Enemy->SetNextFlightPathRequestTime(Fixture.World->GetTimeSeconds() + 0.4);
+	Data.Destination = FVector(-25, 100, 0);
+	AActor* Wall = Fixture.World->SpawnActor<AActor>();
+	UBoxComponent* Box = NewObject<UBoxComponent>(Wall);
+	Wall->SetRootComponent(Box);
+	Box->SetBoxExtent(FVector(10, 100, 100));
+	Box->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	Box->SetCollisionResponseToAllChannels(ECR_Block);
+	Box->RegisterComponent();
+	Wall->SetActorLocation(FVector(-125, 0, 0));
+	TestEqual(TEXT("Blocked old route waits instead of moving through wall"), EnemyFlightTesting::TickPath(Data, 0.01f), EStateTreeRunStatus::Running);
+	TestTrue(TEXT("Actual blockage clears old route and velocity"),
+		Data.bWaitingForPath && Data.PathWaypoints.IsEmpty() && Movement->Velocity.IsNearlyZero());
 	return true;
 }
 

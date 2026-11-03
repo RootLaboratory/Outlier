@@ -43,6 +43,10 @@ struct OUTLIER_API FEnemyStat : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float BattlePeripheralVisionAngle = 0.0f;
 
+	// 직접 시야를 잃은 뒤 실제 대상 위치를 추적하는 시간. 위치 갱신으로 연장하지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.0"))
+	float TargetTrackingGraceSeconds = 3.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float HearingRange = 0.0f;
 

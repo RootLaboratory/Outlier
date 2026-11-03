@@ -41,6 +41,10 @@ struct FEnemyStateTreeSyncTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bPlayerCurrentlyVisible = false;
 
+	// 이동/전투 분기용. 실제 Sight 출력과 분리해 유예 중에도 추적 분기를 유지한다.
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHasTrackableTarget = false;
+
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bHasSharedTargetContact = false;
 	// 접촉 활성 여부와 별개다. 확인한 공유 정보로 추적을 반복하지 않는다.
@@ -53,7 +57,7 @@ struct FEnemyStateTreeSyncTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	TObjectPtr<AAIController> AIController = nullptr;
 
-	// AIController가 Sight 대상 중 우선순위와 거리를 기준으로 선택한 현재 전투 대상.
+	// 직접 감지한 대상 또는 만료 전 유예 추적 대상. 실제 시야 여부는 별도 출력한다.
 	// 이동/바라보기/공격 Task의 TargetActor 입력은 이 출력 하나에 바인딩한다.
 	UPROPERTY(EditAnywhere, Category = Output)
 	TObjectPtr<AActor> TargetActor = nullptr;

@@ -47,7 +47,7 @@ struct FEnemyFlyToLocationTaskInstanceData
 	FFlightSpeedProfile SpeedProfile;
 
 	FFlightSpeedProfileState SpeedProfileState;
-
+	TArray<float> WaypointSpeedLimits;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 180.0f;
 

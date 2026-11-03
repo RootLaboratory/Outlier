@@ -231,6 +231,7 @@ void StopFlyTask(FEnemyFlyToLocationTaskInstanceData& Data)
 	Data.SpeedProfileState.Reset();
 	LogFlight(TEXT("Stop"), Data);
 	Data.PathWaypoints.Reset();
+	Data.WaypointSpeedLimits.Reset();
 	Data.CachedCapsule = nullptr;
 	Data.CachedRoomSubsystem = nullptr;
 	Data.CachedRoom.Reset();
@@ -259,9 +260,55 @@ void PauseFlyMovement(AEnemyBase& Enemy)
 	}
 }
 
-bool ShouldResetWaypointVelocity(const FVector& Velocity, const FVector& ToNextPoint)
+float GetFlightBrakingDeceleration(const UCharacterMovementComponent& Movement)
 {
-	return FVector::DotProduct(Velocity.GetSafeNormal(), ToNextPoint.GetSafeNormal()) < 0.99;
+	// 비행 감속이 비어 있는 에셋은 기존 가속 성능으로 속도 상한을 낮춘다.
+	// 0으로 정지 거리를 계산하거나 최소값 때문에 전체 경로를 저속으로 이동하지 않게 한다.
+	return Movement.BrakingDecelerationFlying > 0.0f
+		? Movement.BrakingDecelerationFlying : FMath::Max(Movement.GetMaxAcceleration(), 1.0f);
+}
+
+float GetCornerSpeedLimit(const FVector& Incoming, const FVector& Outgoing, float Acceleration, float Clearance)
+{
+	if (Incoming.IsNearlyZero() || Outgoing.IsNearlyZero()) return 0.0f;
+	const double Dot = FMath::Clamp(FVector::DotProduct(Incoming.GetSafeNormal(), Outgoing.GetSafeNormal()), -1.0, 1.0);
+	if (Dot > 0.9999) return TNumericLimits<float>::Max();
+	// 방향 변경량이 클수록 관성을 줄인다. 180도 반전은 코너까지 감속한 뒤 새 방향으로 출발한다.
+	const double SinHalf = FMath::Sqrt((1.0 - Dot) * 0.5);
+	const double CosHalf = FMath::Sqrt((1.0 + Dot) * 0.5);
+	return FMath::Sqrt(FMath::Max(Acceleration, 1.0f) * FMath::Max(Clearance, 1.0f) * CosHalf / SinHalf);
+}
+
+float GetFlightWaypointRadius(const FEnemyFlyToLocationTaskInstanceData& Data, bool bFinalPoint)
+{
+	if (Data.bUsePlannedPath) return FMath::Min(10.0f, FMath::Max(Data.AcceptanceRadius, 1.0f));
+	return bFinalPoint ? FMath::Max(Data.AcceptanceRadius, 0.0f) : FMath::Min(10.0f, Data.PathCellSize * 0.1f);
+}
+
+void PrepareFlightSpeedLimits(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	Data.SpeedProfileState.SetPath(Data.PathWaypoints);
+	Data.WaypointSpeedLimits.SetNumZeroed(Data.PathWaypoints.Num());
+	const UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement();
+	if (!Movement) return;
+	const float Braking = GetFlightBrakingDeceleration(*Movement);
+	// 뒤에서 앞으로 정리하여 짧은 구간 다음의 급회전도 현재 구간부터 감속한다.
+	for (int32 Index = Data.PathWaypoints.Num() - 2; Index > 0; --Index)
+	{
+		const FVector Incoming = Data.PathWaypoints[Index] - Data.PathWaypoints[Index - 1];
+		const FVector Outgoing = Data.PathWaypoints[Index + 1] - Data.PathWaypoints[Index];
+		const float Corner = GetCornerSpeedLimit(Incoming, Outgoing, Movement->GetMaxAcceleration(), Data.PathClearance * 0.5f);
+		const float NextSpeed = Data.WaypointSpeedLimits[Index + 1];
+		const float NextRadius = GetFlightWaypointRadius(Data, Index + 1 == Data.PathWaypoints.Num() - 1);
+		const float BrakingDistance = FMath::Max(Outgoing.Size() - GetFlightWaypointRadius(Data, false) - NextRadius, 0.0);
+		const float ReachableSpeed = FMath::Sqrt(NextSpeed * NextSpeed + 2.0f * Braking * BrakingDistance);
+		Data.WaypointSpeedLimits[Index] = FMath::Min(Corner, ReachableSpeed);
+	}
+}
+
+float GetFlightSegmentSpeedLimit(float ExitSpeed, float Distance, float Braking, float ApproachSpeed)
+{
+	return FMath::Max(ApproachSpeed, FMath::Sqrt(ExitSpeed * ExitSpeed + 2.0f * Braking * FMath::Max(Distance, 0.0f)));
 }
 
 FFlightPathRequest MakeFlightPathRequest(
@@ -357,6 +404,8 @@ bool RecordFlightPathProgress(FEnemyFlyToLocationTaskInstanceData& Data, float D
 	}
 	Data.BestDistance = Distance;
 	Data.NoProgressElapsed = 0.0f;
+	// 이전 경로를 따라 전진한 것은 새 목적지 탐색 성공이 아니다. 재시도 시간/횟수는 유지한다.
+	if (Data.bWaitingForPath) return true;
 	// 경로 계산 성공이 아니라 실제 경유점 접근/통과가 재시도 한도를 복구한다.
 	Data.bRepathEpisode = false;
 	Data.RepathAttempts = 0;
@@ -372,7 +421,7 @@ bool HasFlightRepathLimitExpired(const FEnemyFlyToLocationTaskInstanceData& Data
 		|| (Data.bWaitingForPath && Data.RepathAttempts >= Data.MaxRepathAttempts));
 }
 
-void WaitForFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
+void WaitForFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, bool bKeepValidatedPath = false)
 {
 	// 첫 실패부터 시간을 유지한다. 재탐색 성공만으로 한도를 초기화하지 않는다.
 	if (!Data.bRepathEpisode)
@@ -382,7 +431,13 @@ void WaitForFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 		Data.bRepathEpisode = true;
 	}
 	Data.bWaitingForPath = true;
+	if (bKeepValidatedPath && Data.PathWaypoints.IsValidIndex(Data.WaypointIndex))
+	{
+		Data.SegmentCheckElapsed = Data.PathCheckInterval;
+		return;
+	}
 	Data.PathWaypoints.Reset();
+	Data.WaypointSpeedLimits.Reset();
 	PauseFlyMovement(*Data.Enemy);
 	Data.SpeedProfileState.Reset();
 }
@@ -451,7 +506,7 @@ EStateTreeRunStatus StartPlannedFlight(FEnemyFlyToLocationTaskInstanceData& Data
 	}
 	Data.WaypointIndex = 1;
 	Data.BestDistance = FVector::Distance(Data.PathWaypoints[0], Data.PathWaypoints[1]);
-	Data.SpeedProfileState.SetPath(Data.PathWaypoints);
+	PrepareFlightSpeedLimits(Data);
 	Data.LastPathPosition = Data.PathWaypoints[0];
 	Data.TravelledPathLength = 0.0f;
 	Data.SegmentCheckElapsed = 0.0f;
@@ -476,7 +531,8 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 	const double RemainingDelay = Data.Enemy->GetNextFlightPathRequestTime() - Now;
 	if (RemainingDelay > 0.0)
 	{
-		WaitForFlightPath(Data);
+		// 탐색 주기 대기는 장애물 발견과 다르다. 남아 있는 경로는 아래 추종 단계에서 재검증한다.
+		WaitForFlightPath(Data, true);
 		Data.RetryDelay = Data.RepathInterval - static_cast<float>(RemainingDelay);
 		return EStateTreeRunStatus::Running;
 	}
@@ -513,7 +569,7 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 	if (Result.Status == EFlightPathStatus::Success)
 	{
 		Data.PathWaypoints = MoveTemp(Result.Waypoints);
-		Data.SpeedProfileState.SetPath(Data.PathWaypoints);
+		PrepareFlightSpeedLimits(Data);
 		Data.WaypointIndex = Data.PathWaypoints.Num() > 1 ? 1 : 0;
 		Data.bWaitingForPath = false;
 		Data.NoProgressElapsed = 0.0f;
@@ -522,7 +578,7 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 	}
 	if (IsRetryableFlightFailure(Result.Status))
 	{
-		WaitForFlightPath(Data);
+		WaitForFlightPath(Data, Result.Status == EFlightPathStatus::BudgetExceeded);
 		return EStateTreeRunStatus::Running;
 	}
 	Data.MoveResult = EEnemyFlightMoveResult::Invalid;
@@ -585,7 +641,7 @@ EStateTreeRunStatus StartInitialFlight(FEnemyFlyToLocationTaskInstanceData& Data
 	Data.SegmentCheckElapsed = 0.0f;
 	Data.bWaitingForPath = false;
 	LogFlight(TEXT("InitialPathStarted"), Data);
-	Data.SpeedProfileState.SetPath(Data.PathWaypoints);
+	PrepareFlightSpeedLimits(Data);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -617,16 +673,11 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		StopFlyTask(Data);
 		return EStateTreeRunStatus::Failed;
 	}
-	if (!Data.LastDestination.Equals(Data.Destination, FMath::Max(Data.DestinationChangeDistance, 0.0f)))
+	if (!Data.bWaitingForPath && !Data.LastDestination.Equals(Data.Destination, FMath::Max(Data.DestinationChangeDistance, 0.0f)))
 	{
 		if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: destination changed"));
-		// 커브 이동은 즉시 검증된 새 경로를 얻으면 가속을 이어간다. 예산/재시도 대기는 반드시 정지한다.
-		if (Data.SpeedProfile.IsEnabled())
-		{
-			const EStateTreeRunStatus Status = RequestFlightPath(Data);
-			if (Status != EStateTreeRunStatus::Running || Data.bWaitingForPath) return Status;
-		}
-		else WaitForFlightPath(Data);
+		const EStateTreeRunStatus Status = RequestFlightPath(Data);
+		if (Status != EStateTreeRunStatus::Running) return Status;
 	}
 	if (Data.bWaitingForPath)
 	{
@@ -641,9 +692,11 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		{
 			Data.RetryDelay = 0.0f;
 			++Data.RepathAttempts;
-			return RequestFlightPath(Data);
+			const EStateTreeRunStatus Status = RequestFlightPath(Data);
+			if (Status != EStateTreeRunStatus::Running) return Status;
 		}
-		return EStateTreeRunStatus::Running;
+		// 새 경로를 기다려도 유효한 이전 구간은 추종한다. 경로가 없으면 정지 상태로 대기한다.
+		if (!Data.PathWaypoints.IsValidIndex(Data.WaypointIndex)) return EStateTreeRunStatus::Running;
 	}
 
 	const FVector Position = Data.CachedCapsule->GetComponentLocation();
@@ -664,9 +717,7 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 	FVector NextPoint = Data.PathWaypoints[Data.WaypointIndex];
 	const bool bFinalPoint = Data.WaypointIndex == Data.PathWaypoints.Num() - 1;
-	const float Radius = Data.bUsePlannedPath ? FMath::Min(10.0f, FMath::Max(Data.AcceptanceRadius, 1.0f))
-		: bFinalPoint ? FMath::Max(Data.AcceptanceRadius, 0.0f)
-		: FMath::Min(10.0f, Data.PathCellSize * 0.1f);
+	const float Radius = GetFlightWaypointRadius(Data, bFinalPoint);
 	const bool bReachedPoint = FVector::DistSquared(Position, NextPoint) <= FMath::Square(Radius);
 	if (Data.bUsePlannedPath)
 	{
@@ -702,6 +753,12 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 	if (bReachedPoint && bFinalPoint)
 	{
+		if (Data.bWaitingForPath)
+		{
+			// 이전 목적지에 도달한 것은 새 목적지의 도착이 아니다. 여기서 안전하게 멈추고 재시도한다.
+			WaitForFlightPath(Data);
+			return EStateTreeRunStatus::Running;
+		}
 		Data.MoveResult = EEnemyFlightMoveResult::Arrived;
 		LogFlight(TEXT("PathArrived"), Data);
 		StopFlyTask(Data);
@@ -712,14 +769,7 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		// 경유점 통과 시에만 출력한다. 매 프레임 로그가 이동 성능을 가리지 않게 한다.
 		if (CVarEnemyFlightDebug.GetValueOnGameThread() >= 2) LogFlight(TEXT("WaypointReached"), Data);
 		++Data.WaypointIndex;
-		// 방향을 바꾸는 경유점에서는 이전 구간의 관성이 좁은 통로 밖으로 밀지 않게 한다.
-		// 같은 방향의 직선 경유점은 속도를 유지한다.
-		if (ShouldResetWaypointVelocity(Data.Enemy->GetVelocity(), NextPoint - Position))
-		{
-			PauseFlyMovement(*Data.Enemy);
-			Data.SpeedProfileState.Reset();
-			Data.SpeedProfileState.SetPath(Data.PathWaypoints);
-		}
+		// 코너 진입 전에 감속했으므로 정상 통과에서는 속도와 커브 진행도를 초기화하지 않는다.
 	}
 
 	const float Distance = FVector::Distance(Position, NextPoint);
@@ -757,27 +807,52 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 				Movement->Velocity.Size(), Remaining, DeltaTime, true, Data.Enemy, TEXT("EnemyFly"));
 		}
 	}
-	if (!Data.bUsePlannedPath)
+	if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
 	{
-		// 일반 A* 이동도 한 프레임에 경유점을 지나치지 않는다. 모서리에서의 불필요한 재탐색을 막는다.
-		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
+		const float Step = FMath::Max(DeltaTime, UE_SMALL_NUMBER);
+		const bool bAtFinalSegment = Data.WaypointIndex == Data.PathWaypoints.Num() - 1;
+		// 중심점이 아니라 통과 판정 반경에 진입하기 전에 코너 속도까지 낮춘다.
+		const float ArrivalRadius = GetFlightWaypointRadius(Data, bAtFinalSegment);
+		const float ExitSpeed = Data.WaypointSpeedLimits.IsValidIndex(Data.WaypointIndex)
+			? Data.WaypointSpeedLimits[Data.WaypointIndex] : 0.0f;
+		const float Braking = GetFlightBrakingDeceleration(*Movement);
+		// 도착 판정까지는 최소 속도로 접근한다. 반전 코너도 진입 전에 저속으로 낮춘다.
+		const float SegmentLimit = GetFlightSegmentSpeedLimit(ExitSpeed, Distance - ArrivalRadius, Braking, 1.0f);
+		const float DesiredSpeed = FMath::Min(Movement->MaxFlySpeed, SegmentLimit);
+		const float ActualSpeed = Movement->Velocity.Size();
+		const float Rate = DesiredSpeed < ActualSpeed ? Braking : FMath::Max(Movement->GetMaxAcceleration(), 1.0f);
+		Movement->MaxFlySpeed = FMath::FInterpConstantTo(ActualSpeed, DesiredSpeed, Step, Rate);
+
+		// 정상 감속과 별개의 최종 안전 제한이다. 낮은 FPS에서도 미검증 다음 구간을 넘지 않는다.
+		const float TravelLimit = Data.bUsePlannedPath ? FMath::Min(Distance, FMath::Max(500.0f - Data.TravelledPathLength, 0.0f)) : Distance;
+		Movement->MaxFlySpeed = FMath::Min(Movement->MaxFlySpeed, TravelLimit / Step);
+		Movement->Velocity = Movement->Velocity.GetClampedToMaxSize(Movement->MaxFlySpeed);
+
+		// 회전 중에는 기존 관성이 다음 입력 방향과 다르다. 실제로 진행할 한 프레임 구간도 검증한다.
+		// 직선에서는 추가 Trace가 없고, 회전 검사도 CheckSegment의 고정 예산을 그대로 사용한다.
+		const FVector Direction = (NextPoint - Position).GetSafeNormal();
+		if (!Movement->Velocity.IsNearlyZero()
+			&& FVector::DotProduct(Movement->Velocity.GetSafeNormal(), Direction) < 0.99)
 		{
-			Movement->MaxFlySpeed = FMath::Min(Movement->MaxFlySpeed, Distance / FMath::Max(DeltaTime, UE_SMALL_NUMBER));
-			Movement->Velocity = Movement->Velocity.GetClampedToMaxSize(Movement->MaxFlySpeed);
+			// 가속으로 바뀔 수 있는 이동량까지 여유를 더해 현재 속도만 검사하는 틈을 막는다.
+			FFlightPathRequest Request = MakeFlightPathRequest(Data, Position + Movement->Velocity * Step);
+			Request.Clearance += Movement->GetMaxAcceleration() * Step * Step;
+			Data.PathStatus = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Data.CachedCapsule, Request);
+			if (Data.PathStatus != EFlightPathStatus::Success)
+			{
+				if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: turn clearance"));
+				WaitForFlightPath(Data);
+				return EStateTreeRunStatus::Running;
+			}
 		}
 	}
-	if (Data.bUsePlannedPath)
+	if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
 	{
-		// 커브보다 충돌 안전을 우선한다. 짧은 경유점을 한 프레임에 지나치지 않는다.
-		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
-		{
-			const float Remaining = FMath::Max(500.0f - Data.TravelledPathLength, 0.0f);
-			Movement->MaxFlySpeed = FMath::Min(Movement->MaxFlySpeed,
-				FMath::Min(Distance, Remaining) / FMath::Max(DeltaTime, UE_SMALL_NUMBER));
-			Movement->Velocity = Movement->Velocity.GetClampedToMaxSize(Movement->MaxFlySpeed);
-		}
+		// 방향 입력만 주면 옆 방향 관성이 남아 작은 경유점 주위를 선회한다.
+		// CharacterMovement의 목표 속도 추종을 사용해 현재 속도와의 차이를 가속 한도 안에서 상쇄한다.
+		// 위에서 계산한 속도 상한과 충돌/Room 검증은 그대로 적용하며 경유점에서 속도를 초기화하지 않는다.
+		Movement->RequestDirectMove((NextPoint - Position).GetSafeNormal() * Movement->MaxFlySpeed, false);
 	}
-	Data.Enemy->AddMovementInput((NextPoint - Position).GetSafeNormal());
 	return EStateTreeRunStatus::Running;
 }
 }
@@ -877,10 +952,22 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightWaypointTurnTest,
 
 bool FEnemyFlightWaypointTurnTest::RunTest(const FString& Parameters)
 {
-	TestFalse(TEXT("Straight waypoint preserves momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(100, 0, 0)));
-	TestFalse(TEXT("Small steering change preserves momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(100, 1, 0)));
-	TestTrue(TEXT("Corner clears sideways momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(0, 100, 0)));
-	TestTrue(TEXT("Reversal clears old momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(-100, 0, 0)));
+	const float Straight = GetCornerSpeedLimit(FVector(100, 0, 0), FVector(100, 0, 0), 500, 5);
+	const float Gentle = GetCornerSpeedLimit(FVector(100, 0, 0), FVector(100, 25, 0), 500, 5);
+	const float RightAngle = GetCornerSpeedLimit(FVector(100, 0, 0), FVector(0, 100, 0), 500, 5);
+	TestTrue(TEXT("Straight points do not introduce a corner speed cap"), Straight > 10000);
+	TestTrue(TEXT("Sharper corners require lower speed"), Straight > Gentle && Gentle > RightAngle);
+	TestTrue(TEXT("Right angle can be crossed without resetting velocity to zero"), RightAngle > 0);
+	TestEqual(TEXT("Reversal plans a stop before turning"),
+		GetCornerSpeedLimit(FVector(100, 0, 0), FVector(-100, 0, 0), 500, 5), 0.0f);
+	TestEqual(TEXT("Duplicate points fail conservatively"),
+		GetCornerSpeedLimit(FVector::ZeroVector, FVector(100, 0, 0), 500, 5), 0.0f);
+	TestTrue(TEXT("Less clearance lowers corner speed"),
+		GetCornerSpeedLimit(FVector(100, 0, 0), FVector(0, 100, 0), 500, 1) < RightAngle);
+	TestEqual(TEXT("Braking starts before a zero-speed endpoint"), GetFlightSegmentSpeedLimit(0, 100, 500, 1), FMath::Sqrt(100000.0f));
+	TestEqual(TEXT("Corner endpoint retains its planned speed"), GetFlightSegmentSpeedLimit(50, 0, 500, 1), 50.0f);
+	TestEqual(TEXT("Minimum approach avoids stopping outside acceptance radius"), GetFlightSegmentSpeedLimit(0, 0, 500, 1), 1.0f);
+
 	return true;
 }
 
@@ -922,6 +1009,7 @@ bool FEnemyFlightCleanupTest::RunTest(const FString& Parameters)
 	Data.bRepathEpisode = true;
 	Data.CachedCapsule = Enemy->GetCapsuleComponent();
 	Data.PathWaypoints = {FVector::ZeroVector, FVector(500, 0, 0)};
+	Data.WaypointSpeedLimits = {100.0f, 0.0f};
 	Data.SpeedProfileState.TargetSpeed = 100.0f;
 	Movement->MaxFlySpeed = 100.0f;
 	Movement->Velocity = FVector(100, 0, 0);
@@ -952,6 +1040,7 @@ bool FEnemyFlightCleanupTest::RunTest(const FString& Parameters)
 	}
 	StopFlyTask(Data);
 	TestTrue(TEXT("Exit releases path and capsule"), Data.PathWaypoints.IsEmpty() && !Data.CachedCapsule);
+	TestTrue(TEXT("Exit releases cached corner speeds"), Data.WaypointSpeedLimits.IsEmpty());
 	TestFalse(TEXT("Exit clears waiting and repath flags"), Data.bWaitingForPath || Data.bRepathEpisode);
 	TestFalse(TEXT("Exit releases movement ownership"), Data.bOwnsMovement);
 	TestEqual(TEXT("Exit clears profile state"), Data.SpeedProfileState.TargetSpeed, -1.0f);
@@ -1142,6 +1231,7 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	InstanceData.bOwnsMovement = false;
 	InstanceData.SpeedProfileState.Reset();
 	InstanceData.PathWaypoints.Reset();
+	InstanceData.WaypointSpeedLimits.Reset();
 	InstanceData.CachedRoom.Reset();
 	InstanceData.CachedCapsule = nullptr;
 	InstanceData.CachedRoomSubsystem = nullptr;
