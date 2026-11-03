@@ -2240,42 +2240,66 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 			*Partner->GetCurrentRoomTag().ToString(), *Partner->GetActorLocation().ToString());
 		return false;
 	}
-	AFirstPersonCharacter* Anchor = bShooterInside ? static_cast<AFirstPersonCharacter*>(Shooter)
+	// 전투 귀속과 합류 목적지는 구분한다. 요청 방에 플레이어가 있으면 그쪽을,
+	// 형제 방에서 감지된 경우에는 실제 내부 플레이어의 방을 기준으로 합류한다.
+	const bool bAnchorIsShooter = bShooterInside && (ShooterRoom == Room || PartnerRoom != Room);
+	AFirstPersonCharacter* Anchor = bAnchorIsShooter ? static_cast<AFirstPersonCharacter*>(Shooter)
 		: static_cast<AFirstPersonCharacter*>(Partner);
-	AFirstPersonCharacter* MovingPlayer = bShooterInside == bPartnerInside ? nullptr
-		: (bShooterInside ? static_cast<AFirstPersonCharacter*>(Partner)
-			: static_cast<AFirstPersonCharacter*>(Shooter));
+	AFirstPersonCharacter* OtherPlayer = bAnchorIsShooter ? static_cast<AFirstPersonCharacter*>(Partner)
+		: static_cast<AFirstPersonCharacter*>(Shooter);
 	// 전투 귀속은 RoomTag에 남긴다. 합류 목적지는 내부 플레이어가 실제로 있는 방이며,
 	// 목적지 방의 전투를 새로 시작하거나 기존 문/해킹 조건을 충족시키지 않는다.
-	ARoomVolume* JoinRoom = bShooterInside ? ShooterRoom : PartnerRoom;
+	ARoomVolume* JoinRoom = bAnchorIsShooter ? ShooterRoom : PartnerRoom;
 	const FGameplayTag JoinRoomTag = JoinRoom->GetRoomTag();
 	const FGuid JoinRegistrationId = RoomRuntimes.FindChecked(JoinRoomTag).RegistrationId;
+	// 차단막의 현재 충돌 상태가 아니라 대상 방에 직접 연결된 등록 Actor의 존재를 본다.
+	// 그룹 전체를 막을 수 있다는 이유만으로 다른 형제 방의 차단막을 대신 사용하지 않는다.
+	auto HasJoinBarrier = [this, JoinRoomTag]()
+	{
+		return RegisteredBarriers.ContainsByPredicate([this, JoinRoomTag](const TWeakObjectPtr<ARoomCombatBarrier>& Entry)
+		{
+			const ARoomCombatBarrier* Barrier = Entry.Get();
+			return IsValid(Barrier) && !Barrier->IsActorBeingDestroyed()
+				&& Barrier->GetWorld() == GetWorld() && Barrier->ServesRoom(JoinRoomTag);
+		});
+	};
+	const bool bSuitAcquired = PairState->IsPairSuitAcquired();
+	const bool bHasJoinBarrier = HasJoinBarrier();
+	const bool bRequiresSameRoom = bSuitAcquired && bHasJoinBarrier;
+	AFirstPersonCharacter* MovingPlayer = bRequiresSameRoom && ShooterRoom != PartnerRoom ? OtherPlayer : nullptr;
 	// 이동이 없어도 두 내부 방의 수명은 보존한다. 준비/시작 콜백 중 재등록한 방을
 	// 이전 합류의 근거로 재사용하지 않으며, 위치는 완료 직전에 다시 확인한다.
-	const FGameplayTag OtherInsideTag = bShooterInside && bPartnerInside ? PartnerRoom->GetRoomTag() : FGameplayTag();
+	ARoomVolume* OtherRoom = bAnchorIsShooter ? PartnerRoom : ShooterRoom;
+	const FGameplayTag OtherInsideTag = OtherRoom ? OtherRoom->GetRoomTag() : FGameplayTag();
 	const FGuid OtherRegistrationId = OtherInsideTag.IsValid()
 		? RoomRuntimes.FindChecked(OtherInsideTag).RegistrationId : FGuid();
 	auto IsJoinRoomCurrent = [this, &IsRequestCurrent, JoinRoom, JoinRoomTag, JoinRegistrationId, Anchor,
-		OtherInsideTag, OtherRegistrationId]()
+		OtherInsideTag, OtherRegistrationId, PairState, Shooter, Partner,
+		bSuitAcquired, bHasJoinBarrier, &HasJoinBarrier]()
 	{
 		const FRoomCombatRuntime* JoinRuntime = RoomRuntimes.Find(JoinRoomTag);
 		const FRoomCombatRuntime* OtherRuntime = RoomRuntimes.Find(OtherInsideTag);
-		return IsRequestCurrent() && JoinRuntime && JoinRuntime->RegistrationId == JoinRegistrationId
+		return IsRequestCurrent() && IsValid(PairState) && IsValid(Shooter) && IsValid(Partner)
+			&& PairState->GetShooterCharacter() == Shooter && PairState->GetPartnerCharacter() == Partner
+			&& PairState->IsPairSuitAcquired() == bSuitAcquired && HasJoinBarrier() == bHasJoinBarrier
+			&& JoinRuntime && JoinRuntime->RegistrationId == JoinRegistrationId
 			&& JoinRuntime->RoomVolume.Get() == JoinRoom && IsPlayerInsideRoom(Anchor, JoinRoom)
 			&& (!OtherInsideTag.IsValid() || (OtherRuntime && OtherRuntime->RoomVolume.IsValid()
 				&& OtherRuntime->RegistrationId == OtherRegistrationId));
 	};
-	auto ArePlayersJoined = [this, Shooter, Partner, RoomTag, &IsJoinRoomCurrent]()
+	auto ArePlayersJoined = [this, Shooter, Partner, JoinRoom, bRequiresSameRoom, &IsJoinRoomCurrent]()
 	{
-		return IsJoinRoomCurrent() && FindPlayerRoomInCombatGroup(Shooter, RoomTag)
-			&& FindPlayerRoomInCombatGroup(Partner, RoomTag);
+		// 슈트 전/차단막 없는 방은 이동 생략이 정상이다. 이때 상대의 합류를 요구하면
+		// 전투가 영구 대기하므로 기준 플레이어와 준비 수명만 확인해 진행한다.
+		return IsJoinRoomCurrent() && (!bRequiresSameRoom
+			|| (IsPlayerInsideRoom(Shooter, JoinRoom) && IsPlayerInsideRoom(Partner, JoinRoom)));
 	};
 	FRoomCombatPreparationContext Context;
 	if (!BeginInitialDetectionPreparation(RoomTag, Anchor, Context))
 	{
 		return false;
 	}
-	// Preparing이 배치 Enemy 공격과 Wave를 막는 동안 밖의 플레이어만 이동한다.
+	// 세 이동 조건을 충족할 때만 Preparing 동안 이동한다. 형제 방도 다른 방이다.
 	if (MovingPlayer)
 	{
 		const TCHAR* Failures[] = {TEXT("NotAttempted"), TEXT("NotAttempted")};
