@@ -109,13 +109,12 @@ void AOutlierPostProcessVolume::BeginPlay()
 
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Scan);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Damaged);
-	// 할당된 Damaged 머티리얼을 별도의 MID와 블렌드 가중치로 재사용한다.
+	// BP의 PostProcessMaterials에 지정된 Damaged 머티리얼을 별도의 MID와 블렌드 가중치로 재사용한다.
 	if (!HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerShield))
 	{
 		const auto* Damaged = PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Damaged);
 		UMaterialInterface* Source = Damaged ? Damaged->Get() : nullptr;
 		if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Source)) Source = MID->Parent;
-		if (!Source) Source = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/PostProcess/M_Damaged.M_Damaged"));
 		if (Source)
 		{
 			PostProcessMaterials.Add(EOutlierPostProcessMaterialType::PartnerShield,
