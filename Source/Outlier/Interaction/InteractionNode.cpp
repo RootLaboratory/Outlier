@@ -81,6 +81,11 @@ void AInteractionNode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	EmissiveMID = nullptr;
 	CachedEmissiveMesh = nullptr;
 	PresentationClock = nullptr;
+	LocalAttemptId = 0;
+	CanceledAttemptId = 0;
+	LocalInteractor.Reset();
+	CanceledInteractor.Reset();
+	LatestServerAttemptIds.Reset();
 	OutlierAudioFeedback::StopLoops(this);
 	if (bProgressIdRegistered)
 	{
@@ -202,6 +207,58 @@ float FInteractionNodeHoldState::GetProgress(double ServerTime) const
 	return static_cast<float>(FMath::Clamp((ServerTime - ServerStartTime) / Duration, 0.0, 1.0));
 }
 
+int32 AInteractionNode::BeginLocalHoldAttempt(AFirstPersonCharacter* Interactor)
+{
+	if (!IsValid(Interactor) || bCollected || NextLocalAttemptId == MAX_int32) return 0;
+	LocalAttemptId = ++NextLocalAttemptId;
+	LocalInteractor = Interactor;
+	return LocalAttemptId;
+}
+
+int32 AInteractionNode::GetLocalHoldAttemptId(const AFirstPersonCharacter* Interactor) const
+{
+	return Interactor && LocalInteractor.Get() == Interactor ? LocalAttemptId : 0;
+}
+
+void AInteractionNode::EndLocalHoldAttempt(const AFirstPersonCharacter* Interactor, bool bCanceled)
+{
+	if (LocalInteractor.Get() != Interactor) return;
+	if (bCanceled && LocalAttemptId != 0)
+	{
+		CanceledAttemptId = LocalAttemptId;
+		CanceledInteractor = LocalInteractor;
+	}
+	LocalAttemptId = 0;
+	LocalInteractor.Reset();
+	UpdateHoldPresentation();
+}
+
+bool AInteractionNode::AcceptServerHoldAttempt(AFirstPersonCharacter* Interactor, int32 AttemptId)
+{
+	if (!HasAuthority() || !IsValid(Interactor) || AttemptId <= 0) return false;
+	// 리스폰 전 Pawn의 기록은 정리한다. 살아 있는 Pawn의 번호는 취소 후에도 남겨 오래된 시작을 거절한다.
+	for (auto It = LatestServerAttemptIds.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid()) It.RemoveCurrent();
+	}
+	int32& LatestAttemptId = LatestServerAttemptIds.FindOrAdd(Interactor);
+	if (AttemptId <= LatestAttemptId) return false;
+	LatestAttemptId = AttemptId;
+	return true;
+}
+
+int32 AInteractionNode::GetServerHoldAttemptId(const AFirstPersonCharacter* Interactor) const
+{
+	const int32* AttemptId = Interactor ? LatestServerAttemptIds.Find(Interactor) : nullptr;
+	// 진행 snapshot이 종료된 뒤에도 무효화/결과 통지는 원래 요청 번호로 보낸다.
+	return AttemptId ? *AttemptId : 0;
+}
+
+bool AInteractionNode::IsServerHoldAttemptCurrent(const AFirstPersonCharacter* Interactor, int32 AttemptId) const
+{
+	return AttemptId > 0 && GetServerHoldAttemptId(Interactor) == AttemptId;
+}
+
 double AInteractionNode::GetPresentationTime() const
 {
 	if (IsValid(PresentationClock)) return PresentationClock->GetServerWorldTimeSeconds();
@@ -220,9 +277,7 @@ void AInteractionNode::BeginHoldPresentation(AFirstPersonCharacter* Interactor, 
 	}
 	else
 	{
-		// 입력 시작 → 서버 승인 대기. 이전 상태를 새 시도의 진행률로 사용하지 않는다.
-		LocalAttemptId = AttemptId;
-		LocalInteractor = Interactor;
+		// BeginLocalHoldAttempt에서 발급한 번호로 서버 승인을 기다린다.
 		UpdateHoldPresentation();
 	}
 }
@@ -235,13 +290,12 @@ void AInteractionNode::EndHoldPresentation(bool bCanceled)
 	}
 	else
 	{
+		// Used/취소 복제가 결과 RPC보다 먼저 올 수 있다. 표시는 종료하되 요청 번호는 응답 처리까지 보존한다.
 		if (bCanceled && LocalAttemptId != 0)
 		{
 			CanceledAttemptId = LocalAttemptId;
 			CanceledInteractor = LocalInteractor;
 		}
-		LocalAttemptId = 0;
-		LocalInteractor.Reset();
 		UpdateHoldPresentation();
 	}
 }
@@ -262,7 +316,7 @@ void AInteractionNode::PublishHoldState(bool bHolding, int32 AttemptId, float Du
 
 float AInteractionNode::GetHoldProgress() const
 {
-	// 시도 번호는 Pawn 안에서 증가하므로 리스폰 뒤에는 Pawn까지 함께 구분한다.
+	// 번호는 노드별로 발급하며, 진행 snapshot은 상호작용한 Pawn까지 함께 구분한다.
 	const bool bCanceled = CanceledAttemptId != 0 && HoldState.AttemptId == CanceledAttemptId
 		&& HoldState.Interactor == CanceledInteractor.Get();
 	const bool bWaitingForApproval = LocalAttemptId != 0

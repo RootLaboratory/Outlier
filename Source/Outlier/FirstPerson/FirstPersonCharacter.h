@@ -40,6 +40,7 @@ class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTag
 {
 	GENERATED_BODY()
 	friend class FInteractionNodePresentationTest;
+	friend class FInteractionNodeHoldAttemptTest;
 	// 상호작용 세션은 캐릭터의 기존 입력 가능 판정을 재사용한다.
 	friend class UInteractableComponent;
 
@@ -283,11 +284,6 @@ private:
 	TObjectPtr<AActor> HoldingInteractActor;
 
 	bool bAwaitingHoldInteractResult = false;
-	// 노드의 이전 응답/취소가 새 누르기 시도를 덮어쓰지 않도록 요청부터 결과까지 같은 번호를 사용한다.
-	int32 NextNodeHoldAttemptId = 0;
-	int32 LocalNodeHoldAttemptId = 0;
-	int32 ServerNodeHoldAttemptId = 0;
-	TWeakObjectPtr<AActor> ServerNodeHoldActor;
 
 	UPROPERTY()
 	TArray<TObjectPtr<AActor>> NearbyInteractables;

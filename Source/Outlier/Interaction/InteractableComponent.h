@@ -132,6 +132,7 @@ public:
 private:
 	friend class AInteractionNode;
 	friend class FInteractionNodePresentationTest;
+	friend class FInteractionNodeHoldAttemptTest;
 	UPROPERTY(Transient)
 	TObjectPtr<AInteractionNode> InteractionNode;
 

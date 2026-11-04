@@ -320,14 +320,16 @@ void AFirstPersonCharacter::TryInteract()
 				CancelLocalHoldInteract(true);
 			}
 
-			const int32 HoldAttemptId = TargetActor->IsA<AInteractionNode>() ? ++NextNodeHoldAttemptId : 0;
+			AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
+			const int32 HoldAttemptId = Node ? Node->BeginLocalHoldAttempt(this) : 0;
+			if (Node && HoldAttemptId == 0) return;
 			if (!InteractableComponent->BeginHoldInteract(this, HoldAttemptId))
 			{
+				if (Node) Node->EndLocalHoldAttempt(this, true);
 				return;
 			}
 
 			HoldingInteractActor = TargetActor;
-			LocalNodeHoldAttemptId = HoldAttemptId;
 			ServerBeginHoldInteract(TargetActor, HoldAttemptId);
 			return;
 		}
@@ -364,16 +366,18 @@ void AFirstPersonCharacter::NotifyHoldInteractCompleted(AActor* CompletedActor)
 	}
 
 	bAwaitingHoldInteractResult = true;
-	ServerInteract(CompletedActor, LocalNodeHoldAttemptId);
+	const AInteractionNode* Node = Cast<AInteractionNode>(CompletedActor);
+	ServerInteract(CompletedActor, Node ? Node->GetLocalHoldAttemptId(this) : 0);
 }
 
 void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 {
 	AActor* CanceledActor = HoldingInteractActor.Get();
-	const int32 HoldAttemptId = LocalNodeHoldAttemptId;
+	AInteractionNode* Node = Cast<AInteractionNode>(CanceledActor);
+	// 로컬 시도를 정리하기 전에 취소 RPC에 보낼 번호를 확보한다.
+	const int32 HoldAttemptId = Node ? Node->GetLocalHoldAttemptId(this) : 0;
 	if (!CanceledActor)
 	{
-		LocalNodeHoldAttemptId = 0;
 		bAwaitingHoldInteractResult = false;
 		return;
 	}
@@ -385,6 +389,7 @@ void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 			InteractableComponent->EndHoldInteract(this, true);
 		}
 	}
+	if (Node) Node->EndLocalHoldAttempt(this, true);
 
 	if (FocusedInteractable == CanceledActor)
 	{
@@ -392,7 +397,6 @@ void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 	}
 
 	HoldingInteractActor = nullptr;
-	LocalNodeHoldAttemptId = 0;
 	bAwaitingHoldInteractResult = false;
 
 	if (bNotifyServer)
@@ -405,18 +409,16 @@ void AFirstPersonCharacter::NotifyHoldInteractInvalidated(AActor* TargetActor)
 {
 	if (HasAuthority())
 	{
-		ClientOnHoldInteractFailed(TargetActor, ServerNodeHoldActor == TargetActor ? ServerNodeHoldAttemptId : 0);
+		const AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
+		ClientOnHoldInteractFailed(TargetActor, Node ? Node->GetServerHoldAttemptId(this) : 0);
 	}
 }
 
 void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
-	if (TargetActor && TargetActor->IsA<AInteractionNode>())
+	if (AInteractionNode* Node = Cast<AInteractionNode>(TargetActor))
 	{
-		// Reliable RPC의 오래된 시작 요청은 현재 노드 세션을 취소하거나 다시 시작하지 못한다.
-		if (HoldAttemptId <= ServerNodeHoldAttemptId) return;
-		ServerNodeHoldAttemptId = HoldAttemptId;
-		ServerNodeHoldActor = TargetActor;
+		if (!Node->AcceptServerHoldAttempt(this, HoldAttemptId)) return;
 	}
 	IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor);
 	UInteractableComponent* InteractableComponent =
@@ -440,9 +442,9 @@ void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* Targe
 
 void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
-	const bool bNodeInteraction = TargetActor && TargetActor->IsA<AInteractionNode>();
-	if (bNodeInteraction && HoldAttemptId != 0
-		&& (HoldAttemptId != ServerNodeHoldAttemptId || ServerNodeHoldActor != TargetActor)) return;
+	const AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
+	const bool bNodeInteraction = Node != nullptr;
+	if (Node && HoldAttemptId != 0 && !Node->IsServerHoldAttemptCurrent(this, HoldAttemptId)) return;
 	if (!TargetActor || !CanInteract())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked Target=%s"), *GetName(), *GetNameSafe(TargetActor));
@@ -535,8 +537,8 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, i
 
 void AFirstPersonCharacter::ServerCancelHoldInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
-	if (TargetActor && TargetActor->IsA<AInteractionNode>()
-		&& (HoldAttemptId == 0 || HoldAttemptId != ServerNodeHoldAttemptId || ServerNodeHoldActor != TargetActor)) return;
+	const AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
+	if (Node && !Node->IsServerHoldAttemptCurrent(this, HoldAttemptId)) return;
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
 		if (UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent())
@@ -551,10 +553,10 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(
 	EInteractionFlowResult FlowResult,
 	int32 HoldAttemptId)
 {
-	// 늦은 HoldReady(번호 0)도 새 누르기를 정리하지 못하도록 노드는 모든 응답 번호를 확인한다.
-	if (TargetActor && TargetActor->IsA<AInteractionNode>()
-		&& (HoldAttemptId != LocalNodeHoldAttemptId
-			|| (HoldAttemptId != 0 && HoldingInteractActor != TargetActor))) return;
+	AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
+	// 번호는 노드별로 같을 수 있다. 대상과 번호를 함께 확인하며 늦은 HoldReady(0)도 거절한다.
+	if (Node && ((HoldingInteractActor && HoldingInteractActor != TargetActor)
+		|| HoldAttemptId != Node->GetLocalHoldAttemptId(this))) return;
 	const bool bCompletedHoldInteract =
 		bAwaitingHoldInteractResult &&
 		HoldingInteractActor == TargetActor;
@@ -570,7 +572,7 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(
 		}
 
 		HoldingInteractActor = nullptr;
-		LocalNodeHoldAttemptId = 0;
+		if (Node) Node->EndLocalHoldAttempt(this, false);
 		bAwaitingHoldInteractResult = false;
 	}
 
@@ -590,12 +592,12 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(
 
 void AFirstPersonCharacter::ClientOnHoldInteractFailed_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
-	if ((HoldAttemptId != 0 || LocalNodeHoldAttemptId != 0)
-		&& HoldAttemptId != LocalNodeHoldAttemptId) return;
 	if (TargetActor && HoldingInteractActor != TargetActor)
 	{
 		return;
 	}
+	const AInteractionNode* Node = Cast<AInteractionNode>(HoldingInteractActor.Get());
+	if (HoldAttemptId != (Node ? Node->GetLocalHoldAttemptId(this) : 0)) return;
 
 	CancelLocalHoldInteract(false);
 }
@@ -732,7 +734,8 @@ void AFirstPersonCharacter::CompleteDeferredInteraction(AActor* TargetActor, boo
 	{
 		return;
 	}
-	const int32 HoldAttemptId = ServerNodeHoldActor == TargetActor ? ServerNodeHoldAttemptId : 0;
+	const AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
+	const int32 HoldAttemptId = Node ? Node->GetServerHoldAttemptId(this) : 0;
 	if (!bSucceeded)
 	{
 		ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
@@ -1354,14 +1357,15 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 					bIsActiveInteraction &&
 					PreviousComponent->RequiresHoldInteract())
 				{
+					AInteractionNode* Node = Cast<AInteractionNode>(PreviousInteractable.Get());
+					// 범위 이탈로 로컬 시도를 정리하기 전에 취소 RPC의 번호를 보관한다.
+					const int32 HoldAttemptId = Node ? Node->GetLocalHoldAttemptId(this) : 0;
 					PreviousComponent->ResetHoldInteraction(this);
-					const int32 HoldAttemptId = HoldingInteractActor == PreviousInteractable.Get()
-						? LocalNodeHoldAttemptId : 0;
+					if (Node) Node->EndLocalHoldAttempt(this, true);
 
 					if (HoldingInteractActor == PreviousInteractable.Get())
 					{
 						HoldingInteractActor = nullptr;
-						LocalNodeHoldAttemptId = 0;
 					}
 
 					ServerCancelHoldInteract(PreviousInteractable.Get(), HoldAttemptId);
