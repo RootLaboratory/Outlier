@@ -341,7 +341,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")
 	FName CoreBoneName = TEXT("CoreBone");
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_InCombat, Category = "Enemy|State")
 	uint8 bInCombat : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
@@ -718,6 +718,15 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
 	FGameplayTag AppearAudioContext;
 
+	// 전투 상태 동안 반복 재생한다. 비워 두면 재생하지 않는다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag CombatLoopAudioContext;
+
+	virtual bool ShouldPlayCombatLoopAudio() const;
+
+	UFUNCTION()
+	void OnRep_InCombat();
+
 	UFUNCTION()
 	void OnRep_RuntimeStat();
 
@@ -802,7 +811,7 @@ protected:
 	// 행동 중단 여부는 기존 상태 로직이 결정하고, 파생 클래스는 작은 피격 연출만 정리한다.
 	virtual void InterruptDamagePresentation(float BlendOutTime) {}
 	// 서버 로컬 상태 변경과 GAS 통지를 표현에 반영한다. 게임플레이 상태는 변경하지 않는다.
-	virtual void RefreshCombatStatePresentation() {}
+	virtual void RefreshCombatStatePresentation() { RefreshEnemyAudioState(); }
 	virtual void OnPoolStateApplied(EEnemyPoolState PreviousState) {}
 	virtual bool ShouldResetPoolMontages() const { return true; }
 

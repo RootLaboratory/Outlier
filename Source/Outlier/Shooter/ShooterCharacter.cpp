@@ -902,6 +902,10 @@ void AShooterCharacter::HandleShieldChanged(const FOnAttributeChangeData& Change
 		}
 	}
 
+	if (HasAuthority() && !IsDead() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
+	{
+		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.01.State.Shield.Empty"));
+	}
 }
 
 void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -1210,10 +1214,29 @@ void AShooterCharacter::HandleStealthSpeedTagChanged(const FGameplayTag Tag, int
 	RefreshMovementState();
 }
 
+// 쿨타임 감소는 제거 후 재부여로 처리되므로, 다음 틱에도 태그가 없을 때만 실제 재사용 가능으로 본다.
+static void QueueShooterSkillReadyAudio(AShooterCharacter* Character, const FGameplayTag& CooldownTag, int32 NewCount)
+{
+	if (NewCount > 0 || !Character->HasAuthority())
+	{
+		return;
+	}
+	const TWeakObjectPtr<AShooterCharacter> WeakCharacter(Character);
+	Character->GetWorldTimerManager().SetTimerForNextTick([WeakCharacter, CooldownTag]()
+	{
+		AShooterCharacter* Shooter = WeakCharacter.Get();
+		const UOutlierAbilitySystemComponent* AbilitySystem = Shooter ? Shooter->GetOutlierAbilitySystemComponent() : nullptr;
+		if (!AbilitySystem || Shooter->IsDead() || AbilitySystem->HasMatchingGameplayTag(CooldownTag))
+		{
+			return;
+		}
+		OutlierAudioFeedback::Owner(Shooter, TEXT("Audio.Context.Player.01.Skill.Ready"));
+	});
+}
+
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
-	(void)Tag;
-	(void)NewCount;
+	QueueShooterSkillReadyAudio(this, Tag, NewCount);
 	if (!IsLocallyControlled())
 	{
 		return;
@@ -1223,8 +1246,7 @@ void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, 
 
 void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
-	(void)Tag;
-	(void)NewCount;
+	QueueShooterSkillReadyAudio(this, Tag, NewCount);
 	if (IsLocallyControlled())
 	{
 		RefreshShooterSuitCooldownUI();
@@ -1233,8 +1255,7 @@ void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplay
 
 void AShooterCharacter::HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
-	(void)Tag;
-	(void)NewCount;
+	QueueShooterSkillReadyAudio(this, Tag, NewCount);
 	if (IsLocallyControlled())
 	{
 		RefreshShooterSuitCooldownUI();
@@ -1292,6 +1313,10 @@ void AShooterCharacter::HandleUpgradeStateChanged()
 
 void AShooterCharacter::HandleQuantumLeapChargesChanged(bool bRecovered)
 {
+	if (bRecovered && HasAuthority() && !IsDead())
+	{
+		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.01.Skill.Ready"));
+	}
 	RefreshQuantumLeapChargeUI(bRecovered);
 }
 
@@ -2067,11 +2092,13 @@ void AShooterCharacter::ServerUseSuitAbility_Implementation(FGameplayTag Ability
 
 	const bool bCancellingActiveStealth = IsStealthed()
 		&& AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
-	if (!IsDead()
+	const bool bActivated = !IsDead()
 		&& (!IsShooterSuitUseDisabled() || bCancellingActiveStealth)
-		&& OutlierAbilitySystemComponent)
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(AbilityTag);
+	if (!bActivated && !IsDead())
 	{
-		OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(AbilityTag);
+		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.01.Skill.Unavailable"));
 	}
 }
 

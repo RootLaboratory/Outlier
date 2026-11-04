@@ -74,6 +74,7 @@ void ALaserKillFloor::SetHazardEnabled(bool bEnabled)
 	if (!bHazardEnabled)
 	{
 		DamagedActorsInVolume.Reset();
+		OutlierAudioFeedback::World(this, TEXT("Audio.Context.Object.Laser.Off"));
 	}
 	ApplyHazardState();
 	if (bHazardEnabled)

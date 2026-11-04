@@ -508,6 +508,7 @@ protected:
 	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
 	void HandlePartnerCooldownTagChanged(const FGameplayTag CooldownTag, int32 NewCount);
 	void HandlePartnerHackChargesChanged(bool bRecovered);
+	void TryActivatePartnerSkill(const FGameplayTag& AbilityTag);
 	FDelegateHandle PartnerCooldownEffectAddedHandle;
 	FDelegateHandle PartnerHackChargesChangedHandle;
 	TMap<FGameplayTag, FDelegateHandle> PartnerCooldownTagHandles;

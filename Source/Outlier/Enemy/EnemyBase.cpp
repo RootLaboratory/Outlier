@@ -101,6 +101,29 @@ namespace
 		}
 	}
 
+	// 공격한 플레이어에게만 명중/처치 확인음을 2D로 들려준다. 빙의 드론 공격도 Partner 컨트롤러로 판정된다.
+	void PlayAttackerConfirmAudio(const FOutlierDamageRequest& Request, bool bKilled)
+	{
+		AController* Attacker = Request.EventInstigator;
+		if (!Attacker && Request.DamageCauser)
+		{
+			Attacker = Request.DamageCauser->GetInstigatorController();
+		}
+
+		if (Cast<AShooterPlayerController>(Attacker))
+		{
+			OutlierAudioFeedback::Owner(Attacker, bKilled
+				? TEXT("Audio.Context.Player.01.State.KillConfirm")
+				: TEXT("Audio.Context.Player.01.State.HitConfirm"));
+		}
+		else if (Cast<APartnerPlayerController>(Attacker))
+		{
+			OutlierAudioFeedback::Owner(Attacker, bKilled
+				? TEXT("Audio.Context.Player.02.State.KillConfirm")
+				: TEXT("Audio.Context.Player.02.State.HitConfirm"));
+		}
+	}
+
 	// 위젯 컴포넌트도 UMeshComponent 라서 실제 메시 종류만 등장 디졸브 대상으로 넘긴다.
 	void AppendSpawnPresentationMeshes(const AActor* Actor, TArray<UMeshComponent*>& OutMeshes)
 	{
@@ -2192,6 +2215,7 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 
 	if (AppliedDamage > 0.0f)
 	{
+		PlayAttackerConfirmAudio(Request, IsDead());
 		BroadcastDamageCue(Request, AppliedDamage);
 	}
 
@@ -3340,6 +3364,7 @@ void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 		{
 			InitializeCombatMovementPreferences();
 			bInCombat = true;
+			RefreshEnemyAudioState();
 			RefreshPerceptionConfigForCurrentState();
 		}
 		return;
@@ -4157,7 +4182,19 @@ void AEnemyBase::PlaySpawnAppearAudio()
 
 void AEnemyBase::RefreshEnemyAudioState()
 {
-	if (!HoverAudioContext.IsValid()) return;
 	const bool bActive = !IsDead() && (!IsPoolManaged() || PoolState == EEnemyPoolState::CombatActive);
-	OutlierAudioFeedback::Loop(this, *HoverAudioContext.ToString(), bActive, TEXT("Audio.Type.Enemy"));
+	if (HoverAudioContext.IsValid())
+		OutlierAudioFeedback::Loop(this, *HoverAudioContext.ToString(), bActive, TEXT("Audio.Type.Enemy"));
+	if (CombatLoopAudioContext.IsValid())
+		OutlierAudioFeedback::Loop(this, *CombatLoopAudioContext.ToString(), bActive && ShouldPlayCombatLoopAudio(), TEXT("Audio.Type.Enemy"));
+}
+
+bool AEnemyBase::ShouldPlayCombatLoopAudio() const
+{
+	return bInCombat;
+}
+
+void AEnemyBase::OnRep_InCombat()
+{
+	RefreshEnemyAudioState();
 }

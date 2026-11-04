@@ -32,6 +32,7 @@ public:
 
 protected:
 	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UBorder> InfoBorder;
@@ -90,7 +91,9 @@ private:
 
 	FSlateBrush DefaultInfoImageBrush;
 	bool bCachedDefaultInfoImageBrush = false;
+	bool bPopupAudioOpen = false;
 
+	void SetPopupAudioOpen(bool bOpen);
 	bool ResolveHackInfoTag(FGameplayTag& OutHackInfoTag) const;
 	void UpdateInfoText();
 	void UpdateInfoImage(const FHackInfoRow* HackInfo);

@@ -22,6 +22,8 @@ public:
 	void PlayPopUp(bool InFlag);
 
 protected:
+	virtual void NativeDestruct() override;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UPopupRetainerBox> PopupRetainerBox;
 
@@ -33,4 +35,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Interaction")
 	FGameplayTag CurrentInteractTag;
+
+private:
+	void SetPopupAudioOpen(bool bOpen);
+
+	bool bPopupAudioOpen = false;
 };

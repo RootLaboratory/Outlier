@@ -141,6 +141,8 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	bool IsHackedToPlayerTeam() const { return bHackedToPlayerTeam; }
 
+	void PlayAttackAudio();
+
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
 	bool IsWaitingForRoomWaveActivation() const
 	{
@@ -210,6 +212,10 @@ protected:
 	FGameplayTag DeployAudioContext;
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
 	FGameplayTag HackedAudioContext;
+	// 저격(레이저) 발사 시점에 재생한다. 비워 두면 재생하지 않는다.
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag AttackAudioContext;
+	virtual bool ShouldPlayCombatLoopAudio() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
 	virtual void HandleHackCompleted(const FHackResultContext& Context) override;

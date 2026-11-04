@@ -366,6 +366,12 @@ void APartnerCharacter::HandlePartnerCooldownTagChanged(const FGameplayTag Coold
 {
 	if (NewCount == 0)
 	{
+		// 빙의 중 일시 정지는 쿨타임 효과를 제거하지만 재사용 가능이 아니다.
+		if (HasAuthority() && OutlierAbilitySystemComponent
+			&& !OutlierAbilitySystemComponent->ArePartnerSkillCooldownsSuspended())
+		{
+			OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.02.Skill.Ready"));
+		}
 		NotifyPartnerCooldownUI(CooldownTag);
 	}
 }
@@ -532,6 +538,10 @@ void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
 
 void APartnerCharacter::HandlePartnerHackChargesChanged(bool bRecovered)
 {
+	if (bRecovered && HasAuthority())
+	{
+		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.02.Skill.Ready"));
+	}
 	RefreshPartnerHackChargeUI(bRecovered);
 }
 
@@ -891,8 +901,7 @@ void APartnerCharacter::TryHacking()
 		return;
 	}
 
-	OutlierAbilitySystemComponent->TryActivatePartnerAbility(
-		OutlierGameplayTags::Ability::Partner::Hacking());
+	TryActivatePartnerSkill(OutlierGameplayTags::Ability::Partner::Hacking());
 }
 
 void APartnerCharacter::EndHacking()
@@ -918,9 +927,7 @@ void APartnerCharacter::TryEMP()
 		return;
 	}
 
-	OutlierAbilitySystemComponent->TryActivatePartnerAbility(
-		OutlierGameplayTags::Ability::Partner::EMP());
-
+	TryActivatePartnerSkill(OutlierGameplayTags::Ability::Partner::EMP());
 }
 
 void APartnerCharacter::Hacking(AActor* TargetActor)
@@ -944,11 +951,7 @@ void APartnerCharacter::Scan()
 	NotifyStandbyActivity();
 	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
 
-	if (OutlierAbilitySystemComponent)
-	{
-		OutlierAbilitySystemComponent->TryActivatePartnerAbility(
-			OutlierGameplayTags::Ability::Partner::Scan());
-	}
+	TryActivatePartnerSkill(OutlierGameplayTags::Ability::Partner::Scan());
 }
 
 void APartnerCharacter::Shield()
@@ -961,12 +964,20 @@ void APartnerCharacter::Shield()
 
 	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
 
-	if (OutlierAbilitySystemComponent)
-	{
-		OutlierAbilitySystemComponent->TryActivatePartnerAbility(
-			OutlierGameplayTags::Ability::Partner::Shield());
-	}
+	TryActivatePartnerSkill(OutlierGameplayTags::Ability::Partner::Shield());
+}
 
+void APartnerCharacter::TryActivatePartnerSkill(const FGameplayTag& AbilityTag)
+{
+	if (!OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+	// 원격 클라이언트는 GAS가 로컬 CanActivate 실패 시 서버로 보내지 않으므로 입력한 쪽에서 바로 재생한다.
+	if (!OutlierAbilitySystemComponent->TryActivatePartnerAbility(AbilityTag))
+	{
+		OutlierAudioFeedback::Local(this, TEXT("Audio.Context.Player.02.Skill.Unavailable"), TEXT("Audio.Type.Player"));
+	}
 }
 
 void APartnerCharacter::NotifyBoundaryUI(bool bDisabled)

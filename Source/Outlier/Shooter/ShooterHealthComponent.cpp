@@ -2,6 +2,7 @@
 
 #include "Shooter/ShooterHealthComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "OutlierGameMode.h"
 
@@ -74,6 +75,7 @@ void UShooterHealthComponent::HitHistoryRefresh()
 	bShieldRecoveryAbled = true;
 	ShieldRecoveryDelayRemaining = 0.f;
 	RecoveryAccumulated = 0.f;
+	bShieldRecharging = false;
 }
 
 void UShooterHealthComponent::DelayShieldRecovery(float DelaySeconds)
@@ -81,6 +83,7 @@ void UShooterHealthComponent::DelayShieldRecovery(float DelaySeconds)
 	bShieldRecoveryAbled = DelaySeconds <= 0.0f;
 	ShieldRecoveryDelayRemaining = FMath::Max(DelaySeconds, 0.0f);
 	RecoveryAccumulated = 0.0f;
+	bShieldRecharging = false;
 }
 
 void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -114,6 +117,8 @@ void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType
 		|| ShooterCharacter->bSuitDisabledByPartnerBoundary ||
 		ShooterCharacter->GetCurShield() >= ShooterCharacter->GetMaxShield())
 	{
+		// 다른 경로로 가득 찼거나 회복이 막히면 진행 중인 회복 주기를 조용히 끝낸다.
+		bShieldRecharging = false;
 		return;
 	}
 
@@ -136,5 +141,16 @@ void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType
 
 		// 기존 GAS 효과가 기본 Shield만 회복하고 MaxShield 상한을 적용한다.
 		AbilitySystem->ApplyShieldRecoveryToSelf(ShieldRecoveryValue + ReflectionRecoveryBonus);
+
+		if (ShooterCharacter->GetCurShield() >= ShooterCharacter->GetMaxShield())
+		{
+			bShieldRecharging = false;
+			OutlierAudioFeedback::Owner(ShooterCharacter, TEXT("Audio.Context.Player.01.State.Shield.Recharge.Complete"));
+		}
+		else if (!bShieldRecharging)
+		{
+			bShieldRecharging = true;
+			OutlierAudioFeedback::Owner(ShooterCharacter, TEXT("Audio.Context.Player.01.State.Shield.Recharge.Start"));
+		}
 	}
 }

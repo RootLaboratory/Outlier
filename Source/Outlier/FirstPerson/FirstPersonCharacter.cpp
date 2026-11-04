@@ -95,6 +95,27 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
+	// 로컬 빙의 전에 BeginPlay가 실행될 수 있으므로 입력 준비 시점에 설정을 바인딩한다.
+	if (BoundSettingsSubsystem)
+	{
+		BoundSettingsSubsystem->OnMouseSensitivityChanged.RemoveAll(this);
+		BoundSettingsSubsystem = nullptr;
+	}
+	MouseSensitivity = 1.0f;
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	{
+		if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
+		{
+			BoundSettingsSubsystem = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>();
+			if (BoundSettingsSubsystem)
+			{
+				MouseSensitivity = BoundSettingsSubsystem->GetMouseSensitivity();
+				BoundSettingsSubsystem->OnMouseSensitivityChanged.AddUniqueDynamic(
+					this, &AFirstPersonCharacter::HandleMouseSensitivityChanged);
+			}
+		}
+	}
+
 	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
 	if (!EnhancedInputComponent || !InputConfig) {
 		UE_LOG(LogTemp, Warning, TEXT("EnhancedInputComponent or InputConfig is Null"));
@@ -124,22 +145,6 @@ void AFirstPersonCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	NormalizeInteractionSphereRanges();
-
-	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
-	{
-		if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
-		{
-			BoundSettingsSubsystem =
-				LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>();
-			if (BoundSettingsSubsystem)
-			{
-				MouseSensitivity = BoundSettingsSubsystem->GetMouseSensitivity();
-				BoundSettingsSubsystem->OnMouseSensitivityChanged.AddUniqueDynamic(
-					this,
-					&AFirstPersonCharacter::HandleMouseSensitivityChanged);
-			}
-		}
-	}
 
 	GetWorldTimerManager().SetTimer(
 		InteractionTraceTimerHandle,
