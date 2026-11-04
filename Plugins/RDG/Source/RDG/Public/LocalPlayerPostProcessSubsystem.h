@@ -14,6 +14,7 @@ class UTexture2D;
 
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionCovered);
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionFinished);
+DECLARE_MULTICAST_DELEGATE(FOnSplitPrismSettled);
 DECLARE_MULTICAST_DELEGATE(FOnDeathBlackNoiseStarted);
 DECLARE_MULTICAST_DELEGATE(FOnScreenBlackoutCovered);
 DECLARE_MULTICAST_DELEGATE(FOnScreenBlackoutRevealed);
@@ -175,6 +176,8 @@ public:
 
 	FOnHackTransitionCovered OnHackTransitionCovered;
 	FOnHackTransitionFinished OnHackTransitionFinished;
+	// 초점 맞춤/잔차 페이드의 움직임이 끝났을 때 알린다. Holding의 상시 효과는 완료로 취급한다.
+	FOnSplitPrismSettled OnSplitPrismSettled;
 
 	// Screen Blackout(Slate 이후, HUD 포함). 현재 Alpha에서 출발하므로 진행 중에 방향을 바꿔도 튀지 않는다.
 	// Duration은 0 ↔ 1 전체에 걸리는 시간이다. 중간에서 시작하면 남은 거리만큼만 걸리고, 0이면 즉시 도달한다.

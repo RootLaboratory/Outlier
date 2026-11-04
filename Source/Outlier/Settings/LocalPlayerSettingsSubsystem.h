@@ -4,9 +4,19 @@
 #include "Audio/OutlierAudioTypes.h"
 #include "InputCoreTypes.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
+#include "Settings/OutlierInputUserSettings.h"
 #include "LocalPlayerSettingsSubsystem.generated.h"
 
 class UInputAction;
+class AOutlierPlayerState;
+class UOutlierInputBindingTable;
+class UInputMappingContext;
+struct FOutlierInputBindingTableRow;
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnOutlierInputSettingsContextChanged, EOutlierPlayerRole);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnOutlierSprintInputModeChanged,
+	EOutlierPlayerRole, Role, EOutlierSprintInputMode, Mode);
 
 UENUM(BlueprintType)
 enum class EOutlierResolutionPreset : uint8
@@ -79,6 +89,27 @@ class OUTLIER_API ULocalPlayerSettingsSubsystem : public ULocalPlayerSubsystem
 
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
+	virtual void PlayerControllerChanged(APlayerController* NewPlayerController) override;
+
+	void RefreshInputSettingsContext();
+	EOutlierPlayerRole GetInputSettingsRole() const { return InputSettingsRole; }
+	uint32 GetInputSettingsContextRevision() const { return InputSettingsContextRevision; }
+	FOnOutlierInputSettingsContextChanged OnInputSettingsContextChanged;
+
+	EOutlierLinkedBindingResult ChangeLinkedInputBinding(const UOutlierInputBindingTable* Table,
+		const FOutlierInputBindingTableRow& Row, FKey NewKey, FString& OutError);
+	FString GetLinkedInputBindingError(const FOutlierInputBindingTableRow& Row) const;
+	FSimpleMulticastDelegate OnLinkedInputBindingsChanged;
+
+	UFUNCTION(BlueprintPure, Category = "Settings|Input")
+	EOutlierSprintInputMode GetSprintInputMode(EOutlierPlayerRole Role) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Settings|Input")
+	bool SetSprintInputMode(EOutlierPlayerRole Role, EOutlierSprintInputMode Mode);
+
+	UPROPERTY(BlueprintAssignable, Category = "Settings|Input")
+	FOnOutlierSprintInputModeChanged OnSprintInputModeChanged;
 
 	UFUNCTION(BlueprintPure, Category = "Settings|Graphics")
 	EOutlierResolutionPreset GetResolutionPreset() const;
@@ -131,6 +162,35 @@ public:
 	FOnOutlierInputActionKeyChanged OnInputActionKeyChanged;
 
 private:
+	friend class FShooterSprintInputModeTest;
+	friend struct FInputSettingsPresentationTestAccess;
+	friend struct FLinkedInputBindingSettingsTestAccess;
+	void HandleInputSettingsRoleChanged(AOutlierPlayerState* PlayerState);
+	void UnbindInputSettingsPlayerState();
+	TWeakObjectPtr<AOutlierPlayerState> InputSettingsPlayerState;
+	TWeakObjectPtr<APlayerController> InputSettingsController;
+	EOutlierPlayerRole InputSettingsRole = static_cast<EOutlierPlayerRole>(0);
+	uint32 InputSettingsContextRevision = 0;
+
+	UFUNCTION()
+	void HandleInputUserSettingsInitialized(const UEnhancedInputUserSettings* Settings);
+	UFUNCTION()
+	void HandleInputKeyProfileChanged(const UEnhancedPlayerMappableKeyProfile* Profile);
+	UFUNCTION()
+	void HandleInputMappingContextRegistered(const UInputMappingContext* Context);
+	void SynchronizeLinkedInputBindings();
+	void UnbindInputUserSettings();
+	void NotifyLinkedInputBindingChanged(const FOutlierInputBindingTableRow& Row, FKey Key);
+	void ApplyLinkedInputBindings(bool bSave);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UOutlierInputBindingTable> InputBindingDefinitions;
+	TMap<FString, FString> LinkedInputBindingErrors;
+	bool bSynchronizingLinkedBindings = false;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UOutlierInputUserSettings> InputUserSettings;
+
 	void InitializeResolutionOptions();
 	void InitializeSoundVolumeOptions();
 	void SyncResolutionPresetFromGameUserSettings();

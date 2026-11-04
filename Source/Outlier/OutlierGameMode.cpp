@@ -249,7 +249,25 @@ bool AOutlierGameMode::BeginSettingsPause(AFirstPersonPlayerController* Controll
 {
 	UWorld* World = GetWorld();
 	if (!HasAuthority() || !Controller || !World || GameOverWorldPause.IsActive()
-		|| SettingsPauseOwner.IsValid() || World->IsPaused())
+		|| bArenaReloadInProgress || bCheckpointRestartInProgress
+		|| bListenHostReturnRequested || bArenaWorkerMatchCompleting)
+	{
+		return false;
+	}
+	// 이미 설정으로 정지한 페어는 자신의 대기창만 설정창으로 바꾼다.
+	// 상대 화면을 다시 Push하지 않아 상세 설정과 현재 선택을 그대로 유지한다.
+	if (SettingsPauseOwner.IsValid())
+	{
+		if ((Controller != SettingsPauseController.Get() && Controller != SettingsOtherController.Get())
+			|| SettingsMenuUsers.Contains(Controller))
+		{
+			return false;
+		}
+		SettingsMenuUsers.Add(Controller);
+		Controller->ShowInGameSettingFromServer(SettingsPauseLayerOwner.Get(), true);
+		return true;
+	}
+	if (World->IsPaused() || !IsValid(LayerOwner))
 	{
 		return false;
 	}
@@ -263,6 +281,12 @@ bool AOutlierGameMode::BeginSettingsPause(AFirstPersonPlayerController* Controll
 	SettingsPauseController = Controller;
 	SettingsOtherController = OtherController;
 	SettingsPauseLayerOwner = LayerOwner;
+	SettingsMenuUsers.Add(Controller);
+	Controller->ShowInGameSettingFromServer(LayerOwner, true);
+	if (OtherController && OtherController != Controller)
+	{
+		OtherController->ShowInGameSettingFromServer(LayerOwner, false);
+	}
 	return true;
 }
 
@@ -272,6 +296,17 @@ void AOutlierGameMode::EndSettingsPause(AFirstPersonPlayerController* Controller
 		|| !Controller || (Controller != SettingsPauseController.Get()
 			&& Controller != SettingsOtherController.Get()))
 	{
+		return;
+	}
+	if (SettingsMenuUsers.Remove(Controller) == 0)
+	{
+		return;
+	}
+	// 한 명이라도 설정 중이면 닫은 사람만 대기창으로 전환한다.
+	// 마지막 사용자가 닫을 때 양쪽 UI와 월드 정지를 함께 정리한다.
+	if (!SettingsMenuUsers.IsEmpty())
+	{
+		Controller->ShowInGameSettingFromServer(SettingsPauseLayerOwner.Get(), false);
 		return;
 	}
 	ClearSettingsWorldPause();
@@ -298,6 +333,7 @@ void AOutlierGameMode::ClearSettingsWorldPause()
 	SettingsPauseLayerOwner.Reset();
 	SettingsPauseController.Reset();
 	SettingsOtherController.Reset();
+	SettingsMenuUsers.Reset();
 	GameOverWorldPause.TryPause(GetWorld());
 }
 
@@ -2955,7 +2991,7 @@ void AOutlierGameMode::Logout(AController* Exiting)
 			{
 				if (Cast<AEnemyBase>(PartnerController->GetPawn()))
 				{
-					PartnerController->ReleaseEnemyPossession();
+					PartnerController->ReleaseEnemyPossessionForDisconnect();
 				}
 			}
 			if (AFirstPersonCharacter* Pawn = Cast<AFirstPersonCharacter>(ExitingPlayer->GetPawn()))
@@ -3009,7 +3045,7 @@ void AOutlierGameMode::Logout(AController* Exiting)
 			if (APartnerPlayerController* Partner = Cast<APartnerPlayerController>(ExitingPlayer);
 				Partner && Cast<AEnemyBase>(Pawn))
 			{
-				Partner->ReleaseEnemyPossession();
+				Partner->ReleaseEnemyPossessionForDisconnect();
 				Pawn = Partner->GetPawn();
 			}
 			if (AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(Pawn))
@@ -3220,7 +3256,7 @@ bool AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	{
 		if (Cast<AEnemyBase>(PartnerController->GetPawn()))
 		{
-			PartnerController->ReleaseEnemyPossession();
+			PartnerController->ReleaseEnemyPossessionForCleanup();
 		}
 	}
 	ResetRuntimeCombatStateForRespawn();
@@ -3429,7 +3465,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	{
 		if (Cast<AEnemyBase>(PartnerPC->GetPawn()))
 		{
-			PartnerPC->ReleaseEnemyPossession();
+			PartnerPC->ReleaseEnemyPossessionForCleanup();
 		}
 	}
 

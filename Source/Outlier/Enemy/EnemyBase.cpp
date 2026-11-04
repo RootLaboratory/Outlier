@@ -16,10 +16,12 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/EnemyTargetRules.h"
 #include "Enemy/Death/OutlierDeathDebrisActor.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "UObject/StrongObjectPtr.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/GameStateBase.h"
 #include "GameplayEffect.h"
 #include "Animation/AnimInstance.h"
 #include "Components/CapsuleComponent.h"
@@ -31,6 +33,7 @@
 #include "InputActionValue.h"
 #include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
+#include "NativeGameplayTags.h"
 #include "Perception/AIPerceptionSystem.h"
 #include "StateTree.h"
 #include "Components/StateTreeComponentSchema.h"
@@ -54,6 +57,7 @@
 
 namespace
 {
+	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_EnemyTrackingChanged, "Enemy.Event.Perception.TrackingChanged");
 	TAutoConsoleVariable<int32> CVarEnemyImpactReactionDiagnostics(
 		TEXT("outlier.Enemy.ImpactReactionDiagnostics"),
 		0,
@@ -290,6 +294,175 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, PoolLeaseSerial);
 	DOREPLIFETIME(AEnemyBase, PoolCombatPhaseIndex);
 	DOREPLIFETIME(AEnemyBase, PoolWaveIndex);
+	DOREPLIFETIME(AEnemyBase, HackEffectState);
+}
+
+float AEnemyBase::GetHackEffectRemainingTime() const
+{
+	const UWorld* World = GetWorld();
+	if (!HackEffectState.bActive || !World)
+	{
+		return 0.0f;
+	}
+
+	double ServerTime = World->GetTimeSeconds();
+	if (!HasAuthority())
+	{
+		const AGameStateBase* GameState = World->GetGameState();
+		if (!GameState)
+		{
+			// 서버 시계가 아직 없으면 60초에서 대기한다. 로컬 시계로 조기 만료시키지 않는다.
+			return GetHackEffectDuration();
+		}
+		ServerTime = GameState->GetServerWorldTimeSeconds();
+	}
+	return static_cast<float>(FMath::Clamp(HackEffectState.EndServerTime - ServerTime,
+		0.0, static_cast<double>(GetHackEffectDuration())));
+}
+
+FEnemyHackEffectTime AEnemyBase::GetHackEffectRemainingMinutesAndSeconds() const
+{
+	return FEnemyHackEffectTime::FromRemainingTime(GetHackEffectRemainingTime());
+}
+
+bool AEnemyBase::BeginHackEffect()
+{
+	if (!HasAuthority() || !GetWorld() || IsActorBeingDestroyed() || IsDead() || bDeathCleanupPerformed
+		|| HackEffectState.bActive || HackEffectState.EndServerTime > 0.0
+		|| (IsPoolManaged() && PoolState != EEnemyPoolState::CombatActive))
+	{
+		return false;
+	}
+
+	const FEnemyHackEffectState PreviousState = HackEffectState;
+	++HackEffectState.Revision;
+	HackEffectState.bActive = true;
+	HackEffectState.EndServerTime = GetWorld()->GetTimeSeconds() + GetHackEffectDuration();
+	GetWorldTimerManager().SetTimer(HackEffectExpiryTimer,
+		FTimerDelegate::CreateUObject(this, &ThisClass::HandleHackEffectExpired,
+			HackEffectState.Revision, PoolGameplayGeneration, PoolLeaseSerial),
+		GetHackEffectDuration(), false);
+	FlushNetDormancy();
+	ForceNetUpdate();
+	BroadcastHackEffectStateChange(PreviousState);
+	return true;
+}
+
+bool AEnemyBase::EndHackEffect(EEnemyHackEffectEndReason EndReason)
+{
+	if (!HasAuthority() || !HackEffectState.bActive)
+	{
+		return false;
+	}
+
+	// 먼저 종료를 확정한다. 아래 알림에서 사망/복귀가 재진입해도 다시 종료하지 않는다.
+	GetWorldTimerManager().ClearTimer(HackEffectExpiryTimer);
+	const FEnemyHackEffectState PreviousState = HackEffectState;
+	HackEffectState.bActive = false;
+	HackEffectState.EndReason = EndReason;
+	++HackEffectState.Revision;
+	FlushNetDormancy();
+	ForceNetUpdate();
+	MulticastHackEffectEnded(HackEffectState);
+	BroadcastHackEffectStateChange(PreviousState);
+	return true;
+}
+
+bool AEnemyBase::HasHackEffectEndedWithDeath() const
+{
+	return !HackEffectState.bActive && HackEffectState.EndServerTime > 0.0
+		&& (HackEffectState.EndReason == EEnemyHackEffectEndReason::Expired
+			|| HackEffectState.EndReason == EEnemyHackEffectEndReason::ManualRelease);
+}
+
+bool AEnemyBase::EndHackEffectAndDie(EEnemyHackEffectEndReason EndReason)
+{
+	if (EndReason != EEnemyHackEffectEndReason::Expired
+		&& EndReason != EEnemyHackEffectEndReason::ManualRelease)
+	{
+		return false;
+	}
+	// 종료 알림이 복귀/사망을 다시 호출해도 같은 효과를 두 번 처치하지 않는다.
+	// 사망은 기존 GAS 경로가 맡아 Room 집계와 터렛 수명주기를 그대로 거친다.
+	const uint32 EndedRevision = HackEffectState.Revision + 1;
+	if (!EndHackEffect(EndReason))
+	{
+		return false;
+	}
+	// 종료 구독자가 Actor를 풀에 반환/재대여한 경우 새 수명은 처치하지 않는다.
+	if (IsValid(this) && !IsActorBeingDestroyed() && HackEffectState.Revision == EndedRevision)
+	{
+		Die();
+	}
+	return true;
+}
+
+void AEnemyBase::HandleHackEffectExpired(uint32 ExpectedRevision, int32 GameplayGeneration, int32 LeaseSerial)
+{
+	if (!HasAuthority() || !HackEffectState.bActive || HackEffectState.Revision != ExpectedRevision
+		|| (IsPoolManaged() && !MatchesPoolLease(GameplayGeneration, LeaseSerial)))
+	{
+		return;
+	}
+
+	// TimerManager의 프레임 경계보다 저장된 서버 만료 시각을 우선한다.
+	const float RemainingTime = GetHackEffectRemainingTime();
+	if (RemainingTime > 0.0f)
+	{
+		GetWorldTimerManager().SetTimer(HackEffectExpiryTimer,
+			FTimerDelegate::CreateUObject(this, &ThisClass::HandleHackEffectExpired,
+				ExpectedRevision, GameplayGeneration, LeaseSerial), RemainingTime, false);
+		return;
+	}
+	EndHackEffectAndDie(EEnemyHackEffectEndReason::Expired);
+}
+
+void AEnemyBase::OnRep_HackEffectState(const FEnemyHackEffectState& PreviousState)
+{
+	// 종료 RPC와 상태 복제는 같은 변경을 전달한다. 이미 처리한 상태로 되돌아가지 않는다.
+	if (HackEffectState.Revision <= PreviousState.Revision)
+	{
+		HackEffectState = PreviousState;
+		return;
+	}
+	BroadcastHackEffectStateChange(PreviousState);
+}
+
+void AEnemyBase::MulticastHackEffectEnded_Implementation(const FEnemyHackEffectState& EndedState)
+{
+	if (HasAuthority() || EndedState.Revision <= HackEffectState.Revision)
+	{
+		return;
+	}
+	const FEnemyHackEffectState PreviousState = HackEffectState;
+	HackEffectState = EndedState;
+	BroadcastHackEffectStateChange(PreviousState);
+}
+
+void AEnemyBase::BroadcastHackEffectStateChange(const FEnemyHackEffectState& PreviousState)
+{
+	if (HackEffectState.bActive)
+	{
+		OnHackEffectStarted.Broadcast(this, GetHackEffectDuration());
+	}
+	else if (PreviousState.bActive || HackEffectState.EndServerTime > 0.0)
+	{
+		OnHackEffectEnded.Broadcast(this, HackEffectState.EndReason);
+	}
+}
+
+void AEnemyBase::ResetHackEffectForPool()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	EndHackEffect(EEnemyHackEffectEndReason::Cleanup);
+	GetWorldTimerManager().ClearTimer(HackEffectExpiryTimer);
+	// Revision은 초기화하지 않아 이전 대여의 콜백과 종료 알림을 새 대여에서 거부한다.
+	const uint32 NextRevision = HackEffectState.Revision + 1;
+	HackEffectState = FEnemyHackEffectState();
+	HackEffectState.Revision = NextRevision;
 }
 
 void AEnemyBase::BeginPlay()
@@ -433,6 +606,8 @@ bool AEnemyBase::BeginPoolLease(
 
 void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
 {
+	ResetTargetAttackContinuity();
+	ClearTargetTracking();
 	PossessionDamageMultiplier = 1.0f;
 	ReleasePatrolDestination();
 	GetWorldTimerManager().ClearAllTimersForObject(this);
@@ -558,6 +733,8 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 		return;
 	}
 
+	ResetHackEffectForPool();
+
 	// 생존 상태의 전투 이탈도 원래 위치에 파편을 남긴다. 사망 경로의 요청은 중복하지 않는다.
 	if (PoolState == EEnemyPoolState::CombatActive && !bDeathCleanupPerformed)
 	{
@@ -604,6 +781,7 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 
 void AEnemyBase::InvalidatePoolLease()
 {
+	ResetHackEffectForPool();
 	PoolGameplayGeneration = 0;
 	PoolLeaseSerial = 0;
 	OwningPoolSubsystem.Reset();
@@ -962,6 +1140,9 @@ void AEnemyBase::ReturnToOwningPool()
 
 void AEnemyBase::ResetPoolRuntimeState()
 {
+	ResetTargetAttackContinuity();
+	ClearTargetTracking();
+	ResetHackEffectForPool();
 	EndSearchEpisode();
 	SharedTargetRevision = 0;
 	ConsumedSharedTargetRevision = 0;
@@ -1009,6 +1190,9 @@ void AEnemyBase::PrepareForPoolIdle()
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ResetTargetAttackContinuity();
+	ClearTargetTracking();
+	EndHackEffect(EEnemyHackEffectEndReason::Cleanup);
 	OutlierAudioFeedback::StopLoops(this);
 	ReleasePatrolDestination();
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()
@@ -1081,6 +1265,7 @@ void AEnemyBase::PossessedBy(AController* NewController)
 
 void AEnemyBase::UnPossessed()
 {
+	ResetTargetAttackContinuity();
 	StopCurrentAttack();
 	Super::UnPossessed();
 	RefreshAbilitySystemActorInfo();
@@ -1267,7 +1452,7 @@ void AEnemyBase::RequestCombatDecisionRefresh()
 	if (!HasAuthority()
 		|| CombatState != EEnemyCombatState::Combat
 		|| IsAIControlSuppressed()
-		|| bCombatDecisionRefreshPending)
+		|| bCombatDecisionRefreshPending || HasTrackableTarget())
 	{
 		return;
 	}
@@ -1284,7 +1469,7 @@ void AEnemyBase::RequestCombatDecisionRefresh()
 
 				if (CombatState != EEnemyCombatState::Combat
 					|| IsAIControlSuppressed()
-					|| bPlayerCurrentlyVisible)
+					|| bPlayerCurrentlyVisible || HasTrackableTarget())
 				{
 					return;
 				}
@@ -1352,7 +1537,13 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	bPossessedAttackHeld = false;
 	EndPossessedImpactInputLock();
 	bIsPossessed = bNewIsPossessed;
-	if (bIsPossessed) ReleasePatrolDestination();
+	// 서버 로컬 변경에는 PostNetReceive가 없으므로 같은 표현 경로를 직접 갱신한다.
+	// 해킹 종료 처치가 시작된 경우에는 드론 쪽에서 소등하여 원래 상태 색이 잠깐 켜지는 것을 막는다.
+	RefreshCombatStatePresentation();
+	if (bIsPossessed)
+	{
+		ReleasePatrolDestination();
+	}
 	if (bIsPossessed)
 	{
 		CancelCommittedAction();
@@ -1619,49 +1810,168 @@ void AEnemyBase::SetPatternStartPlayerLocation(const FVector& NewLocation)
 
 void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 {
-	if (!HasAuthority() || bPlayerCurrentlyVisible == bNewVisible)
-	{
-		return;
-	}
-
+	if (!HasAuthority() || bPlayerCurrentlyVisible == bNewVisible) return;
 	bPlayerCurrentlyVisible = bNewVisible;
 	if (bNewVisible && DetectAudioContext.IsValid())
 		OutlierAudioFeedback::World(this, *DetectAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
+	RefreshTargetTracking();
+}
 
-	if (bNewVisible)
+AActor* AEnemyBase::GetTrackedTarget() const
+{
+	if (!HasAuthority() || !CanUseEnemyPerception() || IsDead() || CombatState == EEnemyCombatState::Stun) return nullptr;
+	const AEnemyAIController* TargetController = TrackingController.Get();
+	AActor* Target = TrackedTarget.Get();
+	if (!TargetController || GetController() != TargetController || TargetController->GetPawn() != this
+		|| !TargetController->IsValidTrackingTarget(Target)) return nullptr;
+	if (bPlayerCurrentlyVisible && TargetController->IsTargetDirectlyVisible(Target)) return Target;
+	if (CombatState != EEnemyCombatState::Combat) return nullptr;
+	if (bTrackingFromRoom || (TrackingRooms.IsValid() && CanUseRoomTargetSharing()
+		&& TrackingRooms->IsRoomInCombat(GetDefaultRoomTag())))
 	{
-		StopCurrentAttack();
+		FEnemyRoomTargetObservationSnapshot Observation;
+		return TrackingRooms.IsValid() && (!bTrackingFromRoom || TrackingRoomTag == GetDefaultRoomTag())
+			&& TrackingRooms->TryGetRoomTargetObservation(const_cast<AEnemyBase*>(this), Target, Observation)
+			? Target : nullptr;
+	}
+	return GetWorld() && GetWorld()->GetTimeSeconds() < TargetTrackingExpiresAt ? Target : nullptr;
+}
+
+void AEnemyBase::ObserveTrackedTarget(AActor* Target)
+{
+	if (!HasAuthority() || !IsValid(Target)) return;
+	AEnemyAIController* TargetController = Cast<AEnemyAIController>(GetController());
+	if (!TargetController || !CanUseEnemyPerception() || !TargetController->IsValidTrackingTarget(Target)) return;
+	if (PreparedAttackTarget.IsValid() && (PreparedAttackTarget.Get() != Target
+		|| PreparedAttackWeapon.Get() != CurrentWeapon || PreparedAttackController.Get() != TargetController))
+		ResetTargetAttackContinuity();
+	if (TrackedTarget.Get() != Target) ClearTargetTracking();
+	TrackedTarget = Target;
+	TrackingController = TargetController;
+	bTrackingExpiredForSearch = false;
+	UpdateLastKnownPlayerLocation(Target->GetActorLocation());
+}
+
+void AEnemyBase::RefreshTargetTracking()
+{
+	if (!HasAuthority()) return;
+	if (!CanUseEnemyPerception() || IsDead() || CombatState == EEnemyCombatState::Stun)
+	{
+		// 추적 중단과 실제 Sight 상실은 다르다. 기절 중인 정상 감지 플래그를 지우지 않는다.
+		ResetTargetAttackContinuity();
+		ClearTargetTracking();
+		return;
+	}
+	AEnemyAIController* TargetController = Cast<AEnemyAIController>(GetController());
+	if (!TargetController || TargetController->GetPawn() != this) { ClearTargetTracking(); return; }
+	if (!TrackingRooms.IsValid()) TrackingRooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+	UEnemyRoomSubsystem* Rooms = TrackingRooms.Get();
+	const bool bCanShare = CombatState == EEnemyCombatState::Combat && CanUseRoomTargetSharing()
+		&& Rooms && Rooms->IsRoomInCombat(GetDefaultRoomTag());
+	AActor* PreviousTarget = TrackedTarget.Get();
+	const bool bWasAnnounced = bTrackingAnnounced;
+	const bool bWasDirect = bTrackingWasDirectlyVisible;
+	if (bWasDirect && !bTrackingFromRoom && !bCanShare && CombatState == EEnemyCombatState::Combat
+		&& !(bPlayerCurrentlyVisible && TargetController->IsTargetDirectlyVisible(PreviousTarget)))
+	{
+		const float Grace = FMath::IsFinite(RuntimeStat.TargetTrackingGraceSeconds)
+			? FMath::Max(0.0f, RuntimeStat.TargetTrackingGraceSeconds) : 0.0f;
+		// 다른 플레이어가 계속 보여도 현재 대상의 시야 상실은 별도로 유예를 시작한다.
+		// Room에 보고된 대상은 아래의 실제 관측 시각을 사용해 이 로컬 기한을 대체한다.
+		TargetTrackingExpiresAt = GetWorld()->GetTimeSeconds() + Grace;
+	}
+	FEnemyRoomTargetObservationSnapshot Observation;
+	bool bHasRoomObservation = bCanShare
+		&& Rooms->TryGetRoomTargetObservation(this, PreviousTarget, Observation)
+		&& TargetController->IsValidTrackingTarget(PreviousTarget);
+	AActor* Target = GetTrackedTarget();
+	if (!Target && bHasRoomObservation) Target = PreviousTarget;
+	if (!Target)
+	{
+		// 현재 대상이 무효일 때만 새 후보를 비교한다. 직접 시야의 다른 대상이 기존 추적을 빼앗지 않는다.
+		AActor* Visible = bPlayerCurrentlyVisible ? TargetController->GetCachedVisibleTarget() : nullptr;
+		Target = TargetController->IsValidTrackingTarget(Visible) ? Visible : nullptr;
+		bHasRoomObservation = bCanShare && Rooms->TrySelectRoomTarget(this, Observation);
+		if (bHasRoomObservation)
+		{
+			AActor* Shared = Observation.TargetActor.Get();
+			const auto SharedPriority = OutlierEnemyTargetRules::GetPriority(Shared);
+			const auto VisiblePriority = OutlierEnemyTargetRules::GetPriority(Target);
+			if (!Target || SharedPriority < VisiblePriority
+				|| (SharedPriority == VisiblePriority && FVector::DistSquared(GetActorLocation(), Shared->GetActorLocation())
+					< FVector::DistSquared(GetActorLocation(), Target->GetActorLocation()))) Target = Shared;
+			else bHasRoomObservation = Rooms->TryGetRoomTargetObservation(this, Target, Observation);
+		}
+	}
+	if (!Target)
+	{
+		if (bPlayerCurrentlyVisible && !TargetController->IsValidTrackingTarget(TargetController->GetCachedVisibleTarget()))
+			bPlayerCurrentlyVisible = false;
+		if (TrackingController.IsValid()) FinishTargetTracking();
+		return;
+	}
+	const bool bDirect = bPlayerCurrentlyVisible && TargetController->IsTargetDirectlyVisible(Target);
+	ObserveTrackedTarget(Target);
+	bTrackingFromRoom = bHasRoomObservation;
+	TrackingRoomTag = bHasRoomObservation ? GetDefaultRoomTag() : FGameplayTag();
+	const double Deadline = bHasRoomObservation ? Observation.TrackingExpiresAt : TargetTrackingExpiresAt;
+	const bool bNeedsExpiryTimer = !bDirect && !(bHasRoomObservation && Observation.bDirectlyObserved);
+	if (!bNeedsExpiryTimer) GetWorldTimerManager().ClearTimer(TargetTrackingTimer);
+	else if (Deadline != TargetTrackingExpiresAt || !GetWorldTimerManager().TimerExists(TargetTrackingTimer))
+	{
+		// 만료 콜백도 먼저 대체 관측/대상을 확인한다. 공유를 받았다는 이유로 Now + 3초를 만들지 않는다.
+		GetWorldTimerManager().SetTimer(TargetTrackingTimer, this, &AEnemyBase::RefreshTargetTracking,
+			static_cast<float>(FMath::Max(Deadline - GetWorld()->GetTimeSeconds(), 0.001)), false);
+	}
+	TargetTrackingExpiresAt = Deadline;
+	bTrackingWasDirectlyVisible = bDirect;
+	const bool bNewTarget = !bWasAnnounced || PreviousTarget != Target;
+	if (bNewTarget)
+	{
+		const bool bSamePreparedTarget = PreparedAttackTarget.Get() == Target
+			&& PreparedAttackWeapon.Get() == CurrentWeapon && PreparedAttackController.Get() == TargetController;
+		bResumeTargetAttackPreparation = bSamePreparedTarget;
+		if (!bSamePreparedTarget) ResetTargetAttackContinuity();
 		ConsumedSharedTargetRevision = SharedTargetRevision;
 		EndSearchEpisode();
 	}
+	bTrackingAnnounced = true;
+	if (bNewTarget || bWasDirect != bDirect)
+		SendEnemyStateTreeEvent(bNewTarget
+			? FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Perception.TargetAcquired")) : TAG_EnemyTrackingChanged);
+}
 
-	const FGameplayTag PerceptionEvent = FGameplayTag::RequestGameplayTag(
-		bNewVisible
-			? TEXT("Enemy.Event.Perception.TargetAcquired")
-			: TEXT("Enemy.Event.Perception.TargetLost"));
+void AEnemyBase::ClearTargetTracking()
+{
+	if (!HasAuthority()) return;
+	GetWorldTimerManager().ClearTimer(TargetTrackingTimer);
+	TrackedTarget.Reset();
+	TrackingController.Reset();
+	TrackingRoomTag = FGameplayTag();
+	TargetTrackingExpiresAt = 0.0;
+	bTrackingFromRoom = false;
+	bTrackingAnnounced = false;
+	bTrackingWasDirectlyVisible = false;
+	bTrackingExpiredForSearch = false;
+}
 
-	if (bNewVisible)
+void AEnemyBase::FinishTargetTracking()
+{
+	if (!HasAuthority() || GetTrackedTarget()) return;
+	if (bTargetAttackActive) PauseTargetAttack();
+	const AEnemyAIController* TargetController = TrackingController.Get();
+	// 만료 뒤 실제 좌표를 다시 읽지 않는다. 마지막 유효 갱신 위치가 수색 중심으로 남는다.
+	// 정상 만료는 동일 대상의 준비 기록을 보존하고 사망/은신/팀 변경은 폐기한다.
+	if (!TargetController || TargetController != GetController() || !TargetController->IsValidTrackingTarget(TrackedTarget.Get()))
+		ResetTargetAttackContinuity();
+	ClearTargetTracking();
+	if (CombatState != EEnemyCombatState::Combat || !CanUseEnemyPerception() || IsDead()) return;
+	bTrackingExpiredForSearch = true;
+	GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]()
 	{
-		SendEnemyStateTreeEvent(PerceptionEvent);
-	}
-	else
-	{
-		// 병렬 FireCycle이 이전 공격을 유지하지 않도록 상실 시점에서 먼저 중단한다.
-		StopCurrentAttack();
-
-		// StateTree Global Task가 갱신된 가시성으로 전이 조건을 평가하도록 상실 이벤트를 다음 틱에 보낸다.
-		// 다음 틱 전에 재감지되었다면 오래된 TargetLost 이벤트는 폐기한다.
-		GetWorldTimerManager().SetTimerForNextTick(
-			FTimerDelegate::CreateWeakLambda(
-				this,
-				[this, PerceptionEvent]()
-				{
-					if (!bPlayerCurrentlyVisible)
-					{
-						SendEnemyStateTreeEvent(PerceptionEvent);
-					}
-				}));
-	}
+		if (!HasTrackableTarget() && bTrackingExpiredForSearch)
+			SendEnemyStateTreeEvent(FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Perception.TargetLost")));
+	}));
 }
 
 void AEnemyBase::ApplySharedTargetContact(
@@ -1685,10 +1995,11 @@ void AEnemyBase::ApplySharedTargetContact(
 	if (Revision != 0 && Revision < SharedTargetRevision) return;
 	if (bContactChanged) SharedTargetRevision = Revision != 0 ? Revision : SharedTargetRevision + 1;
 	// 직접 시야가 더 정확하다. 이때의 공유 정보는 이미 확인한 것으로 처리한다.
-	if (bPlayerCurrentlyVisible) ConsumedSharedTargetRevision = SharedTargetRevision;
+	if (bPlayerCurrentlyVisible || HasTrackableTarget()) ConsumedSharedTargetRevision = SharedTargetRevision;
 	bHasSharedTargetContact = true;
 	SharedTargetLocation = TargetLocation;
-	if (!bPlayerCurrentlyVisible) UpdateLastKnownPlayerLocation(TargetLocation);
+	if (!bPlayerCurrentlyVisible && !HasTrackableTarget() && !bTrackingAnnounced && !bTrackingExpiredForSearch)
+		UpdateLastKnownPlayerLocation(TargetLocation);
 	if (bContactChanged) ReleaseSearchDestinations();
 
 	if (bContactChanged)
@@ -1697,11 +2008,14 @@ void AEnemyBase::ApplySharedTargetContact(
 			TEXT("Enemy.Event.Combat.TargetShared"));
 		if (bDeferStateTreeEvent)
 		{
-			SendEnemyStateTreeEventNextTick(TargetSharedTag);
+			GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this, TargetSharedTag]()
+			{
+				SendEnemyStateTreeEvent(HasTrackableTarget() ? TAG_EnemyTrackingChanged : TargetSharedTag);
+			}));
 		}
 		else
 		{
-			SendEnemyStateTreeEvent(TargetSharedTag);
+			SendEnemyStateTreeEvent(HasTrackableTarget() ? TAG_EnemyTrackingChanged : TargetSharedTag);
 		}
 	}
 }
@@ -1714,7 +2028,8 @@ void AEnemyBase::ClearSharedTargetContact()
 	}
 
 	// 직접 시야가 없는 개체만 방의 마지막 공유 좌표를 수색 중심으로 보존한다.
-	if (!bPlayerCurrentlyVisible) UpdateLastKnownPlayerLocation(SharedTargetLocation);
+	if (!bPlayerCurrentlyVisible && !HasTrackableTarget() && !bTrackingAnnounced && !bTrackingExpiredForSearch)
+		UpdateLastKnownPlayerLocation(SharedTargetLocation);
 	bHasSharedTargetContact = false;
 
 	const FGameplayTag SharedTargetLostEvent = FGameplayTag::RequestGameplayTag(
@@ -1734,7 +2049,7 @@ void AEnemyBase::ClearSharedTargetContact()
 						{
 							if (!bHasSharedTargetContact)
 							{
-								SendEnemyStateTreeEvent(SharedTargetLostEvent);
+								SendEnemyStateTreeEvent(HasTrackableTarget() ? TAG_EnemyTrackingChanged : SharedTargetLostEvent);
 							}
 						}));
 			}));
@@ -1961,6 +2276,7 @@ void AEnemyBase::EnterAlertFromPerception(const FVector& PlayerLocation)
 
 void AEnemyBase::EnterStun()
 {
+	ResetTargetAttackContinuity();
 	if (!HasAuthority())
 	{
 		return;
@@ -1972,6 +2288,7 @@ void AEnemyBase::EnterStun()
 	}
 
 	InterruptDamagePresentation(0.05f);
+	ClearTargetTracking();
 	PreStunCombatState = CombatState;
 	ReleasePatrolDestination();
 	CombatState = EEnemyCombatState::Stun;
@@ -3366,13 +3683,88 @@ void AEnemyBase::EquipDefaultWeapon()
 
 bool AEnemyBase::StartAttackTarget(AActor* TargetActor)
 {
-	if (!IsValid(TargetActor))
+	if (!CanAttackTrackedTarget(TargetActor)) return false;
+	if (bTargetAttackActive && ActiveAttackTarget.Get() == TargetActor && CurrentWeapon->IsAttacking()) return true;
+	// 첫 발도 자동 연사와 같은 대상 검증을 거치도록 먼저 공격 소유권을 설정한다.
+	ActiveAttackTarget = TargetActor;
+	bTargetAttackActive = true;
+	if (!StartAttackLocation(GetCombatAimPoint(TargetActor)))
 	{
+		ActiveAttackTarget.Reset();
+		bTargetAttackActive = false;
 		return false;
 	}
+	RememberTargetAttackPreparation();
+	bResumeTargetAttackPreparation = false;
+	return true;
+}
 
-	const bool bStarted = StartAttackLocation(GetCombatAimPoint(TargetActor));
-	return bStarted;
+bool AEnemyBase::CanAttackTrackedTarget(const AActor* TargetActor) const
+{
+	return HasAuthority() && CombatState == EEnemyCombatState::Combat
+		&& !IsAIControlSuppressed() && !IsDead() && TargetActor
+		&& TargetActor == GetTrackedTarget() && IsValid(CurrentWeapon)
+		&& CurrentWeapon->HasClearTargetAttackPath(TargetActor, GetCombatAimPoint(TargetActor));
+}
+
+bool AEnemyBase::RefreshTargetAttackForShot()
+{
+	AActor* Target = ActiveAttackTarget.Get();
+	return bTargetAttackActive && CanAttackTrackedTarget(Target)
+		&& UpdateAttackLocation(GetCombatAimPoint(Target));
+}
+
+void AEnemyBase::PauseTargetAttack()
+{
+	if (!HasAuthority()) return;
+	if (IsValid(CurrentWeapon)) CurrentWeapon->PauseTargetAttack();
+	ActiveAttackTarget.Reset();
+	bTargetAttackActive = false;
+	if (AEnemyAIController* EnemyController = Cast<AEnemyAIController>(GetController()))
+		EnemyController->SetAttackAimActive(false);
+	if (AttackPhase == EEnemyAttackPhase::Firing) SetAttackPhase(EEnemyAttackPhase::Idle);
+}
+
+void AEnemyBase::RememberTargetAttackPreparation()
+{
+	if (!HasAuthority() || !GetTrackedTarget() || bIsPossessed) return;
+	PreparedAttackTarget = GetTrackedTarget();
+	PreparedAttackWeapon = CurrentWeapon;
+	PreparedAttackController = Cast<AEnemyAIController>(GetController());
+}
+
+bool AEnemyBase::ConsumeTargetAttackResume()
+{
+	const bool bResume = bResumeTargetAttackPreparation && GetTrackedTarget()
+		&& PreparedAttackTarget.Get() == GetTrackedTarget()
+		&& PreparedAttackWeapon.Get() == CurrentWeapon
+		&& PreparedAttackController.Get() == GetController();
+	bResumeTargetAttackPreparation = false;
+	return bResume;
+}
+
+void AEnemyBase::RememberTargetAttackRecovery(float Duration)
+{
+	if (HasAuthority() && GetWorld())
+		TargetAttackRecoveryEndsAt = GetWorld()->GetTimeSeconds() + FMath::Max(0.0f, Duration);
+}
+
+float AEnemyBase::GetTargetAttackRecoveryRemaining() const
+{
+	return GetWorld() ? FMath::Max(0.0, TargetAttackRecoveryEndsAt - GetWorld()->GetTimeSeconds()) : 0.0f;
+}
+
+void AEnemyBase::ResetTargetAttackContinuity()
+{
+	if (!HasAuthority()) return;
+	PreparedAttackTarget.Reset();
+	PreparedAttackWeapon.Reset();
+	PreparedAttackController.Reset();
+	ActiveAttackTarget.Reset();
+	bTargetAttackActive = false;
+	bResumeTargetAttackPreparation = false;
+	TargetAttackRecoveryEndsAt = 0.0;
+	StopCurrentAttack();
 }
 
 bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
@@ -3484,6 +3876,14 @@ bool AEnemyBase::UpdateAttackLocation(const FVector& TargetLocation)
 
 void AEnemyBase::StopCurrentWeaponAttack()
 {
+	if (HasAuthority() && !bIsPossessed && PreparedAttackTarget.IsValid()
+		&& PreparedAttackWeapon.Get() == CurrentWeapon && PreparedAttackController.Get() == GetController())
+	{
+		PauseTargetAttack();
+		return;
+	}
+	ActiveAttackTarget.Reset();
+	bTargetAttackActive = false;
 	// Task 종료뿐 아니라 Stun/사망/빙의 등의 공통 중단 경로에서도 해제한다.
 	if (HasAuthority())
 	{
@@ -3550,7 +3950,7 @@ void AEnemyBase::ReleaseSearchDestinations()
 bool AEnemyBase::BeginSearchEpisode()
 {
 	if (!HasAuthority() || IsDead() || !CanUseEnemyPerception()
-		|| CombatState != EEnemyCombatState::Combat || bPlayerCurrentlyVisible
+		|| CombatState != EEnemyCombatState::Combat || bPlayerCurrentlyVisible || HasTrackableTarget()
 		|| (!bHasLastKnownPlayerLocation && !HasFreshSharedTargetLocation())) return false;
 	// 이전 회차의 예약부터 해제하고, 이번 회차가 사용할 중심과 정보 버전을 고정한다.
 	// 이후 LKP가 갱신되어도 진행 중인 수색 중심은 바꾸지 않는다.
@@ -3558,7 +3958,8 @@ bool AEnemyBase::BeginSearchEpisode()
 	SearchEpisode.bActive = true;
 	SearchEpisode.Serial = ++NextSearchEpisodeSerial;
 	SearchEpisode.SharedRevision = SharedTargetRevision;
-	SearchEpisode.Center = HasFreshSharedTargetLocation() ? SharedTargetLocation : LastKnownPlayerLocation;
+	SearchEpisode.Center = !bTrackingExpiredForSearch && HasFreshSharedTargetLocation() ? SharedTargetLocation : LastKnownPlayerLocation;
+	bTrackingExpiredForSearch = false;
 	StopCurrentAttack();
 	if (UCharacterMovementComponent* Movement = GetCharacterMovement()) Movement->StopMovementImmediately();
 	return true;
@@ -3793,6 +4194,8 @@ void AEnemyBase::SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot)
 
 void AEnemyBase::PerformDeathCleanup()
 {
+	ResetTargetAttackContinuity();
+	ClearTargetTracking();
 	PossessionDamageMultiplier = 1.0f;
 	ReleasePatrolDestination();
 	if (bDeathCleanupPerformed)
@@ -3800,6 +4203,7 @@ void AEnemyBase::PerformDeathCleanup()
 		return;
 	}
 	bDeathCleanupPerformed = true;
+	EndHackEffect(EEnemyHackEffectEndReason::TargetDied);
 	RefreshCombatStatePresentation();
 	InterruptDamagePresentation(0.0f);
 

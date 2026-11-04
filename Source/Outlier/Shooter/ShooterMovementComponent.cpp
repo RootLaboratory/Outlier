@@ -3,6 +3,7 @@
 #include "Shooter/ShooterMovementComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterCharacterMovementComponent.h"
+#include "Shooter/ShooterCombatComponent.h"
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -45,7 +46,9 @@ void UShooterMovementComponent::HandleSprintPressed()
 		return;
 	}
 
-	const bool bSprint = !bWantsToSprint;
+	bHoldSprintInput = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement())
+		->GetSprintInputMode() == EOutlierSprintInputMode::Hold;
+	const bool bSprint = bHoldSprintInput || !bWantsToSprint;
 	if (bSprint && (ShooterCharacter->WantsToAim() || ShooterCharacter->IsAiming()))
 	{
 		ShooterCharacter->StopAimInternal();
@@ -62,7 +65,7 @@ void UShooterMovementComponent::SetSprintIntent(bool bSprint)
 	bWantsToSprint = bSprint && !ShooterCharacter->IsDead() && !ShooterCharacter->IsSuitTransitionBlocked();
 	if (bWantsToSprint && CanSprint())
 	{
-		ShooterCharacter->TryStopAttack();
+		if (!bHoldSprintInput) ShooterCharacter->TryStopAttack();
 		ShooterCharacter->StopLean();
 	}
 	RefreshMovementState();
@@ -70,7 +73,11 @@ void UShooterMovementComponent::SetSprintIntent(bool bSprint)
 
 void UShooterMovementComponent::HandleSprintReleased()
 {
-	// Sprint는 Toggle이다. 명시적 취소는 StopSprintInternal로 구분해 서버/재생에서도 키 해제와 섞지 않는다.
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter) return;
+	if (CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement())
+		->QueueMovementInput(EShooterMovementInput::SprintReleased)) return;
+	if (bHoldSprintInput) SetSprintIntent(false);
 }
 
 void UShooterMovementComponent::HandleCrouchPressed()
@@ -364,7 +371,7 @@ void UShooterMovementComponent::RefreshMovementState()
 	if (bIsSprinting && !bWasSprinting
 		&& (ShooterCharacter->HasAuthority() || ShooterCharacter->IsLocallyControlled()))
 	{
-		ShooterCharacter->TryStopAttack();
+		if (!bHoldSprintInput) ShooterCharacter->TryStopAttack();
 		ShooterCharacter->StopLean();
 	}
 
@@ -447,6 +454,15 @@ void UShooterMovementComponent::SuspendSprintInternal()
 	}
 }
 
+void UShooterMovementComponent::SuspendSprintForCombat()
+{
+	// Hold의 자동 복귀는 새 Press가 아니다. 공격/조준을 취소하지 않고 제한 해제만 기다린다.
+	const auto* Shooter = GetShooterCharacter();
+	const auto* Input = Shooter ? Cast<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement()) : nullptr;
+	if (Input ? Input->IsHoldSprintInput() : bHoldSprintInput) SuspendSprintInternal();
+	else StopSprintInternal();
+}
+
 void UShooterMovementComponent::ClearInputIntent()
 {
 	bWantsToSprint = false;
@@ -487,6 +503,8 @@ bool UShooterMovementComponent::CanSprint() const
 		&& !ShooterCharacter->IsDead() && !ShooterCharacter->GetCharacterMovement()->IsCrouching()
 		&& !bWantsToCrouch && !bIsSliding
 		&& !ShooterCharacter->WantsToAim()
+		&& (!bHoldSprintInput || (!ShooterCharacter->IsAiming()
+			&& (!ShooterCharacter->CombatComponent || !ShooterCharacter->CombatComponent->IsSprintBlockedByAttack())))
 		&& !ShooterCharacter->IsReloading()
 		&& (!ShooterCharacter->IsActionLocked() || ShooterCharacter->GetActionLock() == EShooterActionLock::Equip);
 }

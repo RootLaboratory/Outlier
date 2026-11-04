@@ -13,6 +13,7 @@
 #include "Net/UnrealNetwork.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Outlier.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Save/OutlierSaveSubSystem.h"
 
 #if WITH_EDITOR
@@ -55,6 +56,22 @@ AExplosiveProp::AExplosiveProp()
 		TEXT("AbilitySystemComponent"));
 	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Minimal);
 	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
+
+	// 원본 경고음의 펄스 시각으로 기본 커브를 만든다. BP에서는 같은 초 단위 축의 커브로 교체할 수 있다.
+	FRichCurve* Curve = ChargeEmissiveCurve.GetRichCurve();
+	Curve->AddKey(0.0f, 0.0f);
+	const float PulseTimes[] = {0.03f, 0.67f, 1.17f, 1.59f, 2.01f, 2.34f, 2.65f,
+		2.92f, 3.13f, 3.34f, 3.54f, 3.72f, 3.86f};
+	for (const float Time : PulseTimes)
+	{
+		const float Progress = Time / 4.029208f;
+		// 매 경고음 사이에는 완전히 꺼져야 다음 펄스의 대비가 유지된다.
+		Curve->AddKey(FMath::Max(0.0f, Time - 0.015f), 0.0f);
+		Curve->AddKey(Time, FMath::Lerp(0.35f, 1.0f, Progress));
+		Curve->AddKey(Time + 0.08f, 0.0f);
+	}
+	Curve->AddKey(3.97f, 1.0f);
+	Curve->AddKey(4.029208f, 1.0f);
 }
 
 UAbilitySystemComponent* AExplosiveProp::GetAbilitySystemComponent() const
@@ -119,6 +136,7 @@ void AExplosiveProp::BeginPlay()
 
 void AExplosiveProp::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ResetChargeEmissive();
 	if (bProgressIdRegistered)
 	{
 		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
@@ -193,6 +211,7 @@ float AExplosiveProp::GetCurrentHP() const
 
 void AExplosiveProp::SetupMountedPresentation()
 {
+	if (!CachedOwningDrone.IsValid()) CachedOwningDrone = Cast<ASelfDestructDrone>(GetOwner());
 	ASelfDestructDrone* OwningDrone = CachedOwningDrone.Get();
 	if (!OwningDrone || MountedSocketName.IsNone())
 	{
@@ -208,6 +227,7 @@ void AExplosiveProp::SetupMountedPresentation()
 			MountedSocketName);
 		ExplosiveMesh->SetOwnerNoSee(true);
 	}
+	InitializeChargeEmissive();
 
 	USkeletalMeshComponent* FirstPersonMesh = OwningDrone->GetFirstPersonMesh();
 	if (!FirstPersonMesh
@@ -238,6 +258,63 @@ void AExplosiveProp::SetupMountedPresentation()
 		FAttachmentTransformRules::SnapToTargetNotIncludingScale,
 		MountedSocketName);
 	FirstPersonExplosiveMesh->SetRelativeTransform(ExplosiveMesh->GetRelativeTransform());
+	FirstPersonExplosiveMesh->SetVisibility(!bExploded, true);
+	// 부착과 복제 상태 도착 순서가 달라도 현재 사운드 위치의 밝기로 합류한다.
+	OwningDrone->RefreshChargePresentation();
+}
+
+void AExplosiveProp::OnRep_Owner()
+{
+	Super::OnRep_Owner();
+	CachedOwningDrone = Cast<ASelfDestructDrone>(GetOwner());
+	if (CachedOwningDrone.IsValid()) SetupMountedPresentation();
+}
+
+void AExplosiveProp::OnRep_MountedSocketName()
+{
+	SetupMountedPresentation();
+}
+
+void AExplosiveProp::InitializeChargeEmissive()
+{
+	if (bChargeMaterialInitialized || GetNetMode() == NM_DedicatedServer) return;
+	bChargeMaterialInitialized = true;
+	UMaterialInterface* Material = ExplosiveMesh && EmissiveMaterialIndex >= 0
+		&& EmissiveMaterialIndex < ExplosiveMesh->GetNumMaterials()
+		? ExplosiveMesh->GetMaterial(EmissiveMaterialIndex) : nullptr;
+	const FRichCurve* Curve = ChargeEmissiveCurve.GetRichCurveConst();
+	if (!Material || !Curve || Curve->IsEmpty() || EmissiveParameterName.IsNone()
+		|| !Material->GetScalarParameterValue(FMaterialParameterInfo(EmissiveParameterName), IdleEmissiveStrength)
+		|| !FMath::IsFinite(IdleEmissiveStrength) || !FMath::IsFinite(PeakEmissiveStrength)
+		|| PeakEmissiveStrength < IdleEmissiveStrength)
+	{
+		UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] Charge emissive curve/material/strength is invalid Actor=%s"), *GetName());
+		return;
+	}
+	ChargeEmissiveMID = ExplosiveMesh->CreateDynamicMaterialInstance(EmissiveMaterialIndex);
+	if (ChargeEmissiveMID && FirstPersonExplosiveMesh)
+	{
+		FirstPersonExplosiveMesh->SetMaterial(EmissiveMaterialIndex, ChargeEmissiveMID);
+	}
+}
+
+void AExplosiveProp::ApplyChargeEmissive(float SoundTime, float ChargeElapsedTime)
+{
+	if (!ChargeEmissiveMID || !FMath::IsFinite(SoundTime) || !FMath::IsFinite(ChargeElapsedTime)) return;
+	const float Alpha = ChargeEmissiveCurve.GetRichCurveConst()->Eval(SoundTime);
+	if (!FMath::IsFinite(Alpha)) return;
+	// 사운드가 중간부터 시작해도 최초 80ms는 기본 밝기 -> 0으로 내린다.
+	// 이후 펄스는 원본 사운드 시간축을 그대로 사용하고 0 -> Peak -> 0으로 반복한다.
+	constexpr float InitialFadeSeconds = 0.08f;
+	const float Strength = ChargeElapsedTime < InitialFadeSeconds
+		? FMath::Lerp(IdleEmissiveStrength, 0.0f, FMath::Clamp(ChargeElapsedTime / InitialFadeSeconds, 0.0f, 1.0f))
+		: PeakEmissiveStrength * FMath::Clamp(Alpha, 0.0f, 1.0f);
+	ChargeEmissiveMID->SetScalarParameterValue(EmissiveParameterName, Strength);
+}
+
+void AExplosiveProp::ResetChargeEmissive()
+{
+	if (ChargeEmissiveMID) ChargeEmissiveMID->SetScalarParameterValue(EmissiveParameterName, IdleEmissiveStrength);
 }
 
 float AExplosiveProp::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)

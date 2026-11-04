@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "UI/SettingPageWidget.h"
+#include "Settings/OutlierInputUserSettings.h"
 #include "SettingInputPageWidget.generated.h"
 
 class UMouseSensitivityWidget;
@@ -11,6 +12,7 @@ class UInputMappingContext;
 class UPanelWidget;
 class UTextBlock;
 class IInputProcessor;
+class USprintInputModeWidget;
 struct FOutlierInputBindingTableRow;
 
 UCLASS(Abstract, Blueprintable)
@@ -34,6 +36,7 @@ public:
 	void SetInputBindingRowPadding(FMargin NewPadding);
 
 protected:
+	virtual void NativeConstruct() override;
 	virtual void NativePreConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual void RebuildKeyboardFocusTargets() override;
@@ -47,6 +50,10 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Input")
 	TObjectPtr<UTextBlock> InputResultText;
+
+	// 키 목록 Host 밖에 배치한다. 행의 레이아웃/스타일은 WBP에서 소유한다.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Setting|Input")
+	TObjectPtr<USprintInputModeWidget> SprintModeRow;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
 	TObjectPtr<UOutlierInputBindingTable> InputBindingTable;
@@ -94,6 +101,12 @@ protected:
 
 private:
 	friend class FSettingInputRebindPreProcessor;
+	friend struct FInputSettingsPresentationTestAccess;
+	void RefreshSprintInputModeRow();
+	void RefreshDisplayedInputRows();
+	void HandleInputSettingsContextChanged(EOutlierPlayerRole Role);
+	UPROPERTY(Transient)
+	TObjectPtr<ULocalPlayerSettingsSubsystem> BoundSettingsSubsystem;
 
 	void ApplyInputBindingRowPadding();
 
@@ -112,20 +125,24 @@ private:
 		FKey& OutKey) const;
 	FKey ResolveInputBindingCurrentKey(
 		const FOutlierInputBindingTableRow& Row) const;
-	bool IsInputKeyDuplicate(FKey NewKey, const UInputBindingRowWidget* IgnoredRowWidget) const;
-	void BuildInputBindingQueryContexts(TArray<UInputMappingContext*>& OutContexts) const;
+
 	void RefreshInputBindingDisplayedKeys();
 	void SetInputResult(const FText& ResultText, const FLinearColor& ResultColor);
 
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UInputBindingRowWidget>> ActiveInputBindingRows;
+	TArray<TObjectPtr<UInputBindingRowWidget>> CachedInputBindingRows;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UInputBindingRowWidget>> DisplayedInputBindingRows;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputBindingRowWidget> HoveredInputBindingRow;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputBindingRowWidget> PendingRebindInputBindingRow;
-	TMap<FName, FKey> RuntimeInputKeyOverrides;
+
 	TSharedPtr<IInputProcessor> InputRebindPreProcessor;
 	double RebindStartTimeSeconds = 0.0;
 	bool bWaitingForInputRebind = false;
 	bool bInputBindingListBuilt = false;
+	bool bInputPageActive = false;
+	uint32 RebindContextRevision = 0;
+	EOutlierPlayerRole DisplayedRole = static_cast<EOutlierPlayerRole>(0);
 };

@@ -110,6 +110,10 @@ class OUTLIER_API URoomCombatDefinition : public UDataAsset
 public:
 	const FRoomCombatRoomDefinition* FindRoomDefinition(FGameplayTag RoomTag) const;
 
+	// 최초 발각으로 실제 이동한 플레이어만 보호한다. 0이면 합류 무적을 사용하지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "s"))
+	float ForcedJoinInvulnerabilitySeconds = 2.0f;
+
 #if WITH_EDITOR
 	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
 #endif

@@ -6,6 +6,7 @@
 #include "AIController.h"
 #include "Components/BoxComponent.h"
 #include "Enemy/EnemyBase.h"
+#include "Enemy/EnemyRoomReturnTestTags.h"
 #include "Enemy/EnemyStateTreeComponent.h"
 #include "Enemy/EnemyStateTreeMovementTasks.h"
 #include "Enemy/EnemyStateTreeReturnTasks.h"
@@ -16,7 +17,6 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "NativeGameplayTags.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomTagComponent.h"
@@ -35,8 +35,6 @@
 namespace
 {
 constexpr TCHAR CommonTreePath[] = TEXT("/Game/Blueprints/AI/VECDrone/StateTree/ST_VECDrone_Common.ST_VECDrone_Common");
-UE_DEFINE_GAMEPLAY_TAG_STATIC(ReturnTreeHome, "Room.ReturnTreeTest.1.1");
-UE_DEFINE_GAMEPLAY_TAG_STATIC(ReturnTreeSibling, "Room.ReturnTreeTest.1.2");
 
 void CollectStates(UStateTreeState* State, TArray<UStateTreeState*>& States)
 {
@@ -297,7 +295,9 @@ bool FEnemyRoomReturnExecutionTest::RunTest(const FString& Parameters)
 	Rooms->SetCombatDefinitionForTesting(Definition);
 	for (int32 Index = 0; Index < 2; ++Index)
 	{
-		const FGameplayTag Tag = Index == 0 ? ReturnTreeHome.GetTag() : ReturnTreeSibling.GetTag();
+		const FGameplayTag Tag = Index == 0
+			? EnemyRoomReturnTestTags::ReturnTreeHome.GetTag()
+			: EnemyRoomReturnTestTags::ReturnTreeSibling.GetTag();
 		auto& Entry = Definition->RoomDefinitions.AddDefaulted_GetRef();
 		Entry.RoomTag = Tag;
 		Entry.CombatPhases.AddDefaulted_GetRef().Waves.AddDefaulted();
@@ -314,7 +314,7 @@ bool FEnemyRoomReturnExecutionTest::RunTest(const FString& Parameters)
 	AAIController* Controller = Fixture.World->SpawnActor<AAIController>();
 	if (!TestNotNull(TEXT("Return actor"), Enemy) || !TestNotNull(TEXT("Return controller"), Controller)) return false;
 	Controller->Possess(Enemy);
-	Enemy->GetRoomTagComp()->AssignDefaultRoomTag(ReturnTreeHome);
+	Enemy->GetRoomTagComp()->AssignDefaultRoomTag(EnemyRoomReturnTestTags::ReturnTreeHome);
 	// 전이 자체를 분리 검증한다. 실제 경로/충돌 이동은 RoomMovement 및 Fly 통합 테스트가 검증한다.
 	*FindFProperty<FEnumProperty>(AEnemyBase::StaticClass(), TEXT("CombatState"))
 		->ContainerPtrToValuePtr<EEnemyCombatState>(Enemy) = EEnemyCombatState::Returning;

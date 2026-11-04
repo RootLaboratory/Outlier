@@ -32,9 +32,9 @@ bool IsCombatDestinationCurrent(const FEnemyCombatDestinationGuardTaskInstanceDa
 	const AEnemyBase* Enemy = Data.Enemy;
 	const AEnemyAIController* Controller = Data.CachedController.Get();
 	if (!IsValid(Enemy) || !Enemy->HasAuthority() || Enemy->IsDead() || !Enemy->CanUseEnemyPerception()
-		|| Enemy->GetCombatState() != EEnemyCombatState::Combat || !Enemy->IsPlayerCurrentlyVisible()
+		|| Enemy->GetCombatState() != EEnemyCombatState::Combat || !Enemy->HasTrackableTarget()
 		|| !Controller || Enemy->GetController() != Controller || Controller->GetPawn() != Enemy
-		|| !IsValid(Data.SelectedTargetActor) || Controller->GetCachedVisibleTarget() != Data.SelectedTargetActor)
+		|| !IsValid(Data.SelectedTargetActor) || Enemy->GetTrackedTarget() != Data.SelectedTargetActor)
 	{
 		return false;
 	}
@@ -51,12 +51,12 @@ const TCHAR* GetCombatDestinationGuardReason(const FEnemyCombatDestinationGuardT
 	if (Enemy->IsDead()) return TEXT("Dead");
 	if (!Enemy->CanUseEnemyPerception()) return TEXT("PerceptionDisabled");
 	if (Enemy->GetCombatState() != EEnemyCombatState::Combat) return TEXT("CombatEnded");
-	if (!Enemy->IsPlayerCurrentlyVisible()) return TEXT("SightLost");
+	if (!Enemy->HasTrackableTarget()) return TEXT("TrackingLost");
 	const AEnemyAIController* Controller = Data.CachedController.Get();
 	if (!Controller || Enemy->GetController() != Controller || Controller->GetPawn() != Enemy)
 		return TEXT("ControllerChanged");
 	if (!IsValid(Data.SelectedTargetActor)) return TEXT("InvalidSelectedTarget");
-	if (Controller->GetCachedVisibleTarget() != Data.SelectedTargetActor) return TEXT("TargetChanged");
+	if (Enemy->GetTrackedTarget() != Data.SelectedTargetActor) return TEXT("TargetChanged");
 	if (HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(), Data.TargetChangeDistance))
 		return TEXT("TargetMoved");
 	return Data.bShouldReselect ? TEXT("ReselectLatched") : TEXT("Current");
@@ -73,7 +73,7 @@ void LogCombatDestinationGuard(const TCHAR* Phase, const FEnemyCombatDestination
 	UE_LOG(LogEnemyCombatNavigation, Log,
 		TEXT("[CombatDestinationGuard] %s Enemy=%s ShouldReselect=%d Reason=%s SelectedTarget=%s CurrentTarget=%s SelectedLocation=%s CurrentLocation=%s Moved2D=%.1f Threshold=%.1f CurrentState=%s TargetState=%s"),
 		Phase, *GetNameSafe(Data.Enemy), Data.bShouldReselect, GetCombatDestinationGuardReason(Data),
-		*GetNameSafe(Target), *GetNameSafe(Data.CachedController.IsValid() ? Data.CachedController->GetCachedVisibleTarget() : nullptr),
+		*GetNameSafe(Target), *GetNameSafe(Data.CachedController.IsValid() ? Data.Enemy->GetTrackedTarget() : nullptr),
 		*Data.SelectedTargetLocation.ToCompactString(), *CurrentLocation.ToCompactString(),
 		Target ? FVector::Dist2D(Data.SelectedTargetLocation, CurrentLocation) : 0.0f, Data.TargetChangeDistance,
 		Transition ? *Transition->CurrentState.Describe() : TEXT("None"),
@@ -95,10 +95,7 @@ AActor* GetAssessmentTarget(const FEnemyCombatAssessmentTaskInstanceData& Data)
 	{
 		return Data.TargetActor;
 	}
-	const AEnemyAIController* AIController = IsValid(Data.Enemy)
-		? Cast<AEnemyAIController>(Data.Enemy->GetController())
-		: nullptr;
-	return AIController ? AIController->GetPreferredVisibleTarget() : nullptr;
+	return IsValid(Data.Enemy) ? Data.Enemy->GetTrackedTarget() : nullptr;
 }
 
 void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
@@ -237,7 +234,10 @@ AEnemyAIController* ResolveEnemyAIController(AEnemyBase* Enemy)
 
 AActor* ResolveTarget(AEnemyAIController& AIController, AActor* ExplicitTarget)
 {
-	return IsValid(ExplicitTarget) ? ExplicitTarget : AIController.GetPreferredVisibleTarget();
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(AIController.GetPawn());
+	AActor* Tracked = Enemy ? Enemy->GetTrackedTarget() : nullptr;
+	// 바인딩이 한 이벤트 늦게 갱신되어도 이전 대상의 좌표로 이동하지 않는다.
+	return IsValid(ExplicitTarget) && ExplicitTarget != Tracked ? nullptr : Tracked;
 }
 
 float CalculateTacticalDistance(

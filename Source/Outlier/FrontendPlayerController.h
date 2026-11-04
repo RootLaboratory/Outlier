@@ -128,6 +128,8 @@ public:
 	const TArray<TObjectPtr<UInputMappingContext>>& GetDefaultMappingContexts() const { return DefaultMappingContexts; }
 
 protected:
+	virtual void InitPlayerState() override;
+	virtual void OnRep_PlayerState() override;
 	virtual void SetupInputComponent() override;
 
 	UPROPERTY(EditAnywhere, Category = "Input|Input Mappings")
@@ -157,6 +159,7 @@ public:
 	TSubclassOf<UTitleWidget> TitleWidgetClass;
 
 private:
+	void RefreshInputSettingsContext();
 	void PrepareForMatch();
 	void TryStartNetworkMvpSmoke();
 	void DriveNetworkMvpSmoke();

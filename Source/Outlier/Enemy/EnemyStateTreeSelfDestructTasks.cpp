@@ -39,9 +39,9 @@ namespace
 		const ASelfDestructDrone* Drone = Data.CachedDrone.Get();
 		const AEnemyAIController* Controller = Data.CachedController.Get();
 		if (!Drone || !Drone->HasAuthority() || Drone->IsDead() || !Drone->CanUseEnemyPerception()
-			|| Drone->GetCombatState() != EEnemyCombatState::Combat || !Drone->IsPlayerCurrentlyVisible()
+			|| Drone->GetCombatState() != EEnemyCombatState::Combat
 			|| !Controller || Drone->GetController() != Controller || Controller->GetPawn() != Drone) return nullptr;
-		return Controller->GetCachedVisibleTarget();
+		return Drone->GetTrackedTarget();
 	}
 
 	void UpdateChargeAssessment(FEnemySelfDestructAssessmentTaskInstanceData& Data)
@@ -50,11 +50,13 @@ namespace
 		const AActor* PreviousTarget = Data.TargetActor;
 		ResetChargeAssessment(Data);
 		Data.TargetActor = GetChargeAssessmentTarget(Data);
-		Data.bHasVisibleTarget = IsValid(Data.TargetActor);
+		// 추적 유예는 돌진 판단에만 사용한다. 실제 Sight 출력은 가려진 상태를 그대로 유지한다.
+		Data.bHasVisibleTarget = IsValid(Data.TargetActor) && Data.CachedDrone->IsPlayerCurrentlyVisible()
+			&& Data.CachedController->IsTargetDirectlyVisible(Data.TargetActor);
 		Data.Eligibility = EnemyCharge::Assess(Data.CachedDrone.Get(), Data.CachedController.Get(),
 			Data.TargetActor, Data.ChargeEntryDistance, Data.ChargeClearance);
 		Data.bCanCharge = Data.Eligibility == EEnemyChargeEligibility::Ready;
-		if (Data.bHasVisibleTarget)
+		if (IsValid(Data.TargetActor))
 		{
 			Data.HorizontalDistance = FVector::Dist2D(Data.Drone->GetActorLocation(), Data.TargetActor->GetActorLocation());
 			Data.SpatialDistance = FVector::Dist(Data.Drone->GetActorLocation(), Data.TargetActor->GetActorLocation());
@@ -125,7 +127,7 @@ EEnemyChargeEligibility EnemyCharge::Assess(const ASelfDestructDrone* Drone, con
 	if (Drone->IsDead() || !Drone->CanUseEnemyPerception() || Drone->GetCombatState() != EEnemyCombatState::Combat)
 		return EEnemyChargeEligibility::NotInCombat;
 	if (!Controller || Drone->GetController() != Controller || Controller->GetPawn() != Drone
-		|| !Drone->IsPlayerCurrentlyVisible() || !IsValid(Target) || Controller->GetCachedVisibleTarget() != Target)
+		|| !IsValid(Target) || Drone->GetTrackedTarget() != Target)
 		return EEnemyChargeEligibility::NoVisibleTarget;
 	if (!IsWithinChargeRange(Drone->GetActorLocation(), Target->GetActorLocation(), Distance)) return EEnemyChargeEligibility::OutOfRange;
 	return IsStraightPathClear(*Drone->GetWorld(), *Drone->GetCapsuleComponent(), *Target, Clearance)
@@ -161,8 +163,12 @@ EStateTreeRunStatus FEnemySelfDestructAssessmentTask::Tick(FStateTreeExecutionCo
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	Data.Elapsed += FMath::Max(DeltaTime, 0.0f);
-	// 시야 상실/타깃 교체는 즉시 반영한다. 비싼 캡슐 Sweep은 같은 타깃에 대해 설정 간격으로만 실행한다.
-	if (GetChargeAssessmentTarget(Data) != Data.TargetActor || Data.Elapsed >= Data.UpdateInterval)
+	const bool bVisible = IsValid(Data.TargetActor) && Data.CachedDrone.IsValid()
+		&& Data.CachedDrone->IsPlayerCurrentlyVisible() && Data.CachedController.IsValid()
+		&& Data.CachedController->IsTargetDirectlyVisible(Data.TargetActor);
+	// 감지 출력/추적 만료/타깃 교체는 즉시 반영한다. 변화가 없을 때만 캡슐 Sweep 간격을 제한한다.
+	if (GetChargeAssessmentTarget(Data) != Data.TargetActor || Data.bHasVisibleTarget != bVisible
+		|| Data.Elapsed >= Data.UpdateInterval)
 	{
 		Data.Elapsed = 0.0f;
 		UpdateChargeAssessment(Data);
@@ -243,7 +249,8 @@ EStateTreeRunStatus FEnemyBeginPossessedSelfDestructTask::EnterState(
 		* FMath::Max(InstanceData.ChargeSpeedMultiplier, 0.0f);
 	if (!Drone->BeginCommittedSelfDestructDirection(
 		ViewRotation.Vector(),
-		InstanceData.TelegraphDuration,
+		// 방향/입력 commit만 먼저 처리한다. 실제 기간은 아래 Update Task 진입에서 확정한다.
+		0.0f,
 		ChargeSpeed,
 		InstanceData.MaxChargeDistance))
 	{
@@ -308,6 +315,7 @@ EStateTreeRunStatus FEnemyUpdatePossessedSelfDestructTask::EnterState(
 		return EStateTreeRunStatus::Failed;
 	}
 
+	Drone->SetCommittedChargeDuration(InstanceData.ChargeDuration);
 	Drone->SetAttackPhase(EEnemyAttackPhase::Firing);
 	return EStateTreeRunStatus::Running;
 }
@@ -327,7 +335,7 @@ EStateTreeRunStatus FEnemyUpdatePossessedSelfDestructTask::Tick(
 		return EStateTreeRunStatus::Failed;
 	}
 
-	InstanceData.ElapsedTime += FMath::Max(DeltaTime, 0.0f);
+	InstanceData.ElapsedTime = Drone->GetCommittedChargeElapsedTime();
 	const float ChargeSpeed =
 		FMath::Max(Drone->GetRuntimeStat().MoveSpeed, 0.0f)
 		* FMath::Max(InstanceData.ChargeSpeedMultiplier, 0.0f);
@@ -379,14 +387,10 @@ EStateTreeRunStatus FEnemyChargeLastDirectionTask::EnterState(
 	AActor* Target = InstanceData.TargetActor.Get();
 	if (!IsValid(Target))
 	{
-		if (const AEnemyAIController* AIController =
-			Cast<AEnemyAIController>(Drone->GetController()))
-		{
-			Target = AIController->GetCachedVisibleTarget();
-		}
+		Target = Drone->GetTrackedTarget();
 	}
 
-	// 전이 조건이 참이었던 프레임 이후 타깃/시야/벽이 바뀌었을 수 있다. Commit 직전 같은 검사를 반복한다.
+	// 전이 이후 추적 만료/대상 교체/벽 변화가 생길 수 있다. 명시된 타깃도 Commit 직전에 다시 검증한다.
 	const EEnemyChargeEligibility Eligibility = EnemyCharge::Assess(Drone, Cast<AEnemyAIController>(Drone->GetController()),
 		Target, InstanceData.ChargeEntryDistance, InstanceData.ChargeClearance);
 	LogChargeEligibility(TEXT("ChargeEnter"), Drone, Target, Eligibility);
@@ -422,7 +426,7 @@ EStateTreeRunStatus FEnemyChargeLastDirectionTask::Tick(
 		return EStateTreeRunStatus::Failed;
 	}
 
-	InstanceData.ElapsedTime += FMath::Max(DeltaTime, 0.0f);
+	InstanceData.ElapsedTime = Drone->GetCommittedChargeElapsedTime();
 	const float ChargeSpeed =
 		FMath::Max(Drone->GetRuntimeStat().MoveSpeed, 0.0f)
 		* FMath::Max(InstanceData.ChargeSpeedMultiplier, 0.0f);

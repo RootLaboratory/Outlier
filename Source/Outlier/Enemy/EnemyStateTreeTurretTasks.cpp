@@ -7,21 +7,11 @@
 
 namespace
 {
-	AActor* ResolveVisibleTarget(AAutoTurret* Turret, AActor* BoundTarget)
+	AActor* ResolveTrackedTarget(AAutoTurret* Turret, AActor* BoundTarget)
 	{
-		if (!Turret || !Turret->IsPlayerCurrentlyVisible())
-		{
-			return nullptr;
-		}
-		const AEnemyAIController* Controller = Cast<AEnemyAIController>(Turret->GetController());
-		AActor* PreferredTarget = Controller ? Controller->GetPreferredVisibleTarget() : nullptr;
-		if (!IsValid(BoundTarget))
-		{
-			return PreferredTarget;
-		}
-
-		// StateTree에 남아 있는 타겟이 아니라 현재 Perception이 직접 보고 있는 타겟만 유효하다.
-		return PreferredTarget == BoundTarget ? BoundTarget : nullptr;
+		AActor* TrackedTarget = Turret ? Turret->GetTrackedTarget() : nullptr;
+		// 터렛도 같은 Room 추적 대상을 사용한다. 오래된 바인딩으로 다른 대상을 사격하지 않는다.
+		return !IsValid(BoundTarget) || BoundTarget == TrackedTarget ? TrackedTarget : nullptr;
 	}
 }
 
@@ -154,7 +144,7 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::EnterState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
-	AActor* Target = ResolveVisibleTarget(Data.Turret, Data.TargetActor);
+	AActor* Target = ResolveTrackedTarget(Data.Turret, Data.TargetActor);
 	if (!Data.Turret || !Data.Turret->HasAuthority() || !IsValid(Target)
 		|| !IsValid(Data.Turret->GetCurrentWeapon()))
 	{
@@ -192,7 +182,7 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::Tick(FStateTreeExecutionContext& 
 		Data.Phase == EEnemyTurretBurstTaskPhase::TelegraphAndTracking
 		|| Data.Phase == EEnemyTurretBurstTaskPhase::BurstFiring;
 	if (bCanUpdateTrackedAim
-		&& ResolveVisibleTarget(Turret, Data.TargetActor) == Data.TargetActor)
+		&& ResolveTrackedTarget(Turret, Data.TargetActor) == Data.TargetActor)
 	{
 		Data.LastValidAimLocation = Turret->GetCombatAimPoint(Data.TargetActor);
 	}
@@ -205,13 +195,13 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::Tick(FStateTreeExecutionContext& 
 		{
 			return EStateTreeRunStatus::Running;
 		}
-		if (!Weapon->CanAttack())
+		if (!Weapon->CanAttack() || !Turret->CanAttackTrackedTarget(Data.TargetActor))
 		{
 			return EStateTreeRunStatus::Running;
 		}
 		// Fire 몽타주와 총구 그룹 모두 첫 그룹에서 같은 사이클을 시작하도록 애니메이션을 먼저 재생한다.
 		Turret->PlayFireMontage();
-		if (!Turret->StartAttackLocation(Data.LastValidAimLocation))
+		if (!Turret->StartAttackTarget(Data.TargetActor))
 		{
 			Turret->StopFireMontage();
 			return EStateTreeRunStatus::Failed;
@@ -268,7 +258,7 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::EnterState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
-	AActor* Target = ResolveVisibleTarget(Data.Turret, Data.TargetActor);
+	AActor* Target = ResolveTrackedTarget(Data.Turret, Data.TargetActor);
 	if (!IsValid(Data.Turret) || !Data.Turret->HasAuthority() || !IsValid(Target)
 		|| Data.Turret->IsDead() || Data.Turret->GetCombatState() == EEnemyCombatState::Stun
 		|| Data.Turret->IsAIControlSuppressed()
@@ -335,7 +325,7 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 
 	if (Data.Phase == EEnemyTurretSniperTaskPhase::LaserTelegraphAndTracking)
 	{
-		if (ResolveVisibleTarget(Turret, Data.TargetActor) == Data.TargetActor)
+		if (ResolveTrackedTarget(Turret, Data.TargetActor) == Data.TargetActor)
 		{
 			Data.LockedAimLocation = Turret->GetCombatAimPoint(Data.TargetActor);
 		}
@@ -345,7 +335,7 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 		{
 			return EStateTreeRunStatus::Running;
 		}
-		if (!Weapon->CanAttack())
+		if (!Weapon->CanAttack() || !Turret->CanAttackTrackedTarget(Data.TargetActor))
 		{
 			if (!Data.bLoggedAttackBlocked && AAutoTurret::IsTurretDiagnosticsEnabled())
 			{
@@ -354,7 +344,7 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 			Data.bLoggedAttackBlocked = true;
 			return EStateTreeRunStatus::Running;
 		}
-		if (!Turret->StartAttackLocation(Data.LockedAimLocation))
+		if (!Turret->StartAttackTarget(Data.TargetActor))
 		{
 			if (AAutoTurret::IsTurretDiagnosticsEnabled())
 			{

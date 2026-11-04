@@ -152,6 +152,10 @@ public:
 // 요청된 로컬 루프 상태. 핸들, 재시도, 재생 주체에 대한 부착은 서브시스템이 관리한다.
 	void SetLocalEmitterLoop(AActor* Emitter, FGameplayTag Type, FGameplayTag Context, bool bEnabled,
 		bool bTwoD = false, float FadeOutDuration = 0.0f);
+	// 서버 시간에 맞춘 단발 구간 재생. catalog가 늦게 로드돼도 재생 직전 위치를 다시 계산한다.
+	void SetLocalEmitterTimedSound(AActor* Emitter, FGameplayTag Type, FGameplayTag Context,
+		const FOutlierAudioPlaybackWindow& Playback);
+	void StopLocalEmitterTimedSound(AActor* Emitter, FGameplayTag Context);
 
 	/**
 	 * Ambient Volume 전용 BGM 채널. 기존 MusicComponent( 프론트엔드/전투 )와는 별개로 동시에 재생된다.
@@ -328,6 +332,9 @@ private:
 		float VolumeMultiplier = 1.0f;
 		float PitchMultiplier = 1.0f;
 		float StartTime = 0.0f;
+		bool bTimedEmitterSound = false;
+		FGameplayTag TimedContext;
+		FOutlierAudioPlaybackWindow Playback;
 		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
 		int32 AudioInstanceId = 0;
 		bool bLooping = false;
@@ -422,6 +429,8 @@ private:
 	bool QueueOrPlay(const FRuntimeCatalogEntry& Entry, const FPendingPlay& PendingPlay);
 	void HandleSoundLoaded(FSoftObjectPath SoundPath);
 	void ExecutePlay(USoundBase* Sound, const FPendingPlay& PendingPlay);
+	bool ResolveTimedEmitterStartTime(const FPendingPlay& PendingPlay, double ServerNow, float& OutTime) const;
+	friend class FOutlierTimedAudioLifecycleTest;
 	void TrackActiveAudioComponent(
 		UAudioComponent* AudioComponent,
 		float BaseVolumeMultiplier,
@@ -476,6 +485,8 @@ private:
 		int32 InstanceId = 0;
 		bool bTwoD = false;
 		bool bOneShotSubmitted = false;
+		bool bTimedSound = false;
+		FOutlierAudioPlaybackWindow Playback;
 	};
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<class UOutlierMenuAudioBinding>> MenuAudioBindings;

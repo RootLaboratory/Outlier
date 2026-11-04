@@ -233,6 +233,10 @@ protected:
 	float LastShotSpreadDegrees = 0.0f;
 	int32 CurrentBurstShotCount = 0;
 	int32 LastAttackMuzzleShotCount = 1;
+	// AI의 일시 중단만 사용하는 재개 시각. 일반 StopAttack은 기존처럼 완전히 초기화한다.
+	double PreservedAttackReadyAt = 0.0;
+	// 실제 발사한 총구 그룹의 다음 허용 시각. 발사하지 못한 연사 콜백은 갱신하지 않는다.
+	double LastAttackGroupReadyAt = 0.0;
 	uint8 bHasLastShotDirection : 1 = false;
 
 protected:
@@ -320,6 +324,8 @@ public:
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;
 	virtual void StopAttack() override;
+	void PauseTargetAttack();
+	bool HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint) const;
 	virtual void PerformAttack() override;
 	bool HasFixedBurst() const { return BurstShotCount > 0; }
 	int32 GetCurrentBurstShotCount() const { return CurrentBurstShotCount; }

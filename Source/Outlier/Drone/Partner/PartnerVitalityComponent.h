@@ -39,6 +39,8 @@ public:
 		FString& OutError);
 
 private:
+	friend class APartnerCharacter;
+
 	bool FailInitialization(const FString& Error) const;
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleMaxHealthChanged(const FOnAttributeChangeData& ChangeData);
@@ -52,6 +54,7 @@ private:
 	bool bInitialized = false;
 	bool bObserversBound = false;
 	bool bOwnerTearingDown = false;
+	bool bSuppressRebootForDamage = false;
 	FDelegateHandle HealthChangedDelegateHandle;
 	FDelegateHandle MaxHealthChangedDelegateHandle;
 	FDelegateHandle GameplayEffectRemovedDelegateHandle;

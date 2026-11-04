@@ -95,6 +95,24 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FRoomCombatDefinitionValidationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	TestEqual(TEXT("Forced join protection defaults to two seconds"),
+		GetDefault<URoomCombatDefinition>()->ForcedJoinInvulnerabilitySeconds, 2.0f);
+	for (float Duration : {0.0f, 0.5f, 2.0f})
+	{
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->ForcedJoinInvulnerabilitySeconds = Duration;
+		FDataValidationContext Context;
+		TestEqual(TEXT("Finite nonnegative forced join durations are valid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Valid);
+	}
+	for (float Duration : {-1.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+	{
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->ForcedJoinInvulnerabilitySeconds = Duration;
+		FDataValidationContext Context;
+		TestEqual(TEXT("Negative and non-finite forced join durations are invalid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+	}
 	TestEqual(TEXT("A new phase defaults to a three-second transition delay"),
 		FRoomCombatPhaseDefinition().DelayBeforeStartSeconds, 3.0f);
 	for (float Delay : {0.0f, 1.5f, 3.0f})

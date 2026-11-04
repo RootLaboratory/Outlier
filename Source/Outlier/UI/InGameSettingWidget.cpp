@@ -57,7 +57,7 @@ void UInGameSettingWidget::NativeDestruct()
 void UInGameSettingWidget::InitializeUILayerContext_Implementation(
 	const TArray<AActor*>& ContextActors)
 {
-	(void)ContextActors;
+	SettingsLayerOwner = ContextActors.IsValidIndex(2) ? ContextActors[2] : nullptr;
 }
 
 bool UInGameSettingWidget::HandleUILayerEscape_Implementation()
@@ -177,11 +177,12 @@ void UInGameSettingWidget::PushSettingLayer()
 		ActiveSettingWidget,
 		ContextActors);
 
+	// 상세 설정도 메뉴와 같은 소유자로 묶어 종료·연결 해제 시 함께 정리한다.
 	LayerSubsystem->PushWidget(
 		UILayerTags::GameMenu(),
 		ActiveSettingWidget,
 		FirstPersonInputModeTags::UI(),
-		OwningPlayer,
+		SettingsLayerOwner.IsValid() ? SettingsLayerOwner.Get() : OwningPlayer,
 		EUILayerFocusTarget::Widget,
 		true);
 }

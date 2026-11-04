@@ -39,6 +39,8 @@ class OUTLIER_API APartnerPlayerController : public AFirstPersonPlayerController
 	GENERATED_BODY()
 	friend class FOutlierGasPartnerPossessionCooldownSessionTest;
 	friend class FOutlierGasPartnerHackPossessionRechargeTest;
+	friend class FEnemyHackEffectGameplayTest;
+	friend class FEnemyHackEffectHUDTest;
 
 protected:
 	/** Pawn class used when respawning the player. */
@@ -71,6 +73,8 @@ protected:
 	virtual bool ShouldShowMainWidget() const override;
 	void PushEnemyHud(AEnemyBase* PossessedEnemy);
 	void PopEnemyHud();
+	void RequestPopEnemyHud();
+	void RestoreEnemyPossessionWithoutKill();
 
 	void RefreshShooterUIForRespawnFromPlayerState();
 	void BindPlayerStateDelegates();
@@ -129,10 +133,17 @@ protected:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AEnemyBase> LocalPendingEnemyPossessionTarget;
 
+	// 서버에서 Possess는 끝났지만 소유 클라이언트의 화면 복귀 완료를 기다리는 대상.
+	TWeakObjectPtr<AEnemyBase> HackLifetimePendingRevealTarget;
+	bool bHackPossessionRevealFinished = false;
+	void TryStartHackLifetimeAfterReveal();
+	void NotifyHackPossessionPresentationFinished();
+
 	UPROPERTY(Transient)
 	TObjectPtr<UEnemyHudWidget> EnemyHudInstance;
 	FUILayerHandle EnemyHudLayerHandle;
 	FHudWidgetCollapseState EnemyHudCollapseState;
+	bool bEnemyHudPopPending = false;
 
 	bool bHackTransitionInputBlocked = false;
 	bool bHackTransitionCoveredNotified = false;
@@ -169,10 +180,18 @@ protected:
 	void ServerNotifyHackTransitionCovered(AEnemyBase* EnemyTarget);
 
 	UFUNCTION(Server, Reliable)
+	void ServerNotifyHackPossessionRevealFinished(AEnemyBase* EnemyTarget);
+
+	UFUNCTION(Server, Reliable)
 	void ServerReleaseEnemyPossession();
+
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareExpiredEnemyHud(AEnemyBase* EnemyTarget);
 
 public:
 	APartnerPlayerController();
+	virtual void FlushPressedKeys() override;
+	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
 	// HUD 슈트 상태는 빙의된 Pawn 대신 이 Controller의 PlayerState를 기준으로 한다.
 	void RefreshPartnerSuitUI();
@@ -195,6 +214,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Partner|EnemyPossession")
 	void ReleaseEnemyPossession();
+
+	// 리스폰/reload는 처치 없이 효과를 정리하고, 일시 이탈은 기존 만료 시각을 유지한다.
+	void ReleaseEnemyPossessionForCleanup();
+	void ReleaseEnemyPossessionForDisconnect();
 
 	// 공간 전환 전 대기 중 해킹까지 취소하고 실제 제어 Pawn을 원래 Partner로 되돌린다.
 	bool RestorePartnerForWorldTransition();

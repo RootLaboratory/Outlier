@@ -39,6 +39,8 @@ public:
 	AActor* GetPreferredVisibleTarget() const;
 	// Perception 이벤트/공유 갱신이 선택한 타깃이다. EQS 대기 중에는 감지 목록을 매 프레임 재검색하지 않는다.
 	AActor* GetCachedVisibleTarget() const { return LastVisibleTarget.Get(); }
+	bool IsTargetDirectlyVisible(const AActor* Target) const;
+	bool IsValidTrackingTarget(const AActor* Target) const { return IsValidDetectionTarget(Target); }
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void SetCachedVisibleTargetForTesting(AActor* TargetActor) { LastVisibleTarget = TargetActor; }
@@ -85,6 +87,7 @@ protected:
 	FTimerHandle SharedTargetReportTimerHandle;
 	TSet<TWeakObjectPtr<AActor>> ProcessedStealthedTargets;
 	TWeakObjectPtr<AActor> LastVisibleTarget;
+	mutable TSet<TWeakObjectPtr<AActor>> DirectlyVisibleTargets;
 	mutable TArray<AActor*> PerceivedActorScratch;
 	int32 TaskDrivenControlPitchCount = 0;
 	bool bAttackAimActive = false;

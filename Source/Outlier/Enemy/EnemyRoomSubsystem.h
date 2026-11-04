@@ -20,14 +20,40 @@ struct FEnemyPatrolDestination
 	int32 Lease = 0;
 };
 
+// 실제 관측 시각은 직접 시야 보고만 갱신한다. 공유 수신/강제 핑과 별도 수명이다.
+struct FEnemyRoomTargetObservation
+{
+	FVector LastObservedLocation = FVector::ZeroVector;
+	double LastObservedAt = 0.0;
+};
+
+struct FEnemyRoomDirectObserver
+{
+	TWeakObjectPtr<AActor> TargetActor;
+	TWeakObjectPtr<AController> Controller;
+	int32 Generation = 0;
+	int32 Lease = 0;
+};
+
+// 조회 결과는 값 복사다. 수신자가 보관하거나 다시 조회해도 유예를 연장하지 않는다.
+struct FEnemyRoomTargetObservationSnapshot
+{
+	TWeakObjectPtr<AActor> TargetActor;
+	FVector LastObservedLocation = FVector::ZeroVector;
+	double LastObservedAt = 0.0;
+	double TrackingExpiresAt = 0.0;
+	bool bDirectlyObserved = false;
+};
+
 // 직접 시야를 가진 Enemy만 Observer로 등록한다.
 // 수신한 공유 좌표만으로는 Observer가 되지 않으므로 방 안에서 위치가 재전파되지 않는다.
 struct FEnemyRoomTargetContactState
 {
 	TWeakObjectPtr<AActor> TargetActor;
-	FVector LastReportedLocation = FVector::ZeroVector;
+	FVector LastReportedLocation = FVector::ZeroVector; // 기존 좌표 공유/강제 핑용이며 관측 시각과 분리한다.
 	// 관측자별 실제 타깃을 보관해 서로 다른 플레이어 보고가 공유 위치를 덮어쓰지 않게 한다.
-	TMap<TWeakObjectPtr<AEnemyBase>, TWeakObjectPtr<AActor>> DirectObservers;
+	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyRoomDirectObserver> DirectObservers;
+	TMap<TWeakObjectPtr<AActor>, FEnemyRoomTargetObservation> TargetObservations;
 	FTimerHandle ForcedShareTimerHandle;
 	bool bSharedContactActive = false;
 	bool bForcedShareConsumed = false;
@@ -72,6 +98,13 @@ public:
 		AActor* TargetActor,
 		const FVector& TargetLocation);
 
+	// 같은 전투 Room의 대상 정보를 조회한다. 유예 길이는 수신 Enemy의 기존 스탯을 사용한다.
+	// 실제 추적/공격 연결은 이 API의 소비자가 담당하며 직접 시야 상태는 변경하지 않는다.
+	bool TryGetRoomTargetObservation(AEnemyBase* Receiver, AActor* TargetActor,
+		FEnemyRoomTargetObservationSnapshot& OutSnapshot);
+	// 현재 대상 유지 여부는 Pawn이 먼저 판단한다. 이 함수는 대체 후보만 기존 우선순위로 고른다.
+	bool TrySelectRoomTarget(AEnemyBase* Receiver, FEnemyRoomTargetObservationSnapshot& OutSnapshot);
+
 	// Observer가 시야를 잃거나 전투 행동에서 이탈하면 직접 관측자 집합에서 제거한다.
 	void RemoveRoomTargetObserver(AEnemyBase* Observer);
 	// 사망 또는 리스폰으로 교체되는 타겟을 방 공유 접촉과 Enemy Perception에서 제거한다.
@@ -91,7 +124,7 @@ public:
 private:
 	void BroadcastSharedTargetContact(FGameplayTag RoomTag, const FVector& TargetLocation, bool bNewInformation = true);
 	void BroadcastSharedTargetLost(FGameplayTag RoomTag);
-	void CompactTargetContactState(FEnemyRoomTargetContactState& ContactState);
+	void CompactTargetContactState(FGameplayTag RoomTag, FEnemyRoomTargetContactState& ContactState);
 	void SynchronizeEnemyWithRoomState(AEnemyBase* Enemy);
 	void ScheduleForcedTargetShare(FGameplayTag RoomTag);
 	void HandleForcedTargetShare(FGameplayTag RoomTag);

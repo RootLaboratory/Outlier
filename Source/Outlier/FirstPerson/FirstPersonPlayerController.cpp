@@ -17,6 +17,7 @@
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
 #include "InputMappingContext.h"
+#include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "InputAction.h"
 #include "FirstPersonCharacter.h"
 #include "FirstPersonPlayerCameraManager.h"
@@ -2080,6 +2081,13 @@ void AFirstPersonPlayerController::BindPostProcessSubSystem()
 
 void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 {
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer(); LocalPlayer && LocalPlayer->PlayerController == this)
+	{
+		if (ULocalPlayerSettingsSubsystem* Settings = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>())
+		{
+			Settings->RefreshInputSettingsContext();
+		}
+	}
 	if (!HasAuthority())
 	{
 		return;
@@ -2438,11 +2446,7 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 {
 	AOutlierGameMode* GameMode = GetWorld()
 		? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
-	if (GameMode && GameMode->IsGameOverSelectionActive())
-	{
-		return;
-	}
-	if (!InGameSettingWidgetClass)
+	if (!GameMode || !InGameSettingWidgetClass)
 	{
 		return;
 	}
@@ -2450,13 +2454,12 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 	AShooterCharacter* ShooterCharacter = nullptr;
 	APartnerCharacter* PartnerCharacter = nullptr;
 	ResolvePairCharactersForController(this, ShooterCharacter, PartnerCharacter);
-
 	AFirstPersonPlayerController* ShooterController = ShooterCharacter
-		? Cast<AFirstPersonPlayerController>(ShooterCharacter->GetController())
-		: nullptr;
+		? Cast<AFirstPersonPlayerController>(ShooterCharacter->GetController()) : nullptr;
 	AFirstPersonPlayerController* PartnerController = PartnerCharacter
-		? Cast<AFirstPersonPlayerController>(PartnerCharacter->GetController())
-		: nullptr;
+		? Cast<AFirstPersonPlayerController>(PartnerCharacter->GetController()) : nullptr;
+	AFirstPersonPlayerController* OtherController = ShooterController == this
+		? PartnerController : ShooterController;
 
 	const AOutlierPlayerState* RequestingPlayerState = GetPlayerState<AOutlierPlayerState>();
 	AActor* PausingCharacter = GetPawn();
@@ -2469,68 +2472,49 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 		PausingCharacter = PartnerCharacter;
 	}
 
-	const UInGameSettingWidget* InGameSettingDefault =
-		InGameSettingWidgetClass->GetDefaultObject<UInGameSettingWidget>();
-	const TSubclassOf<UInGamePauseWidget> InGamePauseWidgetClass = InGameSettingDefault
-		? InGameSettingDefault->GetInGamePauseWidgetClass()
-		: nullptr;
+	GameMode->BeginSettingsPause(this, PausingCharacter, OtherController);
+}
 
-	const AOutlierGameMode* OutlierGameMode = GetWorld()
-		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
-		: nullptr;
-	ConfigureCheckpointRestartFromServer(
-		OutlierGameMode && OutlierGameMode->CanControllerRequestCheckpointRestart(this));
-
-	FUILayerPushRequest PushRequest;
-	PushRequest.WidgetClass = InGameSettingWidgetClass;
-	PushRequest.LayerTag = UILayerTags::GameMenu();
-	PushRequest.InputModeTag = FirstPersonInputModeTags::UI();
-	PushRequest.RequestOwner = PausingCharacter;
-	PushRequest.ContextActors = { ShooterCharacter, PartnerCharacter, PausingCharacter };
-	PushRequest.FocusTarget = EUILayerFocusTarget::Widget;
-	PushRequest.bShowCursor = true;
-
-	AFirstPersonPlayerController* OtherController = ShooterController == this
-		? PartnerController : ShooterController;
-	if (!GameMode || !GameMode->BeginSettingsPause(this, PausingCharacter, OtherController))
+void AFirstPersonPlayerController::ShowInGameSettingFromServer(
+	AActor* LayerOwner, bool bShowSettings)
+{
+	if (!HasAuthority() || !LayerOwner || !InGameSettingWidgetClass)
 	{
 		return;
 	}
-	PushUILayerToController(this, PushRequest);
-
-	AFirstPersonPlayerController* WaitingController = nullptr;
-	if (RequestingPlayerState && RequestingPlayerState->IsShooterPlayer())
+	const UInGameSettingWidget* SettingDefault =
+		InGameSettingWidgetClass->GetDefaultObject<UInGameSettingWidget>();
+	const TSubclassOf<UUserWidget> WidgetClass = bShowSettings
+		? TSubclassOf<UUserWidget>(InGameSettingWidgetClass)
+		: TSubclassOf<UUserWidget>(SettingDefault->GetInGamePauseWidgetClass());
+	if (!WidgetClass)
 	{
-		WaitingController = PartnerController;
-	}
-	else if (RequestingPlayerState && RequestingPlayerState->IsPartnerPlayer())
-	{
-		WaitingController = ShooterController;
-	}
-	else if (ShooterController && ShooterController != this)
-	{
-		WaitingController = ShooterController;
-	}
-	else if (PartnerController && PartnerController != this)
-	{
-		WaitingController = PartnerController;
+		return;
 	}
 
-	if (WaitingController && WaitingController != this && InGamePauseWidgetClass)
+	if (bShowSettings)
 	{
-		FUILayerPushRequest PausePushRequest;
-		PausePushRequest.WidgetClass = InGamePauseWidgetClass;
-		PausePushRequest.LayerTag = UILayerTags::GameMenu();
-		PausePushRequest.InputModeTag = FirstPersonInputModeTags::UI();
-		PausePushRequest.RequestOwner = PausingCharacter;
-		PausePushRequest.ContextActors = { ShooterCharacter, PartnerCharacter, PausingCharacter };
-		PausePushRequest.FocusTarget = EUILayerFocusTarget::None;
-		PausePushRequest.bShowCursor = false;
-		PausePushRequest.bReceivesInput = true;
-
-		PushUILayerToController(WaitingController, PausePushRequest);
+		const AOutlierGameMode* GameMode = GetWorld()->GetAuthGameMode<AOutlierGameMode>();
+		ConfigureCheckpointRestartFromServer(
+			GameMode && GameMode->CanControllerRequestCheckpointRestart(this));
 	}
 
+	// 같은 정지 세션의 소유자를 계속 사용해 이전 화면과 키 힌트를 먼저 제거한다.
+	// 이 함수는 상태가 바뀐 플레이어에게만 호출하므로 상대의 상세 설정은 건드리지 않는다.
+	PopInGameSettingLayerFromController(this, LayerOwner);
+	FUILayerPushRequest Request;
+	Request.WidgetClass = WidgetClass;
+	Request.LayerTag = UILayerTags::GameMenu();
+	Request.InputModeTag = FirstPersonInputModeTags::UI();
+	Request.RequestOwner = LayerOwner;
+	AShooterCharacter* ShooterCharacter = nullptr;
+	APartnerCharacter* PartnerCharacter = nullptr;
+	ResolvePairCharactersForController(this, ShooterCharacter, PartnerCharacter);
+	Request.ContextActors = { ShooterCharacter, PartnerCharacter, LayerOwner };
+	Request.FocusTarget = bShowSettings ? EUILayerFocusTarget::Widget : EUILayerFocusTarget::None;
+	Request.bShowCursor = bShowSettings;
+	Request.bReceivesInput = true;
+	PushUILayerToController(this, Request);
 }
 
 void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()

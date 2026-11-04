@@ -1,5 +1,9 @@
 #include "Enemy/SelfDestructDrone.h"
 #include "Audio/OutlierAudioFeedback.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "GameFramework/GameStateBase.h"
+#include "TimerManager.h"
 
 #include "Components/PrimitiveComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -7,6 +11,8 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/VECDroneMovementComponent.h"
 #include "Drone/Partner/HackableComponent.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "Shooter/ShooterCharacter.h"
 #include "Explosion/ExplosionComponent.h"
 #include "Explosion/ExplosiveProp.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -69,7 +75,7 @@ void ASelfDestructDrone::GetLifetimeReplicatedProps(
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ASelfDestructDrone, MountedExplosives);
-	DOREPLIFETIME(ASelfDestructDrone, bHasCommittedSelfDestruct);
+	DOREPLIFETIME(ASelfDestructDrone, ChargeState);
 }
 
 float ASelfDestructDrone::GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const
@@ -89,6 +95,12 @@ float ASelfDestructDrone::GetWeakPointDamageMultiplier(const UPrimitiveComponent
 void ASelfDestructDrone::BeginPlay()
 {
 	Super::BeginPlay();
+	ChargeClock = GetWorld()->GetGameState();
+	if (GetNetMode() != NM_DedicatedServer && GetGameInstance())
+	{
+		ChargeAudio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>();
+	}
+	RefreshChargePresentation();
 
 	if (HasAuthority())
 	{
@@ -101,6 +113,7 @@ void ASelfDestructDrone::BeginPlay()
 
 void ASelfDestructDrone::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	StopChargePresentation();
 	DestroyMountedExplosives();
 	Super::EndPlay(EndPlayReason);
 }
@@ -117,6 +130,14 @@ void ASelfDestructDrone::SpawnAndAttachMountedExplosives()
 		GetMesh(),
 		MountedExplosiveSocketPattern,
 		MatchingSockets);
+	if (!MountedExplosiveSocketName.IsNone())
+	{
+		MatchingSockets.Reset();
+		if (GetMesh()->DoesSocketExist(MountedExplosiveSocketName))
+		{
+			MatchingSockets.Add(MountedExplosiveSocketName);
+		}
+	}
 	if (MatchingSockets.IsEmpty())
 	{
 		UE_LOG(
@@ -127,24 +148,28 @@ void ASelfDestructDrone::SpawnAndAttachMountedExplosives()
 			*MountedExplosiveSocketPattern.ToString());
 		return;
 	}
-
-	for (const FName SocketName : MatchingSockets)
+	if (MatchingSockets.Num() != 1)
 	{
-		AExplosiveProp* MountedExplosive = GetWorld()->SpawnActorDeferred<AExplosiveProp>(
-			MountedExplosiveClass,
-			GetMesh()->GetSocketTransform(SocketName),
-			this,
-			this,
-			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-		if (!MountedExplosive)
-		{
-			continue;
-		}
-
-		MountedExplosive->InitializeMountedSocket(SocketName);
-		MountedExplosive->FinishSpawning(GetMesh()->GetSocketTransform(SocketName));
-		MountedExplosives.Add(MountedExplosive);
+		UE_LOG(LogOutlier, Error, TEXT("[SelfDestructDrone] Specify one MountedExplosiveSocketName. Actor=%s Matches=%d"),
+			*GetName(), MatchingSockets.Num());
+		return;
 	}
+
+	const FName SocketName = MatchingSockets[0];
+	AExplosiveProp* MountedExplosive = GetWorld()->SpawnActorDeferred<AExplosiveProp>(
+		MountedExplosiveClass,
+		GetMesh()->GetSocketTransform(SocketName),
+		this,
+		this,
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!MountedExplosive)
+	{
+		UE_LOG(LogOutlier, Error, TEXT("[SelfDestructDrone] Failed to spawn mounted explosive Actor=%s"), *GetName());
+		return;
+	}
+	MountedExplosive->InitializeMountedSocket(SocketName);
+	MountedExplosive->FinishSpawning(GetMesh()->GetSocketTransform(SocketName));
+	MountedExplosives.Add(MountedExplosive);
 	ForceNetUpdate();
 }
 
@@ -170,7 +195,7 @@ void ASelfDestructDrone::TriggerSelfDestruct()
 		return;
 	}
 	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] DetonateRequested Drone=%s Committed=%d Health=%.1f"),
-		*GetNameSafe(this), bHasCommittedSelfDestruct, GetCurrentHealth());
+		*GetNameSafe(this), ChargeState.bActive, GetCurrentHealth());
 
 	bTriggeredSelfDestruct = true;
 	ApplyDamageInternal(
@@ -186,13 +211,19 @@ void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
 	FVector NormalImpulse, const FHitResult& Hit)
 {
 	Super::NotifyHit(MyComp, Other, OtherComp, bSelfMoved, HitLocation, HitNormal, NormalImpulse, Hit);
-	// 메시/부착물 접촉은 제외한다. 커밋된 본체의 실제 차단 충돌만 폭발한다.
-	if (!HasAuthority() || !bHasCommittedSelfDestruct || bDeathHandling || IsDead()
+	// 1. 커밋된 본체의 실제 차단 충돌만 검사한다. 메시/부착물 접촉은 제외한다.
+	if (!HasAuthority() || !ChargeState.bActive || bDeathHandling || IsDead()
 		|| MyComp != GetCapsuleComponent() || !Hit.bBlockingHit
 		|| !IsValid(Other) || Other == this || Other->GetOwner() == this || Other->IsAttachedTo(this))
 	{
 		return;
 	}
+	// 2. 채널이 Pawn이어도 일반 AI일 수 있다. 서버의 캐릭터 종류/빙의 상태로 플레이어를 구분한다.
+	const AEnemyBase* OtherEnemy = Cast<AEnemyBase>(Other);
+	const bool bPlayerContact = Cast<AShooterCharacter>(Other) || Cast<APartnerCharacter>(Other)
+		|| (OtherEnemy && OtherEnemy->IsEnemyPossessed());
+	// 벽 접촉은 물리 이동만 막는다. Commit과 시작 시각은 유지해 기존 StateTree 시간 만료로 폭발한다.
+	if (!bPlayerContact) return;
 	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] CollisionDetonate Drone=%s Other=%s Component=%s Location=%s"),
 		*GetNameSafe(this), *GetNameSafe(Other), *GetNameSafe(OtherComp), *HitLocation.ToCompactString());
 	TriggerSelfDestruct();
@@ -242,7 +273,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	if (!HasAuthority()
 		|| bDeathHandling
 		|| IsDead()
-		|| bHasCommittedSelfDestruct)
+		|| ChargeState.bActive)
 	{
 		return false;
 	}
@@ -260,7 +291,8 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	CommittedChargeDistanceLimit = FMath::Max(ChargeDistanceLimit, 0.0f);
 	CommittedImpactElapsedTime = 0.0f;
 
-	bHasCommittedSelfDestruct = true;
+	// 이동/해킹의 commit을 먼저 확정하고 아래에서 클라이언트 연출까지 게시한다.
+	ChargeState.bActive = true;
 	if (HackableComponent)
 	{
 		// 전조가 시작된 자폭은 더 이상 취소 가능한 해킹 대상으로 노출하지 않는다.
@@ -284,7 +316,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 		ActiveController->SetControlRotation(ChargeRotation);
 	}
 	SetActorRotation(FRotator(0.0f, ChargeRotation.Yaw, 0.0f));
-	MulticastSelfDestructTelegraphStarted(FMath::Max(TelegraphDuration, 0.0f));
+	PublishChargeState(true, TelegraphDuration);
 	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Commit Drone=%s Direction=%s Speed=%.1f DistanceLimited=%d Distance=%.1f Duration=%.2f"),
 		*GetNameSafe(this), *CommittedChargeDirection.ToCompactString(), ChargeSpeed,
 		bCommittedChargeDistanceLimited, ChargeDistanceLimit, TelegraphDuration);
@@ -297,7 +329,7 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 	float ChargeSpeed)
 {
 	if (!HasAuthority()
-		|| !bHasCommittedSelfDestruct
+		|| !ChargeState.bActive
 		|| bDeathHandling
 		|| IsDead())
 	{
@@ -368,13 +400,13 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 
 void ASelfDestructDrone::CancelCommittedSelfDestruct()
 {
-	if (!HasAuthority() || !bHasCommittedSelfDestruct || bDeathHandling)
+	if (!HasAuthority() || !ChargeState.bActive || bDeathHandling)
 	{
 		return;
 	}
 	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Cancel Drone=%s"), *GetNameSafe(this));
 
-	bHasCommittedSelfDestruct = false;
+	PublishChargeState(false);
 	ChargeSpeedState.Reset();
 	if (HackableComponent)
 	{
@@ -397,13 +429,12 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 		Movement->StopMovementImmediately();
 		Movement->MaxFlySpeed = FMath::Max(GetRuntimeStat().MoveSpeed, 0.0f);
 	}
-	MulticastSelfDestructTelegraphCancelled();
 	ForceNetUpdate();
 }
 
 bool ASelfDestructDrone::TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity)
 {
-	if (!bHasCommittedSelfDestruct)
+	if (!ChargeState.bActive)
 	{
 		return false;
 	}
@@ -453,21 +484,128 @@ void ASelfDestructDrone::CancelCommittedAction()
 	CancelCommittedSelfDestruct();
 }
 
-void ASelfDestructDrone::MulticastSelfDestructTelegraphStarted_Implementation(
-	float TelegraphDuration)
+void ASelfDestructDrone::PublishChargeState(bool bActive, float Duration)
 {
-	if (GetNetMode() != NM_DedicatedServer)
+	if (!HasAuthority() || !GetWorld()) return;
+	++ChargeState.Revision;
+	ChargeState.bActive = bActive;
+	ChargeState.Playback.ServerStartTime = GetWorld()->GetTimeSeconds();
+	ChargeState.Playback.Duration = Duration;
+	ChargeState.Playback.SoundDuration = ChargeSoundDuration;
+	if (bActive && Duration != 0.0f && !ChargeState.Playback.IsValid())
 	{
-		OutlierAudioFeedback::Loop(this, *TelegraphAudioContext.ToString(), true, TEXT("Audio.Type.Enemy"));
-		OnSelfDestructTelegraphStarted(TelegraphDuration);
+		UE_LOG(LogOutlier, Warning, TEXT("[SelfDestructDrone] Invalid charge audio window Actor=%s Duration=%f SoundDuration=%f"),
+			*GetName(), Duration, ChargeSoundDuration);
+	}
+	RefreshChargePresentation();
+	ForceNetUpdate();
+}
+
+void ASelfDestructDrone::SetCommittedChargeDuration(float Duration)
+{
+	if (!HasAuthority() || !ChargeState.bActive) return;
+	// Begin/Update Task가 다른 설정을 갖더라도 실제 카운트다운 시작 시각과 기간을 한 번에 게시한다.
+	PublishChargeState(true, Duration);
+}
+
+float ASelfDestructDrone::GetCommittedChargeElapsedTime() const
+{
+	return GetWorld() ? static_cast<float>(FMath::Max(0.0,
+		GetWorld()->GetTimeSeconds() - ChargeState.Playback.ServerStartTime)) : 0.0f;
+}
+
+void ASelfDestructDrone::OnRep_ChargeState()
+{
+	RefreshChargePresentation();
+}
+
+void ASelfDestructDrone::OnRep_MountedExplosives()
+{
+	RefreshChargePresentation();
+}
+
+void ASelfDestructDrone::OnPoolStateApplied(EEnemyPoolState PreviousState)
+{
+	Super::OnPoolStateApplied(PreviousState);
+	RefreshChargePresentation();
+}
+
+void ASelfDestructDrone::RefreshChargePresentation()
+{
+	if (!HasActorBegunPlay() || !GetWorld() || GetNetMode() == NM_DedicatedServer) return;
+	if (!ChargeState.bActive || !ChargeState.Playback.IsValid() || IsDead()
+		|| (IsPoolManaged() && GetEnemyPoolState() != EEnemyPoolState::CombatActive))
+	{
+		StopChargePresentation();
+		return;
+	}
+	// 복제 상태, 서버 시계, 부착 Actor는 서로 다른 순서로 준비될 수 있다. 활성 시도에서만 재시도한다.
+	if (!GetWorldTimerManager().IsTimerActive(ChargePresentationTimer))
+	{
+		GetWorldTimerManager().SetTimer(ChargePresentationTimer, this,
+			&ASelfDestructDrone::RefreshChargePresentation, 1.0f / 60.0f, true);
+	}
+	if (!ChargeClock.IsValid()) ChargeClock = GetWorld()->GetGameState();
+	if (!ChargeClock.IsValid()) return;
+	float PlaybackTime = 0.0f;
+	if (!ChargeState.Playback.GetPlaybackTime(ChargeClock->GetServerWorldTimeSeconds(), PlaybackTime))
+	{
+		// 정상 종료 뒤 폭발 복제가 도착할 때까지 마지막 밝기를 유지한다.
+		// 만료된 상태로 처음 진입한 클라이언트는 사운드/이벤트를 뒤늦게 시작하지 않는다.
+		if (bChargePresentationStarted && PresentedChargeRevision == ChargeState.Revision)
+		{
+			GetWorldTimerManager().ClearTimer(ChargePresentationTimer);
+			if (ChargeAudio.IsValid()) ChargeAudio->StopLocalEmitterTimedSound(this, TelegraphAudioContext);
+			if (PresentationExplosive.IsValid())
+			{
+				PresentationExplosive->ApplyChargeEmissive(
+					ChargeState.Playback.SoundDuration, ChargeState.Playback.Duration);
+			}
+		}
+		else
+		{
+			StopChargePresentation();
+		}
+		return;
+	}
+	if (PresentedChargeRevision != ChargeState.Revision || !bChargePresentationStarted)
+	{
+		StopChargePresentation();
+		PresentedChargeRevision = ChargeState.Revision;
+		bChargePresentationStarted = true;
+		if (ChargeAudio.IsValid())
+		{
+			ChargeAudio->SetLocalEmitterTimedSound(this, OutlierAudioFeedback::Tag(TEXT("Audio.Type.Enemy")),
+				TelegraphAudioContext, ChargeState.Playback);
+		}
+		OnSelfDestructTelegraphStarted(ChargeState.Playback.Duration);
+		GetWorldTimerManager().SetTimer(ChargePresentationTimer, this,
+			&ASelfDestructDrone::RefreshChargePresentation, 1.0f / 60.0f, true);
+	}
+	AExplosiveProp* Explosive = GetMountedExplosive();
+	if (PresentationExplosive.Get() != Explosive)
+	{
+		if (PresentationExplosive.IsValid()) PresentationExplosive->ResetChargeEmissive();
+		PresentationExplosive = Explosive;
+	}
+	if (IsValid(Explosive))
+	{
+		// 로컬 누적 시간이 아닌 같은 서버 시계로 평가해 늦게 보인 드론도 현재 밝기에 합류한다.
+		const float ChargeElapsedTime = static_cast<float>(FMath::Max(
+			0.0, ChargeClock->GetServerWorldTimeSeconds() - ChargeState.Playback.ServerStartTime));
+		Explosive->ApplyChargeEmissive(PlaybackTime, ChargeElapsedTime);
 	}
 }
 
-void ASelfDestructDrone::MulticastSelfDestructTelegraphCancelled_Implementation()
+void ASelfDestructDrone::StopChargePresentation()
 {
-	if (GetNetMode() != NM_DedicatedServer)
+	if (GetWorld()) GetWorldTimerManager().ClearTimer(ChargePresentationTimer);
+	if (ChargeAudio.IsValid()) ChargeAudio->StopLocalEmitterTimedSound(this, TelegraphAudioContext);
+	if (PresentationExplosive.IsValid()) PresentationExplosive->ResetChargeEmissive();
+	PresentationExplosive.Reset();
+	if (bChargePresentationStarted)
 	{
-		OutlierAudioFeedback::Loop(this, *TelegraphAudioContext.ToString(), false, TEXT("Audio.Type.Enemy"));
+		bChargePresentationStarted = false;
 		OnSelfDestructTelegraphCancelled();
 	}
 }
@@ -480,7 +618,7 @@ void ASelfDestructDrone::HandleDeath()
 	}
 
 	bDeathHandling = true;
-	bHasCommittedSelfDestruct = false;
+	PublishChargeState(false);
 	bCommittedChargeDistanceLimited = false;
 	// EnemyBase가 Actor를 제거하기 전에 폭발 Queue와 클라이언트 연출을 먼저 확정한다.
 	if (ExplosionComponent)
@@ -505,7 +643,7 @@ void ASelfDestructDrone::ResetPoolRuntimeState()
 	Super::ResetPoolRuntimeState();
 	bDeathHandling = false;
 	bTriggeredSelfDestruct = false;
-	bHasCommittedSelfDestruct = false;
+	PublishChargeState(false);
 	CommittedChargeDirection = FVector::ForwardVector;
 	CommittedChargeTargetDirection = FVector::ForwardVector;
 	CommittedChargeStartLocation = FVector::ZeroVector;
@@ -518,6 +656,8 @@ void ASelfDestructDrone::ResetPoolRuntimeState()
 
 void ASelfDestructDrone::PrepareForPoolIdle()
 {
+	PublishChargeState(false);
+	StopChargePresentation();
 	ChargeSpeedState.Reset();
 	Super::PrepareForPoolIdle();
 	DestroyMountedExplosives();

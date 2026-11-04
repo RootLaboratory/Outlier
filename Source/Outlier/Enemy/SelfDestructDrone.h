@@ -3,10 +3,25 @@
 #include "CoreMinimal.h"
 #include "Enemy/VECDrone.h"
 #include "Drone/FlightMovementComponentBase.h"
+#include "Audio/OutlierAudioTypes.h"
 #include "SelfDestructDrone.generated.h"
 
 class UExplosionComponent;
 class AExplosiveProp;
+class AGameStateBase;
+class UOutlierAudioSubsystem;
+
+USTRUCT()
+struct FSelfDestructChargeState
+{
+	GENERATED_BODY()
+	UPROPERTY()
+	uint32 Revision = 0;
+	UPROPERTY()
+	bool bActive = false;
+	UPROPERTY()
+	FOutlierAudioPlaybackWindow Playback;
+};
 
 UCLASS()
 class OUTLIER_API ASelfDestructDrone : public AVECDrone
@@ -47,10 +62,15 @@ public:
 		float MaxChargeDistance);
 	bool UpdateCommittedSelfDestructMovement(float DeltaTime, float ChargeSpeed);
 	void CancelCommittedSelfDestruct();
-	virtual bool IsPossessedActionCommitted() const override { return bHasCommittedSelfDestruct; }
+	virtual bool IsPossessedActionCommitted() const override { return ChargeState.bActive; }
 
 	UFUNCTION(BlueprintPure, Category = "Self Destruct Drone")
-	bool IsSelfDestructCommitted() const { return bHasCommittedSelfDestruct; }
+	bool IsSelfDestructCommitted() const { return ChargeState.bActive; }
+
+	// 빙의 Update Task의 실제 종료 시간을 commit과 같은 시간축에 확정한다.
+	void SetCommittedChargeDuration(float Duration);
+	float GetCommittedChargeElapsedTime() const;
+	void RefreshChargePresentation();
 
 protected:
 	// AI 돌진은 가속만 적용한다. 목적지 감속이나 타겟 재추적은 하지 않는다.
@@ -66,6 +86,7 @@ protected:
 	FGameplayTag SelfDestructAudioContext;
 	virtual void ResetPoolRuntimeState() override;
 	virtual void PrepareForPoolIdle() override;
+	virtual void OnPoolStateApplied(EEnemyPoolState PreviousState) override;
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity) override;
 	virtual void CancelCommittedAction() override;
 
@@ -75,18 +96,18 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Self Destruct Drone|Explosive")
 	FName MountedExplosiveSocketPattern = TEXT("ExplosiveSocket");
+	// 지정하지 않으면 기존 패턴에서 유일한 소켓만 허용한다. 복수 후보를 임의 선택하지 않는다.
+	UPROPERTY(EditDefaultsOnly, Category = "Self Destruct Drone|Explosive")
+	FName MountedExplosiveSocketName;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Replicated, Category = "Self Destruct Drone|Explosive")
+	UPROPERTY(EditDefaultsOnly, Category = "Self Destruct Drone|Presentation", meta = (ClampMin = "0.0", Units = "s"))
+	float ChargeSoundDuration = 4.029208f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, ReplicatedUsing = OnRep_MountedExplosives, Category = "Self Destruct Drone|Explosive")
 	TArray<TObjectPtr<AExplosiveProp>> MountedExplosives;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Self Destruct Drone|Explosive")
 	TObjectPtr<UExplosionComponent> ExplosionComponent;
-
-	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastSelfDestructTelegraphStarted(float TelegraphDuration);
-
-	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastSelfDestructTelegraphCancelled();
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Self Destruct Drone|Presentation")
 	void OnSelfDestructTelegraphStarted(float TelegraphDuration);
@@ -109,9 +130,22 @@ private:
 	FFlightSpeedProfileState ChargeSpeedState;
 	friend class FEnemyChargeSpeedProfileTest;
 	friend class FEnemyChargeCollisionTest;
+	friend class FEnemyChargePresentationStateTest;
 
-	UPROPERTY(Replicated)
-	bool bHasCommittedSelfDestruct = false;
+	UPROPERTY(ReplicatedUsing = OnRep_ChargeState)
+	FSelfDestructChargeState ChargeState;
+	UFUNCTION()
+	void OnRep_ChargeState();
+	UFUNCTION()
+	void OnRep_MountedExplosives();
+	void PublishChargeState(bool bActive, float Duration = 0.0f);
+	void StopChargePresentation();
+	FTimerHandle ChargePresentationTimer;
+	TWeakObjectPtr<AGameStateBase> ChargeClock;
+	TWeakObjectPtr<UOutlierAudioSubsystem> ChargeAudio;
+	TWeakObjectPtr<AExplosiveProp> PresentationExplosive;
+	uint32 PresentedChargeRevision = 0;
+	bool bChargePresentationStarted = false;
 	FVector CommittedChargeDirection = FVector::ForwardVector;
 	FVector CommittedChargeTargetDirection = FVector::ForwardVector;
 	FVector CommittedChargeStartLocation = FVector::ZeroVector;

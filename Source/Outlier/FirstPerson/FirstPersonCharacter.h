@@ -39,6 +39,10 @@ UCLASS()
 class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IOutlierStealthVisualTarget, public IOutlierReadabilityTarget
 {
 	GENERATED_BODY()
+	friend class FInteractionNodePresentationTest;
+	friend class FInteractionNodeHoldAttemptTest;
+	// 상호작용 세션은 캐릭터의 기존 입력 가능 판정을 재사용한다.
+	friend class UInteractableComponent;
 
 protected:
 	/** Pawn Mesh : first person view(arms; seen only by self) */
@@ -156,21 +160,22 @@ protected:
 	virtual void UnPossessed() override;
 
 	UFUNCTION(Server, Reliable)
-	void ServerInteract(AActor* TargetActor);
+	void ServerInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	UFUNCTION(Server, Reliable)
-	void ServerBeginHoldInteract(AActor* TargetActor);
+	void ServerBeginHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	UFUNCTION(Server, Reliable)
-	void ServerCancelHoldInteract(AActor* TargetActor);
+	void ServerCancelHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	UFUNCTION(Client, Reliable)
 	void ClientOnInteractSucceeded(
 		AActor* TargetActor,
-		EInteractionFlowResult FlowResult);
+		EInteractionFlowResult FlowResult,
+		int32 HoldAttemptId = 0);
 
 	UFUNCTION(Client, Reliable)
-	void ClientOnHoldInteractFailed(AActor* TargetActor);
+	void ClientOnHoldInteractFailed(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	// 서버에서 적용된 피해를 로컬 HUD에 방향 정보와 함께 전달한다.
 	UFUNCTION(Client, Reliable)

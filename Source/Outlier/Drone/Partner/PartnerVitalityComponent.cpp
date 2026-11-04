@@ -285,6 +285,7 @@ void UPartnerVitalityComponent::HandleHealthChanged(const FOnAttributeChangeData
 
 	APartnerCharacter* Partner = Cast<APartnerCharacter>(GetOwner());
 	if (bOwnerTearingDown
+		|| bSuppressRebootForDamage
 		|| !Partner
 		|| !Partner->HasAuthority()
 		|| ChangeData.OldValue <= 0.0f

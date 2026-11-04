@@ -16,6 +16,7 @@
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/GameStateBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "Outlier.h"
 #include "Sound/SoundAttenuation.h"
@@ -2173,6 +2174,17 @@ void UOutlierAudioSubsystem::HandleSoundLoaded(FSoftObjectPath SoundPath)
 	}
 }
 
+bool UOutlierAudioSubsystem::ResolveTimedEmitterStartTime(
+	const FPendingPlay& PendingPlay, double ServerNow, float& OutTime) const
+{
+	const AActor* Emitter = PendingPlay.AttachedEmitter.Get();
+	if (!IsValid(Emitter) || Emitter->IsActorBeingDestroyed()) return false;
+	const FLocalEmitterLoop* Current = LocalEmitterLoops.Find(
+		FLoopPlaybackKey { PendingPlay.AttachedEmitter.Get(), PendingPlay.TimedContext });
+	return Current && Current->bTimedSound && Current->InstanceId == PendingPlay.AudioInstanceId
+		&& PendingPlay.Playback.GetPlaybackTime(ServerNow, OutTime);
+}
+
 void UOutlierAudioSubsystem::ExecutePlay(
 	USoundBase* Sound,
 	const FPendingPlay& PendingPlay)
@@ -2196,6 +2208,21 @@ void UOutlierAudioSubsystem::ExecutePlay(
 	}
 
 	if (PendingPlay.bAttachToEmitter && !PendingPlay.AttachedEmitter.IsValid()) return;
+	float StartTime = PendingPlay.StartTime;
+	if (PendingPlay.bTimedEmitterSound)
+	{
+		const AGameStateBase* Clock = World->GetGameState();
+		// 취소/새 시도가 이전 비동기 요청을 무효화한다. 유효한 요청만 현재 서버 시각으로 seek한다.
+		if (!Clock || !ResolveTimedEmitterStartTime(PendingPlay, Clock->GetServerWorldTimeSeconds(), StartTime)) return;
+		// Loop SoundWave의 GetDuration은 무한 길이를 반환한다. 원본 구간 길이는 Duration으로 검증한다.
+		if (!FMath::IsFinite(Sound->Duration)
+			|| FMath::Abs(Sound->Duration - PendingPlay.Playback.SoundDuration) > 0.02f)
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[Audio] Timed sound duration mismatch Sound=%s Expected=%f Actual=%f"),
+				*GetNameSafe(Sound), PendingPlay.Playback.SoundDuration, Sound->Duration);
+			return;
+		}
+	}
 	FVector ListenerLocation = FVector::ZeroVector;
 	bool bHasLocalListener = false;
 	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
@@ -2266,7 +2293,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 					FRotator::ZeroRotator,
 					PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType),
 					PendingPlay.PitchMultiplier,
-					PendingPlay.StartTime,
+					StartTime,
 					Sound->AttenuationSettings,
 					nullptr,
 					false);
@@ -2278,7 +2305,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 				AudioComponent->SetPitchMultiplier(PendingPlay.PitchMultiplier);
 				AudioComponent->SetVolumeMultiplier(
 					PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType));
-				AudioComponent->Play(PendingPlay.StartTime);
+				AudioComponent->Play(StartTime);
 			}
 		}
 		else
@@ -2290,7 +2317,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 				FRotator::ZeroRotator,
 				PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType),
 				PendingPlay.PitchMultiplier,
-				PendingPlay.StartTime,
+				StartTime,
 				Sound->AttenuationSettings,
 				nullptr,
 				true);
@@ -2315,7 +2342,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 		Sound,
 		PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType),
 		PendingPlay.PitchMultiplier,
-		PendingPlay.StartTime,
+		StartTime,
 		nullptr,
 		false,
 		!PendingPlay.bLooping);
@@ -2438,6 +2465,30 @@ float UOutlierAudioSubsystem::GetCombinedVolumeMultiplier(
 	return MasterMultiplier * GetVolumeMultiplier(VolumeType);
 }
 
+void UOutlierAudioSubsystem::SetLocalEmitterTimedSound(AActor* Emitter, FGameplayTag Type,
+	FGameplayTag Context, const FOutlierAudioPlaybackWindow& Playback)
+{
+	if (bStoppingAllLocalAudio || !IsValid(Emitter) || !Type.IsValid() || !Context.IsValid()
+		|| !Playback.IsValid() || !Emitter->GetWorld()
+		|| Emitter->GetNetMode() == NM_DedicatedServer) return;
+	UWorld* World = Emitter->GetWorld();
+	if (LocalLoopWorld.IsValid() && LocalLoopWorld.Get() != World) ClearLocalEmitterLoops();
+	StopLocalEmitterTimedSound(Emitter, Context);
+	FLocalEmitterLoop& Request = LocalEmitterLoops.Add(FLoopPlaybackKey { Emitter, Context });
+	Request.Type = Type;
+	Request.bTimedSound = true;
+	Request.Playback = Playback;
+	LocalLoopWorld = World;
+	if (!World->GetTimerManager().IsTimerActive(LocalLoopTimer))
+		World->GetTimerManager().SetTimer(LocalLoopTimer, this, &ThisClass::RefreshLocalEmitterLoops, 0.2f, true);
+	RefreshLocalEmitterLoops();
+}
+
+void UOutlierAudioSubsystem::StopLocalEmitterTimedSound(AActor* Emitter, FGameplayTag Context)
+{
+	SetLocalEmitterLoop(Emitter, FGameplayTag(), Context, false);
+}
+
 void UOutlierAudioSubsystem::SetLocalEmitterLoop(AActor* Emitter, FGameplayTag Type,
 	FGameplayTag Context, bool bEnabled, bool bTwoD, float FadeOutDuration)
 {
@@ -2504,6 +2555,18 @@ void UOutlierAudioSubsystem::RefreshLocalEmitterLoops()
 			It.RemoveCurrent();
 			continue;
 		}
+		if (Loop.bTimedSound)
+		{
+			const AGameStateBase* Clock = Emitter->GetWorld()->GetGameState();
+			float PlaybackTime = 0.0f;
+			if (!Clock) continue;
+			if (!Loop.Playback.GetPlaybackTime(Clock->GetServerWorldTimeSeconds(), PlaybackTime))
+			{
+				StopLoopAudioLocally(Loop.InstanceId);
+				It.RemoveCurrent();
+				continue;
+			}
+		}
 		if (Loop.bOneShotSubmitted) continue;
 		if (Loop.InstanceId != 0)
 		{
@@ -2525,7 +2588,7 @@ void UOutlierAudioSubsystem::RefreshLocalEmitterLoops()
 		Contexts.AddTag(It.Key().LoopContextTag);
 		const FRuntimeCatalogEntry* Entry = ResolveBestEntry(Loop.Type, Contexts);
 		if (!Entry) continue;
-		if (Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::OneShot)
+		if (Loop.bTimedSound || Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::OneShot)
 		{
 			// 활성 상태는 유지하되 단발음은 진입당 한 번만 요청한다. 종료 후 재진입하면 다시 허용한다.
 			if (Loop.bOneShotSubmitted) continue;
@@ -2540,9 +2603,12 @@ void UOutlierAudioSubsystem::RefreshLocalEmitterLoops()
 			OneShot.AttachedEmitter = Emitter;
 			OneShot.bAttachToEmitter = !Loop.bTwoD;
 			OneShot.VolumeMultiplier = Entry->VolumeMultiplier;
-			OneShot.PitchMultiplier = Entry->PitchMultiplier;
+			OneShot.PitchMultiplier = Loop.bTimedSound ? 1.0f : Entry->PitchMultiplier;
 			OneShot.VolumeType = Entry->VolumeType;
 			OneShot.AudioInstanceId = Loop.InstanceId;
+			OneShot.bTimedEmitterSound = Loop.bTimedSound;
+			OneShot.TimedContext = It.Key().LoopContextTag;
+			OneShot.Playback = Loop.Playback;
 			QueueOrPlay(*Entry, OneShot);
 			continue;
 		}
