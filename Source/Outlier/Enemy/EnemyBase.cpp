@@ -14,6 +14,7 @@
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "EnhancedInputComponent.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyAdaptationShieldComponent.h"
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/Death/OutlierDeathDebrisActor.h"
@@ -163,6 +164,10 @@ AEnemyBase::AEnemyBase()
 	AutoAimBodyAnchor = CreateDefaultSubobject<USceneComponent>(TEXT("AutoAimBodyAnchor"));
 	AutoAimBodyAnchor->SetupAttachment(GetMesh());
 	AutoAimBodyAnchor->PrimaryComponentTick.bCanEverTick = false;
+
+	AdaptationShieldComponent = CreateDefaultSubobject<UEnemyAdaptationShieldComponent>(
+		TEXT("AdaptationShieldComponent"));
+	AdaptationShieldComponent->SetupAttachment(GetRootComponent());
 }
 
 void AEnemyBase::ResetPatrolPoints()
@@ -724,6 +729,10 @@ void AEnemyBase::ApplyAdaptationState(EEnemyAdaptationState NewState)
 	AdaptationState = NewState;
 	if (GetNetMode() != NM_DedicatedServer)
 	{
+		if (AdaptationShieldComponent)
+		{
+			AdaptationShieldComponent->ApplyAdaptationState(AdaptationState);
+		}
 		OnAdaptationStateChanged(PreviousState, AdaptationState);
 	}
 	UE_LOG(
@@ -781,6 +790,10 @@ FEnemyAdaptationBreakApplicationResult AEnemyBase::ApplyAdaptationBreakEffects(
 
 void AEnemyBase::OnRep_AdaptationState(EEnemyAdaptationState PreviousState)
 {
+	if (AdaptationShieldComponent)
+	{
+		AdaptationShieldComponent->ApplyAdaptationState(AdaptationState);
+	}
 	OnAdaptationStateChanged(PreviousState, AdaptationState);
 	UE_LOG(
 		LogOutlier,
@@ -2168,6 +2181,18 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	if (AppliedDamage > 0.0f)
 	{
 		BroadcastDamageCue(Request, AppliedDamage);
+	}
+
+	// 피해 판정과 무관한 표현이다. 내성 대상인 총기 피격만 방어막 파문으로 보여준다.
+	if (AppliedDamage > 0.0f
+		&& bAdaptationGunDamage
+		&& !IsDead()
+		&& AdaptationShieldComponent
+		&& AdaptationShieldComponent->ShouldShowForState(AdaptationState))
+	{
+		MulticastAdaptationShieldHit(Request.HitResult.bBlockingHit
+			? FVector(Request.HitResult.ImpactPoint)
+			: (Request.DamageOrigin.IsZero() ? GetActorLocation() : Request.DamageOrigin));
 	}
 
 	return AppliedDamage;
@@ -3679,6 +3704,32 @@ void AEnemyBase::HandleDeath()
 	else
 	{
 		Destroy();
+	}
+}
+
+void AEnemyBase::MulticastAdaptationShieldHit_Implementation(FVector_NetQuantize ImpactLocation)
+{
+	if (AdaptationShieldComponent)
+	{
+		AdaptationShieldComponent->NotifyShieldHit(ImpactLocation);
+	}
+}
+
+void AEnemyBase::PlayAdaptationShieldBreak(EEnemyAdaptationState BrokenState, UNiagaraSystem* BreakVFX)
+{
+	if (HasAuthority()
+		&& AdaptationShieldComponent
+		&& AdaptationShieldComponent->ShouldShowForState(BrokenState))
+	{
+		MulticastAdaptationShieldBreak(BreakVFX);
+	}
+}
+
+void AEnemyBase::MulticastAdaptationShieldBreak_Implementation(UNiagaraSystem* BreakVFX)
+{
+	if (AdaptationShieldComponent)
+	{
+		AdaptationShieldComponent->PlayBreak(BreakVFX);
 	}
 }
 
