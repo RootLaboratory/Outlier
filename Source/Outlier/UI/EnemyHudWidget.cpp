@@ -93,7 +93,10 @@ void UEnemyHudWidget::BindDamageFeedback()
 		return;
 	}
 
-	InitializeDamageMasks(static_cast<int32>(Enemy->GetUniqueID()));
+	if (!InitializeDamageMasks(static_cast<int32>(Enemy->GetUniqueID())))
+	{
+		return;
+	}
 
 	HealthChangedHandle = AbilitySystem
 		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetHealthAttribute())
@@ -102,6 +105,7 @@ void UEnemyHudWidget::BindDamageFeedback()
 		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetMaxHealthAttribute())
 		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
 	BoundAbilitySystem = AbilitySystem;
+	// 이미 깎인 적이면 지난 단계까지 바로 부서진 상태로 시작한다.
 	RefreshDamageStage();
 }
 
@@ -149,24 +153,15 @@ bool UEnemyHudWidget::InitializeDamageMasks(int32 Seed)
 		PPSubsystem->SetDroneDamageMaskRevealed(MaskSlot, false);
 	}
 
-	HealthChangedHandle = AbilitySystem
-		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetHealthAttribute())
-		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
-	MaxHealthChangedHandle = AbilitySystem
-		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetMaxHealthAttribute())
-		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
-	BoundAbilitySystem = AbilitySystem;
 	RevealedDamageStageCount = 0;
 	bDamageFeedbackBound = true;
 	PPSubsystem->SetDroneDamageSuppressed(false);
 	return true;
 }
 
-void UEnemyHudWidget::ReleaseDamageFeedback()
-{
-	bDamagePreview = false;
 void UEnemyHudWidget::ReleaseDamageFeedback(bool bPreserveHackExpiry)
 {
+	bDamagePreview = false;
 	if (!bPreserveHackExpiry || !IsShowingHackTimerExpiry())
 	{
 		OnHackTimerExpiryDisplayFinished.Unbind();
