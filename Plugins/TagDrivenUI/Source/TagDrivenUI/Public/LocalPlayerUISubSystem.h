@@ -78,6 +78,8 @@ public:
 	// 로컬 HUD가 늦게 생성되거나 교체됐는지 확인할 때 현재 등록된 인스턴스를 반환한다.
 	UMainUIBase* GetMainUI() const;
 	void FlushMainUITransientWidgets();
+	void BeginEndingPresentation();
+	bool IsEndingPresentationActive() const;
 	// 사망 중 늦게 도착한 피격 표시가 다시 쌓이지 않게 한다.
 	void SetTransientWidgetsSuppressed(bool bSuppressed);
 	void OnRep_PlayerStateChanged(EUIPlayerState State);
@@ -130,6 +132,7 @@ public:
 	void OnAbilityEnabledByDistance();
 
 private:
+	TWeakObjectPtr<UWorld> EndingWorld;
 	void ApplyLegacyVitalityPresentation(EOutlierVitalityChannel Channel, float Current, float Maximum);
 	void ApplyCachedVitalityToModule(UEventDrivenUI* Module, bool bImmediate,
 		EOutlierVitalityChannel Channel = EOutlierVitalityChannel::Count);

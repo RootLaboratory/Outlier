@@ -28,6 +28,7 @@ enum class EOutlierGameplayReloadPhase : uint8;
 enum class EOutlierGameplayReloadFailure : uint8;
 struct FOutlierCheckpointData;
 struct FOutlierCheckpointSnapshot;
+struct FOutlierCinematicContext;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPairGameplayReady, uint32 /*GameplayGeneration*/);
 
@@ -128,6 +129,7 @@ public:
 	}
 
 	void OnClientArenaReady(APlayerController* PC, uint32 GameplayGeneration);
+	void HandleCinematicContext(AFirstPersonPlayerController* PC, const FOutlierCinematicContext& Context);
 	void OnClientArenaGameplayUnloaded(APlayerController* PC, uint32 GameplayGeneration);
 
 	// UFUNCTION(Exec)
@@ -351,6 +353,10 @@ protected:
 
 private:
 	bool IsArenaWorkerProcess() const;
+	void TryStartInitialIntro();
+	void TryFinishInitialIntro();
+	void ReleaseInitialIntroInput();
+	bool IsInitialIntroParticipant(const AFirstPersonPlayerController* PC, const FGuid& IntroId) const;
 	bool UsesStaticArenaHandoff() const;
 	void ClearArenaWorkerWorldPause();
 	void ScheduleArenaWorkerPairSetup();
@@ -405,6 +411,15 @@ private:
 	bool bListenHostReturnRequested = false;
 	FOutlierMatchSaveContext ActiveMatchSaveContext;
 	bool bPendingInitialSaveRestore = false;
+	// 새 매치에만 적용한다. 저장 복원이나 재로딩 시 true로 되돌리지 않는다.
+	bool bPendingInitialIntro = false;
+	bool bInitialIntroStarted = false;
+	bool bInitialIntroFailed = false;
+	FGuid InitialIntroId;
+	TWeakObjectPtr<AFirstPersonPlayerController> InitialIntroShooter;
+	TWeakObjectPtr<AFirstPersonPlayerController> InitialIntroPartner;
+	TSet<TWeakObjectPtr<AFirstPersonPlayerController>> InitialIntroPreparedPlayers;
+	TSet<TWeakObjectPtr<AFirstPersonPlayerController>> InitialIntroReadyPlayers;
 	int32 ActiveMatchPairId = INDEX_NONE;
 	FGuid ListenGuestReconnectToken;
 	FGuid ListenGuestPlayerId;

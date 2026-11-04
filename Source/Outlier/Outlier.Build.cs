@@ -18,6 +18,8 @@ public class Outlier : ModuleRules
             "Engine",
             "InputCore",
             "EnhancedInput",
+            "LevelSequence",
+            "MovieScene",
             "AIModule",
             "StateTreeModule",
             "GameplayStateTreeModule",

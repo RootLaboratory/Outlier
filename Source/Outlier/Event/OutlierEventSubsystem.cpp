@@ -234,6 +234,7 @@ void UOutlierEventSubsystem::RebuildChains()
 
 void UOutlierEventSubsystem::NotifyInfoCompleted(EOutlierInfoRegion Region, const FOutlierInfoWidgetRequest& Request)
 {
+	if (const auto* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>(); UI && UI->IsEndingPresentationActive()) return;
 	UWorld* World = GetWorld();
 	if (!World || World->bIsTearingDown)
 	{
@@ -436,6 +437,7 @@ FGameplayTag UOutlierEventSubsystem::ResolveUpperTag(const FOutlierEventDataRow&
 
 bool UOutlierEventSubsystem::SendTTS(FGameplayTag TTSTag)
 {
+	if (const auto* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>(); UI && UI->IsEndingPresentationActive()) return false;
 	UWorld* World = GetWorld();
 	if (!World || World->bIsTearingDown || World->GetNetMode() == NM_DedicatedServer) return false;
 	FOutlierTTSDataRow TTS;
@@ -499,6 +501,7 @@ bool UOutlierEventSubsystem::TryGetEventGifData(FGameplayTag EventTag, FOutlierG
 
 bool UOutlierEventSubsystem::SendEvent(FGameplayTag EventTag)
 {
+	if (const auto* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>(); UI && UI->IsEndingPresentationActive()) return false;
 	UWorld* World = GetWorld();
 	if (!EventTag.IsValid() || !World || World->bIsTearingDown || World->GetNetMode() == NM_DedicatedServer)
 	{

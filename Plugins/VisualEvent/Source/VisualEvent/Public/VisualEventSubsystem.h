@@ -44,6 +44,7 @@ public:
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
+	void BeginEndingPresentation();
 
 	// 사운드는 Audio Subsystem이 처리하며 여기서는 데칼/VFX만 독립적으로 선택한다.
 	UFUNCTION(BlueprintCallable, Category = "Visual Event")
@@ -84,6 +85,7 @@ public:
 	void SpawnEffectAtLocation(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation);
 
 private:
+	bool bEndingPresentation = false;
 	void FinishLoadingTaggedEffects();
 
 	UPROPERTY(Transient)

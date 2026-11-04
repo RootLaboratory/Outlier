@@ -107,6 +107,7 @@ public:
 	// 볼륨 미등록 상태에서도 타이머와 메시/스텐실의 원본 복구 상태를 정리한다.
 	UFUNCTION(BlueprintCallable, Category = "PostProcess")
 	void ResetAllPostProcess(bool bRestoreAlwaysOnPostProcess = true);
+	void BeginEndingPresentation();
 	void DisableAllBoundPostProcessMaterials();
 	void FlushScanStencilRestoreStates();
 	void FlushPostProcessMaterialParameters();
@@ -156,6 +157,7 @@ public:
 	TObjectPtr<AOutlierPostProcessVolume> BoundPostProcessVolume;
 
 private:
+	bool bEndingPresentation = false;
 	friend class FOutlierMaterialPostProcessResetTest;
 
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> ScanStencilRestoreStates;

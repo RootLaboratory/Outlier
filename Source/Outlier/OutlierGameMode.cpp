@@ -305,6 +305,7 @@ bool AOutlierGameMode::CanControllerRequestCheckpointRestart(
 	const APlayerController* Controller) const
 {
 	return Controller
+		&& !bPendingInitialIntro
 		&& !GameOverWorldPause.IsActive()
 		&& !bArenaReloadInProgress
 		&& !bCheckpointRestartInProgress
@@ -982,6 +983,7 @@ bool AOutlierGameMode::IsPairGameplayReady() const
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
 	if (!HasAuthority() || !Arena || !Arena->IsGameplayLevelsReady()
 		|| ActiveMatchPairId == INDEX_NONE || bPendingInitialSaveRestore || bArenaReloadInProgress
+		|| bPendingInitialIntro
 		|| bListenGuestDisconnected || bListenHostReturnRequested || bArenaWorkerMatchCompleting
 		|| !PendingPossessions.IsEmpty() || !PendingLocalPossessions.IsEmpty()
 		|| !ReadyGameplayPossessPlayers.IsEmpty() || !ArenaWorkerDisconnectedPlayerIds.IsEmpty()
@@ -1000,6 +1002,11 @@ bool AOutlierGameMode::IsPairGameplayReady() const
 
 void AOutlierGameMode::BroadcastPairGameplayReadyIfReady()
 {
+	if (bPendingInitialIntro)
+	{
+		TryStartInitialIntro();
+		return;
+	}
 	if (IsPairGameplayReady())
 	{
 		const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
@@ -2111,6 +2118,19 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	}
 
 	bPendingInitialSaveRestore = bResuming;
+	bPendingInitialIntro = !bResuming;
+	bInitialIntroStarted = false;
+	bInitialIntroFailed = false;
+	InitialIntroPreparedPlayers.Reset();
+	InitialIntroReadyPlayers.Reset();
+	InitialIntroId = bPendingInitialIntro ? FGuid::NewGuid() : FGuid();
+	InitialIntroShooter = Cast<AFirstPersonPlayerController>(NewShooterPC);
+	InitialIntroPartner = Cast<AFirstPersonPlayerController>(NewPartnerPC);
+	if (bPendingInitialIntro)
+	{
+		if (InitialIntroShooter.IsValid()) InitialIntroShooter->ClientPrepareArenaIntro(InitialIntroId);
+		if (InitialIntroPartner.IsValid()) InitialIntroPartner->ClientPrepareArenaIntro(InitialIntroId);
+	}
 	if (bDirectTest && Shooter && Partner)
 	{
 		// DirectPair PIE에서만 서버가 무기한 무적을 부여한다. 개별 능력의 보호 효과와
@@ -2864,6 +2884,12 @@ void AOutlierGameMode::HandleStartingNewPlayer_Implementation(APlayerController*
 void AOutlierGameMode::Logout(AController* Exiting)
 {
 	APlayerController* ExitingPlayer = Cast<APlayerController>(Exiting);
+	if (bPendingInitialIntro && (Exiting == InitialIntroShooter.Get() || Exiting == InitialIntroPartner.Get()))
+	{
+		// 연결이 끊긴 Controller의 늦은 ACK로 이번 라운드가 완료되지 않게 한다.
+		bInitialIntroFailed = true;
+		UE_LOG(LogTemp, Error, TEXT("[Cinematic] Initial Intro interrupted by disconnect: %s"), *GetNameSafe(Exiting));
+	}
 	CancelCheckpointRestartVoteForDisconnect(ExitingPlayer);
 	CancelGameOverPendingForDisconnect(Exiting);
 	// Frontend PC가 역할별 Gameplay PC로 교체될 때도 Logout이 호출된다. 실제 플레이 중인
@@ -3802,6 +3828,11 @@ void AOutlierGameMode::TryStartArenaWorkerPair()
 
 void AOutlierGameMode::ScheduleArenaWorkerGameplayStart()
 {
+	if (bPendingInitialIntro)
+	{
+		TryStartInitialIntro();
+		return;
+	}
 	if (bArenaWorkerGameplayStartScheduled || bArenaWorkerGameplayStarted)
 	{
 		return;
@@ -3831,6 +3862,7 @@ void AOutlierGameMode::StartArenaWorkerGameplay()
 	APlayerController* ShooterController = ArenaWorkerShooterController.Get();
 	APlayerController* PartnerController = ArenaWorkerPartnerController.Get();
 	if (bArenaWorkerGameplayStarted
+		|| bPendingInitialIntro
 		|| bArenaReloadInProgress
 		|| !bArenaWorkerPairStarted
 		|| !ShooterController
@@ -3843,6 +3875,7 @@ void AOutlierGameMode::StartArenaWorkerGameplay()
 
 	bArenaWorkerGameplayStarted = true;
 	ClearArenaWorkerWorldPause();
+	ReleaseInitialIntroInput();
 	if (bResumeRoomPhasesAfterReload)
 	{
 		bResumeRoomPhasesAfterReload = false;

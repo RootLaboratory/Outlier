@@ -43,6 +43,7 @@ bool ULocalPlayerUISubSystem::DispatchInfoRequest(UInfoCanvasBase* Canvas, const
 
 bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest& Pending)
 {
+	if (IsEndingPresentationActive()) return false;
 	UWorld* World = GetWorld();
 	if (bIsDeinitializing || bClearingEventInfo || !World || World->bIsTearingDown || !Pending.Request.EventTag.IsValid())
 	{
@@ -204,6 +205,11 @@ void ULocalPlayerUISubSystem::RefreshEventUI()
 
 void ULocalPlayerUISubSystem::HandleInfoWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
+	if (EndingWorld.Get() == World)
+	{
+		EndingWorld.Reset();
+		bTransientWidgetsSuppressed = false;
+	}
 	if (World == GetWorld() || World == VitalityWorld.Get()) ResetVitalityPresentation();
 	PendingInfoRequests.RemoveAll([World](const FOutlierPendingInfoRequest& Pending)
 	{
@@ -233,6 +239,11 @@ void ULocalPlayerUISubSystem::Deinitialize()
 
 void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 {
+	if (IsEndingPresentationActive())
+	{
+		if (IsValid(InMainUI)) InMainUI->RemoveFromParent();
+		return;
+	}
 	if (!IsValid(InMainUI)) return;
 	if (MainUIInstance != InMainUI)
 	{
@@ -261,6 +272,22 @@ void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 	}
 }
 
+bool ULocalPlayerUISubSystem::IsEndingPresentationActive() const
+{
+	return EndingWorld.IsValid() && EndingWorld.Get() == GetWorld();
+}
+
+void ULocalPlayerUISubSystem::BeginEndingPresentation()
+{
+	EndingWorld = GetWorld();
+	SetTransientWidgetsSuppressed(true);
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->SetVisibility(ESlateVisibility::Collapsed);
+		MainUI->RemoveFromParent();
+	}
+}
+
 void ULocalPlayerUISubSystem::FlushMainUITransientWidgets()
 {
 	ClearEventInfo();
@@ -272,6 +299,7 @@ void ULocalPlayerUISubSystem::FlushMainUITransientWidgets()
 
 void ULocalPlayerUISubSystem::SetTransientWidgetsSuppressed(bool bSuppressed)
 {
+	if (!bSuppressed && IsEndingPresentationActive()) return;
 	bTransientWidgetsSuppressed = bSuppressed;
 	if (bSuppressed)
 	{
@@ -305,6 +333,7 @@ UEventDrivenUI* ULocalPlayerUISubSystem::GetModuleAny(
 
 void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 {
+	if (IsEndingPresentationActive()) return;
 	UMainUIBase* MainUI = GetMainUI();
 	if (!MainUI)
 	{

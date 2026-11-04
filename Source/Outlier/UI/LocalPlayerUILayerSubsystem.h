@@ -78,6 +78,9 @@ public:
 	bool PopWidget(UUserWidget* Widget);
 	int32 PopLayersByOwner(UObject* RequestOwner);
 	void ClearAllLayers();
+	// 이 월드의 최종 화면 상태다. 사전 검증된 두 위젯만 추가할 수 있다.
+	void BeginEndingPresentation(UUserWidget* Ending, UUserWidget* Hint);
+	bool IsEndingPresentationActive() const;
 
 	bool RefocusLayer(FUILayerHandle Handle, EUILayerFocusTarget FocusTarget);
 	bool IsLayerActive(FGameplayTag LayerTag) const;
@@ -100,6 +103,9 @@ public:
 	const UControllerInputConfig* GetWidgetInputConfig() const { return WidgetInputConfig; }
 
 private:
+	TWeakObjectPtr<UWorld> EndingWorld;
+	TWeakObjectPtr<UUserWidget> EndingWidget;
+	TWeakObjectPtr<UUserWidget> EndingHint;
 	bool AttachWidgetToLayer(
 		FGameplayTag LayerTag,
 		UUserWidget* Widget,

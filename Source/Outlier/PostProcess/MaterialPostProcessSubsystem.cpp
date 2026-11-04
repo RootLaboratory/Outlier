@@ -81,6 +81,11 @@ void UMaterialPostProcessSubsystem::Tick(float DeltaTime)
 
 void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume)
 {
+	if (bEndingPresentation)
+	{
+		if (InPostProcessVolume) InPostProcessVolume->bEnabled = false;
+		return;
+	}
 	if (!InPostProcessVolume)
 	{
 		return;
@@ -113,6 +118,7 @@ void UMaterialPostProcessSubsystem::SetPostProcessEnabled(EOutlierPostProcessMat
 
 void UMaterialPostProcessSubsystem::Refresh()
 {
+	if (bEndingPresentation) return;
 	if (!BoundPostProcessVolume)
 	{
 		return;
@@ -123,6 +129,12 @@ void UMaterialPostProcessSubsystem::Refresh()
 	FlushScanStencilRestoreStates();
 	// 하드 디스에이블로 상시 패스까지 꺼졌으므로 되살린다.
 	ApplyAlwaysOnPostProcess();
+}
+
+void UMaterialPostProcessSubsystem::BeginEndingPresentation()
+{
+	bEndingPresentation = true;
+	ResetAllPostProcess(false);
 }
 
 void UMaterialPostProcessSubsystem::ResetAllPostProcess(bool bRestoreAlwaysOnPostProcess)
@@ -147,7 +159,7 @@ void UMaterialPostProcessSubsystem::ResetAllPostProcess(bool bRestoreAlwaysOnPos
 	{
 		BoundPostProcessVolume->DisableAllBlendablesHard();
 		BoundPostProcessVolume->ResetPostProcessMaterialParameters();
-		if (bRestoreAlwaysOnPostProcess)
+		if (bRestoreAlwaysOnPostProcess && !bEndingPresentation)
 		{
 			ApplyAlwaysOnPostProcess();
 		}
@@ -752,6 +764,11 @@ void UMaterialPostProcessSubsystem::EndMagneticPostProcess()
 
 void UMaterialPostProcessSubsystem::StartEnemySpawnPresentation(AActor* Target, FSimpleDelegate OnFinished)
 {
+	if (bEndingPresentation)
+	{
+		OnFinished.ExecuteIfBound();
+		return;
+	}
 	if (!Target)
 	{
 		OnFinished.ExecuteIfBound();
@@ -1024,7 +1041,7 @@ void UMaterialPostProcessSubsystem::ApplyAlwaysOnPostProcess()
 bool UMaterialPostProcessSubsystem::ShouldSkipRenderingWork() const
 {
 	const UWorld* World = GetWorld();
-	return !World || World->GetNetMode() == NM_DedicatedServer;
+	return bEndingPresentation || !World || World->GetNetMode() == NM_DedicatedServer;
 }
 
 void UMaterialPostProcessSubsystem::ClearAllScanStencils()

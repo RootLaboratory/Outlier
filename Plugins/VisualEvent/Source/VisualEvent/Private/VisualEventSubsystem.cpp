@@ -14,6 +14,7 @@
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/World.h"
+#include "UObject/UObjectIterator.h"
 
 void UVisualEventSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -166,6 +167,7 @@ void UVisualEventSubsystem::PlayTaggedEffectsAtLocation(const TArray<FGameplayTa
 
 void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, FVector Location, FRotator Rotation)
 {
+	if (bEndingPresentation) return;
     if (!Def || !Def->DecalMaterial)
     {
         UE_LOG(LogTemp, Error, TEXT("NO DECAL "));
@@ -203,6 +205,7 @@ void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, 
 
 void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, const FVector& Start, const FVector& End)
 {
+	if (bEndingPresentation) return;
 	if (!Def || !Def->FXAsset)
 	{
 	   // UE_LOG(LogTemp, Error, TEXT("NO DEF EFFEECT "));
@@ -248,6 +251,7 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 
 void UVisualEventSubsystem::SpawnProjectileTrail(const UTrailEffectDefinition* Def, USceneComponent* AttachTarget)
 {
+	if (bEndingPresentation) return;
 	if (!Def || !Def->FXAsset || !AttachTarget)
 	{
 		return;
@@ -282,8 +286,33 @@ void UVisualEventSubsystem::SpawnProjectileTrail(const UTrailEffectDefinition* D
 	}
 }
 
+void UVisualEventSubsystem::BeginEndingPresentation()
+{
+	bEndingPresentation = true;
+	bAcceptTaggedEffects = false;
+	PendingTaggedEffects.Reset();
+	for (const auto& Mark : ActiveMarks)
+	{
+		if (Mark.IsValid()) Mark->DestroyComponent();
+	}
+	ActiveMarks.Reset();
+	for (TObjectIterator<UNiagaraComponent> It; It; ++It)
+	{
+		if (It->GetWorld() == GetWorld()) It->DeactivateImmediate();
+	}
+	for (TObjectIterator<UParticleSystemComponent> It; It; ++It)
+	{
+		if (It->GetWorld() == GetWorld())
+		{
+			It->DeactivateSystem();
+			It->SetVisibility(false);
+		}
+	}
+}
+
 void UVisualEventSubsystem::PlaySoundAtLocation(USoundDefinition* SoundDefinition, FVector Location)
 {
+	if (bEndingPresentation) return;
 	if (!SoundDefinition || !SoundDefinition->Sound)
 	{
 		UE_LOG(LogTemp, Error, TEXT("NO Sound "));
@@ -310,6 +339,7 @@ void UVisualEventSubsystem::PlaySoundAtLocation(USoundDefinition* SoundDefinitio
 // Weapon trails are handled by the weapon; hit effects only require a world-space location.
 void UVisualEventSubsystem::FeaturesEffect(FVector Location, FRotator Rotation, FVisualEventSet& EffectSet)
 {
+	if (bEndingPresentation) return;
 	if (EffectSet.DecalDef)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("DecalDef Valid "));
@@ -336,6 +366,7 @@ void UVisualEventSubsystem::FeaturesEffect(FVector Location, FRotator Rotation, 
 
 void UVisualEventSubsystem::SpawnMuzzleEffect(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation, bool bFirstPerson)
 {
+	if (bEndingPresentation) return;
 	if (!Def || !Def->FXAsset)
 	{
 		return;
@@ -386,6 +417,7 @@ void UVisualEventSubsystem::SpawnMuzzleEffect(const UTrailEffectDefinition* Def,
 
 void UVisualEventSubsystem::SpawnEffectAtLocation(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation)
 {
+	if (bEndingPresentation) return;
 	if (!Def || !Def->FXAsset)
 	{
 		UE_LOG(LogTemp, Error, TEXT("NO DEF EFFECT"));

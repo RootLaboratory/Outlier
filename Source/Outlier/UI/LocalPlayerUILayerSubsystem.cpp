@@ -47,6 +47,19 @@ namespace
 	constexpr int32 BackdropRootZOrder = -1000;
 }
 
+bool ULocalPlayerUILayerSubsystem::IsEndingPresentationActive() const
+{
+	return EndingWorld.IsValid() && EndingWorld.Get() == GetWorld();
+}
+
+void ULocalPlayerUILayerSubsystem::BeginEndingPresentation(UUserWidget* Ending, UUserWidget* Hint)
+{
+	EndingWorld = GetWorld();
+	EndingWidget = Ending;
+	EndingHint = Hint;
+	ClearAllLayersInternal(true);
+}
+
 void ULocalPlayerUILayerSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -65,6 +78,11 @@ void ULocalPlayerUILayerSubsystem::Deinitialize()
 
 void ULocalPlayerUILayerSubsystem::RegisterMainUI(UMainUIBase* MainUI)
 {
+	if (IsEndingPresentationActive())
+	{
+		if (IsValid(MainUI)) MainUI->RemoveFromParent();
+		return;
+	}
 	if (!IsValid(MainUI))
 	{
 		return;
@@ -76,6 +94,11 @@ void ULocalPlayerUILayerSubsystem::RegisterMainUI(UMainUIBase* MainUI)
 
 void ULocalPlayerUILayerSubsystem::UnregisterMainUI(UMainUIBase* MainUI)
 {
+	if (IsEndingPresentationActive())
+	{
+		if (RegisteredMainUI.Get() == MainUI) RegisteredMainUI.Reset();
+		return;
+	}
 	if (RegisteredMainUI.Get() != MainUI)
 	{
 		return;
@@ -186,6 +209,7 @@ void ULocalPlayerUILayerSubsystem::UnregisterLayerContainer(
 FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	const FUILayerPushRequest& Request)
 {
+	if (IsEndingPresentationActive()) return {};
 	if (!Request.WidgetClass
 		|| !Request.LayerTag.IsValid()
 		|| !Request.InputModeTag.IsValid())
@@ -266,6 +290,7 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	bool bShowCursor,
 	bool bReceivesInput)
 {
+	if (IsEndingPresentationActive() && Widget != EndingWidget.Get() && Widget != EndingHint.Get()) return {};
 	if (!LayerTag.IsValid() || !InputModeTag.IsValid() || !IsValid(Widget))
 	{
 		return {};
@@ -320,6 +345,7 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushInputScope(
 	bool bShowCursor,
 	bool bReceivesInput)
 {
+	if (IsEndingPresentationActive()) return {};
 	if (!LayerTag.IsValid() || !InputModeTag.IsValid())
 	{
 		return {};
@@ -498,6 +524,7 @@ int32 ULocalPlayerUILayerSubsystem::PopLayersByOwner(UObject* RequestOwner)
 
 void ULocalPlayerUILayerSubsystem::ClearAllLayers()
 {
+	if (IsEndingPresentationActive()) return;
 	ClearAllLayersInternal(true);
 }
 

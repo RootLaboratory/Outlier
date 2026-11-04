@@ -3,6 +3,7 @@
 
 #include "FrontendPlayerController.h"
 #include "Audio/OutlierAudioSubsystem.h"
+#include "Cinematic/OutlierCinematicSubsystem.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
@@ -64,6 +65,15 @@ void AFrontendPlayerController::BeginPlay()
 					this,
 					EUILayerFocusTarget::Widget,
 					true);
+			}
+		}
+
+		// 타이틀 UI가 화면에 표시된 후 배경 재생을 시작한다.
+		if (TitleLayerHandle.IsValid())
+		{
+			if (UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>())
+			{
+				Cinematic->PlayTitleCinematic();
 			}
 		}
 	}
@@ -480,6 +490,13 @@ void AFrontendPlayerController::PrepareForMatch()
 	// Remote server-side controllers share the listen host's GameInstance.
 	if (IsLocalController())
 	{
+		// 아레나가 이 월드로 스트리밍되므로 프런트엔드 종료 시 반복 재생 중인 타이틀 카메라도 정리한다.
+		if (UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>()
+			: nullptr)
+		{
+			Cinematic->ClearLevelCinematics();
+		}
 		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
 		{
 			Audio->EnterGameplayMusic();

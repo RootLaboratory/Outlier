@@ -76,6 +76,7 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 
 void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 {
+	if (IsEndingPresentationActive()) return;
 	// 전역 Tick은 월드 정지와 무관하게 호출된다. 정지 중에는 사망 UI 연출만 진행한다.
 	if (const UWorld* World = GetWorld(); World && World->IsPaused())
 	{
@@ -116,6 +117,13 @@ bool ULocalPlayerPostProcessSubsystem::IsTickable() const
 
 void ULocalPlayerPostProcessSubsystem::MarkDirty()
 {
+	if (IsEndingPresentationActive())
+	{
+		CachedPostProcessParameters = FPostProcessStrcture();
+		CachedUIPostProcessParameters = FPostProcessStrctureUI();
+		bDirty = true;
+		return;
+	}
 	CachedPostProcessParameters = PostProcessParameters;
 	CachedUIPostProcessParameters = UIPostProcessParameters;
 	if (bUIEffectsSuspended && !DeathTransition.IsActive()
@@ -131,6 +139,19 @@ void ULocalPlayerPostProcessSubsystem::MarkDirty()
 		CachedUIPostProcessParameters.SplitPrism.bEnabled = false;
 	}
 	bDirty = true;
+}
+
+bool ULocalPlayerPostProcessSubsystem::IsEndingPresentationActive() const
+{
+	return EndingWorld.IsValid() && EndingWorld.Get() == GetWorld();
+}
+
+void ULocalPlayerPostProcessSubsystem::BeginEndingPresentation()
+{
+	ResetAllPostProcess();
+	EndingWorld = GetWorld();
+	MarkDirty();
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::SetUIEffectsSuspended(bool bSuspended)
