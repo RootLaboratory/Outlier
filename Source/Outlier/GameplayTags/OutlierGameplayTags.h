@@ -388,6 +388,12 @@ namespace OutlierGameplayTags
 
 	namespace State
 	{
+		inline FGameplayTag PartnerShielded()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.PartnerShielded")));
+			return Tag;
+		}
+
 		inline FGameplayTag Rebooting()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Rebooting")));

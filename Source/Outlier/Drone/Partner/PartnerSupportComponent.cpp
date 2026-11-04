@@ -49,6 +49,7 @@ void UPartnerSupportComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		World->GetTimerManager().ClearTimer(ShieldMonitorTimerHandle);
 		World->GetTimerManager().ClearTimer(ScanServerStateTimerHandle);
 		World->GetTimerManager().ClearTimer(ScanClientUpdateTimerHandle);
+		World->GetTimerManager().ClearTimer(ScanEdgeDissolveTimerHandle);
 	}
 
 	if (ActiveScanRange > 0.0f || ActiveScanDuration > 0.0f || !ScannedActors.IsEmpty())
@@ -320,7 +321,17 @@ void UPartnerSupportComponent::UpdateScan_Client()
 
 	if (ScanProgress >= 1.0f)
 	{
-		EndScan_Client();
+		World->GetTimerManager().ClearTimer(ScanClientUpdateTimerHandle);
+		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PostProcessSubsystem->BeginScanEdgeDissolve(ScanEdgeDissolveDuration);
+			World->GetTimerManager().SetTimer(ScanEdgeDissolveTimerHandle, this,
+				&UPartnerSupportComponent::EndScan_Client, ScanEdgeDissolveDuration, false);
+		}
+		else
+		{
+			EndScan_Client();
+		}
 	}
 }
 
@@ -359,6 +370,7 @@ void UPartnerSupportComponent::EndScan_Client()
 	if (World)
 	{
 		World->GetTimerManager().ClearTimer(ScanClientUpdateTimerHandle);
+		World->GetTimerManager().ClearTimer(ScanEdgeDissolveTimerHandle);
 	}
 
 	for (const TWeakObjectPtr<AActor>& WeakActor : ScannedActors)
@@ -382,7 +394,7 @@ void UPartnerSupportComponent::EndScan_Client()
 	{
 		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 		{
-			PostProcessSubsystem->EndScanPostProcess();
+			PostProcessSubsystem->EndScanPostProcess(this);
 		}
 	}
 }
@@ -467,7 +479,7 @@ void UPartnerSupportComponent::ApplyScanEffect(AActor* Actor)
 		{
 			if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 			{
-				PostProcessSubsystem->ApplyScanStencil(Actor, StencilValue);
+				PostProcessSubsystem->ApplyScanStencil(Actor, StencilValue, this);
 			}
 		}
 	}
@@ -485,7 +497,7 @@ void UPartnerSupportComponent::ClearScanEffect(AActor* Actor)
 	{
 		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 		{
-			PostProcessSubsystem->ClearScanStencil(Actor);
+			PostProcessSubsystem->ClearScanStencil(Actor, this);
 		}
 	}
 }

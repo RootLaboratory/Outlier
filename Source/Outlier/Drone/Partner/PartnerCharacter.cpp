@@ -79,6 +79,20 @@ namespace
 	}
 }
 
+void APartnerCharacter::InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil)
+{
+	if (GetNetMode() == NM_DedicatedServer) return;
+	USkeletalMeshComponent* ThirdPersonMesh = GetMesh();
+	if (!ThirdPersonMesh) return;
+	TArray<USceneComponent*> Components;
+	ThirdPersonMesh->GetChildrenComponents(true, Components);
+	Components.Add(ThirdPersonMesh);
+	for (USceneComponent* Component : Components)
+	{
+		ApplyReadabilityStencil(Cast<UMeshComponent>(Component), ReadabilityStencilValue, bPreserveExistingStencil);
+	}
+}
+
 void APartnerCharacter::BeginPlay()
 {
 	if (ThirdPersonTiltRoot && GetMesh()->GetAttachParent() != ThirdPersonTiltRoot)
@@ -90,6 +104,7 @@ void APartnerCharacter::BeginPlay()
 	}
 
 	Super::BeginPlay();
+	IOutlierReadabilityTarget::Execute_InitializeReadabilityStencil(this, false);
 	RefreshAbilitySystemActorInfo();
 	BindPartnerCooldownUIObserver();
 	BindGasMobilityObservers();

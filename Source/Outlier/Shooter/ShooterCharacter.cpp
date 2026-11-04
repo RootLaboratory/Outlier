@@ -373,6 +373,7 @@ void AShooterCharacter::BeginPlay()
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
 	RefreshAbilitySystemActorInfo();
 	BindGasVitalityObservers();
+	RefreshPartnerShieldPostProcess();
 	RefreshLowHPAudio();
 	InitializeGasVitality();
 	InitializeGasSuitAbilities();
@@ -522,6 +523,8 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		PPS->SetPartnerShieldPostProcess(this, false);
 	if (auto* Subsystem = ActionInputSubsystem.Get())
 	{
 		Subsystem->ControlMappingsRebuiltDelegate.RemoveDynamic(this, &AShooterCharacter::HandleControlMappingsRebuilt);
@@ -566,6 +569,7 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 	Super::PossessedBy(NewController);
 	RefreshLowHPAudio();
 	RefreshAbilitySystemActorInfo();
+	RefreshPartnerShieldPostProcess();
 	// PS 업그레이드가 ASC에 반영된 최종 최대치로 리로드 쉴드를 한 번만 채운다.
 	if (HasAuthority() && bPendingReloadShieldFill
 		&& GetPlayerState<AOutlierPlayerState>() && OutlierAbilitySystemComponent)
@@ -589,6 +593,9 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 
 void AShooterCharacter::UnPossessed()
 {
+	if (HasAuthority()) ClientSetPartnerShieldPostProcess(false);
+	if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		PPS->SetPartnerShieldPostProcess(this, false);
 	ClearInputIntent();
 	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	InitializeAutoAimLocalView(nullptr);
@@ -610,6 +617,7 @@ void AShooterCharacter::OnRep_Controller()
 	BindActionInputReset();
 	RefreshLowHPAudio();
 	RefreshAbilitySystemActorInfo();
+	RefreshPartnerShieldPostProcess();
 	RefreshShooterSuitCooldownUI();
 
 	RefreshFirstPersonShadowPolicy();
@@ -776,6 +784,9 @@ void AShooterCharacter::BindGasVitalityObservers()
 	DeadTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).AddUObject(
 			this, &AShooterCharacter::HandleDeadTagChanged);
+	PartnerShieldTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::PartnerShielded(), EGameplayTagEventType::NewOrRemoved).AddUObject(
+			this, &AShooterCharacter::HandlePartnerShieldTagChanged);
 	BulletReflectionTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).AddUObject(
 			this, &AShooterCharacter::HandleBulletReflectionTagChanged);
@@ -815,6 +826,8 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).Remove(DeadTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::PartnerShielded(), EGameplayTagEventType::NewOrRemoved).Remove(PartnerShieldTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).Remove(BulletReflectionTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::QuantumLeaping()).Remove(QuantumLeapTagChangedHandle);
@@ -833,6 +846,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	HealthChangedHandle.Reset();
 	ShieldChangedHandle.Reset();
 	DeadTagChangedHandle.Reset();
+	PartnerShieldTagChangedHandle.Reset();
 	BulletReflectionTagChangedHandle.Reset();
 	QuantumLeapTagChangedHandle.Reset();
 	WeaponOverchargeTagChangedHandle.Reset();
@@ -841,6 +855,28 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
 	StealthSpeedTagChangedHandle.Reset();
+}
+
+void AShooterCharacter::HandlePartnerShieldTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	if (HasAuthority()) ClientSetPartnerShieldPostProcess(NewCount > 0 && !IsDead());
+	else if (IsLocallyControlled()) ClientSetPartnerShieldPostProcess_Implementation(NewCount > 0 && !IsDead());
+}
+
+void AShooterCharacter::RefreshPartnerShieldPostProcess()
+{
+	if (!OutlierAbilitySystemComponent) return;
+	const bool bEnabled = !IsDead() && OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+		OutlierGameplayTags::State::PartnerShielded());
+	if (HasAuthority()) ClientSetPartnerShieldPostProcess(bEnabled);
+	else if (IsLocallyControlled()) ClientSetPartnerShieldPostProcess_Implementation(bEnabled);
+}
+
+void AShooterCharacter::ClientSetPartnerShieldPostProcess_Implementation(bool bEnabled)
+{
+	if (bEnabled && !IsLocallyControlled()) return;
+	if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		PPS->SetPartnerShieldPostProcess(this, bEnabled && !IsDead());
 }
 
 void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
@@ -873,6 +909,8 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	(void)Tag;
 	if (NewCount > 0)
 	{
+		if (HasAuthority()) ClientSetPartnerShieldPostProcess(false);
+		if (IsLocallyControlled()) ClientSetPartnerShieldPostProcess_Implementation(false);
 		if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 		OutlierAudioFeedback::StopLoops(this);
 		CancelActiveQuantumLeap(false);
@@ -2413,7 +2451,6 @@ bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPr
 	}
 	ShadowMesh->SetLeaderPoseComponent(Mesh3P);
 	RefreshFirstPersonShadowPolicy();
-	IOutlierReadabilityTarget::Execute_InitializeReadabilityStencil(this, true);
 	if (bPresentationChanged || bFirstPersonChanged || bThirdPersonChanged)
 	{
 		OnPresentationChanged.Broadcast();

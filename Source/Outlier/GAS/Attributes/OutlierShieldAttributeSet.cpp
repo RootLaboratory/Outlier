@@ -1,6 +1,7 @@
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 
 #include "Net/UnrealNetwork.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 
 UOutlierShieldAttributeSet::UOutlierShieldAttributeSet()
 	: Shield(100.0f)
@@ -66,6 +67,18 @@ void UOutlierShieldAttributeSet::PreAttributeChange(
 	{
 		NewValue = FMath::Clamp(NewValue, 0.0f, GetMaxPartnerShield());
 	}
+}
+
+void UOutlierShieldAttributeSet::PostAttributeChange(
+	const FGameplayAttribute& Attribute, float OldValue, float NewValue)
+{
+	Super::PostAttributeChange(Attribute, OldValue, NewValue);
+	if (Attribute != GetPartnerShieldAttribute()) return;
+	UAbilitySystemComponent* ASC = GetOwningAbilitySystemComponent();
+	if (!ASC || !ASC->IsOwnerActorAuthoritative()) return;
+	const FGameplayTag Tag = OutlierGameplayTags::State::PartnerShielded();
+	const int32 Count = NewValue > 0.0f ? 1 : 0;
+	ASC->SetLooseGameplayTagCount(Tag, Count, EGameplayTagReplicationState::TagAndCountToAll);
 }
 
 void UOutlierShieldAttributeSet::GetLifetimeReplicatedProps(

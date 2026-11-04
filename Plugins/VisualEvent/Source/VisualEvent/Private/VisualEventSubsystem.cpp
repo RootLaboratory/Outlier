@@ -203,6 +203,67 @@ void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, 
 	}
 }
 
+const FName UVisualEventSubsystem::TriggerParameterName(TEXT("User.Trigger"));
+
+bool UVisualEventSubsystem::HasUserParameter(const UNiagaraSystem* System, FName ParameterName)
+{
+	if (!System)
+	{
+		return false;
+	}
+
+	// 키가 "User." 접두어를 가질 수도, 없을 수도 있어 둘 다 비교한다.
+	FString ShortString = ParameterName.ToString();
+	ShortString.RemoveFromStart(TEXT("User."));
+	const FName ShortName(*ShortString);
+
+	TArray<FNiagaraVariable> UserParameters;
+	System->GetExposedParameters().GetUserParameters(UserParameters);
+	return UserParameters.ContainsByPredicate([&](const FNiagaraVariable& Variable)
+	{
+		return Variable.GetName() == ParameterName || Variable.GetName() == ShortName;
+	});
+}
+
+bool UVisualEventSubsystem::SupportsTrigger(const UNiagaraSystem* System)
+{
+	if (!System)
+	{
+		return false;
+	}
+
+	// 발사마다 User 파라미터 목록을 훑지 않도록 시스템별로 한 번만 조회한다.
+	// 월드 서브시스템이라 PIE 를 새로 띄우면 캐시도 새로 만들어져, 에디터에서 에셋을 고친 뒤에도 다시 조회된다.
+	if (const bool* Cached = TriggerSupportCache.Find(System))
+	{
+		return *Cached;
+	}
+
+	const bool bSupports = HasUserParameter(System, TriggerParameterName);
+	TriggerSupportCache.Add(System, bSupports);
+	return bSupports;
+}
+
+void UVisualEventSubsystem::ApplyTrigger(UNiagaraComponent* Comp, const UNiagaraSystem* System, const UTrailEffectDefinition* Def)
+{
+	if (!SupportsTrigger(System))
+	{
+		// Always 를 잘못 고른 경우만 시스템별로 한 번 알린다.
+		if (Def->TriggerMode == ETrailTriggerMode::Always && !WarnedMissingTrigger.Contains(System))
+		{
+			WarnedMissingTrigger.Add(System);
+			UE_LOG(LogTemp, Warning, TEXT("[VisualEvent] %s has no %s. Set TriggerMode to Auto on %s."),
+				*System->GetName(), *TriggerParameterName.ToString(), *Def->GetName());
+		}
+		return;
+	}
+
+	// AutoRelease 풀에서 재사용된 컴포넌트는 이전 발사의 User 파라미터를 그대로 들고 있다.
+	// Never 여도 false 를 명시해야 다른 Definition 이 남긴 true 로 발사되지 않는다.
+	// NM_WeaponTrigger 는 이전 프레임에 캐시한 값과 달라질 때 한 번 발사하고, Activate(true) 로 리셋되면 캐시가 false 로 시작한다.
+	Comp->SetVariableBool(TriggerParameterName, Def->TriggerMode != ETrailTriggerMode::Never);
+}
+
 void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, const FVector& Start, const FVector& End)
 {
 	if (bEndingPresentation) return;
@@ -219,6 +280,7 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 	{
 		const FVector Direction = (FinalEnd - FinalStart).GetSafeNormal();
 
+		// 트레이서( NS_Trail_*_Original )는 World Space 에미터로, 컴포넌트 위치를 총구( TraceStart )로 쓰고 User.End 까지 날아간다.
 		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 			GetWorld(),
 			Niagara,
@@ -234,6 +296,7 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 		{
 			Comp->SetVariablePosition(Def->StartParameterName, FinalStart);
 			Comp->SetVariablePosition(Def->EndParameterName, FinalEnd);
+			ApplyTrigger(Comp, Niagara, Def);
 			Comp->Activate(true);
 		}
 	}

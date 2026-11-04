@@ -1,0 +1,4 @@
+// M_OutlineTransition에서 CustomStencil을 OT 대상 마스크로 변환하는 명시적 노드다.
+uint Bits = (uint)round(Stencil.r);
+uint ScanType = Bits & 3u;
+return ((Bits & 128u) != 0u && (ScanType == 1u || ScanType == 2u)) ? 1.0 : 0.0;

@@ -1,0 +1,54 @@
+// ApplyOutlinePolicy.py가 M_PartnerOutline에 삽입하며, 런타임 파일 의존성은 없다.
+// 스텐실 규약: 관리 표식=128, 팀원=32, 가독성=16, 가이드=8, 근접=4, 스캔=하위 2비트.
+struct FOutlinePolicy
+{
+    float4 Sample(float2 ViewUV, float Tolerance)
+    {
+        float2 UV = ViewportUVToSceneTextureUV(ViewUV, 25);
+        uint Stencil = (uint)round(SceneTextureLookup(UV, 25, false).r);
+        float Custom = SceneTextureLookup(ViewportUVToSceneTextureUV(ViewUV, 13), 13, false).r;
+        float Depth = SceneTextureLookup(ViewportUVToSceneTextureUV(ViewUV, 1), 1, false).r;
+        if ((Stencil & 128u) == 0u) return float4(0, 0, Custom, 0);
+        bool Visible = abs(Custom - Depth) <= max(Tolerance, Depth * 0.00001);
+        uint Scan = Stencil & 3u;
+        if (Scan == 3u) Scan = 0u;
+        uint Rank = Visible && ((Stencil & 4u) != 0u) ? 4u :
+                    Visible && ((Stencil & 8u) != 0u) ? 3u :
+                    ((Stencil & 32u) != 0u) ? 2u : (Scan != 0u ? 1u : 0u);
+        return float4(Rank, Scan, Custom, Visible ? 1 : 0);
+    }
+};
+FOutlinePolicy Policy;
+float2 Pixel = View.ViewSizeAndInvSize.zw;
+float2 HalfPixel = Pixel * 0.5;
+float2 CenterUV = clamp(ViewUV, HalfPixel, 1.0 - HalfPixel);
+float4 Center = Policy.Sample(CenterUV, max(DepthTolerance, 0));
+float SceneDepthAtCenter = SceneTextureLookup(ViewportUVToSceneTextureUV(CenterUV, 1), 1, false).r;
+float2 Offsets[8] = {float2(-1,0), float2(1,0), float2(0,-1), float2(0,1),
+                    float2(-1,-1), float2(-1,1), float2(1,-1), float2(1,1)};
+float BestRank = 0;
+float BestDepth = 1e20;
+float3 Color = Scene.rgb;
+float Width = clamp(Thickness, 0.5, 4.0);
+for (int i = 0; i < 8; ++i)
+{
+    float2 UV = clamp(CenterUV + Offsets[i] * Pixel * Width, HalfPixel, 1.0 - HalfPixel);
+    float4 Neighbor = Policy.Sample(UV, max(DepthTolerance, 0));
+    // 외곽선 검출 전에 필터링한다. 가독성 전용 및 ADS 샘플의 우선순위는 0이다.
+    bool Different = Center.x != Neighbor.x ||
+        (Center.x > 0 && abs(Center.z - Neighbor.z) > max(DepthEdgeThreshold, Center.z * 0.001));
+    if (!Different) continue;
+    // 가능하면 대상 쪽에 그린다. 바깥쪽 외곽선은 실제 대상 샘플을 선택한다.
+    float4 Candidate = Center.x > 0 ? Center : Neighbor;
+    if (Candidate.x == 0) continue;
+    // 보이는 부분 전용 스타일이 출력 픽셀의 가림 표면으로 번지지 않게 한다.
+    if (Candidate.x >= 3 && Candidate.z > SceneDepthAtCenter + max(DepthTolerance, SceneDepthAtCenter * 0.00001)) continue;
+    if (Candidate.x < BestRank || (Candidate.x == BestRank && Candidate.z >= BestDepth)) continue;
+    BestRank = Candidate.x;
+    BestDepth = Candidate.z;
+    Color = Candidate.x == 4 ? MeleeColor.rgb : Candidate.x == 3 ? GuideColor.rgb :
+            Candidate.x == 2 ? TeammateColor.rgb :
+            Candidate.y == 1 ? EnemyColor.rgb : InteractionColor.rgb;
+}
+// 대상이 아닌 픽셀은 입력 장면을 그대로 반환한다. 검정을 제외 마스크로 사용하지 않는다.
+return BestRank > 0 ? lerp(Scene.rgb, Color * max(Emissive, 0), saturate(Strength)) : Scene.rgb;

@@ -50,8 +50,37 @@ void UEnemyHudWidget::BindDamageFeedback()
 		return;
 	}
 
-	// 같은 적을 다시 빙의해도 같은 모서리가 부서져 있도록 적 고유 ID로 섞는다.
-	FRandomStream Stream(static_cast<int32>(Enemy->GetUniqueID()));
+	InitializeDamageMasks(static_cast<int32>(Enemy->GetUniqueID()));
+
+	HealthChangedHandle = AbilitySystem
+		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetHealthAttribute())
+		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
+	MaxHealthChangedHandle = AbilitySystem
+		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetMaxHealthAttribute())
+		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
+	BoundAbilitySystem = AbilitySystem;
+	RefreshDamageStage();
+}
+
+bool UEnemyHudWidget::InitializeDamagePreview(int32 Seed)
+{
+	ReleaseDamageFeedback();
+	OwningEnemy.Reset();
+	bDamagePreview = InitializeDamageMasks(Seed);
+	return bDamagePreview;
+}
+
+void UEnemyHudWidget::SetDamagePreviewHealthRatio(float HealthRatio)
+{
+	if (bDamagePreview) ApplyDamageLostRatio(1.0f - FMath::Clamp(HealthRatio, 0.0f, 1.0f));
+}
+
+bool UEnemyHudWidget::InitializeDamageMasks(int32 Seed)
+{
+	ULocalPlayerPostProcessSubsystem* PPSubsystem = GetPostProcessSubsystem();
+	if (!PPSubsystem) return false;
+	// 게임에서는 적 ID를 사용하고, 디버거에서는 초기화할 때마다 새 시드를 사용한다.
+	FRandomStream Stream(Seed);
 	for (int32 Index = 0; Index < DroneDamageMaskCount; ++Index)
 	{
 		DamageRevealOrder[Index] = static_cast<uint8>(Index);
@@ -77,22 +106,15 @@ void UEnemyHudWidget::BindDamageFeedback()
 		PPSubsystem->SetDroneDamageMaskRevealed(MaskSlot, false);
 	}
 
-	HealthChangedHandle = AbilitySystem
-		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetHealthAttribute())
-		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
-	MaxHealthChangedHandle = AbilitySystem
-		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetMaxHealthAttribute())
-		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
-	BoundAbilitySystem = AbilitySystem;
 	RevealedDamageStageCount = 0;
 	bDamageFeedbackBound = true;
-
-	// 이미 깎인 적이면 지난 단계까지 바로 부서진 상태로 시작한다.
-	RefreshDamageStage();
+	PPSubsystem->SetDroneDamageSuppressed(false);
+	return true;
 }
 
 void UEnemyHudWidget::ReleaseDamageFeedback()
 {
+	bDamagePreview = false;
 	if (UAbilitySystemComponent* AbilitySystem = BoundAbilitySystem.Get())
 	{
 		AbilitySystem
@@ -154,6 +176,13 @@ void UEnemyHudWidget::RefreshDamageStage()
 
 	const float Health = AbilitySystem->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
 	const float LostRatio = FMath::Clamp(1.0f - Health / MaxHealth, 0.0f, 1.0f);
+	ApplyDamageLostRatio(LostRatio);
+}
+
+void UEnemyHudWidget::ApplyDamageLostRatio(float LostRatio)
+{
+	ULocalPlayerPostProcessSubsystem* PPSubsystem = GetPostProcessSubsystem();
+	if (!bDamageFeedbackBound || !PPSubsystem) return;
 	// 부동소수 오차로 정확히 20% 지점에서 한 단계 늦게 열리지 않도록 살짝 여유를 둔다.
 	const int32 Stage = FMath::Min(
 		FMath::FloorToInt(LostRatio / EnemyHudDamage::StageStep + KINDA_SMALL_NUMBER),

@@ -12,14 +12,6 @@ class UOutlierEventDataAsset;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierWorldGuideFinished, const FOutlierWorldGuideContext&, bool);
 
-struct FOutlierGuideStencilState
-{
-	bool bOriginalCustomDepth = false;
-	int32 OriginalStencil = 0;
-	int32 AppliedStencil = 0;
-	int32 Users = 0;
-};
-
 /** Persistent 레벨에 Manager 하나를 배치한다. 서버가 공유 FIFO 하나를 소유하고, 클라이언트는 ActiveContext만 렌더링한다. */
 UCLASS(Blueprintable)
 class OUTLIER_API AOutlierWorldGuideManager : public AActor
@@ -42,8 +34,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (TitleProperty = "WidgetID"))
 	TArray<FOutlierWorldGuideContext> ChainContexts;
 
-	/** 가이드 전용 Stencil. 복원 가드가 구분할 수 있도록 스캔/근접 Outline(1, 2), 무기 조준(3)과 달라야 한다. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (ClampMin = "1", ClampMax = "255"))
+	/** 기존 직렬화 값을 유지한다. 공통 스텐실 서브시스템은 가이드 비트(8)를 예약한다. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "World Guide")
 	int32 OutlineStencilValue = 8;
 
 	UPROPERTY(ReplicatedUsing = OnRep_ActiveContext, BlueprintReadOnly, Category = "World Guide")
@@ -116,7 +108,6 @@ private:
 
 	TMap<FGameplayTag, TArray<TWeakObjectPtr<UOutlierWorldGuideTargetComponent>>> Targets;
 	TMap<TWeakObjectPtr<UOutlierWorldGuideTargetComponent>, TArray<TWeakObjectPtr<UPrimitiveComponent>>> OutlinedTargets;
-	TMap<TWeakObjectPtr<UPrimitiveComponent>, FOutlierGuideStencilState> StencilStates;
 	TSet<FGameplayTag> CompletedWidgetIDs;
 	/** 서버 전용. 그룹 안내의 완료된 타깃 경로. sublevel 리로드로 다시 생성된 타깃의 완료 표시를 복원한다. */
 	TMap<FGameplayTag, TSet<FString>> CompletedTargets;

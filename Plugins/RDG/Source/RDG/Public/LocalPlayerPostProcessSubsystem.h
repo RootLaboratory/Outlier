@@ -12,6 +12,11 @@ class FOutlierPostProcessSceneViewExtension;
 class APostProcessVolume;
 class UTexture2D;
 
+enum class EDroneDamagePreviewAction : uint8 { Start, Damage, Reset, Stop };
+// HUD 생성은 게임 모듈이 담당하며, RDG는 게임 및 UI 클래스에 의존하지 않는다.
+DECLARE_DELEGATE_OneParam(FOnDroneDamagePreviewRequested, EDroneDamagePreviewAction);
+DECLARE_DELEGATE_RetVal(FString, FDroneDamagePreviewStatus);
+
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionCovered);
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionFinished);
 DECLARE_MULTICAST_DELEGATE(FOnDeathBlackNoiseStarted);
@@ -49,6 +54,8 @@ class RDG_API ULocalPlayerPostProcessSubsystem : public ULocalPlayerSubsystem, p
 	friend class FOutlierGameOverPostProcessPauseTest;
 	
 public:
+	FOnDroneDamagePreviewRequested OnDroneDamagePreviewRequested;
+	FDroneDamagePreviewStatus DroneDamagePreviewStatus;
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	virtual void Tick(float DeltaTime) override;

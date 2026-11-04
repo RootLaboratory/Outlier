@@ -1,9 +1,11 @@
 #include "Enemy/EnemyBase.h"
+#include "Event/OutlierEventSubsystem.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Enemy/AutoTurret.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
@@ -121,6 +123,7 @@ AEnemyBase::AEnemyBase()
 	AIControllerClass = AEnemyAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 	EnemyTraits.AddTag(OutlierGameplayTags::Enemy::Adaptation::Target());
+	StunEventTag = FGameplayTag::RequestGameplayTag(TEXT("Event.013_Drone_Stun"));
 
 	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
 		TEXT("AbilitySystemComponent"));
@@ -834,6 +837,10 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 
 	const bool bIdle = PoolState == EEnemyPoolState::Idle;
 	const bool bCombatActive = PoolState == EEnemyPoolState::CombatActive;
+	if (bIdle || PoolState == EEnemyPoolState::DeathPresentation)
+	{
+		if (auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()) Stencils->ClearActorEffects(this);
+	}
 	if (bIdle)
 	{
 		NextFlightPathRequestTime = 0.0;
@@ -2159,9 +2166,14 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		&& Request.StunDurationSeconds > 0.0f
 		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
-		OutlierAbilitySystemComponent->ApplyStunStateToSelf(
+		const bool bStunApplied = OutlierAbilitySystemComponent->ApplyStunStateToSelf(
 			Request.StunDurationSeconds,
-			Request.DamageCauser);
+			Request.DamageCauser).IsValid();
+		// 위 내성 파괴가 LastAccepted 카테고리를 소비할 수 있으므로 원인은 요청 기준으로 판정한다.
+		if (bStunApplied && Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol)
+		{
+			UOutlierEventSubsystem::EventCallOnce(this, StunEventTag);
+		}
 	}
 	if (bCoreWeakPointHit)
 	{
@@ -3851,6 +3863,7 @@ void AEnemyBase::PerformDeathCleanup()
 		return;
 	}
 	bDeathCleanupPerformed = true;
+	if (auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()) Stencils->ClearActorEffects(this);
 	RefreshCombatStatePresentation();
 	InterruptDamagePresentation(0.0f);
 

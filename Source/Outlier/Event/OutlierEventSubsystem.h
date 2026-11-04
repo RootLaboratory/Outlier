@@ -21,10 +21,18 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
+	/** 데디케이티드 서버를 포함해 LocalPlayer 없이 사용할 수 있는 서버 진입점이다.
+	 * 현재 매치의 플레이어 쌍을 찾아 게임 흐름당 한 번 태그를 전달한다.
+	 * 양쪽 중계가 전달을 수락하면 true를 반환한다. 실패한 요청은 재시도할 수 있다. */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Event", meta = (WorldContext = "WorldContextObject"))
+	static bool EventCallOnce(const UObject* WorldContextObject, FGameplayTag EventTag);
+
 	/** 각 Upper/GIF 행의 DT 종료 조건과 표시 시간을 쓴다. */
+	UFUNCTION(BlueprintCallable, Category = "Event")
 	bool SendEvent(FGameplayTag EventTag);
 
 	/** 데이터 태그 직접 요청은 Event DT의 다른 영역을 디스패치하지 않는다. */
+	UFUNCTION(BlueprintCallable, Category = "Event|TTS")
 	bool SendTTS(FGameplayTag TTSTag);
 
 	bool TryGetEventData(FGameplayTag EventTag, FOutlierEventDataRow& OutData);

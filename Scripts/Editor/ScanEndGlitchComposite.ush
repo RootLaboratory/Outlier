@@ -1,0 +1,11 @@
+// 원본 장면 위에 합성하며, 장면 자체의 색이나 위치는 바꾸지 않는다.
+if (TargetMask < 0.5 || StartTime < 0 || Time < StartTime) return ScanColor.rgb;
+float T = saturate((Time - StartTime) / max(Duration, 0.0001));
+if (T >= 1) return OriginalScene.rgb;
+float Frame = floor((Time - StartTime) * 24.0);
+float Band = floor(ViewUV.y * View.ViewSizeAndInvSize.y / 12.0);
+float Segment = fmod(Band + Frame * 3.0, 7.0);
+float Gate = Segment == 6 ? 0.0 : 1.0;
+float3 Channels = Segment < 2 ? float3(1, 0.35, 0.35) :
+                  Segment < 4 ? float3(0.35, 1, 1) : float3(1, 1, 1);
+return OriginalScene.rgb + (ScanColor.rgb - OriginalScene.rgb) * Channels * Gate * (1.0 - T);

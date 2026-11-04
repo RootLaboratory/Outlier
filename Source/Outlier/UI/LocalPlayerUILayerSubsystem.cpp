@@ -64,10 +64,21 @@ void ULocalPlayerUILayerSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 {
 	Super::Initialize(Collection);
 	Collection.InitializeDependency<ULocalPlayerPostProcessSubsystem>();
+	if (auto* PP = GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+	{
+		PP->OnDroneDamagePreviewRequested.BindUObject(this, &ULocalPlayerUILayerSubsystem::HandleDroneDamagePreview);
+		PP->DroneDamagePreviewStatus.BindLambda([this]() { return DronePreviewMessage; });
+	}
 }
 
 void ULocalPlayerUILayerSubsystem::Deinitialize()
 {
+	StopDroneDamagePreview();
+	if (auto* PP = GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+	{
+		PP->OnDroneDamagePreviewRequested.Unbind();
+		PP->DroneDamagePreviewStatus.Unbind();
+	}
 	bIsDeinitializing = true;
 	ClearAllLayersInternal(false);
 	DestroyLayerRoot();
@@ -94,6 +105,7 @@ void ULocalPlayerUILayerSubsystem::RegisterMainUI(UMainUIBase* MainUI)
 
 void ULocalPlayerUILayerSubsystem::UnregisterMainUI(UMainUIBase* MainUI)
 {
+	if (DronePreviewMainUI.Get() == MainUI) StopDroneDamagePreview();
 	if (IsEndingPresentationActive())
 	{
 		if (RegisteredMainUI.Get() == MainUI) RegisteredMainUI.Reset();
@@ -537,6 +549,7 @@ void ULocalPlayerUILayerSubsystem::ClearAllLayersInternal(
 	}
 
 	TGuardValue<bool> ClearingGuard(bIsClearingLayers, true);
+	StopDroneDamagePreview();
 
 	// Widget 제거 콜백이 LayerEntries를 갱신할 수 있으므로 먼저 목록을 분리한다.
 	TArray<FUILayerEntry> EntriesToRemove = MoveTemp(LayerEntries);

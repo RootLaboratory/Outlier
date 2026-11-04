@@ -17,12 +17,6 @@ class UOutlierAbilitySystemComponent;
 class UPrimitiveComponent;
 enum class EOutlierPostProcessMaterialType : uint8;
 
-struct FScanStencilRestoreState
-{
-	bool bRenderCustomDepth = false;
-	int32 CustomDepthStencilValue = 0;
-};
-
 // 은신 오버라이드를 걸기 전 메시 컴포넌트의 원본 상태.
 // 1인칭 / 3인칭 구분 없이 슬롯별 머티리얼을 교체하므로 두 경우 모두 채워진다.
 USTRUCT()
@@ -115,9 +109,10 @@ public:
 	//Scan
 	void StartScanPostProcess(FVector ScanOrigin, float CurrentScanRadius, float Range);
 	void UpdateScanPostProcess(FVector ScanOrigin, float CurrentScanRadius);
-	void ApplyScanStencil(AActor* Actor, int32 StencilValue);
-	void ClearScanStencil(AActor* Actor);
-	void EndScanPostProcess();
+	void BeginScanEdgeDissolve(float Duration);
+	void ApplyScanStencil(AActor* Actor, int32 StencilValue, UObject* Source = nullptr);
+	void ClearScanStencil(AActor* Actor, UObject* Source = nullptr);
+	void EndScanPostProcess(UObject* Source = nullptr);
 	// 상시 PartnerOutline 패스에 Shooter 로컬 타깃의 스텐실만 공급한다.
 	void SetMeleeOutlineTarget(AActor* Target, AShooterCharacter* SourceShooter);
 	void ClearMeleeOutlineTarget(AActor* Target = nullptr);
@@ -136,6 +131,7 @@ public:
 	void UpdateDamagedPostProcess(float InHPRatio);
 	void UpdateDamagedPostProcess(float InHPRatio, FVector4 Color);
 	void EndDamagedPostProcess();
+	void SetPartnerShieldPostProcess(AShooterCharacter* Source, bool bEnabled);
 
 	// Magnetic
 	// 자기장 발생기의 중력렌즈. 원점 / 반경이 펄스 동안 고정이므로 Update 가 없다.
@@ -157,11 +153,10 @@ public:
 	TObjectPtr<AOutlierPostProcessVolume> BoundPostProcessVolume;
 
 private:
+	TWeakObjectPtr<AShooterCharacter> PartnerShieldSource;
 	bool bEndingPresentation = false;
 	friend class FOutlierMaterialPostProcessResetTest;
 
-	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> ScanStencilRestoreStates;
-	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> MeleeOutlineRestoreStates;
 	TWeakObjectPtr<AActor> MeleeOutlineTarget;
 	TWeakObjectPtr<AShooterCharacter> MeleeOutlineSource;
 	bool bMeleeOutlineActive = false;

@@ -1,0 +1,9 @@
+// 이번 스캔의 종료 애니메이션 동안에만 스캔 패턴 자체를 왜곡한다.
+if (TargetMask < 0.5 || StartTime < 0 || Time < StartTime) return BaseUV;
+float T = saturate((Time - StartTime) / max(Duration, 0.0001));
+if (T >= 1) return BaseUV;
+float Frame = floor((Time - StartTime) * 24.0);
+float Band = floor(ViewUV.y * View.ViewSizeAndInvSize.y / 12.0);
+float Segment = fmod(Band + Frame * 3.0, 7.0);
+float Direction = Segment < 2 ? -1.0 : Segment < 4 ? 1.0 : 0.0;
+return BaseUV + float2(Direction * max(Amount, 0) * (0.35 + 0.65 * T), 0);

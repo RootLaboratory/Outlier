@@ -1,15 +1,19 @@
 #include "Event/OutlierEventSubsystem.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Event/OutlierEventSettings.h"
 #include "Event/OutlierEventDataAsset.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/GameStateBase.h"
 #include "LocalPlayerUISubSystem.h"
 #include "Outlier.h"
 #include "OutlierPlayerState.h"
+#include "Save/OutlierSaveSubSystem.h"
+#include "Tutorial/Trigger/Tuto_EventTriggerInterface.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
 
 namespace
@@ -105,6 +109,40 @@ namespace
 			}
 		}
 	}
+}
+
+bool UOutlierEventSubsystem::EventCallOnce(const UObject* WorldContextObject, FGameplayTag EventTag)
+{
+	if (!IsValid(WorldContextObject) || !EventTag.IsValid() || !GEngine) return false;
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
+	if (!World || World->bIsTearingDown || World->GetNetMode() == NM_Client) return false;
+
+	UGameInstance* GameInstance = World->GetGameInstance();
+	UOutlierSaveSubSystem* Saves = GameInstance ? GameInstance->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	// 튜토리얼 트리거 액터와 공유하는 기존 서버 게임 흐름 캐시를 사용한다.
+	if (!Saves || Saves->HasFiredTutorialEvent(EventTag)) return false;
+	const AGameStateBase* GameState = World->GetGameState();
+	if (!GameState) return false;
+
+	// 로컬 전달 콜백이 같은 태그를 다시 요청할 수 있으므로 전달 전에 예약한다.
+	if (!Saves->MarkTutorialEventFired(EventTag)) return false;
+	// CombatObserver의 대체 처리와 마찬가지로 현재 매치 및 아레나 워커는 한 쌍을 관리한다.
+	// Source는 이벤트를 받을 플레이어를 식별한다. 스턴을 가한 플레이어를 뜻하지 않는다.
+	// 전달 계층은 양쪽 역할, Pawn, Controller를 검증한 후 두 전달을 큐에 넣는다.
+	for (APlayerState* RawState : GameState->PlayerArray)
+	{
+		AOutlierPlayerState* State = Cast<AOutlierPlayerState>(RawState);
+		if (!IsValid(State) || State->GetWorld() != World || !State->HasAuthority()
+			|| State->GetPairId() == INDEX_NONE) continue;
+		if (ITuto_EventTriggerInterface::DispatchEventTag(World, EventTag, State,
+			ETuto_EventOperation::Trigger, ETuto_EventRegion::Both, WorldContextObject->GetName()))
+		{
+			return true;
+		}
+	}
+
+	Saves->UnmarkTutorialEventFired(EventTag);
+	return false;
 }
 
 void UOutlierEventSubsystem::Initialize(FSubsystemCollectionBase& Collection)

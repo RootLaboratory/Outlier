@@ -18,10 +18,10 @@ class OUTLIER_API IOutlierReadabilityTarget
 	GENERATED_BODY()
 
 public:
-	// 1/2: scan/melee, 3: ADS, 8: world guide. Shared by all readability targets.
+	// 관리되는 스텐실 규약의 가독성 비트다. 독점 ID로 사용하지 않는다.
 	static constexpr int32 DefaultReadabilityStencilValue = 16;
 
-	/** Preserve an active override when refreshing an existing mesh after a presentation change. */
+	/** 일시적 요청을 덮어쓰지 않고 가독성을 등록한다. 기존 인자는 유지한다. */
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "PostProcess|Readability")
 	void InitializeReadabilityStencil(bool bPreserveExistingStencil = false);
 

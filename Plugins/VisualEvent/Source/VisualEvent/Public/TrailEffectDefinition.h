@@ -8,6 +8,17 @@
 
 class UFXSystemAsset;
 
+UENUM(BlueprintType)
+enum class ETrailTriggerMode : uint8
+{
+	// 시스템에 User.Trigger 가 있으면 true, 없으면 건드리지 않는다.
+	Auto,
+	// 항상 true. 시스템에 Trigger 가 없으면 경고를 한 번 남긴다.
+	Always,
+	// 항상 false. Trigger 가 있는 시스템이라도 발사하지 않는다.
+	Never,
+};
+
 // 일단 전역 scale 기반으로 처리했는데 sprite renderer 기반의 vfx에는 쓸모 없다는 걸 알았음.
 
 /**
@@ -51,6 +62,11 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Beam")
 	FName EndParameterName = TEXT("User.End");
+
+	// Lyra 트레이서처럼 NM_WeaponTrigger 로 발사되는 시스템의 User.Trigger( bool ) 처리.
+	// 보통은 Auto 로 두면 시스템에 Trigger 가 있을 때 알아서 true 를 넣는다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Beam")
+	ETrailTriggerMode TriggerMode = ETrailTriggerMode::Auto;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Beam")
 	FVector StartOffset = FVector::ZeroVector;

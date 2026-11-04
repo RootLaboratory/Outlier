@@ -100,7 +100,8 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability", meta = (ClampMin = "1", ClampMax = "255"))
+	/** 기존 직렬화 설정을 유지한다. 가독성 표현에는 공통 예약 비트(16)를 사용한다. */
+	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability")
 	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
 
 	virtual void InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil) override;
@@ -631,6 +632,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void EnterStun();
+
+	// 권총 스턴이 처음 적용될 때만 게임 플로우당 한 번 보낸다. EMP/내성 파괴 스턴은 제외한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Event", meta = (Categories = "Event"))
+	FGameplayTag StunEventTag;
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void RestoreStateAfterStun();
