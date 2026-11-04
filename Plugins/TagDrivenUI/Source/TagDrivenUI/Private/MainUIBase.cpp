@@ -89,6 +89,21 @@ void UMainUIBase::On_RepAbilityabledByDistance()
 {
 }
 
+void UMainUIBase::NativeOnInitialized()
+{
+	Super::NativeOnInitialized();
+	// 연결 상태는 서버 판정이 도착할 때만 연다. WBP 디자이너 기본값과 무관하게 숨긴 채 시작한다.
+	SetConnectionLost(false);
+}
+
+void UMainUIBase::SetConnectionLost(bool bLost)
+{
+	if (ConnectionWidget)
+	{
+		ConnectionWidget->SetVisibility(bLost ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}
+
 void UMainUIBase::ModulesControl(bool Flag)
 {
 	const bool bWasActive = bModulesActive;

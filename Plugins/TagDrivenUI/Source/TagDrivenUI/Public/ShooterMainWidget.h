@@ -5,26 +5,18 @@
 #include "CoreMinimal.h"
 
 #include "MainUIBase.h"
+#include "WidgetWeaponType.h"
 
 #include "ShooterMainWidget.generated.h"
 
 class UPartnerCamUI;
 class UHPBarUI;
 class UAmmoUI;
-class UCrossHairBase;
+class UShooterCrosshairWidget;
 class UAbilitySlotUI;
 class UShooterCurrentWeaponIcon;
 class UShooterStatusBarWidget;
 class UImage;
-
-UENUM(BlueprintType)
-enum class EWidgetWeaponType : uint8
-{
-	Unarmed,
-	Pistol,
-	Rifle,
-	Melee
-};
 
 UCLASS(Blueprintable)
 class TAGDRIVENUI_API UShooterMainWidget : public UMainUIBase
@@ -53,9 +45,7 @@ public:
 	void OnChangeWeapon(EWidgetWeaponType Type);
 	void SetCurrentAbilityPresentation(const FGameplayTag& AbilityTag);
 
-	// 슈트 획득 시점에 라이플/권총 크로스헤어를 둘 다 초기화한다.
-	// 현재 등록된 쪽만 건드리면 안 쓰던 쪽에 이전 확산이 그대로 남는다.
-	void ResetCrossHairs();
+	void SetCrosshairSuitAcquired(bool bAcquired);
 
 	// Shooter가 과부하 중 AutoAim 업그레이드 활성 여부를 전달한다. ADS 표시와 별도로 제어한다.
 	void SetAutoAimPresentation(bool bActive);
@@ -68,11 +58,9 @@ public:
 	UPROPERTY(Transient)
 	TObjectPtr<UAmmoUI> AmmoUI;
 
+	// DefaultLayer 직속 컨테이너. 내부 Rifle/Pistol 바인딩은 컨테이너가 소유한다.
 	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UCrossHairBase> RifleCrossHairUI;
-
-	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UCrossHairBase> PistolCrossHairUI;
+	TObjectPtr<UShooterCrosshairWidget> CrosshairLayer;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UAbilitySlotUI> CurrentAbilityUI;
@@ -95,5 +83,4 @@ private:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UShooterStatusBarWidget> ShooterStatusBarHUD;
 
-	TObjectPtr<UCrossHairBase> CurrentCrossHairUI;
 };

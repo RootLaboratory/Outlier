@@ -998,6 +998,7 @@ void APartnerCharacter::NotifyBoundaryUI(bool bDisabled)
 		{
 			SubSystem->OnAbilityEnabledByDistance();
 		}
+		SubSystem->OnPartnerConnectionChanged(bDisabled);
 	}
 }
 

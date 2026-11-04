@@ -29,10 +29,14 @@ void ULobbyWidget::NativeConstruct()
 	if (Guest1Widget)
 	{
 		Guest1Widget->SetGuestIndex(0);
+		Guest1Widget->OnMoveRequested.RemoveAll(this);
+		Guest1Widget->OnMoveRequested.AddUObject(this, &ThisClass::MoveLocalGuestPreview);
 	}
 	if (Guest2Widget)
 	{
 		Guest2Widget->SetGuestIndex(1);
+		Guest2Widget->OnMoveRequested.RemoveAll(this);
+		Guest2Widget->OnMoveRequested.AddUObject(this, &ThisClass::MoveLocalGuestPreview);
 	}
 	RefreshRoleSelection();
 	StartLobbyRefreshTimer();
@@ -40,6 +44,8 @@ void ULobbyWidget::NativeConstruct()
 
 void ULobbyWidget::NativeDestruct()
 {
+	if (Guest1Widget) Guest1Widget->OnMoveRequested.RemoveAll(this);
+	if (Guest2Widget) Guest2Widget->OnMoveRequested.RemoveAll(this);
 	StopLobbyRefreshTimer();
 	UnbindLobbyPlayerStateDelegates();
 	Super::NativeDestruct();

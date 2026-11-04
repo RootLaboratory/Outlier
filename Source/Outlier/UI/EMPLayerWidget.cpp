@@ -8,6 +8,7 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "UI/EMPMarkWidget.h"
 
 void UEMPLayerWidget::BindEMPComponent(UPartnerEMPComponent* InEMPComponent)
@@ -28,10 +29,7 @@ void UEMPLayerWidget::InitializeMarkingTimer(float Duration)
 	bFinished = false;
 	StartReveal();
 
-	if (EMPProgressBar)
-	{
-		EMPProgressBar->SetPercent(0.0f);
-	}
+	UpdateProgress(0.0f);
 }
 
 void UEMPLayerWidget::ExpireEMP()
@@ -87,10 +85,7 @@ void UEMPLayerWidget::NativeConstruct()
 		EMPProgressBar = WidgetTree->ConstructWidget<UProgressBar>(UProgressBar::StaticClass(), TEXT("EMPProgressBar"));
 	}
 
-	if (EMPProgressBar)
-	{
-		EMPProgressBar->SetPercent(0.0f);
-	}
+	UpdateProgress(FMath::Clamp(ElapsedTime / MarkingDuration, 0.0f, 1.0f));
 
 	EnsureRevealMaterial();
 
@@ -120,10 +115,7 @@ void UEMPLayerWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 		ElapsedTime += InDeltaTime;
 		const float Progress = FMath::Clamp(ElapsedTime / MarkingDuration, 0.0f, 1.0f);
 
-		if (EMPProgressBar)
-		{
-			EMPProgressBar->SetPercent(Progress);
-		}
+		UpdateProgress(Progress);
 
 		if (ElapsedTime >= MarkingDuration)
 		{
@@ -202,6 +194,42 @@ void UEMPLayerWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 			CanvasSlot->SetPosition(ScreenLocation / ViewportScale);
 			CanvasSlot->SetSize(MarkerSlotSize / ViewportScale);
 		}
+	}
+}
+
+void UEMPLayerWidget::EnsureProgressMaterial()
+{
+	if (ProgressMaterial || !EMPProgressBar)
+	{
+		return;
+	}
+
+	FProgressBarStyle ProgressStyle = EMPProgressBar->GetWidgetStyle();
+	UMaterialInterface* Material = Cast<UMaterialInterface>(ProgressStyle.FillImage.GetResourceObject());
+	if (!Material)
+	{
+		return;
+	}
+
+	ProgressMaterial = UMaterialInstanceDynamic::Create(Material, this);
+	if (ProgressMaterial)
+	{
+		ProgressStyle.FillImage.SetResourceObject(ProgressMaterial);
+		EMPProgressBar->SetWidgetStyle(ProgressStyle);
+	}
+}
+
+void UEMPLayerWidget::UpdateProgress(float Progress)
+{
+	if (EMPProgressBar)
+	{
+		EMPProgressBar->SetPercent(1.0f - Progress);
+	}
+
+	EnsureProgressMaterial();
+	if (ProgressMaterial)
+	{
+		ProgressMaterial->SetScalarParameterValue(ProgressParameterName, Progress);
 	}
 }
 

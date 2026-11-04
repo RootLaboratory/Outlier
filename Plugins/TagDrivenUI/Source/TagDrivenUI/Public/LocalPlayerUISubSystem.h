@@ -130,6 +130,8 @@ public:
 	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityDisabledByDistance();
 	void OnAbilityEnabledByDistance();
+	// 파트너 경계 이탈 복제 결과. MainUI가 늦게 생겨도 RegisterMainUI에서 재생한다.
+	void OnPartnerConnectionChanged(bool bLost);
 
 private:
 	TWeakObjectPtr<UWorld> EndingWorld;
@@ -166,6 +168,8 @@ private:
 	// 슈트 획득 신호는 MainUI 가 생기기 전에 도착할 수 있다(OnRep 은 값이 바뀌는 순간 한 번뿐).
 	// 마지막 상태를 들고 있다가 RegisterMainUI 에서 새 위젯에 그대로 물려준다.
 	bool bShooterSuitAcquired = false;
+
+	bool bPartnerConnectionLost = false;
 
 	bool bTransientWidgetsSuppressed = false;
 };

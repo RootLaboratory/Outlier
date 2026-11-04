@@ -7,6 +7,9 @@
 class UImage;
 class UTextBlock;
 class UTexture2D;
+class UButton;
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnLobbyGuestMoveRequested, int32 /* Direction */);
 
 UENUM(BlueprintType)
 enum class ELobbyGuestWidgetState : uint8
@@ -24,6 +27,9 @@ class OUTLIER_API ULobbyGuestWidget : public UUserWidget
 public:
 	virtual void NativePreConstruct() override;
 	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
+
+	FOnLobbyGuestMoveRequested OnMoveRequested;
 
 	UFUNCTION(BlueprintCallable, Category = "Lobby|Guest")
 	void SetGuestIndex(int32 InGuestIndex);
@@ -46,6 +52,12 @@ public:
 	bool GetFrameCenterInLocalSpace(FVector2D& OutCenter) const;
 
 protected:
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UButton> LeftButton;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UButton> RightButton;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UImage> Frame;
 
@@ -65,6 +77,12 @@ protected:
 	void OnGuestStateChanged(ELobbyGuestWidgetState State, bool bIsLocalGuest, bool bIsConfirmed);
 
 private:
+	UFUNCTION()
+	void HandleLeftButtonClicked();
+
+	UFUNCTION()
+	void HandleRightButtonClicked();
+
 	void RefreshText();
 	void RefreshResultImage();
 	void RefreshPresentation();

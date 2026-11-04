@@ -4,6 +4,7 @@
 
 #include "AmmoUI.h"
 #include "CrossHairBase.h"
+#include "ShooterCrosshairWidget.h"
 #include "EventDrivenUI.h"
 #include "HPBarUI.h"
 #include "InfoCanvasBase.h"
@@ -104,6 +105,8 @@ void UShooterMainWidget::ModuleInit()
 void UShooterMainWidget::ApplyExceptionVisibility()
 {
 	ShowExceptionLayer(InfoLayer);
+	// 전용 분기로 처리해 다른 슈트 HUD 레이어가 열리지 않게 한다.
+	ShowExceptionLayer(CrosshairLayer);
 }
 
 void UShooterMainWidget::ModuleDestruct()
@@ -134,16 +137,6 @@ void UShooterMainWidget::DefaultModuleInit()
 
 void UShooterMainWidget::SuitOnModuleInit()
 {
-	if (RifleCrossHairUI)
-	{
-		RifleCrossHairUI->Deactivate();
-	}
-
-	if (PistolCrossHairUI)
-	{
-		PistolCrossHairUI->Deactivate();
-	}
-
 	if (AmmoUI)
 	{
 		AmmoUI->Deactivate();
@@ -166,15 +159,12 @@ void UShooterMainWidget::SuitOnModuleInit()
 
 }
 
-void UShooterMainWidget::ResetCrossHairs()
+void UShooterMainWidget::SetCrosshairSuitAcquired(bool bAcquired)
 {
-	UCrossHairBase* CrossHairs[] = { RifleCrossHairUI, PistolCrossHairUI };
-	for (UCrossHairBase* CrossHair : CrossHairs)
+	if (CrosshairLayer)
 	{
-		if (CrossHair)
-		{
-			CrossHair->ResetCrossHairState();
-		}
+		CrosshairLayer->SetSuitAcquired(bAcquired);
+		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CrosshairLayer->GetCurrentCrosshair());
 	}
 }
 
@@ -197,76 +187,11 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 			TEXT("[ShooterHUD][WeaponEvent] FAILED: registered CurrentWeapon module is missing or wrong type"));
 	}
 
-	switch (Type)
+	SetModuleActive(AmmoUI, Type != EWidgetWeaponType::Unarmed);
+	if (CrosshairLayer)
 	{
-	case EWidgetWeaponType::Melee:
-	{
-		//UE_LOG(LogTemp, Error, TEXT("Melee"));
-
-		SetModuleActive(AmmoUI, true);
-
-		if (CurrentCrossHairUI)
-		{
-			CurrentCrossHairUI->Deactivate();
-		}
-
-		CurrentCrossHairUI = nullptr;
-		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
-		break;
-	}
-	case EWidgetWeaponType::Pistol:
-	{
-		//UE_LOG(LogTemp, Error, TEXT("Pistol"));
-
-		SetModuleActive(AmmoUI, true);
-
-		if (CurrentCrossHairUI)
-		{
-			CurrentCrossHairUI->Deactivate();
-		}
-
-		CurrentCrossHairUI = PistolCrossHairUI;
-
-		SetModuleActive(CurrentCrossHairUI, true);
-
-		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
-		break;
-	}
-	case EWidgetWeaponType::Rifle:
-	{
-		//UE_LOG(LogTemp, Error, TEXT("Rifle"));
-
-		SetModuleActive(AmmoUI, true);
-
-		if (CurrentCrossHairUI)
-		{
-			CurrentCrossHairUI->Deactivate();
-		}
-
-		CurrentCrossHairUI = RifleCrossHairUI;
-
-		SetModuleActive(CurrentCrossHairUI, true);
-
-		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
-		break;
-	}
-	case EWidgetWeaponType::Unarmed:
-	default:
-	{
-		if (AmmoUI)
-		{
-			AmmoUI->Deactivate();
-		}
-
-		if (CurrentCrossHairUI)
-		{
-			CurrentCrossHairUI->Deactivate();
-		}
-
-		CurrentCrossHairUI = nullptr;
-		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
-		break;
-	}
+		CrosshairLayer->SetWeaponType(Type);
+		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CrosshairLayer->GetCurrentCrosshair());
 	}
 }
 

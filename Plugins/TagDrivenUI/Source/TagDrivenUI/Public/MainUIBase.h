@@ -46,6 +46,8 @@ public:
 	void FlushTransientWidgets();
 	virtual void On_RepAbilityDisabledByDistance();
 	virtual void On_RepAbilityabledByDistance();
+	// 서버 경계 판정이 복제된 뒤 로컬 플레이어에서만 호출된다. 슈트 전환 잠금과는 별개다.
+	void SetConnectionLost(bool bLost);
 
 	virtual void ModulesControl(bool Flag);
 	/** HUD 비활성화 시 레이어를 숨긴 뒤 호출된다. 사망 가시성에는 실행되지 않는다. */
@@ -64,6 +66,8 @@ public:
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 protected:
+	virtual void NativeOnInitialized() override;
+
 	// MainUI 가시성은 바꾸지 않고 예외 위젯의 브랜치를 DefaultLayer까지 연다.
 	void ShowExceptionLayer(UWidget* Layer);
 	void RegisterModule(UEventDrivenUI* InModule);
@@ -96,4 +100,8 @@ public:
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UCanvasPanel> DefaultLayer;
+
+	// 파트너와 연결이 끊긴 동안만 표시한다. Shooter/GangTong 메인 WBP 모두 같은 이름으로 배치한다.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "UI|Connection")
+	TObjectPtr<UWidget> ConnectionWidget;
 };

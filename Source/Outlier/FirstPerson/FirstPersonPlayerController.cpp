@@ -26,6 +26,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "LocalPlayerUISubSystem.h"
 #include "OutlierGameInstance.h"
+#include "OutlierPlayerState.h"
 #include "OutlierGameMode.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
@@ -375,6 +376,13 @@ void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
 
 	if (!LayerSubsystem->PushWidget(Request).IsValid())
 	{
+		return;
+	}
+
+	if (UUILayerKeyHintWidget* KeyHint = Cast<UUILayerKeyHintWidget>(
+		LayerSubsystem->FindWidgetByOwnerAndClass(Request.RequestOwner, Request.WidgetClass)))
+	{
+		KeyHint->SetVisibility(ESlateVisibility::HitTestInvisible);
 		return;
 	}
 
@@ -2697,7 +2705,10 @@ void AFirstPersonPlayerController::ControlMainWidget(bool InFlag) const
 
 	if (ShooterUIInstance)
 	{
-		ShooterUIInstance->ModulesControl(InFlag);
+		// 해킹 및 EMP 취소 후 HUD를 복원할 때도 슈트 획득 조건을 적용한다.
+		const AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+		const bool bSuitAcquired = OutlierPlayerState && OutlierPlayerState->GetAcquiredSuit();
+		ShooterUIInstance->ModulesControl(InFlag && bSuitAcquired);
 	}
 }
 

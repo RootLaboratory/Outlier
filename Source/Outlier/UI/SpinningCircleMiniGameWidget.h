@@ -79,7 +79,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SpinningCircle", meta = (ClampMin = "0.0"))
 	float CircleThickness = 12.0f;
 
-	// 링 충돌 판정 폭 (시각적 두께보다 크게 설정하면 빠른 마우스 이동에도 안정적으로 감지됨)
+	// 충돌 띠의 폭이다. 이동 경로를 검사해 고속 이동 시에도 띠를 건너뛰지 않게 한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SpinningCircle", meta = (ClampMin = "0.0"))
 	float RingHitTolerance = 24.0f;
 
@@ -115,6 +115,7 @@ private:
 	TArray<FSpinningCircleLayer> CircleLayers;
 
 	FVector2D InitialMouseLocalPosition = FVector2D::ZeroVector;
+	FVector2D PreviousMouseLocalPosition = FVector2D::ZeroVector;
 	uint8 bJudgementActive : 1 = false;
 	uint8 bPendingInitialMouseReset : 1 = false;
 
@@ -126,7 +127,7 @@ private:
 	void UpdateCircleLayers(float DeltaTime);
 	bool TryInitializeMousePosition();
 	void ResetMouseToInitialPosition();
-	EMouseAreaResult EvaluateMouseArea() const;
+	EMouseAreaResult EvaluateMouseArea(const FVector2D& MouseLocalPosition, float DeltaTime) const;
 	FVector2D GetCircleCenterLocal() const;
 	FVector2D GetMouseLocalPosition() const;
 	bool IsAngleInsideGap(const FSpinningCircleLayer& Layer, float AngleDegrees) const;

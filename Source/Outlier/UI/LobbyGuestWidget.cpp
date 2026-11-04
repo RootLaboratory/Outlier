@@ -1,5 +1,6 @@
 #include "UI/LobbyGuestWidget.h"
 
+#include "Components/Button.h"
 #include "Components/Image.h"
 #include "Components/TextBlock.h"
 #include "Blueprint/WidgetTree.h"
@@ -37,10 +38,29 @@ void ULobbyGuestWidget::NativePreConstruct()
 void ULobbyGuestWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (LeftButton) LeftButton->OnClicked.AddUniqueDynamic(this, &ThisClass::HandleLeftButtonClicked);
+	if (RightButton) RightButton->OnClicked.AddUniqueDynamic(this, &ThisClass::HandleRightButtonClicked);
 
 	RefreshText();
 	RefreshResultImage();
 	RefreshPresentation();
+}
+
+void ULobbyGuestWidget::NativeDestruct()
+{
+	if (LeftButton) LeftButton->OnClicked.RemoveDynamic(this, &ThisClass::HandleLeftButtonClicked);
+	if (RightButton) RightButton->OnClicked.RemoveDynamic(this, &ThisClass::HandleRightButtonClicked);
+	Super::NativeDestruct();
+}
+
+void ULobbyGuestWidget::HandleLeftButtonClicked()
+{
+	if (bIsOwningLocalGuest) OnMoveRequested.Broadcast(-1);
+}
+
+void ULobbyGuestWidget::HandleRightButtonClicked()
+{
+	if (bIsOwningLocalGuest) OnMoveRequested.Broadcast(1);
 }
 
 void ULobbyGuestWidget::SetGuestIndex(int32 InGuestIndex)
@@ -97,6 +117,9 @@ void ULobbyGuestWidget::RefreshResultImage()
 
 void ULobbyGuestWidget::RefreshPresentation()
 {
+	if (LeftButton) LeftButton->SetIsEnabled(bIsOwningLocalGuest);
+	if (RightButton) RightButton->SetIsEnabled(bIsOwningLocalGuest);
+
 	const bool bHasSelectedRole = GuestState != ELobbyGuestWidgetState::Default;
 	if (GuestText)
 	{

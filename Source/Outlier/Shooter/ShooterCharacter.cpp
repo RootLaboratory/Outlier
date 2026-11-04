@@ -4462,6 +4462,8 @@ void AShooterCharacter::RefreshShooterSuitAvailabilityUI()
 		{
 			SubSystem->OnAbilityEnabledByDistance();
 		}
+		// 슈트 잠금은 전환/재부팅도 포함하므로, 연결 표시는 경계 플래그만 따른다.
+		SubSystem->OnPartnerConnectionChanged(bSuitDisabledByPartnerBoundary);
 	}
 }
 
