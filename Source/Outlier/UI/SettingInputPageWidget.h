@@ -125,8 +125,7 @@ private:
 		FKey& OutKey) const;
 	FKey ResolveInputBindingCurrentKey(
 		const FOutlierInputBindingTableRow& Row) const;
-	bool IsInputKeyDuplicate(FKey NewKey, const UInputBindingRowWidget* IgnoredRowWidget) const;
-	void BuildInputBindingQueryContexts(TArray<UInputMappingContext*>& OutContexts) const;
+
 	void RefreshInputBindingDisplayedKeys();
 	void SetInputResult(const FText& ResultText, const FLinearColor& ResultColor);
 
@@ -138,7 +137,7 @@ private:
 	TObjectPtr<UInputBindingRowWidget> HoveredInputBindingRow;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputBindingRowWidget> PendingRebindInputBindingRow;
-	TMap<FName, FKey> RuntimeInputKeyOverrides;
+
 	TSharedPtr<IInputProcessor> InputRebindPreProcessor;
 	double RebindStartTimeSeconds = 0.0;
 	bool bWaitingForInputRebind = false;

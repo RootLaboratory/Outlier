@@ -33,6 +33,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Input Binding")
 	void SetDisplayedKey(FKey NewKey);
+	void SetBindingError(const FText& Error);
 
 	UPROPERTY(BlueprintAssignable, Category = "Input Binding")
 	FOnInputBindingRowEvent OnRebindRequested;

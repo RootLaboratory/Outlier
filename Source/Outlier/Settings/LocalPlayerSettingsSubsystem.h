@@ -9,6 +9,9 @@
 
 class UInputAction;
 class AOutlierPlayerState;
+class UOutlierInputBindingTable;
+class UInputMappingContext;
+struct FOutlierInputBindingTableRow;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnOutlierInputSettingsContextChanged, EOutlierPlayerRole);
 
@@ -94,6 +97,11 @@ public:
 	uint32 GetInputSettingsContextRevision() const { return InputSettingsContextRevision; }
 	FOnOutlierInputSettingsContextChanged OnInputSettingsContextChanged;
 
+	EOutlierLinkedBindingResult ChangeLinkedInputBinding(const UOutlierInputBindingTable* Table,
+		const FOutlierInputBindingTableRow& Row, FKey NewKey, FString& OutError);
+	FString GetLinkedInputBindingError(const FOutlierInputBindingTableRow& Row) const;
+	FSimpleMulticastDelegate OnLinkedInputBindingsChanged;
+
 	UFUNCTION(BlueprintPure, Category = "Settings|Input")
 	EOutlierSprintInputMode GetSprintInputMode(EOutlierPlayerRole Role) const;
 
@@ -156,6 +164,7 @@ public:
 private:
 	friend class FShooterSprintInputModeTest;
 	friend struct FInputSettingsPresentationTestAccess;
+	friend struct FLinkedInputBindingSettingsTestAccess;
 	void HandleInputSettingsRoleChanged(AOutlierPlayerState* PlayerState);
 	void UnbindInputSettingsPlayerState();
 	TWeakObjectPtr<AOutlierPlayerState> InputSettingsPlayerState;
@@ -165,6 +174,19 @@ private:
 
 	UFUNCTION()
 	void HandleInputUserSettingsInitialized(const UEnhancedInputUserSettings* Settings);
+	UFUNCTION()
+	void HandleInputKeyProfileChanged(const UEnhancedPlayerMappableKeyProfile* Profile);
+	UFUNCTION()
+	void HandleInputMappingContextRegistered(const UInputMappingContext* Context);
+	void SynchronizeLinkedInputBindings();
+	void UnbindInputUserSettings();
+	void NotifyLinkedInputBindingChanged(const FOutlierInputBindingTableRow& Row, FKey Key);
+	void ApplyLinkedInputBindings(bool bSave);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UOutlierInputBindingTable> InputBindingDefinitions;
+	TMap<FString, FString> LinkedInputBindingErrors;
+	bool bSynchronizingLinkedBindings = false;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UOutlierInputUserSettings> InputUserSettings;

@@ -139,7 +139,6 @@ struct FInputSettingsPresentationTestAccess
 			Page->CachedInputBindingRows.Add(Widget);
 		}
 		Page->bInputBindingListBuilt = true;
-		Page->RuntimeInputKeyOverrides.Add(TEXT("Presentation3"), EKeys::L);
 		const auto OriginalRows = Page->CachedInputBindingRows;
 		// 실제 WBP의 상하 패딩도 행 간격에 포함된다. 필터로 생기는 빈 행만 검사한다.
 		const float ExpectedRowStride = Page->InputBindingRowYOffset
@@ -163,7 +162,6 @@ struct FInputSettingsPresentationTestAccess
 				Test.TestEqual(TEXT("Hidden bindings excluded from focus"), Page->KeyboardFocusTargets.Contains(Row), Row->GetInputBindingRow().IsVisibleForRole(Role));
 			}
 		}
-		Test.TestTrue(TEXT("Hidden Partner binding retains rebound key conflict"), Page->IsInputKeyDuplicate(EKeys::L, OriginalRows[0]));
 		Page->bWaitingForInputRebind = true;
 		Page->PendingRebindInputBindingRow = OriginalRows[2];
 		Page->HandleInputSettingsContextChanged(ERole::Partner);
