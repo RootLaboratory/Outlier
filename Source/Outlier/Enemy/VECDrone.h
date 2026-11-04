@@ -107,6 +107,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|State Light")
 	FDroneStateLightSettings CombatLightSettings;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|State Light")
+	FDroneStateLightSettings PossessedLightSettings;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Hit Reaction")
 	TObjectPtr<UAnimMontage> HitReactionMontage;
 
@@ -172,6 +175,7 @@ private:
 	int32 StateLightLease = INDEX_NONE;
 	bool bStateLightReady = false;
 	bool bStateLightApplied = false;
+	bool bAppliedStateLightPossessed = false;
 
 	bool CanPlayHitReaction() const;
 	void StopHitReaction(float BlendOutTime);

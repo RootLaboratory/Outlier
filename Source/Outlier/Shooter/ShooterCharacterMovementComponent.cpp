@@ -31,7 +31,7 @@ bool FShooterMovementInput::operator==(const FShooterMovementInput& Other) const
 {
 	return Epoch == Other.Epoch && CrouchRequest == Other.CrouchRequest && JumpCancelRequest == Other.JumpCancelRequest
 		&& ActionRequest == Other.ActionRequest && AimSwitchId == Other.AimSwitchId
-		&& bSprint == Other.bSprint && bAim == Other.bAim
+		&& bSprint == Other.bSprint && bHoldSprint == Other.bHoldSprint && bFire == Other.bFire && bAim == Other.bAim
 		&& bCrouch == Other.bCrouch && bSprintAtCrouch == Other.bSprintAtCrouch;
 }
 
@@ -43,6 +43,8 @@ void FShooterMovementInput::Serialize(FArchive& Ar)
 	Ar.SerializeIntPacked(ActionRequest);
 	Ar << AimSwitchId;
 	Ar.SerializeBits(&bSprint, 1);
+	Ar.SerializeBits(&bHoldSprint, 1);
+	Ar.SerializeBits(&bFire, 1);
 	Ar.SerializeBits(&bAim, 1);
 	Ar.SerializeBits(&bCrouch, 1);
 	Ar.SerializeBits(&bSprintAtCrouch, 1);
@@ -72,7 +74,9 @@ void FShooterSlideSnapshot::Serialize(FArchive& Ar)
 	Ar.SerializeIntPacked(ActiveRequest);
 	Ar.SerializeBits(&bActive, 1);
 	Ar.SerializeBits(&bSprintHeld, 1);
+	Ar.SerializeBits(&bHoldSprint, 1);
 	Ar.SerializeBits(&bAimHeld, 1);
+	Ar.SerializeBits(&bFireHeld, 1);
 	Ar.SerializeBits(&bCrouchHeld, 1);
 	Ar.SerializeBits(&bCrouched, 1);
 	Ar << EndReason;
@@ -93,6 +97,39 @@ bool UShooterCharacterMovementComponent::IsReplayingMovement() const
 	return bRestoringMovementState || (CharacterOwner && CharacterOwner->bClientUpdating);
 }
 
+bool UShooterCharacterMovementComponent::IsHoldSprintInput() const
+{
+	// 같은 프레임의 Sprint→Aim/Fire는 아직 이동에 적용되지 않은 입력도 보존한다.
+	// 서버 적용/과거 이동 재생은 현재 로컬 설정 대신 해당 이동의 정책만 사용한다.
+	if (CharacterOwner && CharacterOwner->IsLocallyControlled() && !bApplyingMovementInput && !IsReplayingMovement())
+	{
+		return LiveMovementInput.bHoldSprint;
+	}
+	const auto* Movement = GetShooterMovement();
+	return Movement && Movement->bHoldSprintInput;
+}
+
+void UShooterCharacterMovementComponent::SetSprintInputMode(EOutlierSprintInputMode Mode)
+{
+	if (SprintInputMode == Mode) return;
+	SprintInputMode = Mode;
+	RequireFreshSprintPress();
+}
+
+void UShooterCharacterMovementComponent::RequireFreshSprintPress()
+{
+	// Flush가 만든 가짜 Release/Started는 재입력으로 보지 않는다.
+	// Controller가 받은 실제 키 Press만 이 대기를 해제한다.
+	bAwaitingFreshSprintPress = true;
+	bSprintKeyDown = false;
+	CancelActionInput(true, false);
+}
+
+void UShooterCharacterMovementComponent::NotifyFreshSprintPress()
+{
+	bAwaitingFreshSprintPress = false;
+}
+
 bool UShooterCharacterMovementComponent::QueueMovementInput(EShooterMovementInput Input)
 {
 	if (bApplyingMovementInput || !CharacterOwner || !CharacterOwner->IsLocallyControlled())
@@ -104,16 +141,25 @@ bool UShooterCharacterMovementComponent::QueueMovementInput(EShooterMovementInpu
 	case EShooterMovementInput::SprintPressed:
 		if (const auto* Shooter = Cast<AShooterCharacter>(CharacterOwner);
 			Shooter && (Shooter->IsDead() || Shooter->IsSuitTransitionBlocked())) return true;
+		if (bAwaitingFreshSprintPress || bSprintKeyDown) return true;
+		bSprintKeyDown = true;
 		if (++NextMovementRequest == 0) ++NextMovementRequest;
 		LiveMovementInput.ActionRequest = NextMovementRequest;
-		LiveMovementInput.bSprint = !LiveMovementInput.bSprint;
+		LiveMovementInput.bHoldSprint = SprintInputMode == EOutlierSprintInputMode::Hold;
+		LiveMovementInput.bSprint = LiveMovementInput.bHoldSprint || !LiveMovementInput.bSprint;
 		if (LiveMovementInput.bSprint)
 		{
 			LiveMovementInput.bAim = false;
 			LiveMovementInput.AimSwitchId = 0;
 		}
 		break;
-	case EShooterMovementInput::SprintReleased: break; // 일반 키 해제는 Toggle을 바꾸지 않는다.
+	case EShooterMovementInput::SprintReleased:
+		bSprintKeyDown = false;
+		if (!LiveMovementInput.bHoldSprint || !LiveMovementInput.bSprint) break;
+		if (++NextMovementRequest == 0) ++NextMovementRequest;
+		LiveMovementInput.ActionRequest = NextMovementRequest;
+		LiveMovementInput.bSprint = false;
+		break;
 	case EShooterMovementInput::CrouchPressed:
 		if (++NextMovementRequest == 0) ++NextMovementRequest;
 		LiveMovementInput.CrouchRequest = NextMovementRequest;
@@ -138,7 +184,19 @@ uint32 UShooterCharacterMovementComponent::RecordActionInput(bool bAim)
 	const auto* Shooter = Cast<AShooterCharacter>(CharacterOwner);
 	LiveMovementInput.AimSwitchId = bAim && Shooter && Shooter->IsWeaponSwitchInProgress()
 		? Shooter->ActiveProceduralSwitchId : 0;
-	if (bAim) LiveMovementInput.bSprint = false;
+	if (bAim && !LiveMovementInput.bHoldSprint) LiveMovementInput.bSprint = false;
+	return LiveMovementInput.ActionRequest;
+}
+
+uint32 UShooterCharacterMovementComponent::RecordFireInput(bool bFire)
+{
+	if (bApplyingMovementInput || IsReplayingMovement()) return LiveMovementInput.ActionRequest;
+	if (LiveMovementInput.bFire == bFire) return LiveMovementInput.ActionRequest;
+	if (++NextMovementRequest == 0) ++NextMovementRequest;
+	LiveMovementInput.ActionRequest = NextMovementRequest;
+	LiveMovementInput.bFire = bFire;
+	// Toggle은 사격 입력으로 해제하고, Hold는 의도를 남겨 사격 종료 후 재개한다.
+	if (bFire && !LiveMovementInput.bHoldSprint) LiveMovementInput.bSprint = false;
 	return LiveMovementInput.ActionRequest;
 }
 
@@ -157,7 +215,7 @@ void UShooterCharacterMovementComponent::CancelActionInput(bool bCancelSprint, b
 	}
 }
 
-bool UShooterCharacterMovementComponent::ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId)
+bool UShooterCharacterMovementComponent::ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId, bool bHoldSprint, bool bFire)
 {
 	auto* Shooter = Cast<AShooterCharacter>(CharacterOwner);
 	auto* Movement = GetShooterMovement();
@@ -165,6 +223,8 @@ bool UShooterCharacterMovementComponent::ApplyActionInput(uint32 Request, uint32
 		|| static_cast<int32>(Request - ProcessedActionRequest) <= 0) return false;
 	ProcessedActionRequest = Request;
 	TGuardValue<bool> InputGuard(bApplyingMovementInput, true);
+	Movement->bHoldSprintInput = bHoldSprint;
+	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyFireInput(bFire);
 	// 공통 순번으로 늦은 Aim RPC/이동 입력을 버린다. Sprint ON 후 OFF가 같은 이동에 묶여도
 	// bAim=false가 남으므로 중간 ON에서 취소한 Aim은 다시 살아나지 않는다.
 	const bool bAllowed = !Shooter->IsDead() && !Shooter->IsSuitTransitionBlocked();
@@ -181,7 +241,8 @@ bool UShooterCharacterMovementComponent::ApplyActionInput(uint32 Request, uint32
 	}
 	AppliedAimSwitchId = bAllowed && bAim && bValidAimSwitch ? AimSwitchId : 0;
 	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyAimInput(bAllowed && bAim && bValidAimSwitch);
-	Movement->SetSprintIntent(bAllowed && bSprint && !bAim);
+	// Hold에서는 Aim과 Sprint 의도를 함께 보관한다. 실제 달리기는 CanSprint가 차단한다.
+	Movement->SetSprintIntent(bAllowed && bSprint && (bHoldSprint || !bAim));
 	return true;
 }
 
@@ -219,7 +280,7 @@ void UShooterCharacterMovementComponent::ApplyMovementInput()
 		PrepareSlideJump();
 		CharacterOwner->Jump();
 	};
-	ApplyActionInput(MoveInput.ActionRequest, MoveInput.Epoch, MoveInput.bSprint, MoveInput.bAim, MoveInput.AimSwitchId);
+	ApplyActionInput(MoveInput.ActionRequest, MoveInput.Epoch, MoveInput.bSprint, MoveInput.bAim, MoveInput.AimSwitchId, MoveInput.bHoldSprint, MoveInput.bFire);
 	// 같은 프레임에 누르고 놓아도 시작 요청은 남는다. 취소와 재입력은 요청 순서대로 판정한다.
 	const bool bJumpFirst = bNewJump && bNewCrouch
 		&& static_cast<int32>(MoveInput.CrouchRequest - MoveInput.JumpCancelRequest) > 0;
@@ -286,10 +347,15 @@ FShooterSlideSnapshot UShooterCharacterMovementComponent::CaptureSlideSnapshot()
 	Result.EndReason = SlideEndReason;
 	Result.bActive = bSlideSimulating;
 	Result.bCrouched = CharacterOwner && CharacterOwner->bIsCrouched;
-	if (const auto* Shooter = Cast<AShooterCharacter>(CharacterOwner)) Result.bAimHeld = Shooter->WantsToAim();
+	if (const auto* Shooter = Cast<AShooterCharacter>(CharacterOwner))
+	{
+		Result.bAimHeld = Shooter->WantsToAim();
+		Result.bFireHeld = Shooter->CombatComponent && Shooter->CombatComponent->IsFireInputHeld();
+	}
 	if (const auto* Movement = GetShooterMovement())
 	{
 		Result.bSprintHeld = Movement->WantsToSprint();
+		Result.bHoldSprint = Movement->bHoldSprintInput;
 		Result.bCrouchHeld = Movement->WantsToCrouch();
 	}
 	return Result;
@@ -308,6 +374,7 @@ void UShooterCharacterMovementComponent::RestoreSlideSnapshot(const FShooterSlid
 		// 전환 전 홀드/진입 요청을 새 서버 기준에 붙이지 않는다. 요청 순번 자체는 계속 증가한다.
 		LiveMovementInput = {};
 		LiveMovementInput.Epoch = MovementEpoch;
+		RequireFreshSprintPress();
 		MoveInput = LiveMovementInput;
 	}
 	// 위치/속도는 엔진 보정 결과를 유지한다. 진입 API를 다시 호출하면 배율과 연출이 중복된다.
@@ -342,12 +409,16 @@ void UShooterCharacterMovementComponent::RestoreSlideSnapshot(const FShooterSlid
 	{
 		LiveMovementInput.ActionRequest = ProcessedActionRequest;
 		LiveMovementInput.bSprint = Snapshot.bSprintHeld;
+		LiveMovementInput.bHoldSprint = Snapshot.bHoldSprint;
+		LiveMovementInput.bFire = Snapshot.bFireHeld;
 		LiveMovementInput.bAim = Snapshot.bAimHeld;
 		LiveMovementInput.AimSwitchId = Snapshot.bAimHeld ? Snapshot.AimSwitchId : 0;
 	}
 	ActiveSlideRequest = Snapshot.ActiveRequest;
 	SlideEndReason = Snapshot.EndReason;
 	Movement->bWantsToSprint = Snapshot.bSprintHeld;
+	Movement->bHoldSprintInput = Snapshot.bHoldSprint;
+	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyFireInput(Snapshot.bFireHeld);
 	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyAimInput(Snapshot.bAimHeld);
 	Movement->bWantsToCrouch = Snapshot.bCrouchHeld;
 	Movement->bIsSliding = Snapshot.bActive;
@@ -361,16 +432,21 @@ void UShooterCharacterMovementComponent::RestoreSlideSnapshot(const FShooterSlid
 		Shooter->EndActionLock(EShooterActionLock::Slide);
 	}
 	bWantsToCrouch = Snapshot.bActive || Snapshot.bCrouchHeld;
-	if (Shooter->bIsCrouched != Snapshot.bCrouched)
+	RestoreCrouchedPosture(Snapshot.bCrouched);
+	Movement->RefreshMovementState();
+}
+
+void UShooterCharacterMovementComponent::RestoreCrouchedPosture(bool bCrouched)
+{
+	if (CharacterOwner && CharacterOwner->bIsCrouched != bCrouched)
 	{
 		// 위치 보정은 캡슐 자세까지 되돌리지 않는다. 승인된 자세만 복원하고 보정된 중심은 다시 이동하지 않는다.
 		// 이후 새 앉기/일어서기는 기존 지형 검사를 그대로 사용한다.
-		Shooter->SetIsCrouched(Snapshot.bCrouched);
-		if (Snapshot.bCrouched) Crouch(true);
+		CharacterOwner->SetIsCrouched(bCrouched);
+		if (bCrouched) Crouch(true);
 		else UnCrouch(true);
 		bForceNextFloorCheck = true;
 	}
-	Movement->RefreshMovementState();
 }
 
 void UShooterCharacterMovementComponent::ReconcileSlidePresentation()
@@ -409,6 +485,7 @@ void UShooterCharacterMovementComponent::ReconcileSlidePresentation()
 
 void UShooterCharacterMovementComponent::ResetSlideForLifecycle()
 {
+	RequireFreshSprintPress();
 	ResetSlideJumpMomentum();
 	bSlideJumpAttempt = bStopSlideJumpAfterCheck = false;
 	bSlideJumpRejected = false;
@@ -420,6 +497,7 @@ void UShooterCharacterMovementComponent::ResetSlideForLifecycle()
 
 	// 1. 홀드를 먼저 비워 종료 과정에서 Sprint/앉기가 재개되지 않게 하고, 기존 종료 API로 물리를 복구한다.
 	Movement->ClearInputIntent();
+	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyFireInput(false);
 	Shooter->StopAimInternal();
 	Movement->StopSlide(ESlideEndReason::ForcedCancel);
 	EndSlideSimulation();
@@ -493,6 +571,8 @@ public:
 	uint32 SlideRequest = 0;
 	bool bSliding = false;
 	bool bSprintHeld = false;
+	bool bHoldSprint = false;
+	bool bFireHeld = false;
 	bool bAimHeld = false;
 	bool bCrouchHeld = false;
 	bool bCrouched = false;
@@ -510,7 +590,7 @@ public:
 		MovementInput = {};
 		SlideRequest = 0;
 		bSliding = false;
-		bSprintHeld = bAimHeld = bCrouchHeld = false;
+		bSprintHeld = bHoldSprint = bFireHeld = bAimHeld = bCrouchHeld = false;
 		bCrouched = false;
 		EndReason = 0;
 		JumpMomentum = {};
@@ -549,6 +629,8 @@ public:
 		SlideRequest = Movement->ActiveSlideRequest;
 		const FShooterSlideSnapshot Slide = Movement->CaptureSlideSnapshot();
 		bSprintHeld = Slide.bSprintHeld;
+		bHoldSprint = Slide.bHoldSprint;
+		bFireHeld = Slide.bFireHeld;
 		bAimHeld = Slide.bAimHeld;
 		bCrouchHeld = Slide.bCrouchHeld;
 		bCrouched = Slide.bCrouched;
@@ -650,6 +732,8 @@ void FShooterAudioMoveData::ClientFillNetworkMoveData(const FSavedMove_Character
 	PredictedSlideRequest = Move.SlideRequest;
 	bPredictedSliding = Move.bSliding;
 	bPredictedSprintHeld = Move.bSprintHeld;
+	bPredictedHoldSprint = Move.bHoldSprint;
+	bPredictedFireHeld = Move.bFireHeld;
 	bPredictedAimHeld = Move.bAimHeld;
 	bPredictedCrouchHeld = Move.bCrouchHeld;
 	bPredictedCrouched = Move.bCrouched;
@@ -669,6 +753,8 @@ bool FShooterAudioMoveData::Serialize(UCharacterMovementComponent& Movement, FAr
 	Ar.SerializeIntPacked(PredictedSlideRequest);
 	Ar.SerializeBits(&bPredictedSliding, 1);
 	Ar.SerializeBits(&bPredictedSprintHeld, 1);
+	Ar.SerializeBits(&bPredictedHoldSprint, 1);
+	Ar.SerializeBits(&bPredictedFireHeld, 1);
 	Ar.SerializeBits(&bPredictedAimHeld, 1);
 	Ar.SerializeBits(&bPredictedCrouchHeld, 1);
 	Ar.SerializeBits(&bPredictedCrouched, 1);
@@ -1499,6 +1585,7 @@ void UShooterCharacterMovementComponent::ServerMoveHandleClientError(float Clien
 	if (Move && (Move->MovementInput.Epoch != MovementEpoch || Move->bPredictedSliding != bSlideSimulating
 		|| (bSlideSimulating && Move->PredictedSlideRequest != ActiveSlideRequest)
 		|| Move->bPredictedSprintHeld != Slide.bSprintHeld || Move->bPredictedAimHeld != Slide.bAimHeld
+		|| Move->bPredictedHoldSprint != Slide.bHoldSprint || Move->bPredictedFireHeld != Slide.bFireHeld
 		|| Move->bPredictedCrouchHeld != Slide.bCrouchHeld
 		|| Move->bPredictedCrouched != Slide.bCrouched
 		|| Move->PredictedEndReason != SlideEndReason
@@ -1561,12 +1648,25 @@ bool FShooterMoveResponse::Serialize(UCharacterMovementComponent& Movement, FArc
 	return !Ar.IsError();
 }
 
+void UShooterCharacterMovementComponent::OnClientCorrectionReceived(FNetworkPredictionData_Client_Character& ClientData,
+	float TimeStamp, FVector NewLocation, FVector NewVelocity, UPrimitiveComponent* NewBase, FName NewBaseBoneName,
+	bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode, FVector ServerGravityDirection)
+{
+	Super::OnClientCorrectionReceived(ClientData, TimeStamp, NewLocation, NewVelocity, NewBase, NewBaseBoneName,
+		bHasBase, bBaseRelativePosition, ServerMovementMode, ServerGravityDirection);
+	// 엔진이 승인한 보정에만 자세를 먼저 복원한다. 점프 예측의 선 캡슐로 Walking 바닥 검사를
+	// 수행하면 서버의 앉은 위치를 잘못 밀어낸다. 위치/이동 모드 적용은 이후 엔진 경로가 맡는다.
+	if (PendingSlideCorrection) RestoreCrouchedPosture(PendingSlideCorrection->bCrouched);
+}
+
 void UShooterCharacterMovementComponent::ClientHandleMoveResponse(const FCharacterMoveResponseDataContainer& Response)
 {
 	// 새 수명주기를 받은 뒤 도착한 이전 보정은 위치와 Slide 모두 되돌리지 않는다.
 	if (Response.IsCorrection() && static_cast<int32>(
 		static_cast<const FShooterMoveResponse&>(Response).SlideSnapshot.AppliedInput.Epoch - MovementEpoch) < 0) return;
 	TGuardValue<bool> RestoreGuard(bRestoringMovementState, Response.IsCorrection());
+	TGuardValue<const FShooterSlideSnapshot*> CorrectionGuard(PendingSlideCorrection,
+		Response.IsCorrection() ? &static_cast<const FShooterMoveResponse&>(Response).SlideSnapshot : nullptr);
 #if !UE_BUILD_SHIPPING
 	const bool bTraceCorrection = Response.IsCorrection() && ShouldTraceSlideMovement();
 	if (bTraceCorrection)

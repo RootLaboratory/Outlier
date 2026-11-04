@@ -160,6 +160,7 @@ public:
 
 private:
 	friend class FOutlierGameOverPendingFailureTest;
+	friend class FOutlierSettingsPauseTest;
 	friend class FOutlierDirectPairTest;
 	friend class FElevatorCheckpointIntegrationTest;
 	void TryStartDirectPairTest();
@@ -181,6 +182,8 @@ private:
 	TWeakObjectPtr<AActor> SettingsPauseLayerOwner;
 	TWeakObjectPtr<AFirstPersonPlayerController> SettingsPauseController;
 	TWeakObjectPtr<AFirstPersonPlayerController> SettingsOtherController;
+	// 월드 정지 소유자와 별개로, 현재 설정창을 사용하는 플레이어만 기록한다.
+	TSet<TWeakObjectPtr<AFirstPersonPlayerController>> SettingsMenuUsers;
 
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingPossessions;

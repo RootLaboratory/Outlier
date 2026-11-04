@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShooterCharacter.h"
+#include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Drone/Partner/PartnerShieldRecipientComponent.h"
 #include "Audio/OutlierAudioFeedback.h"
@@ -525,9 +526,11 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 		PPS->SetPartnerShieldPostProcess(this, false);
+	UnbindSprintSettings();
 	if (auto* Subsystem = ActionInputSubsystem.Get())
 	{
 		Subsystem->ControlMappingsRebuiltDelegate.RemoveDynamic(this, &AShooterCharacter::HandleControlMappingsRebuilt);
+		Subsystem->OnPostUserSettingsInitialized.RemoveAll(this);
 	}
 	ActionInputSubsystem.Reset();
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
@@ -1572,6 +1575,7 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	// Sprint
 	EnhancedInputComponent->BindAction(ShooterInputConfig->SprintAction,		ETriggerEvent::Started,   this, &AShooterCharacter::HandleSprintPressed);
 	EnhancedInputComponent->BindAction(ShooterInputConfig->SprintAction,		ETriggerEvent::Completed, this, &AShooterCharacter::HandleSprintReleased);
+	EnhancedInputComponent->BindAction(ShooterInputConfig->SprintAction,		ETriggerEvent::Canceled,  this, &AShooterCharacter::HandleSprintReleased);
 
 	// Crouch
 	EnhancedInputComponent->BindAction(ShooterInputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::HandleCrouchPressed);
@@ -1605,11 +1609,14 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 void AShooterCharacter::BindActionInputReset()
 {
+	UnbindSprintSettings();
 	if (auto* Previous = ActionInputSubsystem.Get())
 	{
 		Previous->ControlMappingsRebuiltDelegate.RemoveDynamic(this, &AShooterCharacter::HandleControlMappingsRebuilt);
+		Previous->OnPostUserSettingsInitialized.RemoveAll(this);
 	}
 	ActionInputSubsystem.Reset();
+	SprintInputKeys.Reset();
 	const auto* PlayerController = Cast<APlayerController>(GetController());
 	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
 	if (!LocalPlayer) return;
@@ -1617,6 +1624,74 @@ void AShooterCharacter::BindActionInputReset()
 	{
 		ActionInputSubsystem = Subsystem;
 		Subsystem->ControlMappingsRebuiltDelegate.AddUniqueDynamic(this, &AShooterCharacter::HandleControlMappingsRebuilt);
+		Subsystem->OnPostUserSettingsInitialized.AddUniqueDynamic(this, &AShooterCharacter::HandleSprintSettingsLoaded);
+		if (const auto* Config = Cast<UShooterInputConfig>(InputConfig); Config && Config->SprintAction)
+		{
+			SprintInputKeys = Subsystem->QueryKeysMappedToAction(Config->SprintAction);
+		}
+	}
+	if (auto* Settings = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>())
+	{
+		SprintSettingsSubsystem = Settings;
+		Settings->OnSprintInputModeChanged.AddUniqueDynamic(this, &AShooterCharacter::HandleSprintInputModeChanged);
+		Settings->OnInputSettingsContextChanged.AddUObject(this, &AShooterCharacter::HandleSprintSettingsContextChanged);
+		CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())
+			->SetSprintInputMode(Settings->GetSprintInputMode(EOutlierPlayerRole::Shooter));
+	}
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->RequireFreshSprintPress();
+}
+
+void AShooterCharacter::UnbindSprintSettings()
+{
+	if (auto* Settings = SprintSettingsSubsystem.Get())
+	{
+		Settings->OnSprintInputModeChanged.RemoveAll(this);
+		Settings->OnInputSettingsContextChanged.RemoveAll(this);
+	}
+	SprintSettingsSubsystem.Reset();
+}
+
+void AShooterCharacter::HandleSprintInputModeChanged(EOutlierPlayerRole SettingsRole, EOutlierSprintInputMode Mode)
+{
+	if (!IsLocallyControlled() || SettingsRole != EOutlierPlayerRole::Shooter) return;
+	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	if (Movement->GetSprintInputMode() == Mode) return;
+	Movement->SetSprintInputMode(Mode);
+	StopSprintInternal();
+	RefreshMovementState();
+	// 방식 변경은 Sprint만 초기화한다. 진행 중인 Aim/Fire 입력은 그대로 전달한다.
+	if (!HasAuthority()) ServerSetAimState(WantsToAim(), false, Movement->GetActionInputRequest(),
+		Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId(),
+		Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent());
+}
+
+void AShooterCharacter::HandleSprintSettingsContextChanged(EOutlierPlayerRole SettingsRole)
+{
+	if (!IsLocallyControlled()) return;
+	if (const auto* Settings = SprintSettingsSubsystem.Get())
+	{
+		CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())
+			->SetSprintInputMode(Settings->GetSprintInputMode(EOutlierPlayerRole::Shooter));
+	}
+	ResetActionInput();
+}
+
+void AShooterCharacter::HandleSprintSettingsLoaded(const UEnhancedInputUserSettings* Settings)
+{
+	// 로드 알림의 구독 순서에 기대지 않고 전달된 저장 객체에서 현재 역할 값을 읽는다.
+	if (!IsLocallyControlled()) return;
+	if (const auto* InputSettings = Cast<UOutlierInputUserSettings>(Settings))
+	{
+		HandleSprintInputModeChanged(EOutlierPlayerRole::Shooter,
+			InputSettings->GetSprintInputMode(EOutlierPlayerRole::Shooter));
+	}
+}
+
+void AShooterCharacter::NotifySprintKeyPressed(FKey Key)
+{
+	if (SprintInputKeys.Contains(Key))
+	{
+		CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->NotifyFreshSprintPress();
 	}
 }
 
@@ -1625,29 +1700,37 @@ void AShooterCharacter::HandleControlMappingsRebuilt()
 	const auto* Config = Cast<UShooterInputConfig>(InputConfig);
 	const auto* Subsystem = ActionInputSubsystem.Get();
 	if (!IsLocallyControlled() || !Config || !Subsystem) return;
+	SprintInputKeys = Config->SprintAction ? Subsystem->QueryKeysMappedToAction(Config->SprintAction) : TArray<FKey>();
 	const bool bMissingSprint = Config->SprintAction && Subsystem->QueryKeysMappedToAction(Config->SprintAction).IsEmpty();
 	const bool bMissingAim = Config->AimAction && Subsystem->QueryKeysMappedToAction(Config->AimAction).IsEmpty();
 	if (!bMissingSprint && !bMissingAim) return;
 	// 일반 Release와 컨텍스트 종료를 구분한다. 키 재설정으로 액션이 계속 유효하면 의도는 유지한다.
 	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
 	Movement->CancelActionInput(bMissingSprint, bMissingAim);
-	if (bMissingSprint) StopSprintInternal();
+	if (bMissingSprint)
+	{
+		Movement->RequireFreshSprintPress();
+		StopSprintInternal();
+	}
 	if (bMissingAim) StopAimInternal();
 	RefreshActionIntentsAfterEquip();
 	if (!HasAuthority()) ServerSetAimState(WantsToAim(), Movement->GetSprintInputIntent(),
-		Movement->GetActionInputRequest(), Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId());
+		Movement->GetActionInputRequest(), Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId(),
+		Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent());
 }
 
 void AShooterCharacter::ResetActionInput()
 {
 	if (!IsLocallyControlled()) return;
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->RequireFreshSprintPress();
 	ClearInputIntent();
 	StopSprintInternal();
 	RefreshActionIntentsAfterEquip();
 	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
 	// 포커스 초기화는 이동이 일시 정지해도 서버에 전달한다. 단순 키 Release에서는 호출하지 않는다.
 	const uint32 Request = Movement->RecordActionInput(false);
-	if (!HasAuthority()) ServerSetAimState(false, false, Request, Movement->GetMovementInputEpoch(), 0);
+	if (!HasAuthority()) ServerSetAimState(false, false, Request, Movement->GetMovementInputEpoch(), 0,
+		Movement->IsLiveHoldSprintInput(), false);
 }
 
 void AShooterCharacter::OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
@@ -3596,7 +3679,10 @@ void AShooterCharacter::HandleDeath()
 
 void AShooterCharacter::ClearInputIntent()
 {
-	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->CancelActionInput(true, true);
+	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	Movement->RequireFreshSprintPress();
+	Movement->CancelActionInput(true, true);
+	Movement->RecordFireInput(false);
 	if (CombatComponent)
 	{
 		CombatComponent->ClearInputIntent();
@@ -4276,10 +4362,10 @@ void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex
 	}
 }
 
-void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId)
+void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId, bool bHoldSprint, bool bFireHeld)
 {
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())
-		->ApplyActionInput(InputRequest, InputEpoch, bSprintIntent, bNewAiming, AimSwitchId);
+		->ApplyActionInput(InputRequest, InputEpoch, bSprintIntent, bNewAiming, AimSwitchId, bHoldSprint, bFireHeld);
 }
 
 void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting, uint32 InputRequest, uint32 InputEpoch)

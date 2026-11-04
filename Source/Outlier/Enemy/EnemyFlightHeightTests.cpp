@@ -4,6 +4,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyEnvQuery.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/EnemyStateTreeMovementTasks.h"
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
 #include "Enemy/EnemyStateTreeSelfDestructTasks.h"
@@ -11,6 +12,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
+#include "TimerManager.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "EnvironmentQuery/EnvQuery.h"
@@ -172,8 +174,11 @@ bool MakeHeightCombatQuery(FEnemyFlightHeightTestWorld& Fixture, const FString& 
 	FEnemyRunEnvQueryTaskInstanceData& Data, double TargetHeight = 50.0)
 {
 	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
-	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	UClass* TargetClass = LoadClass<AActor>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	AActor* Target = TargetClass ? Fixture.World->SpawnActor<AActor>(TargetClass) : nullptr;
 	if (!Controller || !Target) return false;
+	Target->SetActorEnableCollision(false);
 	UBoxComponent* TargetRoot = NewObject<UBoxComponent>(Target);
 	Target->SetRootComponent(TargetRoot);
 	TargetRoot->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -183,6 +188,7 @@ bool MakeHeightCombatQuery(FEnemyFlightHeightTestWorld& Fixture, const FString& 
 	Target->SetActorLocation(FVector(TargetDistance, 0, TargetHeight));
 	Controller->Possess(Fixture.Enemy);
 	Controller->SetCachedVisibleTargetForTesting(Target);
+	Fixture.Enemy->ObserveTrackedTarget(Target);
 	Fixture.Enemy->SetPlayerCurrentlyVisible(true);
 
 	Data.Enemy = Fixture.Enemy;
@@ -235,7 +241,15 @@ bool FinishHeightQuery(FAutomationTestBase& Test, FEnemyFlightHeightTestWorld& F
 	if (!Test.TestTrue(TEXT("Actual asynchronous EQS request starts"), RequestId != INDEX_NONE)) return false;
 	// 실패/조기 종료에도 스택 참조를 잡은 Delegate를 다음 테스트까지 남기지 않는다.
 	ON_SCOPE_EXIT { if (!bCompleted) Manager->AbortQuery(RequestId); };
-	BeforeCompletion();
+	{
+		// 에디터의 EQS는 TimeOnly에서도 자동 Tick된다. 중단 조건을 만드는 동안에는 이를 막고,
+		// 조건 적용이 끝난 뒤 아래의 명시적 Tick에서 실제 완료 Delegate를 실행한다.
+		const ETickableTickType TickType = Manager->GetTickableTickType();
+		Manager->SetTickableTickType(ETickableTickType::Never);
+		ON_SCOPE_EXIT { Manager->SetTickableTickType(TickType); };
+		BeforeCompletion();
+	}
+	if (!Test.TestFalse(TEXT("EQS completion waits until interruption is applied"), bCompleted)) return false;
 	for (int32 Tick = 0; Tick < 256 && !bCompleted; ++Tick) Manager->Tick(1.0f / 60.0f);
 	return Test.TestTrue(TEXT("Actual EQS delegate finishes within bounded manager ticks"), bCompleted)
 		&& Test.TestTrue(TEXT("Actual EQS result exists"), OutResult.IsValid());
@@ -905,7 +919,9 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightHeightCompletionIntegrationTest,
 void FEnemyFlightHeightCompletionIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
 	for (const TCHAR* Scenario : {TEXT("SettingsChanged"), TEXT("Disabled"), TEXT("Enabled"),
-		TEXT("PreferenceChanged"), TEXT("SightLost"), TEXT("TargetChanged"), TEXT("TargetMoved"),
+		TEXT("PreferenceChanged"), TEXT("SightLost"), TEXT("TrackingGrace"), TEXT("TrackingExpired"), TEXT("TargetChanged"), TEXT("TargetMoved"),
+		TEXT("SharedSource"), TEXT("SharedObserverHandoff"), TEXT("SharedGrace"), TEXT("SharedExpired"),
+		TEXT("SharedRoomEnded"), TEXT("SharedRoomChanged"), TEXT("SharedTargetChanged"),
 		TEXT("Possessed"), TEXT("Death"), TEXT("PoolReuse"), TEXT("Inactive"), TEXT("RequestReplaced")})
 	{
 		Names.Add(Scenario);
@@ -920,6 +936,24 @@ bool FEnemyFlightHeightCompletionIntegrationTest::RunTest(const FString& Paramet
 	if (Parameters == TEXT("Enabled")) Fixture.Enemy->FlightHeightSettings.bEnabled = false;
 	FEnemyRunEnvQueryTaskInstanceData Data;
 	if (!TestTrue(TEXT("Combat query inputs initialize"), MakeHeightCombatQuery(Fixture, TEXT("Approach"), Data))) return false;
+	UEnemyRoomSubsystem* Rooms = nullptr;
+	AEnemyBase* Observer = nullptr;
+	if (Parameters.StartsWith(TEXT("Shared")))
+	{
+		Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+		Observer = Fixture.World->SpawnActor<AEnemyBase>();
+		if (!TestNotNull(TEXT("Shared query Room subsystem exists"), Rooms)
+			|| !TestNotNull(TEXT("Shared query observer exists"), Observer)) return false;
+		Observer->GetRoomTagComp()->AssignDefaultRoomTag(Fixture.RoomTag);
+		Observer->EnterCombatFromRoom(Data.CapturedTarget->GetActorLocation(), false);
+		Rooms->SetActiveRoomTargetForTesting(Fixture.RoomTag, Data.CapturedTarget->GetActorLocation(), false);
+		Rooms->ReportRoomTargetContact(Observer, Data.CapturedTarget.Get(), Data.CapturedTarget->GetActorLocation());
+		Data.CachedController->SetCachedVisibleTargetForTesting(nullptr);
+		Fixture.Enemy->SetPlayerCurrentlyVisible(false);
+		if (!TestEqual(TEXT("Pending query captures the same Actor through shared tracking"),
+			Fixture.Enemy->GetTrackedTarget(), Data.CapturedTarget.Get())) return false;
+		EnemySearchTesting::CaptureQuery(Data);
+	}
 	Data.TargetChangeDistance = 200;
 	FEnvQueryRequest Request(Data.QueryTemplate, Fixture.Enemy);
 	if (!TestTrue(TEXT("Request prepares before interruption"), EnemySearchTesting::PrepareRequest(Data, Request))) return false;
@@ -927,11 +961,82 @@ bool FEnemyFlightHeightCompletionIntegrationTest::RunTest(const FString& Paramet
 	bool bPoolReused = false;
 	const auto Interrupt = [&]
 	{
-		if (Parameters == TEXT("SettingsChanged")) Fixture.Enemy->FlightHeightSettings.MidHeight += 50;
+		if (Parameters == TEXT("SharedSource"))
+		{
+			// 실행 중 요청은 정보 출처가 아니라 Actor/수명/방 스냅샷에 귀속된다.
+			Data.CachedController->SetCachedVisibleTargetForTesting(Data.CapturedTarget.Get());
+			Fixture.Enemy->SetPlayerCurrentlyVisible(true);
+			Data.CachedController->SetCachedVisibleTargetForTesting(nullptr);
+			Fixture.Enemy->SetPlayerCurrentlyVisible(false);
+		}
+		else if (Parameters == TEXT("SharedObserverHandoff"))
+		{
+			AEnemyBase* NextObserver = Fixture.World->SpawnActor<AEnemyBase>();
+			if (!TestNotNull(TEXT("Replacement query observer exists"), NextObserver)) return;
+			NextObserver->GetRoomTagComp()->AssignDefaultRoomTag(Fixture.RoomTag);
+			NextObserver->EnterCombatFromRoom(Data.CapturedTarget->GetActorLocation(), false);
+			Rooms->RemoveRoomTargetObserver(Observer);
+			Rooms->ReportRoomTargetContact(NextObserver, Data.CapturedTarget.Get(), Data.CapturedTarget->GetActorLocation());
+		}
+		else if (Parameters == TEXT("SharedGrace") || Parameters == TEXT("SharedExpired"))
+		{
+			Rooms->RemoveRoomTargetObserver(Observer);
+			Fixture.Enemy->RefreshTargetTracking();
+			if (Parameters == TEXT("SharedExpired"))
+			{
+				// 비동기 EQS 완료는 보류하고 마지막 직접 보고 시각에 따른 유예만 만료시킨다.
+				Fixture.World->GetTimerManager().Tick(0.0f);
+				const int32 Steps = FMath::CeilToInt((Fixture.Enemy->GetRuntimeStat().TargetTrackingGraceSeconds + 0.1f) * 32.0f);
+				for (int32 Step = 0; Step < Steps; ++Step)
+				{
+					++GFrameCounter;
+					Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+					Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+				}
+				TestFalse(TEXT("Shared tracking expires before EQS completion"), Fixture.Enemy->HasTrackableTarget());
+			}
+		}
+		else if (Parameters == TEXT("SharedRoomEnded")) Rooms->NotifyRoomCombatEnded(Fixture.RoomTag);
+		else if (Parameters == TEXT("SharedRoomChanged")) Fixture.Enemy->GetRoomTagComp()->AssignDefaultRoomTag(
+			FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.2")));
+		else if (Parameters == TEXT("SharedTargetChanged"))
+		{
+			AActor* NextTarget = Fixture.World->SpawnActor<AActor>(Data.CapturedTarget->GetClass());
+			if (!TestNotNull(TEXT("Replacement query player exists"), NextTarget)) return;
+			NextTarget->SetActorEnableCollision(false);
+			NextTarget->SetActorLocation(Data.CapturedTarget->GetActorLocation());
+			Rooms->NotifyTargetActorRemoved(Data.CapturedTarget.Get());
+			Rooms->ReportRoomTargetContact(Observer, NextTarget, NextTarget->GetActorLocation());
+			Fixture.Enemy->RefreshTargetTracking();
+			TestEqual(TEXT("New shared Actor replaces the removed target"), Fixture.Enemy->GetTrackedTarget(), NextTarget);
+		}
+		else if (Parameters == TEXT("SettingsChanged")) Fixture.Enemy->FlightHeightSettings.MidHeight += 50;
 		else if (Parameters == TEXT("Disabled")) Fixture.Enemy->FlightHeightSettings.bEnabled = false;
 		else if (Parameters == TEXT("Enabled")) Fixture.Enemy->FlightHeightSettings.bEnabled = true;
 		else if (Parameters == TEXT("PreferenceChanged")) Fixture.Enemy->CombatHeightPreference = EEnemyFlightHeightPreference::High;
-		else if (Parameters == TEXT("SightLost")) Fixture.Enemy->SetPlayerCurrentlyVisible(false);
+		else if (Parameters == TEXT("SightLost") || Parameters == TEXT("TrackingGrace") || Parameters == TEXT("TrackingExpired"))
+		{
+			if (Parameters == TEXT("SightLost"))
+				const_cast<FEnemyStat&>(Fixture.Enemy->GetRuntimeStat()).TargetTrackingGraceSeconds = 0;
+			Data.CachedController->SetCachedVisibleTargetForTesting(nullptr);
+			Fixture.Enemy->SetPlayerCurrentlyVisible(false);
+			if (Parameters == TEXT("TrackingExpired"))
+			{
+				// 대기 타이머를 먼저 활성화하고 고정 만료 기준인 월드 시각도 함께 진행한다.
+				// EQS 자동 Tick은 FinishHeightQuery가 차단하고 TimeOnly로 Actor 감지/이동을 보류한다.
+				++GFrameCounter;
+				Fixture.World->GetTimerManager().Tick(0.0f);
+				const float WaitSeconds = Fixture.Enemy->GetRuntimeStat().TargetTrackingGraceSeconds + 0.1f;
+				const int32 Steps = FMath::CeilToInt(WaitSeconds * 60.0f);
+				for (int32 Step = 0; Step < Steps; ++Step)
+				{
+					++GFrameCounter;
+					Fixture.World->Tick(LEVELTICK_TimeOnly, WaitSeconds / Steps);
+					Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+				}
+				TestFalse(TEXT("Tracking expires before the pending EQS result is delivered"), Fixture.Enemy->HasTrackableTarget());
+			}
+		}
 		else if (Parameters == TEXT("TargetChanged")) Data.CachedController->SetCachedVisibleTargetForTesting(nullptr);
 		else if (Parameters == TEXT("TargetMoved")) Data.CapturedTarget->AddActorWorldOffset(FVector(250, 0, 0));
 		else if (Parameters == TEXT("Possessed")) Fixture.Enemy->SetEnemyPossessed(true);
@@ -950,6 +1055,13 @@ bool FEnemyFlightHeightCompletionIntegrationTest::RunTest(const FString& Paramet
 		else if (Parameters == TEXT("RequestReplaced")) ++Data.RequestId;
 	};
 	if (!FinishHeightQuery(*this, Fixture, Data, Request, Result, Interrupt)) return false;
+	if (Parameters == TEXT("TrackingGrace") || Parameters == TEXT("SharedSource")
+		|| Parameters == TEXT("SharedObserverHandoff") || Parameters == TEXT("SharedGrace"))
+	{
+		TestTrue(TEXT("Delayed EQS result remains usable for the same target during grace"), Data.bHasDestination);
+		TestEqual(TEXT("Grace does not make a valid snapshot stale"), Data.QueryResult, EEnemyEnvQueryResult::Success);
+		return true;
+	}
 	if (Parameters == TEXT("PoolReuse")) TestTrue(TEXT("Actual pool lease reset occurred before completion"), bPoolReused);
 	TestFalse(TEXT("Interrupted live query never exposes a destination"), Data.bHasDestination);
 	TestTrue(TEXT("Interrupted live query never leaves orbit waypoints"), Data.SelectedWaypoints.IsEmpty());
@@ -1173,9 +1285,12 @@ bool FEnemyFlightHeightChargeRegressionTest::RunTest(const FString& Parameters)
 	ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>(
 		ASelfDestructDrone::StaticClass(), FTransform(FVector(0, 1000, 400)), Spawn);
 	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
-	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	UClass* TargetClass = LoadClass<AActor>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	AActor* Target = TargetClass ? Fixture.World->SpawnActor<AActor>(TargetClass) : nullptr;
 	if (!TestNotNull(TEXT("Charge drone exists"), Drone) || !TestNotNull(TEXT("Charge controller exists"), Controller)
 		|| !TestNotNull(TEXT("Charge target exists"), Target)) return false;
+	Target->SetActorEnableCollision(false);
 	UBoxComponent* Root = NewObject<UBoxComponent>(Target);
 	Target->SetRootComponent(Root);
 	Root->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -1187,6 +1302,7 @@ bool FEnemyFlightHeightChargeRegressionTest::RunTest(const FString& Parameters)
 	Drone->EnterCombatFromRoom(Target->GetActorLocation(), false);
 	Controller->Possess(Drone);
 	Controller->SetCachedVisibleTargetForTesting(Target);
+	Drone->ObserveTrackedTarget(Target);
 	Drone->SetPlayerCurrentlyVisible(true);
 	UCapsuleComponent* Capsule = Drone->GetCapsuleComponent();
 	Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);

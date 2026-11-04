@@ -71,6 +71,7 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<USettingWidget> ActiveSettingWidget;
+	TWeakObjectPtr<AActor> SettingsLayerOwner;
 
 	FText DefaultMenuText;
 	bool bLeavingGame = false;

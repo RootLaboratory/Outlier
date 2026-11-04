@@ -11,6 +11,7 @@
 #include "AbilitySystemInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "Interface/JumperAffectableInterface.h"
+#include "Settings/OutlierInputUserSettings.h"
 #include "PostProcess/OutlierReadabilityTarget.h"
 #include "PartnerCharacter.generated.h"
 
@@ -77,6 +78,9 @@ class UOutlierVitalAttributeSet;
 class UOutlierPartnerMovementAttributeSet;
 class UOutlierPartnerCombatAttributeSet;
 class UPartnerVitalityComponent;
+class ULocalPlayerSettingsSubsystem;
+class UEnhancedInputLocalPlayerSubsystem;
+class UEnhancedInputUserSettings;
 
 class USceneComponent;
 struct FGameplayEffectSpec;
@@ -104,6 +108,7 @@ public:
 
 	virtual void InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil) override;
 
+	friend class FPartnerSprintInputModeTest;
 protected:
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -469,6 +474,30 @@ protected:
 	void SyncMove();
 	void StopSyncMove();
 	void ToggleAccelerate();
+	void ReleaseAccelerate();
+	void BindAccelerateInputSettings();
+	void UnbindAccelerateInputSettings();
+	void HandleAccelerateContextChanged(EOutlierPlayerRole SettingsRole);
+	UFUNCTION()
+	void HandleAccelerateModeChanged(EOutlierPlayerRole SettingsRole, EOutlierSprintInputMode Mode);
+	UFUNCTION()
+	void HandleAccelerateMappingsRebuilt();
+	UFUNCTION()
+	void HandleAccelerateSettingsInitialized(const UEnhancedInputUserSettings* Settings);
+	TWeakObjectPtr<ULocalPlayerSettingsSubsystem> AccelerateSettings;
+	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> AccelerateInputSubsystem;
+	TArray<FKey> AccelerateInputKeys;
+	EOutlierSprintInputMode AccelerateInputMode = EOutlierSprintInputMode::Toggle;
+	bool bAccelerateInputHeld = false;
+	bool bAccelerateNeedsFreshPress = false;
+	// 서버 수명주기와 요청 순번을 함께 검사해 지연된 ON이 초기화 이후 되살아나지 않게 한다.
+	UPROPERTY(ReplicatedUsing = OnRep_AccelerateInputEpoch)
+	uint32 AccelerateInputEpoch = 1;
+	uint32 NextAccelerateInputRequest = 0;
+	uint32 ProcessedAccelerateInputRequest = 0;
+	UFUNCTION()
+	void OnRep_AccelerateInputEpoch();
+	void ApplyAccelerateInput(bool bAccelerate);
 	void FreeMove();
 	void StopFreeMove();
 	void VerticalMove(const FInputActionValue& Value);
@@ -494,7 +523,7 @@ protected:
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
 
 	UFUNCTION(Server, Reliable)
-	void ServerSetAccelerate(bool bNewAccelerate);
+	void ServerSetAccelerate(bool bNewAccelerate, uint32 Request, uint32 Epoch);
 
 	void EnsurePartnerDataInitialized();
 	void InitializeFromDataTables();
@@ -547,6 +576,9 @@ protected:
 	FRotator StandbyLastAimRotation = FRotator::ZeroRotator;
 	bool bStandbyAimInitialized = false;
 public:
+	// 입력 초기화와 일반 Release를 구분한다. 컨텍스트 복귀는 실제 새 키 Press 이후에만 허용한다.
+	void ResetAccelerateInput();
+	void NotifyAccelerateKeyPressed(FKey Key);
 	/** 서버에서 판정하고 복제하는 대기 상태. AnimBP의 Active / Standby 전이에 사용한다. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Partner|Standby")
 	bool bIsStandby = false;

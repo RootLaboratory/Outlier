@@ -6,6 +6,7 @@
 #include "Shooter/ShooterMovementComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Engine/Engine.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -39,8 +40,10 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	}
 	World->AddToRoot();
 	Context.SetCurrentWorld(World);
+	APlayerController* Controller = nullptr;
 	ON_SCOPE_EXIT
 	{
+		if (Controller) Controller->Player = nullptr;
 		GEngine->ShutdownWorldNetDriver(World);
 		World->DestroyWorld(true);
 		World->SetPhysicsScene(nullptr);
@@ -236,14 +239,16 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Action input serialization has no archive errors"), Writer.IsError() || Reader.IsError());
 	TestTrue(TEXT("Packed action intent preserves order and exclusive state"), Received == Sent);
 
-	APlayerController* Controller = World->SpawnActor<APlayerController>();
+	Controller = World->SpawnActor<APlayerController>();
 	if (!TestNotNull(TEXT("Local input controller"), Controller)) return false;
 	Controller->Possess(Shooter);
-	// 테스트 월드에서 생성한 컨트롤러는 자동으로 로컬 제어자가 되지 않는다.
+	// NetDriver가 없는 테스트 월드도 LocalPlayer 연결이 있어야 로컬 제어자로 판정된다.
+	Controller->Player = NewObject<ULocalPlayer>(GEngine);
 	Controller->SetAsLocalPlayerController();
 	if (!TestTrue(TEXT("Queued input fixture is locally controlled"), Shooter->IsLocallyControlled())) return false;
 	// 위의 서버 도착 순서 fixture와 별개로 새 로컬 입력 이력을 시작한다.
 	Movement->ResetSlideForLifecycle();
+	Movement->NotifyFreshSprintPress();
 	Movement->SetMovementMode(MOVE_Walking);
 	Movement->Velocity = FVector(100.0f, 0.0f, 0.0f);
 	Combat->HandleAimPressed();
@@ -309,6 +314,7 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	FloorBox->RegisterComponent();
 	Pistol->SetActorEnableCollision(false);
 	Movement->ResetSlideForLifecycle();
+	Movement->NotifyFreshSprintPress();
 	Shooter->SetActorLocation(FVector(0.0, 0.0, Shooter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 2.15));
 	Movement->SetMovementMode(MOVE_Walking);
 	Movement->Velocity = FVector::ZeroVector;

@@ -16,6 +16,7 @@ class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBas
 	friend class FOutlierShooterPresentationAnimationTest;
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
+	friend class FShooterSprintInputModeTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -23,6 +24,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bWantsToFire : 1 = false;
+	// 발사 대기/연사 간격에도 유지한다. 실제 무기 발사 상태와 별개로 Hold Sprint를 차단한다.
+	bool bFireInputHeld = false;
+	void UpdateFireInput(bool bHeld);
 
 	UPROPERTY(ReplicatedUsing = OnRep_IsAiming, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsAiming : 1 = false;
@@ -112,6 +116,9 @@ public:
 	bool CanFireInCurrentState() const;
 
 	void ClearInputIntent();
+	bool IsSprintBlockedByAttack() const;
+	bool IsFireInputHeld() const { return bFireInputHeld; }
+	void ApplyFireInput(bool bHeld) { bFireInputHeld = bHeld; }
 
 	bool WantsToAim() const { return bWantsToAim; }
 	bool WantsToFire() const { return bWantsToFire; }

@@ -3,6 +3,10 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyTargetRules.h"
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemInterface.h"
+#include "GameplayTags/OutlierGameplayTags.h"
+#include "Interface/GameplayTagProviderInterface.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
@@ -26,12 +30,25 @@ void LogSearchSharing(const TCHAR* Phase, FGameplayTag RoomTag, const FEnemyRoom
 		Contact.bForcedShareConsumed, *Contact.LastReportedLocation.ToCompactString(), *GetNameSafe(Contact.TargetActor.Get()));
 }
 
+bool IsObservationTargetUnavailable(const AActor* Target)
+{
+	if (OutlierEnemyTargetRules::IsUnavailable(Target) || Target->IsActorBeingDestroyed()) return true;
+	// Enemy는 GameplayTagProvider 대신 ASC로 상태를 제공한다. 빙의 대상도 같은 경계로 검사한다.
+	const IAbilitySystemInterface* AbilityOwner = Cast<IAbilitySystemInterface>(Target);
+	const UAbilitySystemComponent* AbilitySystem = AbilityOwner ? AbilityOwner->GetAbilitySystemComponent() : nullptr;
+	if (AbilitySystem && (AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead())
+		|| AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed())
+		|| AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting()))) return true;
+	const IGameplayTagProviderInterface* Tags = Cast<IGameplayTagProviderInterface>(Target);
+	return Tags && Tags->GetOwnedGameplayTagsForQuery().HasTagExact(OutlierGameplayTags::State::Dead());
+}
+
 bool IsSharedTargetObserved(const FEnemyRoomTargetContactState& Contact)
 {
 	if (OutlierEnemyTargetRules::IsUnavailable(Contact.TargetActor.Get())) return false;
 	for (const auto& Observer : Contact.DirectObservers)
 	{
-		if (Observer.Value == Contact.TargetActor) return true;
+		if (Observer.Value.TargetActor == Contact.TargetActor) return true;
 	}
 	return false;
 }
@@ -101,6 +118,7 @@ void UEnemyRoomSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 {
 	ReleaseSearchDestinations(Enemy);
 	ReleasePatrolDestination(Enemy);
+	RemoveRoomTargetObserver(Enemy);
 	if (!Enemy)
 	{
 		return;
@@ -143,6 +161,7 @@ void UEnemyRoomSubsystem::RefreshEnemyRegistration(AEnemyBase* Enemy)
 			return;
 		}
 
+		RemoveRoomTargetObserver(Enemy);
 		if (TSet<TWeakObjectPtr<AEnemyBase>>* PreviousEnemies =
 			RegisteredEnemiesByRoom.Find(*PreviousKey))
 		{
@@ -289,7 +308,11 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 		|| !IsValid(Observer)
 		|| !IsValid(TargetActor)
 		|| !Observer->HasAuthority()
-		|| !Observer->CanUseRoomTargetSharing())
+		|| !Observer->CanUseRoomTargetSharing()
+		|| Observer->IsDead() || !Observer->CanUseEnemyPerception()
+		|| Observer->GetCombatState() == EEnemyCombatState::Stun
+		|| TargetLocation.ContainsNaN()
+		|| IsObservationTargetUnavailable(TargetActor))
 	{
 		return;
 	}
@@ -301,14 +324,23 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 	}
 
 	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(RoomTag);
-	CompactTargetContactState(ContactState);
+	CompactTargetContactState(RoomTag, ContactState);
 	// 다른 드론이 계속 보고 있어도, 시야를 잃었던 개체의 실제 재목격은 새 정보다.
-	const TWeakObjectPtr<AActor>* PreviousTarget = ContactState.DirectObservers.Find(Observer);
-	const bool bRediscovered = !PreviousTarget || PreviousTarget->Get() != TargetActor;
+	const FEnemyRoomDirectObserver* PreviousObserver = ContactState.DirectObservers.Find(Observer);
+	const bool bRediscovered = !PreviousObserver || PreviousObserver->TargetActor.Get() != TargetActor;
 	World->GetTimerManager().ClearTimer(ContactState.ForcedShareTimerHandle);
 	// 직접 재발견은 다음 시야 상실 회차의 단발 핑을 다시 허용한다.
 	ContactState.bForcedShareConsumed = false;
-	ContactState.DirectObservers.Add(TWeakObjectPtr<AEnemyBase>(Observer), TWeakObjectPtr<AActor>(TargetActor));
+	FEnemyRoomDirectObserver& DirectObserver = ContactState.DirectObservers.FindOrAdd(Observer);
+	DirectObserver.TargetActor = TargetActor;
+	DirectObserver.Controller = Observer->GetController();
+	DirectObserver.Generation = Observer->GetPoolGameplayGeneration();
+	DirectObserver.Lease = Observer->GetPoolLeaseSerial();
+	// 좌표가 50cm 미만으로 변했거나 대표 대상이 아니어도 실제 관측 시각은 갱신한다.
+	// 아래의 기존 좌표 공유 조기 반환과 강제 핑은 이 기록을 변경하지 않는다.
+	FEnemyRoomTargetObservation& Observation = ContactState.TargetObservations.FindOrAdd(TargetActor);
+	Observation.LastObservedLocation = TargetLocation;
+	Observation.LastObservedAt = World->GetTimeSeconds();
 
 	const bool bTargetChanged = ContactState.TargetActor.Get() != TargetActor;
 	// 관측 등록과 핑 초기화는 모든 타깃에 적용하되, 공유 타깃 교체는 우선순위로 제한한다.
@@ -346,7 +378,7 @@ void UEnemyRoomSubsystem::RemoveRoomTargetObserver(AEnemyBase* Observer)
 		FEnemyRoomTargetContactState& ContactState = ContactIt.Value();
 		const bool bRemovedDirectObserver =
 			ContactState.DirectObservers.Remove(ObserverKey) > 0;
-		CompactTargetContactState(ContactState);
+		CompactTargetContactState(ContactIt.Key(), ContactState);
 		if (!bRemovedDirectObserver || !ContactState.DirectObservers.IsEmpty())
 		{
 			continue;
@@ -384,7 +416,7 @@ void UEnemyRoomSubsystem::HandleForcedTargetShare(FGameplayTag RoomTag)
 	{
 		return;
 	}
-	CompactTargetContactState(*ContactState);
+	CompactTargetContactState(RoomTag, *ContactState);
 	if (!ContactState->DirectObservers.IsEmpty())
 	{
 		return;
@@ -393,7 +425,8 @@ void UEnemyRoomSubsystem::HandleForcedTargetShare(FGameplayTag RoomTag)
 	AActor* TargetActor = ContactState->TargetActor.Get();
 	if (!IsValid(TargetActor))
 	{
-		TargetContactStates.Remove(RoomTag);
+		ContactState->TargetActor.Reset();
+		ContactState->bSharedContactActive = false;
 		return;
 	}
 
@@ -421,12 +454,18 @@ void UEnemyRoomSubsystem::NotifyTargetActorRemoved(AActor* TargetActor)
 	TArray<FGameplayTag> RemovedContactKeys;
 	for (auto ContactIt = TargetContactStates.CreateIterator(); ContactIt; ++ContactIt)
 	{
+		ContactIt.Value().TargetObservations.Remove(TargetActor);
+		for (auto ObserverIt = ContactIt.Value().DirectObservers.CreateIterator(); ObserverIt; ++ObserverIt)
+		{
+			if (ObserverIt.Value().TargetActor.Get() == TargetActor) ObserverIt.RemoveCurrent();
+		}
 		if (ContactIt.Value().TargetActor.Get() == TargetActor
 			|| !ContactIt.Value().TargetActor.IsValid())
 		{
 			World->GetTimerManager().ClearTimer(ContactIt.Value().ForcedShareTimerHandle);
 			RemovedContactKeys.Add(ContactIt.Key());
-			ContactIt.RemoveCurrent();
+			ContactIt.Value().TargetActor.Reset();
+			ContactIt.Value().bSharedContactActive = false;
 		}
 	}
 
@@ -576,15 +615,100 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetLost(FGameplayTag RoomTag)
 	}
 }
 
-void UEnemyRoomSubsystem::CompactTargetContactState(FEnemyRoomTargetContactState& ContactState)
+void UEnemyRoomSubsystem::CompactTargetContactState(
+	FGameplayTag RoomTag, FEnemyRoomTargetContactState& ContactState)
 {
 	for (auto ObserverIt = ContactState.DirectObservers.CreateIterator(); ObserverIt; ++ObserverIt)
 	{
-		if (!ObserverIt.Key().IsValid() || !ObserverIt.Value().IsValid())
+		const AEnemyBase* Observer = ObserverIt.Key().Get();
+		const FEnemyRoomDirectObserver& Report = ObserverIt.Value();
+		if (!IsValid(Observer) || !Observer->CanUseRoomTargetSharing()
+			|| Observer->IsDead() || !Observer->CanUseEnemyPerception()
+			|| Observer->GetCombatState() == EEnemyCombatState::Stun
+			|| ResolveEnemyRoomTag(Observer) != RoomTag
+			|| Observer->GetController() != Report.Controller.Get()
+			|| Observer->GetPoolGameplayGeneration() != Report.Generation
+			|| Observer->GetPoolLeaseSerial() != Report.Lease
+			|| IsObservationTargetUnavailable(Report.TargetActor.Get()))
 		{
 			ObserverIt.RemoveCurrent();
 		}
 	}
+	for (auto TargetIt = ContactState.TargetObservations.CreateIterator(); TargetIt; ++TargetIt)
+	{
+		if (IsObservationTargetUnavailable(TargetIt.Key().Get())) TargetIt.RemoveCurrent();
+	}
+}
+
+bool UEnemyRoomSubsystem::TryGetRoomTargetObservation(
+	AEnemyBase* Receiver, AActor* TargetActor, FEnemyRoomTargetObservationSnapshot& OutSnapshot)
+{
+	OutSnapshot = {};
+	const UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || !IsValid(Receiver)
+		|| !Receiver->HasAuthority() || !Receiver->CanUseRoomTargetSharing()
+		|| Receiver->IsDead() || !Receiver->CanUseEnemyPerception()
+		|| Receiver->GetCombatState() == EEnemyCombatState::Stun) return false;
+
+	const FGameplayTag RoomTag = ResolveEnemyRoomTag(Receiver);
+	FEnemyRoomTargetContactState* Contact = TargetContactStates.Find(RoomTag);
+	if (!IsRoomInCombat(RoomTag) || !Contact) return false;
+	CompactTargetContactState(RoomTag, *Contact);
+	const FEnemyRoomTargetObservation* Observation = Contact->TargetObservations.Find(TargetActor);
+	if (!Observation) return false;
+
+	bool bObserved = false;
+	for (const auto& Observer : Contact->DirectObservers)
+	{
+		if (Observer.Value.TargetActor.Get() == TargetActor) { bObserved = true; break; }
+	}
+	const float ConfiguredGrace = Receiver->GetRuntimeStat().TargetTrackingGraceSeconds;
+	const double Grace = FMath::IsFinite(ConfiguredGrace) ? FMath::Max(0.0f, ConfiguredGrace) : 0.0f;
+	const double ExpiresAt = Observation->LastObservedAt + Grace;
+	// 관측자 제거/조회 시각이 아니라 마지막 실제 관측 시각에 고정한다.
+	// 관측 중에는 유효하며, 마지막 관측자 이탈 뒤에는 만료 경계를 포함해 차단한다.
+	if (!bObserved && World->GetTimeSeconds() >= ExpiresAt) return false;
+
+	OutSnapshot.TargetActor = TargetActor;
+	OutSnapshot.LastObservedLocation = Observation->LastObservedLocation;
+	OutSnapshot.LastObservedAt = Observation->LastObservedAt;
+	OutSnapshot.TrackingExpiresAt = ExpiresAt;
+	OutSnapshot.bDirectlyObserved = bObserved;
+	return true;
+}
+
+bool UEnemyRoomSubsystem::TrySelectRoomTarget(
+	AEnemyBase* Receiver, FEnemyRoomTargetObservationSnapshot& OutSnapshot)
+{
+	OutSnapshot = {};
+	if (!IsValid(Receiver)) return false;
+	AEnemyAIController* Controller = Cast<AEnemyAIController>(Receiver->GetController());
+	FEnemyRoomTargetContactState* Contact = TargetContactStates.Find(ResolveEnemyRoomTag(Receiver));
+	if (!Controller || !Contact) return false;
+	float BestDistanceSquared = TNumericLimits<float>::Max();
+	auto BestPriority = OutlierEnemyTargetRules::ETargetPriority::Invalid;
+	// 월드의 적을 검색하지 않고 이 Room에 직접 보고된 소수의 대상만 비교한다.
+	// 조회 중 무효 기록이 제거될 수 있으므로 키만 복사한다. 일반적인 플레이어 수는 스택에 담는다.
+	TArray<TWeakObjectPtr<AActor>, TInlineAllocator<8>> Candidates;
+	for (const auto& Entry : Contact->TargetObservations) Candidates.Add(Entry.Key);
+	for (const TWeakObjectPtr<AActor>& CandidateTarget : Candidates)
+	{
+		AActor* Target = CandidateTarget.Get();
+		if (!Controller->IsValidTrackingTarget(Target)) continue;
+		FEnemyRoomTargetObservationSnapshot Candidate;
+		if (!TryGetRoomTargetObservation(Receiver, Target, Candidate)) continue;
+		const auto Priority = OutlierEnemyTargetRules::GetPriority(Target);
+		const float DistanceSquared = FVector::DistSquared(Receiver->GetActorLocation(), Target->GetActorLocation());
+		if (Priority != OutlierEnemyTargetRules::ETargetPriority::Invalid
+			&& (!OutSnapshot.TargetActor.IsValid() || Priority < BestPriority
+				|| (Priority == BestPriority && DistanceSquared < BestDistanceSquared)))
+		{
+			OutSnapshot = Candidate;
+			BestPriority = Priority;
+			BestDistanceSquared = DistanceSquared;
+		}
+	}
+	return OutSnapshot.TargetActor.IsValid();
 }
 
 void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)

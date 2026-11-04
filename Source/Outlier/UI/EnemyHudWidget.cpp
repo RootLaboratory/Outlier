@@ -1,12 +1,14 @@
 #include "UI/EnemyHudWidget.h"
 
 #include "AbilitySystemComponent.h"
+#include "UI/HackEffectTimerWidget.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/LocalPlayer.h"
 #include "FPostProcessStructures.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Math/RandomStream.h"
+#include "Engine/World.h"
 
 namespace EnemyHudDamage
 {
@@ -19,6 +21,7 @@ void UEnemyHudWidget::InitializeForEnemy(AEnemyBase* InEnemy)
 	ReleaseDamageFeedback();
 	OwningEnemy = InEnemy;
 	BindDamageFeedback();
+	InitializeHackTimer();
 }
 
 AEnemyBase* UEnemyHudWidget::GetOwningEnemy() const
@@ -26,10 +29,50 @@ AEnemyBase* UEnemyHudWidget::GetOwningEnemy() const
 	return OwningEnemy.Get();
 }
 
+void UEnemyHudWidget::NativeConstruct()
+{
+	Super::NativeConstruct();
+	InitializeHackTimer();
+}
+
 void UEnemyHudWidget::NativeDestruct()
 {
+	// 부모 Destruct가 자식보다 먼저 실행된다. 외부 제거 중에도 대기 중인 Controller 복귀를 끝낸다.
+	const FSimpleDelegate DisplayFinished = IsShowingHackTimerExpiry()
+		? OnHackTimerExpiryDisplayFinished : FSimpleDelegate();
 	ReleaseDamageFeedback();
 	Super::NativeDestruct();
+	DisplayFinished.ExecuteIfBound();
+}
+
+void UEnemyHudWidget::InitializeHackTimer()
+{
+	if (HackEffectTimerWidget)
+	{
+		HackEffectTimerWidget->InitializeForEnemy(OwningEnemy.Get());
+		HackEffectTimerWidget->OnHackTimerExpiryDisplayFinished.BindUObject(
+			this, &ThisClass::HandleHackTimerExpiryDisplayFinished);
+	}
+}
+
+void UEnemyHudWidget::ShowHackTimerExpiry(AEnemyBase* Target)
+{
+	if (HackEffectTimerWidget)
+	{
+		HackEffectTimerWidget->ShowHackTimerExpiry(Target);
+	}
+}
+
+bool UEnemyHudWidget::IsShowingHackTimerExpiry() const
+{
+	return HackEffectTimerWidget && HackEffectTimerWidget->IsShowingHackTimerExpiry();
+}
+
+void UEnemyHudWidget::HandleHackTimerExpiryDisplayFinished()
+{
+	const FSimpleDelegate DisplayFinished = OnHackTimerExpiryDisplayFinished;
+	OnHackTimerExpiryDisplayFinished.Unbind();
+	DisplayFinished.ExecuteIfBound();
 }
 
 void UEnemyHudWidget::BindDamageFeedback()
@@ -106,6 +149,13 @@ bool UEnemyHudWidget::InitializeDamageMasks(int32 Seed)
 		PPSubsystem->SetDroneDamageMaskRevealed(MaskSlot, false);
 	}
 
+	HealthChangedHandle = AbilitySystem
+		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetHealthAttribute())
+		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
+	MaxHealthChangedHandle = AbilitySystem
+		->GetGameplayAttributeValueChangeDelegate(UOutlierVitalAttributeSet::GetMaxHealthAttribute())
+		.AddUObject(this, &UEnemyHudWidget::HandleVitalAttributeChanged);
+	BoundAbilitySystem = AbilitySystem;
 	RevealedDamageStageCount = 0;
 	bDamageFeedbackBound = true;
 	PPSubsystem->SetDroneDamageSuppressed(false);
@@ -115,6 +165,16 @@ bool UEnemyHudWidget::InitializeDamageMasks(int32 Seed)
 void UEnemyHudWidget::ReleaseDamageFeedback()
 {
 	bDamagePreview = false;
+void UEnemyHudWidget::ReleaseDamageFeedback(bool bPreserveHackExpiry)
+{
+	if (!bPreserveHackExpiry || !IsShowingHackTimerExpiry())
+	{
+		OnHackTimerExpiryDisplayFinished.Unbind();
+		if (HackEffectTimerWidget)
+		{
+			HackEffectTimerWidget->ReleaseHackTimer();
+		}
+	}
 	if (UAbilitySystemComponent* AbilitySystem = BoundAbilitySystem.Get())
 	{
 		AbilitySystem

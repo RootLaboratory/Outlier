@@ -20,6 +20,7 @@
 #include "Enemy/EnemyAdaptationTypes.h"
 #include "Enemy/EnemyPoolTypes.h"
 #include "Enemy/EnemyFlightHeightTypes.h"
+#include "Enemy/EnemyHackEffectTypes.h"
 #include "PostProcess/OutlierSpawnVisualTarget.h"
 #include "PostProcess/OutlierReadabilityTarget.h"
 #include "EnemyBase.generated.h"
@@ -31,6 +32,7 @@ class UInputAction;
 class USphereComponent;
 struct FInputActionValue;
 class URoomTagComponent;
+class UEnemyRoomSubsystem;
 class ARangedWeaponBase;
 class APartnerCharacter;
 class UGeometryCollection;
@@ -40,11 +42,18 @@ class UEnemyAdaptationSubsystem;
 class UEnemyAdaptationShieldComponent;
 class UNiagaraSystem;
 class UEnemyHudWidget;
+class AEnemyBase;
+class AEnemyAIController;
 class UEnemyPoolSubsystem;
 class UMeshComponent;
 class UPrimitiveComponent;
 class USceneComponent;
 struct FOnAttributeChangeData;
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEnemyHackEffectStarted,
+	AEnemyBase*, Target, float, Duration);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEnemyHackEffectEnded,
+	AEnemyBase*, Target, EEnemyHackEffectEndReason, EndReason);
 
 // 자식 State가 바뀌어도 한 수색 회차의 중심/선정 지점은 유지한다. 서버에서만 사용한다.
 struct FEnemySearchEpisode
@@ -140,6 +149,34 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
+	UFUNCTION(BlueprintPure, Category = "Enemy|Hack")
+	bool IsHackEffectActive() const { return HackEffectState.bActive; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Hack")
+	float GetHackEffectDuration() const { return FEnemyHackEffectTime::Duration; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Hack")
+	float GetHackEffectRemainingTime() const;
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Hack")
+	FEnemyHackEffectTime GetHackEffectRemainingMinutesAndSeconds() const;
+
+	UPROPERTY(BlueprintAssignable, Category = "Enemy|Hack")
+	FOnEnemyHackEffectStarted OnHackEffectStarted;
+
+	UPROPERTY(BlueprintAssignable, Category = "Enemy|Hack")
+	FOnEnemyHackEffectEnded OnHackEffectEnded;
+
+	// C++ 게임플레이 연결부 전용이다. BP/UI에는 조회와 알림만 공개한다.
+	bool BeginHackEffect();
+	bool EndHackEffect(EEnemyHackEffectEndReason EndReason);
+	bool EndHackEffectAndDie(EEnemyHackEffectEndReason EndReason);
+	bool HasHackEffectEndedWithDeath() const;
+	bool HasHackEffectExpired() const
+	{
+		return HasHackEffectEndedWithDeath() && HackEffectState.EndReason == EEnemyHackEffectEndReason::Expired;
+	}
+
 	// IOutlierSpawnVisualTarget : 등장 디졸브를 받을 메시만 알려준다 ( 교체 / 진행 / 원복은 UMaterialPostProcessSubsystem 담당 ).
 	// 본체와 장착 무기의 메시를 넘긴다. 메시 구성이 다른 파생 적은 Override 한다.
 	virtual void CollectSpawnPresentationMeshes(TArray<UMeshComponent*>& OutMeshes) const override;
@@ -212,6 +249,29 @@ protected:
 	virtual void OnRep_Controller() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	void RefreshAbilitySystemActorInfo();
+
+private:
+	friend class FEnemyHackEffectLifetimeTest;
+	friend class FEnemyHackEffectGameplayTest;
+	friend class FEnemyHackEffectHUDTest;
+
+	UPROPERTY(ReplicatedUsing = OnRep_HackEffectState)
+	FEnemyHackEffectState HackEffectState;
+
+	FTimerHandle HackEffectExpiryTimer;
+
+	UFUNCTION()
+	void OnRep_HackEffectState(const FEnemyHackEffectState& PreviousState);
+
+	// 마지막 상태 복제가 Actor 파괴보다 늦어져도 UI가 종료 사유를 받을 수 있게 한다.
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastHackEffectEnded(const FEnemyHackEffectState& EndedState);
+
+	void BroadcastHackEffectStateChange(const FEnemyHackEffectState& PreviousState);
+	void HandleHackEffectExpired(uint32 ExpectedRevision, int32 GameplayGeneration, int32 LeaseSerial);
+	void ResetHackEffectForPool();
+
+protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
@@ -540,6 +600,15 @@ public:
 	// AI/StateTree용 서버 권한 공격 API.
 	// Target 버전은 Actor의 현재 위치를 사용하고 Location 버전은 LKP 위협 사격처럼 좌표만 조준한다.
 	bool StartAttackTarget(AActor* TargetActor);
+	bool CanAttackTrackedTarget(const AActor* TargetActor) const;
+	bool HasActiveTargetAttack() const { return bTargetAttackActive; }
+	bool RefreshTargetAttackForShot();
+	void PauseTargetAttack();
+	void ResetTargetAttackContinuity();
+	bool ConsumeTargetAttackResume();
+	void RememberTargetAttackPreparation();
+	void RememberTargetAttackRecovery(float Duration);
+	float GetTargetAttackRecoveryRemaining() const;
 	bool StartAttackLocation(const FVector& TargetLocation);
 	bool StartPossessedAttackBurst();
 
@@ -586,6 +655,14 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsPlayerCurrentlyVisible() const { return bPlayerCurrentlyVisible; }
+
+	// 직접 시야·같은 Room 공유·관측 유예를 합친 전투 대상이다. 실제 시야 플래그는 변경하지 않는다.
+	AActor* GetTrackedTarget() const;
+	bool HasTrackableTarget() const { return GetTrackedTarget() != nullptr; }
+	bool ShouldSkipTrackingLossWait() const { return bTrackingExpiredForSearch; }
+	void ObserveTrackedTarget(AActor* Target);
+	void RefreshTargetTracking();
+	void ClearTargetTracking();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool HasSharedTargetContact() const { return bHasSharedTargetContact; }
@@ -737,6 +814,24 @@ protected:
 	uint64 NextSearchEpisodeSerial = 0;
 	bool bHasLastKnownPlayerLocation = false;
 	FEnemySearchEpisode SearchEpisode;
+	TWeakObjectPtr<AActor> TrackedTarget;
+	TWeakObjectPtr<AEnemyAIController> TrackingController;
+	TWeakObjectPtr<UEnemyRoomSubsystem> TrackingRooms;
+	FGameplayTag TrackingRoomTag;
+	FTimerHandle TargetTrackingTimer;
+	double TargetTrackingExpiresAt = 0.0;
+	bool bTrackingFromRoom = false;
+	bool bTrackingAnnounced = false;
+	bool bTrackingWasDirectlyVisible = false;
+	bool bTrackingExpiredForSearch = false;
+	TWeakObjectPtr<AActor> ActiveAttackTarget;
+	TWeakObjectPtr<AActor> PreparedAttackTarget;
+	TWeakObjectPtr<ARangedWeaponBase> PreparedAttackWeapon;
+	TWeakObjectPtr<AEnemyAIController> PreparedAttackController;
+	bool bResumeTargetAttackPreparation = false;
+	bool bTargetAttackActive = false;
+	double TargetAttackRecoveryEndsAt = 0.0;
+	void FinishTargetTracking();
 
 	void InitializeGasVitality();
 	void BindGasVitalityObservers();

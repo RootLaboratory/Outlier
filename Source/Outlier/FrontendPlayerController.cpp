@@ -20,11 +20,13 @@
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/TitleWidget.h"
 #include "UI/UILayerGameplayTags.h"
+#include "Settings/LocalPlayerSettingsSubsystem.h"
 
 
 void AFrontendPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	RefreshInputSettingsContext();
 
 	/*UE_LOG(LogTemp, Warning,
 		TEXT("[TitleDiag] FrontendPC BeginPlay PC=%s Local=%d TitleWidgetClass=%s GameMode=%s Map=%s"),
@@ -79,6 +81,29 @@ void AFrontendPlayerController::BeginPlay()
 	}
 
 	TryStartNetworkMvpSmoke();
+}
+
+void AFrontendPlayerController::RefreshInputSettingsContext()
+{
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer(); LocalPlayer && LocalPlayer->PlayerController == this)
+	{
+		if (ULocalPlayerSettingsSubsystem* Settings = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>())
+		{
+			Settings->RefreshInputSettingsContext();
+		}
+	}
+}
+
+void AFrontendPlayerController::InitPlayerState()
+{
+	Super::InitPlayerState();
+	RefreshInputSettingsContext();
+}
+
+void AFrontendPlayerController::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+	RefreshInputSettingsContext();
 }
 
 void AFrontendPlayerController::AcknowledgePossession(APawn* P)

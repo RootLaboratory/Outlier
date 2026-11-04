@@ -66,14 +66,12 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 	InstanceData.bHasFreshSharedTargetLocation = InstanceData.Enemy->HasFreshSharedTargetLocation();
 	InstanceData.SharedTargetLocation = InstanceData.Enemy->GetSharedTargetLocation();
 	InstanceData.AIController = Cast<AAIController>(InstanceData.Enemy->GetController());
-	const AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(InstanceData.AIController);
-	InstanceData.TargetActor = EnemyAIController
-		? EnemyAIController->GetPreferredVisibleTarget()
-		: nullptr;
-	// 감지 플래그가 표적 Actor보다 먼저 갱신될 수 있다. 이때 DirectCombat으로
-	// 진입하면 사격형의 자식 상태를 고르지 못하므로 공유 추적/수색을 유지한다.
+	InstanceData.TargetActor = InstanceData.Enemy->GetTrackedTarget();
+	InstanceData.bHasTrackableTarget = IsValid(InstanceData.TargetActor);
+	// 다른 플레이어가 보여도 현재 전투 대상이 공유로만 추적된다면 직접 시야로 표시하지 않는다.
+	const AEnemyAIController* PerceptionController = Cast<AEnemyAIController>(InstanceData.AIController);
 	InstanceData.bPlayerCurrentlyVisible = InstanceData.Enemy->IsPlayerCurrentlyVisible()
-		&& IsValid(InstanceData.TargetActor);
+		&& PerceptionController && PerceptionController->IsTargetDirectlyVisible(InstanceData.TargetActor);
 	InstanceData.LastKnownPlayerLocation = InstanceData.Enemy->GetLastKnownPlayerLocation();
 	InstanceData.PatternStartPlayerLocation = InstanceData.Enemy->GetPatternStartPlayerLocation();
 	InstanceData.EnemyType = InstanceData.Enemy->GetRuntimeStat().Type;

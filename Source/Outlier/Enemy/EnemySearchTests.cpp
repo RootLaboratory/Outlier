@@ -3,6 +3,8 @@
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/EnemyPoolSubsystem.h"
+#include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
@@ -13,6 +15,10 @@
 #include "Perception/AISense_Hearing.h"
 #include "Perception/AISense_Sight.h"
 #include "Room/RoomTagComponent.h"
+#include "Shooter/ShooterCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "AbilitySystemComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "TimerManager.h"
 
 namespace
@@ -627,6 +633,571 @@ bool FEnemySearchScenarioTest::RunTest(const FString& Parameters)
 	EnemySearchTesting::ExitSession(Session);
 	TestFalse(TEXT("Scenario teardown ends the episode"), Enemy->GetSearchEpisode().bActive);
 	AddInfo(FString::Printf(TEXT("[SearchScenario] End Scenario=%s; assertions determine PASS/FAIL"), *Parameters));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyTrackingGraceTest,
+	"Outlier.Enemy.Tracking", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyTrackingGraceTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("Expiry"), TEXT("Reacquire"), TEXT("SharedContact"),
+		TEXT("ZeroDuration"), TEXT("DestroyedTarget"), TEXT("ControllerChanged"), TEXT("Stun"),
+		TEXT("VisibleUnavailable"), TEXT("GraceUnavailable"), TEXT("VisibleDead"), TEXT("GraceDead"),
+		TEXT("DeathCleanup"), TEXT("PoolReuse"), TEXT("StunVisible")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyTrackingGraceTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	Fixture.World->CreateAISystem();
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(FGameplayTag());
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	UClass* TargetClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Enemy exists"), Enemy) || !TestNotNull(TEXT("Controller exists"), Controller)
+		|| !TestNotNull(TEXT("Concrete player class exists"), TargetClass)) return false;
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AShooterCharacter* Target = Fixture.World->SpawnActor<AShooterCharacter>(TargetClass,
+		FTransform(FVector(500, 100, 200)), Spawn);
+	if (!TestNotNull(TEXT("Player target exists"), Target)) return false;
+	Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Target->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Controller->Possess(Enemy);
+	FEnemyStat& Stat = const_cast<FEnemyStat&>(Enemy->GetRuntimeStat());
+	TestEqual(TEXT("Tracking defaults to three seconds"), Stat.TargetTrackingGraceSeconds, 3.0f);
+	if (Parameters == TEXT("ZeroDuration")) Stat.TargetTrackingGraceSeconds = 0.0f;
+	auto Sight = [&](bool bVisible)
+	{
+		Controller->SetCachedVisibleTargetForTesting(bVisible ? Target : nullptr);
+		if (bVisible) Enemy->ObserveTrackedTarget(Target);
+		Enemy->SetPlayerCurrentlyVisible(bVisible);
+	};
+	auto Advance = [&](float Seconds)
+	{
+		// 최초 Tick은 대기 타이머를 활성화한다. 이후 월드 시각과 타이머를 함께 진행해야
+		// 고정 만료 시각과 만료 콜백을 같은 시간축에서 검증할 수 있다.
+		Fixture.AdvanceTimers(0.0f);
+		const int32 Steps = FMath::Max(1, FMath::CeilToInt(Seconds * 60.0f));
+		for (int32 Step = 0; Step < Steps; ++Step)
+		{
+			++GFrameCounter;
+			// TimeOnly는 감지/이동 Actor를 실행하지 않으며 TimerManager도 별도로 갱신해야 한다.
+			Fixture.World->Tick(LEVELTICK_TimeOnly, Seconds / Steps);
+			Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+			Enemy->RefreshTargetTracking();
+		}
+	};
+	Sight(true);
+	if (!TestEqual(TEXT("Direct sight chooses the player"), Enemy->GetTrackedTarget(), static_cast<AActor*>(Target))) return false;
+	if (Parameters == TEXT("StunVisible"))
+	{
+		Enemy->EnterStun();
+		Enemy->RefreshTargetTracking();
+		TestTrue(TEXT("Stun preserves actual sight"), Enemy->IsPlayerCurrentlyVisible());
+		TestFalse(TEXT("Stun suspends tracking"), Enemy->HasTrackableTarget());
+		Enemy->RestoreStateAfterStun();
+		Enemy->RefreshTargetTracking();
+		TestEqual(TEXT("Recovery reuses valid direct sight without a new perception callback"), Enemy->GetTrackedTarget(), static_cast<AActor*>(Target));
+		return true;
+	}
+	if (Parameters == TEXT("VisibleUnavailable") || Parameters == TEXT("VisibleDead"))
+	{
+		Target->GetAbilitySystemComponent()->AddLooseGameplayTag(FGameplayTag::RequestGameplayTag(
+			Parameters == TEXT("VisibleDead") ? TEXT("State.Dead") : TEXT("State.Stealthed")));
+		Enemy->RefreshTargetTracking();
+		TestFalse(TEXT("Unavailable visible player is not tracked"), Enemy->HasTrackableTarget());
+		TestFalse(TEXT("Unavailable visible player clears direct visibility"), Enemy->IsPlayerCurrentlyVisible());
+		return true;
+	}
+	Sight(false);
+	TestFalse(TEXT("Grace never fakes direct visibility"), Enemy->IsPlayerCurrentlyVisible());
+	if (Parameters == TEXT("ZeroDuration"))
+	{
+		TestFalse(TEXT("Zero grace ends tracking immediately"), Enemy->HasTrackableTarget());
+		TestTrue(TEXT("Zero grace skips an additional search wait"), Enemy->ShouldSkipTrackingLossWait());
+		return true;
+	}
+	TestEqual(TEXT("Sight loss retains the same player"), Enemy->GetTrackedTarget(), static_cast<AActor*>(Target));
+	TestFalse(TEXT("Search cannot start during grace"), Enemy->BeginSearchEpisode());
+	if (Parameters == TEXT("GraceUnavailable") || Parameters == TEXT("GraceDead"))
+	{
+		Target->GetAbilitySystemComponent()->AddLooseGameplayTag(FGameplayTag::RequestGameplayTag(
+			Parameters == TEXT("GraceDead") ? TEXT("State.Dead") : TEXT("State.Stealthed")));
+		Enemy->RefreshTargetTracking();
+		TestFalse(TEXT("Grace cannot bypass target stealth"), Enemy->HasTrackableTarget());
+		return true;
+	}
+	if (Parameters == TEXT("PoolReuse"))
+	{
+		Enemy->SetPoolPresentationAutoCompleteForTesting(false);
+		Enemy->PrepareForPoolSpawn(Fixture.World->GetSubsystem<UEnemyPoolSubsystem>());
+		FEnemyPoolLeaseContext Lease;
+		Lease.GameplayGeneration = 1;
+		Lease.RoomTag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.1"));
+		if (!TestTrue(TEXT("New pool lease starts"), Enemy->BeginPoolLease(Lease, FTransform(FVector(2000, 0, 300)), 1))) return false;
+		Advance(4.0f);
+		TestFalse(TEXT("New lease cannot retain the previous tracked player"), Enemy->HasTrackableTarget());
+		TestFalse(TEXT("Old expiry cannot request search in the new lease"), Enemy->ShouldSkipTrackingLossWait());
+		return true;
+	}
+	if (Parameters == TEXT("DeathCleanup"))
+	{
+		Enemy->GetAbilitySystemComponent()->AddLooseGameplayTag(FGameplayTag::RequestGameplayTag(TEXT("State.Dead")));
+		Advance(4.0f);
+		TestFalse(TEXT("Death clears tracking"), Enemy->HasTrackableTarget());
+		TestFalse(TEXT("Old tracking timer cannot request search after death"), Enemy->ShouldSkipTrackingLossWait());
+		return true;
+	}
+	Target->SetActorLocation(FVector(700, -200, 400));
+	Advance(1.0f);
+	TestTrue(TEXT("Grace follows the current three-dimensional position"),
+		Enemy->GetLastKnownPlayerLocation().Equals(Target->GetActorLocation()));
+	if (Parameters == TEXT("ControllerChanged"))
+	{
+		Controller->UnPossess();
+		Advance(4.0f);
+		TestFalse(TEXT("Unpossess clears tracking"), Enemy->HasTrackableTarget());
+		TestFalse(TEXT("Old timer cannot request search after unpossess"), Enemy->ShouldSkipTrackingLossWait());
+		return true;
+	}
+	if (Parameters == TEXT("Stun"))
+	{
+		Enemy->EnterStun();
+		Advance(4.0f);
+		TestFalse(TEXT("Stun clears tracking"), Enemy->HasTrackableTarget());
+		TestFalse(TEXT("Old tracking timer cannot request search during stun"), Enemy->ShouldSkipTrackingLossWait());
+		return true;
+	}
+	if (Parameters == TEXT("DestroyedTarget"))
+	{
+		const FVector LastValid = Enemy->GetLastKnownPlayerLocation();
+		Target->Destroy();
+		Enemy->RefreshTargetTracking();
+		TestFalse(TEXT("Destroyed player cannot remain tracked"), Enemy->HasTrackableTarget());
+		TestTrue(TEXT("Invalidation preserves the last valid position"), Enemy->GetLastKnownPlayerLocation().Equals(LastValid));
+		return true;
+	}
+	if (Parameters == TEXT("Reacquire"))
+	{
+		Sight(true);
+		Advance(3.0f);
+		TestTrue(TEXT("Old expiry cannot end reacquired sight"), Enemy->HasTrackableTarget());
+		Sight(false);
+		Advance(2.9f);
+		TestTrue(TEXT("A new sight loss receives a fresh grace period"), Enemy->HasTrackableTarget());
+	}
+	else
+	{
+		if (Parameters == TEXT("SharedContact"))
+		{
+			Enemy->ApplySharedTargetContact(FVector(-900, 800, 100), true, 100);
+			TestFalse(TEXT("Shared information during tracking is already consumed"), Enemy->HasFreshSharedTargetLocation());
+			TestTrue(TEXT("Shared information cannot replace direct tracking"),
+				Enemy->GetLastKnownPlayerLocation().Equals(Target->GetActorLocation()));
+		}
+		Advance(1.9f);
+		TestTrue(TEXT("Tracking remains valid before expiry"), Enemy->HasTrackableTarget());
+	}
+	Target->SetActorLocation(FVector(800, -300, 450));
+	Advance(0.2f);
+	TestFalse(TEXT("The fixed deadline ends tracking"), Enemy->HasTrackableTarget());
+	const FVector Frozen = Enemy->GetLastKnownPlayerLocation();
+	TestTrue(TEXT("Expiry captures the last tracked position"), Frozen.Equals(Target->GetActorLocation()));
+	Target->SetActorLocation(FVector(1200, 900, 600));
+	Advance(1.0f);
+	TestTrue(TEXT("Hidden player movement after expiry is not observed"), Enemy->GetLastKnownPlayerLocation().Equals(Frozen));
+	FEnemySearchSessionTaskInstanceData Session;
+	Session.Enemy = Enemy;
+	TestEqual(TEXT("Expiry can enter search"), EnemySearchTesting::EnterSession(Session), EStateTreeRunStatus::Running);
+	TestTrue(TEXT("Expiry bypasses LossWait"), Session.bSkipLossWait);
+	TestTrue(TEXT("Search uses the frozen tracking center"), Enemy->GetSearchEpisode().Center.Equals(Frozen));
+	EnemySearchTesting::ExitSession(Session);
+	return true;
+}
+
+// 공유 대상 선택/공격과 분리해 관측 데이터의 출처와 시간 경계만 검증한다.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyRoomObservationTargetsTest,
+	"Outlier.Enemy.RoomObservation.Targets", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyRoomObservationTargetsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	AEnemyBase* First = Fixture.SpawnEnemy(Room);
+	AEnemyBase* Second = Fixture.SpawnEnemy(Room, FVector(2000, 0, 0));
+	AEnemyBase* Receiver = Fixture.SpawnEnemy(Room, FVector(4000, 0, 0));
+	AActor* TargetA = Fixture.World->SpawnActor<AActor>();
+	AActor* TargetB = Fixture.World->SpawnActor<AActor>();
+	if (!Rooms || !First || !Second || !Receiver || !TargetA || !TargetB) return false;
+	Rooms->SetActiveRoomTargetForTesting(Room, FVector::ZeroVector, false);
+	Rooms->ReportRoomTargetContact(First, TargetA, FVector(100, 0, 0));
+	Rooms->ReportRoomTargetContact(Second, TargetB, FVector(200, 0, 0));
+	FEnemyRoomTargetObservationSnapshot SnapshotA, SnapshotB;
+	if (!TestTrue(TEXT("First target retained"), Rooms->TryGetRoomTargetObservation(Receiver, TargetA, SnapshotA))
+		|| !TestTrue(TEXT("Second target retained"), Rooms->TryGetRoomTargetObservation(Receiver, TargetB, SnapshotB))) return false;
+	TestTrue(TEXT("Both targets independently observed"), SnapshotA.bDirectlyObserved && SnapshotB.bDirectlyObserved);
+	TestTrue(TEXT("First location preserved"), SnapshotA.LastObservedLocation.Equals(FVector(100, 0, 0)));
+	TestTrue(TEXT("Second location preserved"), SnapshotB.LastObservedLocation.Equals(FVector(200, 0, 0)));
+	const uint64 Revision = Rooms->GetSharedRevisionForTesting(Room);
+	// 좌표 공유의 50cm 필터를 통과하지 않아도 정지한 대상의 직접 관측은 최신이어야 한다.
+	++GFrameCounter;
+	Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f);
+	Rooms->ReportRoomTargetContact(First, TargetA, FVector(110, 0, 0));
+	TestEqual(TEXT("Small movement does not republish legacy coordinates"), Rooms->GetSharedRevisionForTesting(Room), Revision);
+	TestTrue(TEXT("Updated observation available"), Rooms->TryGetRoomTargetObservation(Receiver, TargetA, SnapshotA));
+	TestEqual(TEXT("Direct report uses server time"), SnapshotA.LastObservedAt, static_cast<double>(Fixture.World->GetTimeSeconds()));
+	TestTrue(TEXT("Observation retains exact reported location"), SnapshotA.LastObservedLocation.Equals(FVector(110, 0, 0)));
+	Rooms->RemoveRoomTargetObserver(First);
+	TestTrue(TEXT("First target enters grace"), Rooms->TryGetRoomTargetObservation(Receiver, TargetA, SnapshotA));
+	TestFalse(TEXT("Other target observer does not keep first target directly observed"), SnapshotA.bDirectlyObserved);
+	TestTrue(TEXT("Other target remains directly observed"), Rooms->TryGetRoomTargetObservation(Receiver, TargetB, SnapshotB) && SnapshotB.bDirectlyObserved);
+	Rooms->NotifyTargetActorRemoved(TargetA);
+	TestFalse(TEXT("Removed representative target unavailable"), Rooms->TryGetRoomTargetObservation(Receiver, TargetA, SnapshotA));
+	TestTrue(TEXT("Removing representative preserves other target record"), Rooms->TryGetRoomTargetObservation(Receiver, TargetB, SnapshotB));
+	Rooms->NotifyRoomCombatEnded(Room);
+	TestFalse(TEXT("Combat end clears records"), Rooms->TryGetRoomTargetObservation(Receiver, TargetB, SnapshotB));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyRoomObservationExpiryTest,
+	"Outlier.Enemy.RoomObservation.Expiry", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyRoomObservationExpiryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	AEnemyBase* Observer = Fixture.SpawnEnemy(Room);
+	AEnemyBase* OtherObserver = Fixture.SpawnEnemy(Room, FVector(2000, 0, 0));
+	AEnemyBase* Receiver = Fixture.SpawnEnemy(Room, FVector(4000, 0, 0));
+	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	if (!Rooms || !Observer || !OtherObserver || !Receiver || !Target) return false;
+	Rooms->SetActiveRoomTargetForTesting(Room, FVector::ZeroVector, false);
+	FEnemyRoomTargetObservationSnapshot Snapshot;
+	auto Advance = [&](float Seconds)
+	{
+		// 큰 DeltaSeconds는 WorldSettings에서 제한된다. 이진수로 정확한 간격을 사용해
+		// 월드 시각을 실제로 진행하고 3초 만료 경계도 오차 없이 검증한다.
+		const int32 Steps = FMath::Max(1, FMath::CeilToInt(Seconds * 32.0f));
+		for (int32 Step = 0; Step < Steps; ++Step)
+		{
+			++GFrameCounter;
+			Fixture.World->Tick(LEVELTICK_TimeOnly, Seconds / Steps);
+		}
+	};
+	Rooms->ReportRoomTargetContact(Observer, Target, FVector::ZeroVector);
+	Advance(1.0f);
+	Rooms->ReportRoomTargetContact(OtherObserver, Target, FVector::ZeroVector);
+	Rooms->RemoveRoomTargetObserver(Observer);
+	TestTrue(TEXT("Observer handoff remains direct"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot) && Snapshot.bDirectlyObserved);
+	const double LastObserved = Snapshot.LastObservedAt;
+	Advance(1.0f);
+	Rooms->RemoveRoomTargetObserver(OtherObserver);
+	TestTrue(TEXT("Delayed removal retains remaining grace"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	TestEqual(TEXT("Removal does not refresh observation time"), Snapshot.LastObservedAt, LastObserved);
+	TestEqual(TEXT("Grace anchored to last direct report"), Snapshot.TrackingExpiresAt, LastObserved + 3.0);
+	const double Deadline = Snapshot.TrackingExpiresAt;
+	Target->SetActorLocation(FVector(900, 0, 0));
+	Rooms->TriggerForcedShareForTesting(Room);
+	TestTrue(TEXT("Legacy forced ping executed"), Rooms->IsForcedShareConsumedForTesting(Room));
+	for (int32 Read = 0; Read < 3; ++Read)
+	{
+		TestTrue(TEXT("Repeated read still within original grace"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+		TestEqual(TEXT("Read and forced ping preserve deadline"), Snapshot.TrackingExpiresAt, Deadline);
+		TestTrue(TEXT("Forced ping does not overwrite observed location"), Snapshot.LastObservedLocation.IsZero());
+	}
+	Advance(2.0f);
+	TestFalse(TEXT("Exactly three seconds since last observation expires"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	TestFalse(TEXT("Failed query clears target output"), Snapshot.TargetActor.IsValid());
+	TestEqual(TEXT("Failed query clears deadline output"), Snapshot.TrackingExpiresAt, 0.0);
+	Rooms->ReportRoomTargetContact(Observer, Target, Target->GetActorLocation());
+	TestTrue(TEXT("Genuine rediscovery renews observation"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	TestTrue(TEXT("Rediscovery advances time"), Snapshot.LastObservedAt > LastObserved);
+	FEnemyStat& Stat = const_cast<FEnemyStat&>(Receiver->GetRuntimeStat());
+	Stat.TargetTrackingGraceSeconds = 0.0f;
+	TestTrue(TEXT("Zero grace still permits active direct observation"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	Rooms->RemoveRoomTargetObserver(Observer);
+	TestFalse(TEXT("Zero grace expires immediately after loss"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	Stat.TargetTrackingGraceSeconds = 5.0f;
+	TestTrue(TEXT("Receiver configuration controls grace"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	TestEqual(TEXT("Configured duration uses same observation time"), Snapshot.TrackingExpiresAt, Snapshot.LastObservedAt + 5.0);
+	Rooms->ResetRuntimeCombatState();
+	TestFalse(TEXT("Runtime reset clears all records"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyRoomObservationLifecycleTest,
+	"Outlier.Enemy.RoomObservation.Lifecycle", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyRoomObservationLifecycleTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	AEnemyBase* Observer = Fixture.SpawnEnemy(Room);
+	AEnemyBase* Receiver = Fixture.SpawnEnemy(Room, FVector(2000, 0, 0));
+	AEnemyBase* Outsider = Fixture.SpawnEnemy(FGameplayTag(), FVector(4000, 0, 0));
+	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	if (!Rooms || !Observer || !Receiver || !Outsider || !Target) return false;
+	Rooms->SetActiveRoomTargetForTesting(Room, FVector::ZeroVector, false);
+	Rooms->ReportRoomTargetContact(Observer, Target, FVector::ZeroVector);
+	FEnemyRoomTargetObservationSnapshot Snapshot;
+	TestFalse(TEXT("Different room cannot read observation"), Rooms->TryGetRoomTargetObservation(Outsider, Target, Snapshot));
+	Rooms->UnregisterEnemy(Observer);
+	TestTrue(TEXT("Unregister leaves bounded grace"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	TestFalse(TEXT("Unregistered observer no longer direct"), Snapshot.bDirectlyObserved);
+	Rooms->ReportRoomTargetContact(Observer, Target, FVector::ZeroVector);
+	Observer->GetRoomTagComp()->AssignDefaultRoomTag(FGameplayTag());
+	TestTrue(TEXT("Room departure leaves bounded grace"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	TestFalse(TEXT("Observer from different room is removed"), Snapshot.bDirectlyObserved);
+	Observer->GetRoomTagComp()->AssignDefaultRoomTag(Room);
+	Rooms->ReportRoomTargetContact(Observer, Target, FVector::ZeroVector);
+	Observer->EnterStun();
+	TestTrue(TEXT("Stunned observer leaves bounded grace"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	TestFalse(TEXT("Stunned observer is not a direct source"), Snapshot.bDirectlyObserved);
+	Rooms->ReportRoomTargetContact(Observer, Target, FVector::ZeroVector);
+	TestTrue(TEXT("Stun rejects new direct report"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot) && !Snapshot.bDirectlyObserved);
+	Observer->RestoreStateAfterStun();
+	Rooms->ReportRoomTargetContact(Observer, Target, FVector::ZeroVector);
+	Observer->SetEnemyPossessed(true);
+	TestTrue(TEXT("Possessed observer leaves bounded grace"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	TestFalse(TEXT("Possessed observer is not a direct source"), Snapshot.bDirectlyObserved);
+	// 사망/은신으로 무효화된 기록은 상태가 풀려도 새 직접 보고 없이 되살아나지 않는다.
+	AEnemyBase* TaggedTarget = Fixture.SpawnEnemy(Room, FVector(6000, 0, 0));
+	if (!TaggedTarget || !TaggedTarget->GetAbilitySystemComponent()) return false;
+	Observer->SetEnemyPossessed(false);
+	for (const TCHAR* TagName : {TEXT("State.Dead"), TEXT("State.Stealthed")})
+	{
+		Rooms->ReportRoomTargetContact(Observer, TaggedTarget, TaggedTarget->GetActorLocation());
+		TestTrue(TEXT("Fresh target observation available"), Rooms->TryGetRoomTargetObservation(Receiver, TaggedTarget, Snapshot));
+		const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TagName));
+		TaggedTarget->GetAbilitySystemComponent()->AddLooseGameplayTag(Tag);
+		TestFalse(TEXT("Unavailable target immediately rejected"), Rooms->TryGetRoomTargetObservation(Receiver, TaggedTarget, Snapshot));
+		TaggedTarget->GetAbilitySystemComponent()->RemoveLooseGameplayTag(Tag);
+		TestFalse(TEXT("Availability alone cannot restore discarded observation"), Rooms->TryGetRoomTargetObservation(Receiver, TaggedTarget, Snapshot));
+	}
+	Target->Destroy();
+	TestFalse(TEXT("Destroyed target immediately unavailable"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyRoomObservationPoolReuseTest,
+	"Outlier.Enemy.RoomObservation.PoolReuse", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyRoomObservationPoolReuseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	UEnemyPoolSubsystem* Pool = Fixture.World->GetSubsystem<UEnemyPoolSubsystem>();
+	if (!Rooms || !Pool) return false;
+	UEnemyPoolDefinition* Definition = NewObject<UEnemyPoolDefinition>(Fixture.World);
+	FEnemyPoolEntry& Entry = Definition->Entries.AddDefaulted_GetRef();
+	Entry.EnemyClass = AEnemyBase::StaticClass();
+	Entry.PrewarmCount = 1;
+	Entry.MaxCount = 1;
+	if (!TestTrue(TEXT("Observation pool prewarms"), Pool->PrewarmPool(Definition))) return false;
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	Rooms->SetActiveRoomTargetForTesting(Room, FVector::ZeroVector, false);
+	AEnemyBase* Receiver = Fixture.SpawnEnemy(Room, FVector(3000, 0, 0));
+	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	FEnemyPoolLeaseContext Context;
+	Context.RoomTag = Room;
+	Context.GameplayGeneration = 10;
+	AEnemyBase* Observer = Pool->LeaseEnemy(AEnemyBase::StaticClass(), FTransform::Identity, Context);
+	if (!Observer || !Receiver || !Target) return false;
+	Rooms->ReportRoomTargetContact(Observer, Target, FVector::ZeroVector);
+	FEnemyRoomTargetObservationSnapshot Snapshot;
+	TestTrue(TEXT("Current lease directly observed"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot) && Snapshot.bDirectlyObserved);
+	if (!TestTrue(TEXT("First lease returned"), Pool->ReturnEnemy(Observer,
+		Observer->GetPoolGameplayGeneration(), Observer->GetPoolLeaseSerial()))) return false;
+	TestTrue(TEXT("Return retains only bounded grace"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot) && !Snapshot.bDirectlyObserved);
+	Context.GameplayGeneration = 11;
+	AEnemyBase* Reused = Pool->LeaseEnemy(AEnemyBase::StaticClass(), FTransform::Identity, Context);
+	if (!TestNotNull(TEXT("Second lease exists"), Reused)) return false;
+	TestEqual(TEXT("Same Actor reused"), Reused, Observer);
+	TestTrue(TEXT("New lease cannot inherit direct observation"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot) && !Snapshot.bDirectlyObserved);
+	Rooms->ReportRoomTargetContact(Reused, Target, FVector::ZeroVector);
+	TestTrue(TEXT("New lease requires a genuine report"), Rooms->TryGetRoomTargetObservation(Receiver, Target, Snapshot) && Snapshot.bDirectlyObserved);
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyRoomTrackingTest,
+	"Outlier.Enemy.RoomTracking", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyRoomTrackingTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("Acquire"), TEXT("LiveObserver"), TEXT("Expiry"), TEXT("LateAcquire"), TEXT("ZeroGrace"),
+		TEXT("KeepCurrent"), TEXT("Priority"), TEXT("Alternative"), TEXT("DirectTransition"), TEXT("RoomEnded"), TEXT("RoomChanged")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyRoomTrackingTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	Fixture.World->CreateAISystem();
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.1"));
+	AEnemyBase* Observer = Fixture.SpawnEnemy(Room, FVector(3000, 0, 300));
+	AEnemyBase* OtherObserver = Fixture.SpawnEnemy(Room, FVector(4000, 0, 300));
+	AEnemyBase* Receiver = Fixture.SpawnEnemy(Room, FVector(0, 0, 300));
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	UClass* TargetClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!Rooms || !Observer || !OtherObserver || !Receiver || !Controller || !TargetClass) return false;
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ACharacter* Target = Fixture.World->SpawnActor<ACharacter>(
+		Parameters == TEXT("Priority") ? APartnerCharacter::StaticClass() : TargetClass,
+		FTransform(FVector(500, 0, 300)), Spawn);
+	AShooterCharacter* Other = Fixture.World->SpawnActor<AShooterCharacter>(TargetClass,
+		FTransform(FVector(700, 100, 300)), Spawn);
+	if (!TestNotNull(TEXT("Shared player exists"), Target) || !TestNotNull(TEXT("Alternative player exists"), Other)) return false;
+	Controller->Possess(Receiver);
+	if (Parameters == TEXT("ZeroGrace"))
+		const_cast<FEnemyStat&>(Receiver->GetRuntimeStat()).TargetTrackingGraceSeconds = 0.0f;
+	Receiver->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Target->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Other->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Rooms->SetActiveRoomTargetForTesting(Room, Target->GetActorLocation(), false);
+	Rooms->ReportRoomTargetContact(Observer, Target, Target->GetActorLocation());
+	if (Parameters == TEXT("LateAcquire"))
+	{
+		Rooms->RemoveRoomTargetObserver(Observer);
+		// 수신자가 늦게 합류해도 마지막 직접 보고 이후 남은 1초만 사용해야 한다.
+		for (int32 Step = 0; Step < 64; ++Step)
+		{
+			++GFrameCounter;
+			Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		}
+	}
+	Receiver->RefreshTargetTracking();
+	if (!TestEqual(TEXT("Never-seen shared player becomes the live target"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target))) return false;
+	TestFalse(TEXT("Sharing does not fabricate direct sight"), Receiver->IsPlayerCurrentlyVisible());
+	TestFalse(TEXT("Shared live tracking blocks search"), Receiver->BeginSearchEpisode());
+	auto Advance = [&](float Seconds)
+	{
+		Fixture.AdvanceTimers(0.0f);
+		const int32 Steps = FMath::RoundToInt(Seconds * 32.0f);
+		for (int32 Step = 0; Step < Steps; ++Step)
+		{
+			++GFrameCounter;
+			Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+			Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+			Receiver->RefreshTargetTracking();
+		}
+	};
+	if (Parameters == TEXT("ZeroGrace") || Parameters == TEXT("LateAcquire"))
+	{
+		Rooms->RemoveRoomTargetObserver(Observer);
+		if (Parameters == TEXT("LateAcquire")) Advance(1.0f);
+		else Receiver->RefreshTargetTracking();
+		TestNull(TEXT("Zero or partially consumed grace cannot restart on receipt"), Receiver->GetTrackedTarget());
+		TestTrue(TEXT("Expired shared tracking skips another search wait"), Receiver->ShouldSkipTrackingLossWait());
+	}
+	else if (Parameters == TEXT("Acquire") || Parameters == TEXT("LiveObserver"))
+	{
+		Target->SetActorLocation(FVector(600, -100, 200));
+		Advance(Parameters == TEXT("LiveObserver") ? 4.0f : 0.25f);
+		TestEqual(TEXT("Live observation remains trackable"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+		TestTrue(TEXT("Tracking uses actual 3D position rather than the old reported coordinate"),
+			Receiver->GetLastKnownPlayerLocation().Equals(Target->GetActorLocation()));
+	}
+	else if (Parameters == TEXT("KeepCurrent") || Parameters == TEXT("Alternative") || Parameters == TEXT("Priority"))
+	{
+		// 더 가까운 대상이나 우선순위가 높은 Shooter도 유효한 현재 대상을 교체하지 않는다.
+		if (Parameters != TEXT("Priority")) Other->SetActorLocation(FVector(100, 100, 300));
+		Rooms->ReportRoomTargetContact(OtherObserver, Other, Other->GetActorLocation());
+		Controller->SetCachedVisibleTargetForTesting(Other);
+		Receiver->SetPlayerCurrentlyVisible(true);
+		TestEqual(TEXT("A new visible/shared candidate cannot steal the current target"),
+			Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+		if (Parameters == TEXT("Priority"))
+		{
+			Controller->SetCachedVisibleTargetForTesting(nullptr);
+			Receiver->SetPlayerCurrentlyVisible(false);
+			Receiver->ClearTargetTracking();
+			Receiver->RefreshTargetTracking();
+			TestEqual(TEXT("Without a current target, Shooter priority beats a closer Partner"),
+				Receiver->GetTrackedTarget(), static_cast<AActor*>(Other));
+		}
+		if (Parameters == TEXT("Alternative"))
+		{
+			Rooms->RemoveRoomTargetObserver(Observer);
+			Advance(3.0f);
+			TestEqual(TEXT("Expiry chooses the remaining valid target before search"),
+				Receiver->GetTrackedTarget(), static_cast<AActor*>(Other));
+			TestFalse(TEXT("Alternative target avoids a search-expiry transition"), Receiver->ShouldSkipTrackingLossWait());
+		}
+	}
+	else if (Parameters == TEXT("DirectTransition"))
+	{
+		Controller->SetCachedVisibleTargetForTesting(Target);
+		Receiver->SetPlayerCurrentlyVisible(true);
+		Rooms->RemoveRoomTargetObserver(Observer);
+		Advance(4.0f);
+		TestEqual(TEXT("Own direct sight survives the old shared deadline"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+		Rooms->ReportRoomTargetContact(Observer, Target, Target->GetActorLocation());
+		Controller->SetCachedVisibleTargetForTesting(nullptr);
+		Receiver->SetPlayerCurrentlyVisible(false);
+		Advance(4.0f);
+		TestEqual(TEXT("Direct-to-shared transition keeps the same target"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+		TestFalse(TEXT("Shared continuation keeps actual lost sight"), Receiver->IsPlayerCurrentlyVisible());
+	}
+	else if (Parameters == TEXT("RoomEnded") || Parameters == TEXT("RoomChanged"))
+	{
+		if (Parameters == TEXT("RoomEnded")) Rooms->NotifyRoomCombatEnded(Room);
+		else Receiver->GetRoomTagComp()->AssignDefaultRoomTag(FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.2")));
+		TestNull(TEXT("Old Room permission is rejected even before the next tracking refresh"), Receiver->GetTrackedTarget());
+		const FVector LastValid = Receiver->GetLastKnownPlayerLocation();
+		Target->SetActorLocation(FVector(900, 200, 100));
+		Receiver->RefreshTargetTracking();
+		TestNull(TEXT("Old Room observation cannot become local grace"), Receiver->GetTrackedTarget());
+		TestTrue(TEXT("Room invalidation freezes the last valid position"), Receiver->GetLastKnownPlayerLocation().Equals(LastValid));
+	}
+	else
+	{
+		Rooms->RemoveRoomTargetObserver(Observer);
+		Advance(2.0f);
+		// 180초 강제 핑과 좌표 수신은 대상의 직접 관측 시각을 갱신할 수 없다.
+		Rooms->TriggerForcedShareForTesting(Room);
+		Receiver->ApplySharedTargetContact(FVector(900, 0, 300), true, 10000);
+		Target->SetActorLocation(FVector(600, 0, 200));
+		Advance(0.5f);
+		Target->SetActorLocation(FVector(900, 0, 200));
+		Advance(0.46875f);
+		const FVector LastValid = Receiver->GetLastKnownPlayerLocation();
+		Target->SetActorLocation(FVector(1000, 0, 100));
+		// 마지막 유효 갱신 뒤 정확히 만료 경계까지 진행해 만료 콜백의 좌표 누출도 검사한다.
+		Advance(1.0f / 32.0f);
+		TestNull(TEXT("Received or relayed information cannot extend the original deadline"), Receiver->GetTrackedTarget());
+		const FVector Frozen = Receiver->GetLastKnownPlayerLocation();
+		TestFalse(TEXT("No stale observation is re-adopted"), Receiver->HasTrackableTarget());
+		TestTrue(TEXT("Expiry skips the additional loss wait"), Receiver->ShouldSkipTrackingLossWait());
+		TestTrue(TEXT("Expiry preserves the final valid sample without reading a post-deadline position"), Frozen.Equals(LastValid));
+		Target->SetActorLocation(FVector(1200, 0, 100));
+		Advance(1.0f);
+		TestTrue(TEXT("Movement after expiry stays hidden"), Receiver->GetLastKnownPlayerLocation().Equals(Frozen));
+	}
 	return true;
 }
 

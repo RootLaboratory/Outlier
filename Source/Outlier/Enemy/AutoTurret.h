@@ -98,6 +98,7 @@ UCLASS()
 class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
 {
 	GENERATED_BODY()
+	friend class FEnemyHackEffectGameplayTest;
 
 public:
 	AAutoTurret();

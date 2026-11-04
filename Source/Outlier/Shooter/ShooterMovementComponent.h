@@ -13,6 +13,7 @@ class OUTLIER_API UShooterMovementComponent : public UShooterCharacterComponentB
 	GENERATED_BODY()
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
+	friend class FShooterSprintInputModeTest;
 	friend class UShooterCharacterMovementComponent;
 
 protected:
@@ -43,6 +44,7 @@ protected:
 	float SlideElapsedTime = 0.0f;
 
 	float BaseMaxWalkSpeedCrouched = -1.0f;
+	bool bHoldSprintInput = false;
 
 	float GetStealthSpeedMultiplier() const;
 
@@ -75,6 +77,8 @@ public:
 	void SetMovementStateImmediate(EMovementState NewState);
 	void StopSprintInternal();
 	void SuspendSprintInternal();
+	// 전투 제한은 Hold 의도를 보존하고 Toggle 의도만 취소한다. 수명주기 초기화와 구분한다.
+	void SuspendSprintForCombat();
 	void ClearInputIntent();
 	bool CanStartSlide() const;
 	bool CanSprint() const;

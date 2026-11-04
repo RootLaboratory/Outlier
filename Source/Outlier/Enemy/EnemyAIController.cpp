@@ -1,6 +1,7 @@
 #include "Enemy/EnemyAIController.h"
 
 #include "Enemy/AutoTurret.h"
+#include "AbilitySystemComponent.h"
 
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
@@ -143,6 +144,7 @@ void AEnemyAIController::OnPossess(APawn* InPawn)
 
 	ProcessedStealthedTargets.Reset();
 	LastVisibleTarget.Reset();
+	DirectlyVisibleTargets.Reset();
 
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(InPawn))
 	{
@@ -152,9 +154,15 @@ void AEnemyAIController::OnPossess(APawn* InPawn)
 
 void AEnemyAIController::OnUnPossess()
 {
+	if (AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn()))
+	{
+		Enemy->ResetTargetAttackContinuity();
+		Enemy->ClearTargetTracking();
+	}
 	StopSharedTargetReporting(true);
 	ProcessedStealthedTargets.Reset();
 	LastVisibleTarget.Reset();
+	DirectlyVisibleTargets.Reset();
 	TaskDrivenControlPitchCount = 0;
 	bAttackAimActive = false;
 	Super::OnUnPossess();
@@ -162,6 +170,8 @@ void AEnemyAIController::OnUnPossess()
 
 void AEnemyAIController::UpdateControlRotation(float DeltaTime, bool bUpdatePawn)
 {
+	// 기존 컨트롤러 갱신에서 참조 한 개만 확인한다. 공격 조준이 회전을 소유해도 추적은 갱신한다.
+	if (AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn())) Enemy->RefreshTargetTracking();
 	// 공격 경로가 시점 기준으로 Pitch/Yaw와 본체 Yaw를 함께 설정한다.
 	// 기본 Focus/이동 회전으로 덮으면 다음 연사 타이머가 잘못된 방향을 읽는다.
 	if (bAttackAimActive)
@@ -249,11 +259,14 @@ void AEnemyAIController::RefreshTeamAndPerceptionFromPawn()
 	}
 
 	SetGenericTeamId(Enemy->GetGenericTeamId());
+	Enemy->ResetTargetAttackContinuity();
+	Enemy->ClearTargetTracking();
 	if (EnemyPerceptionComponent)
 	{
 		EnemyPerceptionComponent->ForgetAll();
 		ProcessedStealthedTargets.Reset();
 		LastVisibleTarget.Reset();
+		DirectlyVisibleTargets.Reset();
 	}
 	RefreshPerceptionConfigFromPawn();
 	SetEnemyPerceptionEnabled(Enemy->CanUseEnemyPerception());
@@ -274,9 +287,15 @@ void AEnemyAIController::SetEnemyPerceptionEnabled(bool bEnabled)
 		bEnabled && (!Enemy || Enemy->UsesHearingPerception()));
 	if (!bEnabled)
 	{
+		if (AEnemyBase* ControlledEnemy = Cast<AEnemyBase>(GetPawn()))
+		{
+			ControlledEnemy->ResetTargetAttackContinuity();
+			ControlledEnemy->ClearTargetTracking();
+		}
 		EnemyPerceptionComponent->ForgetAll();
 		ProcessedStealthedTargets.Reset();
 		LastVisibleTarget.Reset();
+		DirectlyVisibleTargets.Reset();
 	}
 
 	if (bEnabled)
@@ -308,6 +327,7 @@ AActor* AEnemyAIController::GetPreferredVisibleTarget() const
 AActor* AEnemyAIController::SelectPreferredVisibleTarget(
 	const TArray<AActor*>& VisibleActors) const
 {
+	DirectlyVisibleTargets.Reset();
 	const APawn* ControlledPawn = GetPawn();
 	AActor* BestTarget = nullptr;
 	EEnemyTargetPriority BestPriority = EEnemyTargetPriority::Invalid;
@@ -318,6 +338,7 @@ AActor* AEnemyAIController::SelectPreferredVisibleTarget(
 		{
 			continue;
 		}
+		DirectlyVisibleTargets.Add(Target);
 
 		const EEnemyTargetPriority TargetPriority = OutlierEnemyTargetRules::GetPriority(Target);
 		if (TargetPriority == EEnemyTargetPriority::Invalid)
@@ -339,6 +360,12 @@ AActor* AEnemyAIController::SelectPreferredVisibleTarget(
 	}
 
 	return BestTarget;
+}
+
+bool AEnemyAIController::IsTargetDirectlyVisible(const AActor* Target) const
+{
+	return IsValidTrackingTarget(Target)
+		&& (LastVisibleTarget.Get() == Target || DirectlyVisibleTargets.Contains(Target));
 }
 
 void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
@@ -406,7 +433,7 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 		const FVector TargetLocation = LocationSource->GetActorLocation();
 
 		UpdateVisibleTarget(Enemy, LocationSource);
-		Enemy->UpdateLastKnownPlayerLocation(TargetLocation);
+		if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(TargetLocation);
 
 		if (!Enemy->IsInCombat())
 		{
@@ -447,18 +474,13 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 
 void AEnemyAIController::UpdateVisibleTarget(AEnemyBase* Enemy, AActor* PreferredTarget)
 {
-	const bool bWasVisible = Enemy->IsPlayerCurrentlyVisible();
 	const bool bIsVisible = IsValid(PreferredTarget);
-	const bool bTargetChanged = LastVisibleTarget.Get() != PreferredTarget;
+	const bool bVisibilityChanged = Enemy->IsPlayerCurrentlyVisible() != bIsVisible;
 	LastVisibleTarget = bIsVisible ? PreferredTarget : nullptr;
+	if (!bIsVisible) DirectlyVisibleTargets.Reset();
+	// 직접 감지 캐시는 공유 보고용이다. 전투 대상 교체는 현재 추적의 유효성을 먼저 확인한다.
 	Enemy->SetPlayerCurrentlyVisible(bIsVisible);
-
-	// Visibility can stay true while the preferred actor changes; Sync only ticks on events.
-	if (bWasVisible && bIsVisible && bTargetChanged)
-	{
-		Enemy->SendEnemyStateTreeEvent(FGameplayTag::RequestGameplayTag(
-			TEXT("Enemy.Event.Perception.TargetAcquired")));
-	}
+	if (!bVisibilityChanged) Enemy->RefreshTargetTracking();
 }
 
 void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus)
@@ -474,12 +496,13 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 
 	const FVector HeardLocation = Stimulus.StimulusLocation;
 
-	// 청각은 들린 위치만 기록한다. 직접 시야 확보나 방 공유 정보로 취급하지 않는다.
+	// 유효한 전투 대상의 실제 추적 위치를 소리로 덮어쓰지 않는다.
+	// 청각만 남았다면 들린 위치를 기록하되 직접 시야나 방 공유 관측으로 취급하지 않는다.
 	// 진행 중인 수색의 고정 중심/공유 버전도 이 갱신만으로는 바뀌지 않는다.
-	Enemy->UpdateLastKnownPlayerLocation(HeardLocation);
+	if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(HeardLocation);
 
 	const EEnemyCombatState State = Enemy->GetCombatState();
-	// 이미 참여 중인 적은 들린 위치만 갱신한다. 진행 중인 수색이나 공격을 다시 시작하지 않는다.
+	// 이미 참여 중인 적의 수색이나 공격을 소리만으로 다시 시작하지 않는다.
 	if (State == EEnemyCombatState::Combat)
 	{
 		return;
@@ -687,7 +710,7 @@ void AEnemyAIController::ConfigureHearingFromEnemy(AEnemyBase* Enemy)
 bool AEnemyAIController::IsValidDetectionTarget(const AActor* TargetActor) const
 {
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
-	if (!TargetPawn || OutlierEnemyTargetRules::IsUnavailable(TargetActor))
+	if (!TargetPawn || OutlierEnemyTargetRules::IsUnavailable(TargetActor) || TargetActor->IsActorBeingDestroyed())
 	{
 		return false;
 	}
@@ -720,7 +743,10 @@ bool AEnemyAIController::IsValidDetectionTarget(const AActor* TargetActor) const
 
 	if (const AEnemyBase* EnemyTarget = Cast<AEnemyBase>(TargetActor))
 	{
-		return EnemyTarget->GetCurrentHealth() > 0.0f;
+		const UAbilitySystemComponent* AbilitySystem = EnemyTarget->GetAbilitySystemComponent();
+		return !EnemyTarget->IsDead() && EnemyTarget->GetCurrentHealth() > 0.0f
+			&& (!AbilitySystem || (!AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed())
+				&& !AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting())));
 	}
 
 	return true;

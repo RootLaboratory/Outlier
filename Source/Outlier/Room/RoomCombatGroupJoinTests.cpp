@@ -13,6 +13,8 @@
 #include "Misc/ScopeExit.h"
 #include "NativeGameplayTags.h"
 #include "OutlierPlayerState.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Room/RoomCombatBarrier.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -41,7 +43,9 @@ namespace
 		URoomCombatDefinition* Definition;
 		AShooterCharacter* Shooter;
 		APartnerCharacter* Partner;
+		AOutlierPlayerState* PairState;
 		TMap<FGameplayTag, ARoomVolume*> Rooms;
+		TMap<FGameplayTag, ARoomCombatBarrier*> Barriers;
 		TArray<AEnemyBase*> Enemies;
 		int32 TeleportCalls = 0;
 
@@ -84,6 +88,8 @@ namespace
 			AOutlierPlayerState* State = World->SpawnActor<AOutlierPlayerState>();
 			State->SetShooterCharacter(Shooter);
 			State->SetPartnerCharacter(Partner);
+			PairState = State;
+			PairState->SetAcquiredSuit(true);
 			AGameStateBase* GameState = World->GetGameState();
 			if (!GameState)
 			{
@@ -97,6 +103,7 @@ namespace
 			for (const auto& Room : Rooms) Room.Value->DispatchBeginPlay();
 			Shooter->DispatchBeginPlay();
 			Partner->DispatchBeginPlay();
+			for (const auto& Entry : Rooms) AddBarrier(Entry.Key);
 			Combat->JoinTeleportObserverForTesting = [this] { ++TeleportCalls; };
 		}
 
@@ -181,6 +188,18 @@ namespace
 			Combat->RegisterBarrier(Barrier);
 		}
 
+		void AddBarrier(FGameplayTag Tag)
+		{
+			ARoomCombatBarrier* Barrier = World->SpawnActor<ARoomCombatBarrier>();
+			*FindFProperty<FStructProperty>(ARoomCombatBarrier::StaticClass(), TEXT("RoomTag"))
+				->ContainerPtrToValuePtr<FGameplayTag>(Barrier) = Tag;
+			// 기본 fixture는 차단막 존재 조건만 갖춘다. 안전 fallback이 필요한 사례에서만
+			// AddFallback으로 방 내부 위치를 별도로 설정한다.
+			Barrier->SetActorLocation(FVector(0, 0, -10000));
+			Combat->RegisterBarrier(Barrier);
+			Barriers.Add(Tag, Barrier);
+		}
+
 		void PlaceJoinPair(bool bMoveShooter, AFirstPersonCharacter*& Anchor, AFirstPersonCharacter*& Moving)
 		{
 			Anchor = bMoveShooter ? static_cast<AFirstPersonCharacter*>(Partner) : Shooter;
@@ -197,15 +216,23 @@ namespace
 			Anchor->SetActorLocation(Location);
 		}
 
+		void AdvanceFrames(int32 Frames)
+		{
+			for (int32 Index = 0; Index < Frames; ++Index)
+			{
+				// 동기 테스트의 World Tick 반복은 엔진 프레임 번호를 올리지 않는다.
+				// TimerManager의 같은 프레임 중복 실행 방지를 넘겨 GAS 만료 시간도 진행시킨다.
+				++GFrameCounter;
+				World->Tick(LEVELTICK_All, 0.1f);
+			}
+		}
+
 		void AdvanceRetryInterval()
 		{
 			IConsoleVariable* Retry = IConsoleManager::Get().FindConsoleVariable(
 				TEXT("outlier.RoomCombat.InitialDetectionRetrySeconds"));
 			const float Duration = FMath::Max(Retry->GetFloat(), 0.0f) + 0.2f;
-			for (int32 Index = 0; Index < FMath::CeilToInt(Duration / 0.1f); ++Index)
-			{
-				World->Tick(LEVELTICK_All, 0.1f);
-			}
+			AdvanceFrames(FMath::CeilToInt(Duration / 0.1f));
 		}
 	};
 
@@ -217,6 +244,10 @@ namespace
 
 	void CheckJoinReleased(FAutomationTestBase& Test, const FGroupJoinWorld& Fixture)
 	{
+		Test.TestFalse(TEXT("Failed join does not protect Shooter"), Fixture.Shooter->GetOutlierAbilitySystemComponent()
+			->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+		Test.TestFalse(TEXT("Failed join does not protect Partner"), Fixture.Partner->GetOutlierAbilitySystemComponent()
+			->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
 		Test.TestEqual(TEXT("Failed join leaves Preparing"), Fixture.Combat->GetRoomState(JoinA), ERoomCombatState::Dormant);
 		Test.TestFalse(TEXT("Failed join releases its reservation"), Fixture.Combat->IsRoomCombatReserved(JoinA));
 		Test.TestFalse(TEXT("Failed join does not close the exit"), Fixture.Combat->IsExitBlocked(JoinA));
@@ -245,26 +276,28 @@ bool FRoomGroupJoinInsideTest::RunTest(const FString& Parameters)
 	UClass* Class = LoadJoinShooter();
 	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
 	FGroupJoinWorld Test(Class);
-	for (FGameplayTag PartnerTag : {JoinA.GetTag(), JoinB.GetTag()})
-	{
-		Test.Place(Test.Shooter, JoinA, FVector(-150, 0, 0));
-		Test.Place(Test.Partner, PartnerTag, FVector(150, 0, 0));
-		const FVector ShooterBefore = Test.Shooter->GetActorLocation();
-		const FVector PartnerBefore = Test.Partner->GetActorLocation();
-		TestTrue(TEXT("Same room or sibling pair can start"), Test.Combat->TryStartInitialDetectionForPlayers(JoinA));
-		TestEqual(TEXT("No teleport is invoked inside the group"), Test.TeleportCalls, 0);
-		TestTrue(TEXT("Shooter stays in place"), Test.Shooter->GetActorLocation().Equals(ShooterBefore));
-		TestTrue(TEXT("Partner stays in place"), Test.Partner->GetActorLocation().Equals(PartnerBefore));
-		TestFalse(TEXT("Destination event room is not reserved"), Test.Combat->IsRoomCombatReserved(JoinB));
-		TestTrue(TEXT("Repeated detection does not restart combat"), Test.Combat->TryStartInitialDetectionForPlayers(JoinA));
-		TestEqual(TEXT("Repeated detection never teleports the internal pair"), Test.TeleportCalls, 0);
-		Test.Reset();
-	}
+	Test.Place(Test.Shooter, JoinA, FVector(-150, 0, 0));
+	Test.Place(Test.Partner, JoinA, FVector(150, 0, 0));
+	const FVector ShooterBefore = Test.Shooter->GetActorLocation();
+	const FVector PartnerBefore = Test.Partner->GetActorLocation();
+	TestTrue(TEXT("Same-room pair can start"), Test.Combat->TryStartInitialDetectionForPlayers(JoinA));
+	TestEqual(TEXT("Same-room pair never teleports"), Test.TeleportCalls, 0);
+	TestFalse(TEXT("Internal Shooter receives no protection"), Test.Shooter->GetOutlierAbilitySystemComponent()
+		->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestFalse(TEXT("Internal Partner receives no protection"), Test.Partner->GetOutlierAbilitySystemComponent()
+		->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestTrue(TEXT("Shooter stays in place"), Test.Shooter->GetActorLocation().Equals(ShooterBefore));
+	TestTrue(TEXT("Partner stays in place"), Test.Partner->GetActorLocation().Equals(PartnerBefore));
+	TestFalse(TEXT("Destination event room is not reserved"), Test.Combat->IsRoomCombatReserved(JoinB));
+	TestTrue(TEXT("Repeated detection does not restart combat"), Test.Combat->TryStartInitialDetectionForPlayers(JoinA));
+	TestEqual(TEXT("Repeated detection never teleports the internal pair"), Test.TeleportCalls, 0);
+	Test.Reset();
 	Test.Place(Test.Shooter, JoinB);
 	Test.Place(Test.Partner, JoinC);
 	TestTrue(TEXT("Combat room can be empty while both players are in siblings"),
 		Test.Combat->TryStartInitialDetectionForPlayers(JoinA));
-	TestEqual(TEXT("Two different siblings do not teleport"), Test.TeleportCalls, 0);
+	TestEqual(TEXT("Different siblings require a real join"), Test.TeleportCalls, 1);
+	TestEqual(TEXT("Partner joins the anchor's exact room"), Test.Partner->GetCurrentRoomTag(), JoinB.GetTag());
 	Test.Reset();
 	for (FGameplayTag Outside : {JoinOutside.GetTag(), JoinPrefix.GetTag(), JoinLevel.GetTag()})
 	{
@@ -328,6 +361,63 @@ bool FRoomGroupJoinDestinationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Partner arrives at B's configured fallback"),
 		Test.Partner->GetActorLocation().Equals(Fallback->GetJoinFallbackLocation(), 0.1f));
 	TestEqual(TEXT("Only the valid fallback invokes teleport"), Test.TeleportCalls, 1);
+	TestTrue(TEXT("Successful fallback protects the moved Partner"), Test.Partner->GetOutlierAbilitySystemComponent()
+		->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomGroupJoinConditionsTest, "Outlier.Room.GroupJoin.SuitBarrierAndExactRoom",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomGroupJoinConditionsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UClass* Class = LoadJoinShooter();
+	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
+	for (bool bSuitAcquired : {false, true})
+	{
+		for (bool bHasBarrier : {false, true})
+		{
+			for (FGameplayTag OtherRoom : {JoinA.GetTag(), JoinC.GetTag(), JoinOutside.GetTag()})
+			{
+				for (bool bMoveShooter : {false, true})
+				{
+					AddInfo(FString::Printf(TEXT("Suit=%d Barrier=%d OtherRoom=%s MoveShooter=%d"),
+						bSuitAcquired, bHasBarrier, *OtherRoom.ToString(), bMoveShooter));
+					FGroupJoinWorld Fixture(Class);
+					Fixture.PairState->SetAcquiredSuit(bSuitAcquired);
+					if (!bHasBarrier) Fixture.Combat->UnregisterBarrier(Fixture.Barriers[JoinA]);
+					AFirstPersonCharacter* Anchor = bMoveShooter
+						? static_cast<AFirstPersonCharacter*>(Fixture.Partner) : Fixture.Shooter;
+					AFirstPersonCharacter* Other = bMoveShooter
+						? static_cast<AFirstPersonCharacter*>(Fixture.Shooter) : Fixture.Partner;
+					Fixture.Place(Anchor, JoinA, FVector(-150, 0, 0));
+					Fixture.Place(Other, OtherRoom, FVector(150, 0, 0));
+					const FVector AnchorBefore = Anchor->GetActorLocation();
+					const FVector OtherBefore = Other->GetActorLocation();
+					const bool bShouldMove = bSuitAcquired && bHasBarrier && OtherRoom != JoinA;
+					TestFalse(TEXT("Barrier starts with collision disabled"), Fixture.Barriers[JoinA]->IsBlocked());
+					TestTrue(TEXT("Skipping movement never stalls valid initial combat"),
+						Fixture.Combat->TryStartInitialDetectionForPlayers(JoinA));
+					TestEqual(TEXT("Only all three conditions permit teleport"), Fixture.TeleportCalls, bShouldMove ? 1 : 0);
+					TestTrue(TEXT("Anchor remains in place"), Anchor->GetActorLocation().Equals(AnchorBefore));
+					UOutlierAbilitySystemComponent* OtherASC = bMoveShooter
+						? Fixture.Shooter->GetOutlierAbilitySystemComponent() : Fixture.Partner->GetOutlierAbilitySystemComponent();
+					TestEqual(TEXT("Only a moved player receives join immunity"),
+						OtherASC->HasMatchingGameplayTag(
+							OutlierGameplayTags::State::DamageImmune()), bShouldMove);
+					if (bShouldMove)
+					{
+						TestEqual(TEXT("Moving player reaches the exact requested room"), Other->GetCurrentRoomTag(), JoinA.GetTag());
+					}
+					else
+					{
+						TestTrue(TEXT("Skipped player keeps the original position"), Other->GetActorLocation().Equals(OtherBefore));
+					}
+				}
+			}
+		}
+	}
 	return true;
 }
 
@@ -400,9 +490,9 @@ bool FRoomGroupJoinNarrowSpaceTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	// 원래 실패해야 하는 배치에서는 상태 복구뿐 아니라 일반 로그의 원인 분류도 검증한다.
-	AddExpectedMessagePlain(TEXT("NearbyRejected=[WorldBlockingCollision:8] FallbackFailure=NoSafeDestination FallbackRejected=[WorldBlockingCollision:1]"),
+	AddExpectedMessagePlain(TEXT("NearbyRejected=[WorldBlockingCollision:8] FallbackFailure=NoSafeDestination"),
 		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2);
-	AddExpectedMessagePlain(TEXT("NearbyRejected=[CapsuleOutsideRoom:8] FallbackFailure=NoSafeDestination FallbackRejected=[NoFallbackConfigured]"),
+	AddExpectedMessagePlain(TEXT("NearbyRejected=[CapsuleOutsideRoom:8] FallbackFailure=NoSafeDestination"),
 		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2);
 	UClass* Class = LoadJoinShooter();
 	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
@@ -618,6 +708,7 @@ bool FRoomGroupJoinTagScenarioTest::RunTest(const FString& Parameters)
 		FGroupJoinWorld Fixture(Class);
 		Fixture.AddRoom(JoinLegacy, 18000);
 		Fixture.AddRoom(JoinLegacyOther, 21000);
+		Fixture.AddBarrier(JoinLegacy);
 		AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>();
 		Enemy->GetRoomTagComp()->AssignDefaultRoomTag(JoinLegacy);
 		Fixture.Combat->RegisterPreplacedEnemy(Enemy);
@@ -723,6 +814,160 @@ bool FRoomGroupJoinOverlapScenarioTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Fresh detection succeeds after overlap is removed"), Fixture.Combat->TryStartInitialDetectionForPlayers(JoinA));
 			TestEqual(TEXT("Recovery does not teleport the already-arrived pair again"), Fixture.TeleportCalls, 1);
 		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomGroupJoinProtectionTest, "Outlier.Room.GroupJoin.Protection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomGroupJoinProtectionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UClass* Class = LoadJoinShooter();
+	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
+	FGroupJoinWorld Fixture(Class);
+	const FGameplayTag Immune = OutlierGameplayTags::State::DamageImmune();
+	for (bool bMoveShooter : {false, true})
+	{
+		for (float Duration : {0.0f, 0.8f, 2.0f})
+		{
+			Fixture.Definition->ForcedJoinInvulnerabilitySeconds = Duration;
+			AFirstPersonCharacter* Anchor;
+			AFirstPersonCharacter* Moving;
+			Fixture.PlaceJoinPair(bMoveShooter, Anchor, Moving);
+			UOutlierAbilitySystemComponent* MovedASC = bMoveShooter
+				? Fixture.Shooter->GetOutlierAbilitySystemComponent() : Fixture.Partner->GetOutlierAbilitySystemComponent();
+			UOutlierAbilitySystemComponent* AnchorASC = bMoveShooter
+				? Fixture.Partner->GetOutlierAbilitySystemComponent() : Fixture.Shooter->GetOutlierAbilitySystemComponent();
+			bool bSawStart = false;
+			Fixture.Combat->CombatEventObserverForTesting = [&](FGameplayTag, ERoomCombatEvent Event, int32)
+			{
+				if (Event != ERoomCombatEvent::SequenceStarted) return;
+				bSawStart = true;
+				TestEqual(TEXT("Protection is decided before combat starts"), MovedASC->HasMatchingGameplayTag(Immune), Duration > 0);
+				TestFalse(TEXT("Anchor is never protected"), AnchorASC->HasMatchingGameplayTag(Immune));
+			};
+			TestTrue(TEXT("Join starts combat"), Fixture.Combat->TryStartInitialDetectionForPlayers(JoinA));
+			TestTrue(TEXT("Combat start was observed"), bSawStart);
+			Fixture.Combat->CombatEventObserverForTesting = nullptr;
+			TestEqual(TEXT("Exactly one teleport"), Fixture.TeleportCalls, 1);
+			if (Duration > 0)
+			{
+				TestFalse(TEXT("Protection rejects gameplay damage"), MovedASC->ApplyDamageToSelf(
+					1.0f, nullptr, Anchor, OutlierGameplayTags::Damage::Weapon()));
+				Fixture.AdvanceFrames(4);
+				TestTrue(TEXT("Protection remains before expiry"), MovedASC->HasMatchingGameplayTag(Immune));
+				Fixture.Definition->ForcedJoinInvulnerabilitySeconds = 30.0f;
+				TestTrue(TEXT("Repeated detection is accepted without another join"),
+					Fixture.Combat->TryStartInitialDetectionForPlayers(JoinA));
+				Fixture.AdvanceFrames(FMath::CeilToInt(Duration * 10.0f) - 2);
+				TestFalse(TEXT("Duplicate detection and edited settings do not extend protection"),
+					MovedASC->HasMatchingGameplayTag(Immune));
+				TestTrue(TEXT("Damage resumes after expiry"), MovedASC->ApplyDamageToSelf(
+					1.0f, nullptr, Anchor, OutlierGameplayTags::Damage::Weapon()));
+			}
+			else
+			{
+				TestFalse(TEXT("Zero duration adds no immunity"), MovedASC->HasMatchingGameplayTag(Immune));
+			}
+			TestEqual(TEXT("Repeated detection never moves again"), Fixture.TeleportCalls, 1);
+			Fixture.Reset();
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomGroupJoinProtectionLifecycleTest, "Outlier.Room.GroupJoin.ProtectionLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomGroupJoinProtectionLifecycleTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UClass* Class = LoadJoinShooter();
+	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
+	const FGameplayTag Immune = OutlierGameplayTags::State::DamageImmune();
+	// 각 정리 사유를 새 월드에서 검사해 사망/Pawn 교체가 다음 시나리오에 남지 않게 한다.
+	for (int32 Scenario = 0; Scenario < 9; ++Scenario)
+	{
+		FGroupJoinWorld Fixture(Class);
+		AFirstPersonCharacter* Anchor;
+		AFirstPersonCharacter* Moving;
+		Fixture.PlaceJoinPair(false, Anchor, Moving);
+		UOutlierAbilitySystemComponent* ASC = Fixture.Partner->GetOutlierAbilitySystemComponent();
+		const FActiveGameplayEffectHandle OtherImmunity = ASC->ApplyDamageImmuneStateToSelf();
+		TestTrue(TEXT("Join with unrelated protection succeeds"), Fixture.Combat->TryStartInitialDetectionForPlayers(JoinA));
+		switch (Scenario)
+		{
+		case 0: Fixture.Combat->ResetRuntimeCombatState(); break;
+		case 1: Fixture.Combat->UnregisterRoom(Fixture.Rooms[JoinA]); break;
+		case 2: Fixture.Combat->UnregisterRoom(Fixture.Rooms[JoinB]); break;
+		case 3: ASC->ApplyDeadStateToSelf(); break;
+		case 4:
+		{
+			AOutlierPlayerState* State = CastChecked<AOutlierPlayerState>(Fixture.World->GetGameState()->PlayerArray.Last());
+			State->SetPartnerCharacter(nullptr);
+			break;
+		}
+		case 5: static_cast<APawn*>(Moving)->UnPossessed(); break;
+		case 6:
+			// 마지막 실제 적 사망으로 최초 발각 차수를 완료한다.
+			Fixture.Combat->NotifyEnemyDefeated(Fixture.Enemies[0]);
+			break;
+		case 7:
+			Fixture.AdvanceFrames(24);
+			break;
+		case 8: Moving->Destroy(); break;
+		}
+		TestNotNull(TEXT("Cleanup preserves the unrelated effect"), ASC->GetActiveGameplayEffect(OtherImmunity));
+		ASC->RemoveActiveEffectFromSelf(OtherImmunity);
+		TestFalse(TEXT("Only the unrelated immunity remained after cleanup"), ASC->HasMatchingGameplayTag(Immune));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomGroupJoinProtectionReentryTest, "Outlier.Room.GroupJoin.ProtectionReentry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomGroupJoinProtectionReentryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UClass* Class = LoadJoinShooter();
+	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
+	const FGameplayTag Immune = OutlierGameplayTags::State::DamageImmune();
+	for (int32 Scenario = 0; Scenario < 3; ++Scenario)
+	{
+		FGroupJoinWorld Fixture(Class);
+		AFirstPersonCharacter* Anchor;
+		AFirstPersonCharacter* Moving;
+		Fixture.PlaceJoinPair(false, Anchor, Moving);
+		UOutlierAbilitySystemComponent* ASC = Fixture.Partner->GetOutlierAbilitySystemComponent();
+		FDelegateHandle Handle;
+		if (Scenario < 2)
+		{
+			// 아직 효과 핸들을 돌려받기 전의 태그 알림에서도 시도가 무효화될 수 있다.
+			Handle = ASC->RegisterGameplayTagEvent(Immune, EGameplayTagEventType::NewOrRemoved)
+				.AddLambda([&Fixture, Scenario](FGameplayTag, int32 Count)
+				{
+					if (Count == 0) return;
+					if (Scenario == 0) Fixture.Combat->ResetRuntimeCombatState();
+					else CastChecked<AOutlierPlayerState>(Fixture.World->GetGameState()->PlayerArray.Last())
+						->SetPartnerCharacter(nullptr);
+				});
+		}
+		else
+		{
+			Fixture.Combat->CombatEventObserverForTesting = [&Fixture](FGameplayTag, ERoomCombatEvent Event, int32)
+			{
+				if (Event == ERoomCombatEvent::SequenceStarted) Fixture.Combat->ResetRuntimeCombatState();
+			};
+		}
+		TestFalse(TEXT("Invalidated protection cannot commit combat"),
+			Fixture.Combat->TryStartInitialDetectionForPlayers(JoinA));
+		ASC->RegisterGameplayTagEvent(Immune, EGameplayTagEventType::NewOrRemoved).Remove(Handle);
+		Fixture.Combat->CombatEventObserverForTesting = nullptr;
+		TestFalse(TEXT("Interrupted application leaves no immunity"), ASC->HasMatchingGameplayTag(Immune));
+		TestFalse(TEXT("Interrupted application leaves no barrier"), Fixture.Combat->IsExitBlocked(JoinA));
 	}
 	return true;
 }

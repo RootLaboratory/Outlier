@@ -6,6 +6,7 @@
 #include "Engine/DataTable.h"
 #include "Explosion/ExplosionTypes.h"
 #include "Damage/OutlierDamageReceiver.h"
+#include "Curves/CurveFloat.h"
 #include "ExplosiveProp.generated.h"
 
 class ASelfDestructDrone;
@@ -17,6 +18,7 @@ class USoundBase;
 class UStaticMeshComponent;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
+class UMaterialInstanceDynamic;
 struct FOnAttributeChangeData;
 
 UCLASS()
@@ -39,6 +41,10 @@ public:
 
 	// 자폭 드론이 Deferred Spawn을 완료하기 전에 1P/3P가 공유할 소켓 이름을 전달한다.
 	void InitializeMountedSocket(FName InMountedSocketName);
+	virtual void OnRep_Owner() override;
+	// 커브는 원본 사운드 시각, 시작 시 소등은 차징 경과 시각을 사용한다.
+	void ApplyChargeEmissive(float SoundTime, float ChargeElapsedTime);
+	void ResetChargeEmissive();
 
 	// 외부 SaveGame 복구 시스템이 서버에서 호출할 초기 상태 복구 함수다.
 	UFUNCTION(BlueprintCallable, Category = "Explosive Prop")
@@ -55,6 +61,14 @@ public:
 	bool IsMountedOnSelfDestructDrone() const;
 
 protected:
+	UPROPERTY(EditDefaultsOnly, Category = "Explosive Prop|Charge")
+	FRuntimeFloatCurve ChargeEmissiveCurve;
+	UPROPERTY(EditDefaultsOnly, Category = "Explosive Prop|Charge", meta = (ClampMin = "0"))
+	int32 EmissiveMaterialIndex = 0;
+	UPROPERTY(EditDefaultsOnly, Category = "Explosive Prop|Charge")
+	FName EmissiveParameterName = TEXT("EmissiveStrength");
+	UPROPERTY(EditDefaultsOnly, Category = "Explosive Prop|Charge", meta = (ClampMin = "0.0"))
+	float PeakEmissiveStrength = 30.0f;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Explosive Prop")
 	TObjectPtr<USceneComponent> SceneRoot;
 
@@ -101,7 +115,15 @@ protected:
 	virtual void HandleExplosionProcessed();
 
 private:
+	friend class FEnemyChargeEmissiveMaterialTest;
 	void SetupMountedPresentation();
+	void InitializeChargeEmissive();
+	UFUNCTION()
+	void OnRep_MountedSocketName();
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> ChargeEmissiveMID;
+	float IdleEmissiveStrength = 0.0f;
+	bool bChargeMaterialInitialized = false;
 
 	// 배치 폭발물의 HP와 피격 연출 값을 DataTable에서 읽는다.
 	bool InitializeFromDataTable();
@@ -127,7 +149,7 @@ private:
 	UPROPERTY(ReplicatedUsing = OnRep_Exploded)
 	bool bExploded = false;
 
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing = OnRep_MountedSocketName)
 	FName MountedSocketName = NAME_None;
 
 	TOptional<FExplosivePropRow> RuntimePropRow;

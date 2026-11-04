@@ -75,6 +75,7 @@ AVECDrone::AVECDrone()
 	AlertLightSettings.bPulseEnabled = true;
 	AlertLightSettings.MinIntensity = 0.0f;
 	CombatLightSettings.LightColor = FLinearColor::Red;
+	PossessedLightSettings.LightColor = FLinearColor(0.0f, 1.0f, 1.0f);
 
 	FirstPersonCameraRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person Camera Root"));
 	FirstPersonCameraRoot->SetupAttachment(GetCapsuleComponent());
@@ -184,7 +185,7 @@ void AVECDrone::RefreshStateSpotLight()
 	// 서버는 상태만 결정하고 Dedicated Server에서는 조명 타이머를 만들지 않는다.
 	if (!bStateLightReady || GetNetMode() == NM_DedicatedServer || !GetWorld()
 		|| !IsValid(StateSpotLight) || !bUseStateSpotLight || IsActorBeingDestroyed()
-		|| bDeathCleanupPerformed || IsDead() || GetCurrentHealth() <= 0.0f
+		|| bDeathCleanupPerformed || IsDead() || GetCurrentHealth() <= 0.0f || HasHackEffectEndedWithDeath()
 		|| HasActiveStunTag() || GetCombatState() == EEnemyCombatState::Stun
 		|| (IsPoolManaged() && GetEnemyPoolState() != EEnemyPoolState::CombatActive))
 	{
@@ -193,9 +194,13 @@ void AVECDrone::RefreshStateSpotLight()
 	}
 
 	const EEnemyCombatState CurrentState = GetCombatState();
+	const bool bPossessed = IsEnemyPossessed();
 	const bool bSameLifetime = StateLightGeneration == GetPoolGameplayGeneration()
 		&& StateLightLease == GetPoolLeaseSerial();
-	if (bStateLightApplied && bSameLifetime && AppliedStateLightState == CurrentState
+	// 빙의 표현 중에는 AI 전투 상태가 바뀌어도 같은 설정이다. 반복을 켠 BP도 위상을 유지한다.
+	const bool bSamePresentation = bAppliedStateLightPossessed == bPossessed
+		&& (bPossessed || AppliedStateLightState == CurrentState);
+	if (bStateLightApplied && bSameLifetime && bSamePresentation
 		&& (!ActiveStateLightSettings.bPulseEnabled
 			|| GetWorldTimerManager().IsTimerActive(StateLightPulseTimerHandle)))
 	{
@@ -203,24 +208,28 @@ void AVECDrone::RefreshStateSpotLight()
 		return;
 	}
 
-	const FDroneStateLightSettings* Settings = nullptr;
-	switch (CurrentState)
+	const FDroneStateLightSettings* Settings = &PossessedLightSettings;
+	if (!bPossessed)
 	{
-	case EEnemyCombatState::NonCombat:
-		Settings = &NonCombatLightSettings;
-		break;
-	case EEnemyCombatState::Alert:
-		Settings = &AlertLightSettings;
-		break;
-	case EEnemyCombatState::Combat:
-		Settings = &CombatLightSettings;
-		break;
-	default:
-		ResetStateSpotLight();
-		return;
+		switch (CurrentState)
+		{
+		case EEnemyCombatState::NonCombat:
+			Settings = &NonCombatLightSettings;
+			break;
+		case EEnemyCombatState::Alert:
+			Settings = &AlertLightSettings;
+			break;
+		case EEnemyCombatState::Combat:
+			Settings = &CombatLightSettings;
+			break;
+		default:
+			ResetStateSpotLight();
+			return;
+		}
 	}
 
 	AppliedStateLightState = CurrentState;
+	bAppliedStateLightPossessed = bPossessed;
 	StateLightGeneration = GetPoolGameplayGeneration();
 	StateLightLease = GetPoolLeaseSerial();
 	bStateLightApplied = true;
@@ -295,6 +304,7 @@ void AVECDrone::ResetStateSpotLight()
 {
 	StopStateLightPulse();
 	bStateLightApplied = false;
+	bAppliedStateLightPossessed = false;
 	StateLightGeneration = INDEX_NONE;
 	StateLightLease = INDEX_NONE;
 	if (IsValid(StateSpotLight))

@@ -643,4 +643,66 @@ bool FEnemyCombatAssetsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyRoomTrackingAssetsTest, "Outlier.Enemy.RoomTracking.StateBindings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyRoomTrackingAssetsTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Type : {TEXT("Gun"), TEXT("Melee")}) { Names.Add(Type); Commands.Add(Type); }
+}
+
+bool FEnemyRoomTrackingAssetsTest::RunTest(const FString& Parameters)
+{
+	const UClass* Class = LoadClass<AEnemyBase>(nullptr, Parameters == TEXT("Melee")
+		? TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Explosion.BP_VECDrone_Explosion_C")
+		: TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	if (!TestNotNull(TEXT("Shared combat BP loads"), Class)) return false;
+	const AEnemyBase* Enemy = Class->GetDefaultObject<AEnemyBase>();
+	const auto* Component = Cast<UEnemyStateTreeComponent>(Enemy->GetStateTreeComponent());
+	const FStructProperty* Battle = FindFProperty<FStructProperty>(Class, TEXT("BattleStateTreeReference"));
+	if (!TestNotNull(TEXT("Shared combat component exists"), Component)
+		|| !TestNotNull(TEXT("Shared combat battle reference exists"), Battle)) return false;
+	TArray<const UStateTree*> Trees;
+	const UStateTree* Common = Component->GetConfiguredStateTreeReference().GetStateTree();
+	const UStateTree* BattleTree = Battle->ContainerPtrToValuePtr<FStateTreeReference>(Enemy)->GetStateTree();
+	if (!TestNotNull(TEXT("Shared combat common tree exists"), Common)
+		|| !TestNotNull(TEXT("Shared combat battle tree exists"), BattleTree)) return false;
+	Trees.Add(Common);
+	EnemyCombatTesting::CollectTrees(BattleTree, *Component, Trees);
+	const FGameplayTag TrackingChanged = FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Perception.TrackingChanged"));
+	int32 TrackingInputs = 0;
+	for (const UStateTree* Tree : Trees)
+	{
+		if (!TestTrue(Tree->GetPathName() + TEXT(" shared combat tree is compiled"), Tree->IsReadyToRun())) continue;
+		// 에디터 그래프만 검사하면 오래된 컴파일 데이터가 남은 경우를 놓친다. 실제 실행 바인딩도 검사한다.
+		for (int32 Index = 0; Index < Tree->GetNodes().Num(); ++Index)
+		{
+			const auto* Condition = Tree->GetNode(Index).GetPtr<const FStateTreeCompareBoolCondition>();
+			if (!Condition) continue;
+			for (const FName Input : {FName(TEXT("bLeft")), FName(TEXT("bRight"))})
+			{
+				const auto* Copy = FindCombatCopy(*Tree, *Condition, Input, false);
+				if (!Copy || !Copy->SourceLeafProperty) continue;
+				const FName Source = Copy->SourceLeafProperty->GetFName();
+				TestTrue(Tree->GetPathName() + TEXT(" combat selection does not depend on direct sight"), Source != TEXT("bPlayerCurrentlyVisible"));
+				TrackingInputs += Source == TEXT("bHasTrackableTarget");
+			}
+		}
+		for (const FCompactStateTreeState& State : Tree->GetStates())
+		{
+			for (int32 Index = 0; Index < State.TransitionsNum; ++Index)
+			{
+				const auto* Transition = Tree->GetTransitionFromIndex(FStateTreeIndex16(State.TransitionsBegin + Index));
+				if (!Transition || !Transition->bTransitionEnabled
+					|| !EnumHasAnyFlags(Transition->Trigger, EStateTreeTransitionTrigger::OnEvent)) continue;
+				// 중립 갱신은 Sync만 깨운다. 상위 Perception 태그 전이도 같은 대상의 재진입을 만들 수 있다.
+				TestFalse(EnemyCombatTesting::StatePath(*Tree, &State) + TEXT(" neutral source update cannot trigger a transition"),
+					Transition->RequiredEvent.Tag.IsValid() && TrackingChanged.MatchesTag(Transition->RequiredEvent.Tag));
+			}
+		}
+	}
+	TestTrue(TEXT("Configured compiled combat trees actually consume trackable-target conditions"), TrackingInputs > 0);
+	return !HasAnyErrors();
+}
+
 #endif

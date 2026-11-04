@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShooterPlayerController.h"
+#include "InputKeyEventArgs.h"
 
 #include "Blueprint/UserWidget.h"
 #include "GameFramework/PlayerStart.h"
@@ -26,6 +27,16 @@ void AShooterPlayerController::FlushPressedKeys()
 	// 뷰포트 포커스 상실/입력 초기화는 일반 키 해제와 달리 Toggle과 Aim 예약을 모두 폐기한다.
 	if (auto* Shooter = Cast<AShooterCharacter>(GetPawn())) Shooter->ResetActionInput();
 	Super::FlushPressedKeys();
+}
+
+bool AShooterPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+	// Enhanced Input의 컨텍스트 복구로 생긴 Started와 실제 키 재입력을 구분한다.
+	if (Params.Event == IE_Pressed)
+	{
+		if (auto* Shooter = Cast<AShooterCharacter>(GetPawn())) Shooter->NotifySprintKeyPressed(Params.Key);
+	}
+	return Super::InputKey(Params);
 }
 
 AShooterPlayerController::AShooterPlayerController()

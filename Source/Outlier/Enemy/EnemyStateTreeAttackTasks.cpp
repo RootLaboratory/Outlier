@@ -17,18 +17,10 @@ float SelectDuration(float MinDuration, float MaxDuration)
 
 AActor* ResolveAttackTarget(const FEnemyAttackTargetTaskInstanceData& InstanceData)
 {
-	// StateTree에서 명시적으로 바인딩한 Actor가 있으면 그 대상을 우선한다.
-	if (IsValid(InstanceData.TargetActor))
-	{
-		return InstanceData.TargetActor;
-	}
-
-	// 바인딩이 없으면 현재 Sight 결과를 직접 조회해 Global Task의 이벤트 갱신 시점에 의존하지 않는다.
 	const AEnemyBase* Enemy = InstanceData.Enemy;
-	const AEnemyAIController* EnemyController = Enemy
-		? Cast<AEnemyAIController>(Enemy->GetController())
-		: nullptr;
-	return EnemyController ? EnemyController->GetPreferredVisibleTarget() : nullptr;
+	AActor* TrackedTarget = Enemy ? Enemy->GetTrackedTarget() : nullptr;
+	// 오래된 바인딩이 다른 대상을 가리키면 현재 추적 대상을 우회하지 않는다.
+	return !InstanceData.TargetActor || InstanceData.TargetActor == TrackedTarget ? TrackedTarget : nullptr;
 }
 
 bool ShouldWaitForCombatDecision(
@@ -38,7 +30,7 @@ bool ShouldWaitForCombatDecision(
 		&& InstanceData.Enemy->HasAuthority()
 		&& InstanceData.Enemy->GetCombatState() == EEnemyCombatState::Combat
 		&& InstanceData.bRequireVisibleTarget
-		&& !InstanceData.Enemy->IsPlayerCurrentlyVisible();
+		&& !InstanceData.Enemy->HasTrackableTarget();
 }
 
 void BeginCombatDecisionWait(FEnemyAttackTargetTaskInstanceData& InstanceData)
@@ -91,14 +83,15 @@ EStateTreeRunStatus FEnemyAttackTargetTask::EnterState(
 		return EStateTreeRunStatus::Failed;
 	}
 
-	if (!InstanceData.Enemy->GetCurrentWeapon()->CanAttack())
+	if (!InstanceData.Enemy->CanAttackTrackedTarget(TargetActor)
+		|| !InstanceData.Enemy->GetCurrentWeapon()->CanAttack())
 	{
 		return EStateTreeRunStatus::Running;
 	}
 
 	if (!InstanceData.Enemy->StartAttackTarget(TargetActor))
 	{
-		return EStateTreeRunStatus::Failed;
+		return EStateTreeRunStatus::Running;
 	}
 
 	InstanceData.bAttackStarted = true;
@@ -149,6 +142,14 @@ EStateTreeRunStatus FEnemyAttackTargetTask::Tick(
 		InstanceData.CombatDecisionRefreshElapsed = 0.0f;
 	}
 
+	// 이동 완료와 무관하게 사거리/사선을 검사한다. 차단 중에는 버스트 진행과 전조를 초기화하지 않는다.
+	if (!InstanceData.Enemy->CanAttackTrackedTarget(TargetActor))
+	{
+		if (InstanceData.bAttackStarted) InstanceData.Enemy->PauseTargetAttack();
+		InstanceData.bAttackStarted = false;
+		return EStateTreeRunStatus::Running;
+	}
+
 	if (!InstanceData.bAttackStarted)
 	{
 		if (!InstanceData.Enemy->GetCurrentWeapon()->CanAttack())
@@ -158,11 +159,10 @@ EStateTreeRunStatus FEnemyAttackTargetTask::Tick(
 
 		if (!InstanceData.Enemy->StartAttackTarget(TargetActor))
 		{
-			return EStateTreeRunStatus::Failed;
+			return EStateTreeRunStatus::Running;
 		}
 
 		InstanceData.bAttackStarted = true;
-		InstanceData.ElapsedTime = 0.0f;
 		return EStateTreeRunStatus::Running;
 	}
 
@@ -385,6 +385,10 @@ EStateTreeRunStatus FEnemyAttackPhaseWaitTask::EnterState(
 		return EStateTreeRunStatus::Failed;
 	}
 
+	// 감지 출력만 바뀐 AI 재선택은 진행 중인 전조/회복을 이어간다. 빙의 입력 소비는 기존 흐름을 유지한다.
+	if (!InstanceData.Enemy->IsEnemyPossessed() && Transition.ChangeType == EStateTreeStateChangeType::Sustained)
+		return EStateTreeRunStatus::Running;
+
 	if (InstanceData.bConsumePossessedAttackRequest
 		&& !InstanceData.Enemy->ConsumePossessedAttackRequest())
 	{
@@ -395,8 +399,25 @@ EStateTreeRunStatus FEnemyAttackPhaseWaitTask::EnterState(
 	InstanceData.SelectedDuration = SelectDuration(
 		InstanceData.MinDuration,
 		InstanceData.MaxDuration);
+	EEnemyAttackPhase PresentationPhase = InstanceData.Phase;
+	if (!InstanceData.Enemy->IsEnemyPossessed())
+	{
+		if (InstanceData.Phase == EEnemyAttackPhase::Telegraph)
+		{
+			// 수색 중 같은 대상을 다시 찾으면 새 전조 대신 남아 있던 회복 시간만 기다린다.
+			if (InstanceData.Enemy->ConsumeTargetAttackResume())
+			{
+				InstanceData.SelectedDuration = InstanceData.Enemy->GetTargetAttackRecoveryRemaining();
+				PresentationPhase = EEnemyAttackPhase::Recover;
+				if (InstanceData.SelectedDuration <= 0.0f) return EStateTreeRunStatus::Succeeded;
+			}
+			InstanceData.Enemy->RememberTargetAttackPreparation();
+		}
+		else if (InstanceData.Phase == EEnemyAttackPhase::Recover)
+			InstanceData.Enemy->RememberTargetAttackRecovery(InstanceData.SelectedDuration);
+	}
 	// 서버가 단계만 확정하고 복제하며, 실제 전조·회복 연출은 Enemy BP가 선택한다.
-	InstanceData.Enemy->SetAttackPhase(InstanceData.Phase);
+	InstanceData.Enemy->SetAttackPhase(PresentationPhase);
 	return InstanceData.SelectedDuration <= 0.0f
 		? EStateTreeRunStatus::Succeeded
 		: EStateTreeRunStatus::Running;
@@ -426,6 +447,8 @@ void FEnemyAttackPhaseWaitTask::ExitState(
 	const FStateTreeTransitionResult& Transition) const
 {
 	const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	if (InstanceData.Enemy && !InstanceData.Enemy->IsEnemyPossessed()
+		&& Transition.ChangeType == EStateTreeStateChangeType::Sustained) return;
 	if (InstanceData.Enemy
 		&& InstanceData.Phase == EEnemyAttackPhase::Recover
 		&& InstanceData.Enemy->GetAttackPhase() == EEnemyAttackPhase::Recover

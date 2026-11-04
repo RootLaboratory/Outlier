@@ -4,6 +4,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/CharacterMovementReplication.h"
 #include "Curves/CurveFloat.h"
+#include "Settings/OutlierInputUserSettings.h"
 #include "ShooterCharacterMovementComponent.generated.h"
 
 struct FShooterCoyoteState
@@ -45,6 +46,9 @@ struct FShooterMovementInput
 	uint32 ActionRequest = 0;
 	int32 AimSwitchId = 0;
 	bool bSprint = false;
+	// 이 이동을 수집할 때의 유지 정책이다. 서버/재생은 현재 사용자 설정을 조회하지 않는다.
+	bool bHoldSprint = false;
+	bool bFire = false;
 	bool bAim = false;
 	bool bCrouch = false;
 	bool bSprintAtCrouch = false;
@@ -86,8 +90,10 @@ struct FShooterSlideSnapshot
 	float Duration = 0.0f;
 	uint8 EndReason = 0;
 	bool bActive = false;
-	bool bSprintHeld = false; // 기존 패킷 필드명 유지. 키 홀드가 아닌 Sprint Toggle 결과다.
+	bool bSprintHeld = false; // 기존 패킷 필드명 유지. 방식에 따라 해석한 Sprint 결과 의도다.
+	bool bHoldSprint = false;
 	bool bAimHeld = false;
+	bool bFireHeld = false;
 	bool bCrouchHeld = false;
 	bool bCrouched = false;
 	void Serialize(FArchive& Ar);
@@ -112,6 +118,8 @@ struct FShooterAudioMoveData : FCharacterNetworkMoveData
 	uint32 PredictedSlideRequest = 0;
 	bool bPredictedSliding = false;
 	bool bPredictedSprintHeld = false;
+	bool bPredictedHoldSprint = false;
+	bool bPredictedFireHeld = false;
 	bool bPredictedAimHeld = false;
 	bool bPredictedCrouchHeld = false;
 	bool bPredictedCrouched = false;
@@ -143,6 +151,7 @@ class OUTLIER_API UShooterCharacterMovementComponent : public UCharacterMovement
 	friend class FOutlierMovementAudioPredictionTest;
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
+	friend class FShooterSprintInputModeTest;
 	friend class UShooterMovementComponent;
 	friend struct FShooterMoveResponse;
 	friend class FShooterSlidePredictionTest;
@@ -160,8 +169,16 @@ public:
 	FVector GetSlideDirection() const { return SlideDirection; }
 	bool QueueMovementInput(EShooterMovementInput Input);
 	uint32 RecordActionInput(bool bAim);
+	uint32 RecordFireInput(bool bFire);
 	void CancelActionInput(bool bCancelSprint, bool bCancelAim);
-	bool ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId = 0);
+	bool ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId = 0, bool bHoldSprint = false, bool bFire = false);
+	void SetSprintInputMode(EOutlierSprintInputMode Mode);
+	void RequireFreshSprintPress();
+	void NotifyFreshSprintPress();
+	bool IsHoldSprintInput() const;
+	bool IsLiveHoldSprintInput() const { return LiveMovementInput.bHoldSprint; }
+	bool GetFireInputIntent() const { return LiveMovementInput.bFire; }
+	EOutlierSprintInputMode GetSprintInputMode() const { return SprintInputMode; }
 	uint32 GetMovementInputEpoch() const { return MovementEpoch; }
 	bool GetSprintInputIntent() const { return LiveMovementInput.bSprint; }
 	uint32 GetActionInputRequest() const { return LiveMovementInput.ActionRequest; }
@@ -222,6 +239,9 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void OnClientCorrectionReceived(FNetworkPredictionData_Client_Character& ClientData, float TimeStamp,
+		FVector NewLocation, FVector NewVelocity, UPrimitiveComponent* NewBase, FName NewBaseBoneName,
+		bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode, FVector ServerGravityDirection) override;
 	virtual void CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration) override;
 	virtual void PhysFalling(float DeltaTime, int32 Iterations) override;
 	virtual void PhysWalking(float DeltaTime, int32 Iterations) override;
@@ -232,6 +252,11 @@ protected:
 		const FVector& Delta, const FVector& SubLocation) override;
 
 private:
+	EOutlierSprintInputMode SprintInputMode = EOutlierSprintInputMode::Toggle;
+	bool bSprintKeyDown = false;
+	bool bAwaitingFreshSprintPress = false;
+	void RestoreCrouchedPosture(bool bCrouched);
+	const FShooterSlideSnapshot* PendingSlideCorrection = nullptr;
 	bool TryEvaluateSlideJumpRemainingRatio(float Progress, float& OutRatio) const;
 	// 이번 PhysFalling 구간의 평균 감속량. 충돌용 가상 CalcVelocity에서는 시간/커브 상태를 변경하지 않는다.
 	float SlideJumpIntervalDecayRate = 0.0f;

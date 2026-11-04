@@ -13,6 +13,7 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Shooter/ShooterPlayerController.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -238,7 +239,8 @@ void UShooterCombatComponent::HandleAimPressed()
 	if (!ShooterCharacter->HasAuthority())
 	{
 		ShooterCharacter->ServerSetAimState(true, Movement->GetSprintInputIntent(),
-			InputSequence, Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId());
+			InputSequence, Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId(),
+			Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent());
 	}
 
 	ApplyAimInput(true);
@@ -260,7 +262,7 @@ void UShooterCombatComponent::StartAimInternal()
 
 	if (ShooterCharacter->IsSprinting())
 	{
-		ShooterCharacter->StopSprintInternal();
+		ShooterCharacter->MovementComponent->SuspendSprintForCombat();
 		ShooterCharacter->RefreshMovementState();
 	}
 
@@ -327,7 +329,8 @@ void UShooterCombatComponent::HandleAimReleased()
 	if (!ShooterCharacter->HasAuthority())
 	{
 		ShooterCharacter->ServerSetAimState(false, Movement->GetSprintInputIntent(),
-			InputSequence, Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId());
+			InputSequence, Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId(),
+			Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent());
 	}
 
 	ApplyAimInput(false);
@@ -351,10 +354,10 @@ void UShooterCombatComponent::ApplyAimInput(bool bNewWantsToAim)
 	}
 
 	bWantsToAim = true;
-	// 공중/교체 중에도 Aim 의도는 Sprint를 취소한다. 실제 ADS의 허용 여부와 분리한다.
+	// Aim은 실제 Sprint를 중지한다. Toggle은 해제하고 Hold는 제한 종료 후 재개한다.
 	if (ShooterCharacter->MovementComponent)
 	{
-		ShooterCharacter->MovementComponent->SetSprintIntent(false);
+		ShooterCharacter->MovementComponent->SuspendSprintForCombat();
 	}
 	ShooterCharacter->RefreshMovementState();
 	RestoreAimIfRequested();
@@ -377,6 +380,32 @@ bool UShooterCombatComponent::ShouldDelayFireForSprintExit(const AShooterCharact
 		&& FirstPersonAnimInstance->GetViewModelSprintAlpha() > SprintFireAllowedAlpha;
 }
 
+void UShooterCombatComponent::UpdateFireInput(bool bHeld)
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	// 원격 서버의 무순번 Attack RPC는 최신 이동 입력의 Fire 의도를 덮지 않는다.
+	// 원격 입력은 ApplyActionInput의 공통 순번 검증을 통과한 값만 적용한다.
+	if (!Shooter || !Shooter->IsLocallyControlled()) return;
+	const bool bChanged = bFireInputHeld != bHeld;
+	bFireInputHeld = bHeld;
+	if (!bChanged) return;
+	auto* Input = CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
+	const uint32 Request = Input->RecordFireInput(bHeld);
+	if (!Shooter->HasAuthority())
+	{
+		// 발사 대기는 소유자의 무기 복귀 연출을 기다린다. 그동안 서버도 Hold 의도를 지우지 않고 중지한다.
+		Shooter->ServerSetAimState(Shooter->WantsToAim(), Input->GetSprintInputIntent(), Request,
+			Input->GetMovementInputEpoch(), Input->GetAimInputSwitchId(), Input->IsLiveHoldSprintInput(), bHeld);
+	}
+}
+
+bool UShooterCombatComponent::IsSprintBlockedByAttack() const
+{
+	const AShooterCharacter* Shooter = GetShooterCharacter();
+	return bFireInputHeld || bWantsToFire || bPendingSprintExitFire || bIsMeleeAttacking
+		|| (Shooter && Shooter->CurrentWeapon && Shooter->CurrentWeapon->IsAttacking());
+}
+
 void UShooterCombatComponent::QueueSprintExitFire(AShooterCharacter& ShooterCharacter)
 {
 	bPendingSprintExitFire = true;
@@ -384,8 +413,9 @@ void UShooterCombatComponent::QueueSprintExitFire(AShooterCharacter& ShooterChar
 
 	if (ShooterCharacter.IsSprinting())
 	{
-		ShooterCharacter.StopSprintInternal();
-		if (!ShooterCharacter.HasAuthority())
+		ShooterCharacter.MovementComponent->SuspendSprintForCombat();
+		const auto* Input = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter.GetCharacterMovement());
+		if (!ShooterCharacter.HasAuthority() && !Input->IsLiveHoldSprintInput())
 		{
 			const auto* Movement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter.GetCharacterMovement());
 			// 발사 대기로 취소한 순번을 함께 보낸다. 늦은 취소 RPC가 이후 Toggle ON을 덮지 않는다.
@@ -447,6 +477,8 @@ void UShooterCombatComponent::TryStartAttack()
 	{
 		return;
 	}
+	if (ShooterCharacter->IsDead()) return;
+	if (ShooterCharacter->GetWeaponType() != EWeaponType::Melee) UpdateFireInput(true);
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 
@@ -475,7 +507,7 @@ void UShooterCombatComponent::TryStartAttack()
 
 	if (ShooterCharacter->IsSprinting() && ShooterCharacter->WeaponMode != EWeaponMode::Melee)
 	{
-		ShooterCharacter->StopSprintInternal();
+		ShooterCharacter->MovementComponent->SuspendSprintForCombat();
 		ShooterCharacter->RefreshMovementState();
 	}
 
@@ -525,6 +557,7 @@ void UShooterCombatComponent::TryStopAttack()
 	{
 		return;
 	}
+	UpdateFireInput(false);
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 	ClearPendingSprintExitFire();
@@ -558,6 +591,7 @@ void UShooterCombatComponent::TryStopAttack()
 	}
 
 	RefreshCombatState();
+	ShooterCharacter->RefreshMovementState();
 }
 
 void UShooterCombatComponent::CancelMeleeAttack()
@@ -585,6 +619,7 @@ void UShooterCombatComponent::HandleWeaponAttackStopped()
 	bWantsToFire = false;
 	bIsMeleeAttacking = false;
 	RefreshCombatState();
+	ShooterCharacter->RefreshMovementState();
 }
 
 void UShooterCombatComponent::HandleAutoReloadRequested()
@@ -751,7 +786,7 @@ void UShooterCombatComponent::ResolveStateConflicts()
 	if (ShooterCharacter->MovementState == EMovementState::Run
 		&& (bWantsToAim || bWantsToFire))
 	{
-		ShooterCharacter->StopSprintInternal();
+		ShooterCharacter->MovementComponent->SuspendSprintForCombat();
 		ShooterCharacter->RefreshMovementState();
 	}
 
@@ -1280,6 +1315,7 @@ void UShooterCombatComponent::HandleWeaponReuseCooldownTagChanged(
 
 void UShooterCombatComponent::ClearInputIntent()
 {
+	bFireInputHeld = false;
 	ClearPendingSprintExitFire();
 	bWantsToAim = false;
 	bWantsToFire = false;

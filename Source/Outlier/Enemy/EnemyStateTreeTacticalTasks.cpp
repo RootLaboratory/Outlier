@@ -510,15 +510,15 @@ bool IsEnvQueryTargetCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 	{
 		const FEnemySearchEpisode& Episode = Data.Enemy->GetSearchEpisode();
 		return Episode.bActive && !Episode.bLocalGuard && Episode.Serial == Data.CapturedSearchSerial
-			&& !Data.Enemy->IsPlayerCurrentlyVisible()
+			&& !Data.Enemy->IsPlayerCurrentlyVisible() && !Data.Enemy->HasTrackableTarget()
 			&& Data.Enemy->GetSharedTargetRevision() == Data.CapturedSharedRevision;
 	}
 	if (!Data.bRequireVisibleTarget)
 	{
 		return true;
 	}
-	if (!Data.Enemy->IsPlayerCurrentlyVisible() || !Data.CapturedTarget.IsValid()
-		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get()) return false;
+	if (!Data.Enemy->HasTrackableTarget() || !Data.CapturedTarget.IsValid()
+		|| Data.Enemy->GetTrackedTarget() != Data.CapturedTarget.Get()) return false;
 	const float ChangeDistance = (Data.bValidateOrbitPath || Data.bValidateRetreatPath || Data.bValidateChasePath) && Data.TargetChangeDistance <= 0.0f
 		? 200.0f : Data.TargetChangeDistance;
 	return ChangeDistance <= 0.0f
@@ -528,7 +528,7 @@ bool IsEnvQueryTargetCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 
 bool IsEnvQuerySnapshotCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 {
-	// 적 수명 -> 소유 컨트롤러 -> 초기 소속 방 -> 직접 목격 타깃 순서로 확인한다.
+	// 적 수명 -> 소유 컨트롤러 -> 초기 소속 방 -> 직접 시야 또는 유예 추적 타깃 순서로 확인한다.
 	// 앞 단계가 참조 유효성을 보장하므로 뒤 단계는 동일 참조를 다시 검색하지 않는다.
 	return IsEnvQueryEnemyCurrent(Data)
 		&& IsEnvQueryControllerCurrent(Data)
@@ -549,7 +549,7 @@ void LogEnvQuerySnapshotFailure(const FEnemyRunEnvQueryTaskInstanceData& Data, i
 	if (!IsEnvQueryEnemyCurrent(Data)) Reason = TEXT("EnemyLifetimeOrCombatStateChanged");
 	else if (!IsEnvQueryControllerCurrent(Data)) Reason = TEXT("ControllerChanged");
 	else if (!IsEnvQueryRoomCurrent(Data)) Reason = TEXT("RoomChangedOrUnavailable");
-	else if (!IsEnvQueryTargetCurrent(Data)) Reason = TEXT("SightLostTargetChangedOrMoved");
+	else if (!IsEnvQueryTargetCurrent(Data)) Reason = TEXT("TrackingLostTargetChangedOrMoved");
 	else if (Data.bRequireVisibleTarget && Data.SearchMode == EEnemySearchQueryMode::None
 		&& !EnemyFlightHeight::IsSnapshotCurrent(*Data.Enemy, Data.HeightSnapshot)) Reason = TEXT("FlightHeightSettingsChanged");
 	UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyEQSSnapshot] Enemy=%s Request=%d Reason=%s Start=%s Current=%s Target=%s CurrentTargetLocation=%s"),
@@ -576,7 +576,7 @@ void CaptureEnvQuerySnapshot(FEnemyRunEnvQueryTaskInstanceData& Data)
 	Data.MovementRooms = FEnemyMovementRoomContext();
 	if (Data.CachedRooms) Data.CachedRooms->BuildEnemyMovementRoomContext(Enemy, Data.MovementRooms);
 	Data.CapturedTarget = Data.CachedController.IsValid() && Data.bRequireVisibleTarget
-		? Data.CachedController->GetCachedVisibleTarget() : nullptr;
+		? Data.Enemy->GetTrackedTarget() : nullptr;
 	Data.SelectedTargetLocation = Data.CapturedTarget.IsValid()
 		? Data.CapturedTarget->GetActorLocation() : FVector::ZeroVector;
 	Data.SelectedTargetActor = Data.CapturedTarget.Get();
@@ -1706,7 +1706,7 @@ EStateTreeRunStatus EnterSearchSession(FEnemySearchSessionTaskInstanceData& Data
 {
 	Data.bShouldRestart = false;
 	Data.bLocalGuard = false;
-	Data.bSkipLossWait = IsValid(Data.Enemy) && Data.Enemy->HasFreshSharedTargetLocation();
+	Data.bSkipLossWait = IsValid(Data.Enemy) && (Data.Enemy->HasFreshSharedTargetLocation() || Data.Enemy->ShouldSkipTrackingLossWait());
 	if (!IsValid(Data.Enemy) || !Data.Enemy->BeginSearchEpisode()) return EStateTreeRunStatus::Failed;
 	Data.SearchCenter = Data.Enemy->GetSearchEpisode().Center;
 	LogSearchEpisode(TEXT("Begin"), *Data.Enemy);
@@ -1718,7 +1718,7 @@ EStateTreeRunStatus TickSearchSession(FEnemySearchSessionTaskInstanceData& Data)
 	if (!IsValid(Data.Enemy) || Data.Enemy->IsDead() || !Data.Enemy->CanUseEnemyPerception()
 		|| Data.Enemy->GetCombatState() != EEnemyCombatState::Combat) return EStateTreeRunStatus::Failed;
 	// 직접 재감지는 상위 전이가 처리한다. 부모 Task 완료가 그 전이를 덮어쓰지 않게 한다.
-	if (Data.Enemy->IsPlayerCurrentlyVisible())
+	if (Data.Enemy->IsPlayerCurrentlyVisible() || Data.Enemy->HasTrackableTarget())
 	{
 		Data.bShouldRestart = false;
 		return EStateTreeRunStatus::Running;
@@ -1796,7 +1796,7 @@ EStateTreeRunStatus AdvanceSearchProgress(FEnemySearchProgressTaskInstanceData& 
 	Data.PointIndex = 0;
 	Data.Destination = FVector::ZeroVector;
 	AEnemyBase* Enemy = Data.Enemy;
-	if (!IsValid(Enemy) || !Enemy->HasAuthority() || Enemy->IsPlayerCurrentlyVisible()
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || Enemy->IsPlayerCurrentlyVisible() || Enemy->HasTrackableTarget()
 		|| !Enemy->CanUseEnemyPerception() || !Enemy->GetSearchEpisode().bActive)
 		return EStateTreeRunStatus::Failed;
 	// 각 자식 State 진입 시 한 단계만 반영한다. SelectCurrentPoint는 조회만 하고,

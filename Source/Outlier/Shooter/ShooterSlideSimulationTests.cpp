@@ -3,7 +3,9 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Shooter/ShooterMovementComponent.h"
+#include "Shooter/ShooterCombatComponent.h"
 #include "Weapon/WeaponBase.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Curves/CurveFloat.h"
@@ -497,11 +499,15 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		Sent.MovementInput.JumpCancelRequest = 18;
 		Sent.MovementInput.ActionRequest = 19;
 		Sent.MovementInput.bAim = true;
+		Sent.MovementInput.bHoldSprint = true;
+		Sent.MovementInput.bFire = true;
 		Sent.MovementInput.bSprintAtCrouch = true;
 		Sent.MovementInput.bCrouch = true;
 		Sent.PredictedSlideRequest = 17;
 		Sent.bPredictedSliding = true;
 		Sent.bPredictedSprintHeld = false;
+		Sent.bPredictedHoldSprint = true;
+		Sent.bPredictedFireHeld = true;
 		Sent.bPredictedCrouchHeld = true;
 		Sent.bPredictedCrouched = true;
 		Sent.PredictedEndReason = uint8(ESlideEndReason::JumpCancel);
@@ -524,6 +530,8 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Movement packet preserves predicted Slide request"), Received.PredictedSlideRequest, Sent.PredictedSlideRequest);
 		TestEqual(TEXT("Movement packet preserves predicted active state"), Received.bPredictedSliding, Sent.bPredictedSliding);
 		TestEqual(TEXT("Movement packet preserves effective Sprint intent"), Received.bPredictedSprintHeld, Sent.bPredictedSprintHeld);
+		TestTrue(TEXT("Movement packet preserves predicted Hold policy"), Received.bPredictedHoldSprint);
+		TestTrue(TEXT("Movement packet preserves predicted held Fire"), Received.bPredictedFireHeld);
 		TestEqual(TEXT("Movement packet preserves effective crouch intent"), Received.bPredictedCrouchHeld, Sent.bPredictedCrouchHeld);
 		TestEqual(TEXT("Movement packet preserves actual capsule posture"), Received.bPredictedCrouched, Sent.bPredictedCrouched);
 		TestEqual(TEXT("Movement packet preserves predicted end reason"), Received.PredictedEndReason, Sent.PredictedEndReason);
@@ -547,6 +555,8 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		Response.SlideSnapshot.ProcessedJumpCancelRequest = 16;
 		Response.SlideSnapshot.ProcessedActionRequest = 19;
 		Response.SlideSnapshot.bAimHeld = true;
+		Response.SlideSnapshot.bHoldSprint = true;
+		Response.SlideSnapshot.bFireHeld = true;
 		Response.SlideSnapshot.AppliedInput = Sent.MovementInput;
 		Response.SlideSnapshot.Elapsed = 0.375f;
 		Response.SlideSnapshot.CurrentSpeed = 379.2f;
@@ -563,6 +573,8 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Slide correction roundtrip has no archive error"), ResponseWriter.IsError() || ResponseReader.IsError());
 		const auto& Snapshot = ReceivedResponse.SlideSnapshot;
 		TestTrue(TEXT("Correction preserves active Slide"), Snapshot.bActive);
+		TestTrue(TEXT("Correction preserves Hold policy"), Snapshot.bHoldSprint);
+		TestTrue(TEXT("Correction preserves held Fire"), Snapshot.bFireHeld);
 		TestEqual(TEXT("Correction preserves actual capsule posture"), Snapshot.bCrouched, Response.SlideSnapshot.bCrouched);
 		TestTrue(TEXT("Correction preserves applied input baseline"), Snapshot.AppliedInput == Response.SlideSnapshot.AppliedInput);
 		TestEqual(TEXT("Correction preserves request watermark"), Snapshot.ProcessedCrouchRequest, uint32(17));
@@ -622,16 +634,35 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 	UClass* ConnectionClass = LoadClass<UNetConnection>(nullptr, TEXT("/Script/OnlineSubsystemUtils.IpConnection"));
 	if (!TestNotNull(TEXT("Client fixture net driver class"), DriverClass)
 		|| !TestNotNull(TEXT("Client fixture connection class"), ConnectionClass)) return false;
-	for (int32 Case = 0; Case < 8; ++Case)
+	const TCHAR* ReplayCases[] = {
+		TEXT("RejectedRequest"), TEXT("ActiveCorrection"), TEXT("NewRequest"), TEXT("JumpCancelBoundary"),
+		TEXT("FinishBoundary"), TEXT("LifecycleBoundary"), TEXT("SprintToggleOff"), TEXT("BufferedAim"),
+		TEXT("HoldRelease"), TEXT("HoldBufferedAim"), TEXT("HoldFireHeld"), TEXT("HoldFireRelease"),
+		TEXT("HoldModeChange"), TEXT("HoldLifecycleBoundary")
+	};
+	for (int32 Case = 0; Case < UE_ARRAY_COUNT(ReplayCases); ++Case)
 	{
-		const TCHAR* Name = Case == 0 ? TEXT("RejectedRequest") : Case == 1 ? TEXT("ActiveCorrection")
-			: Case == 2 ? TEXT("NewRequest") : Case == 3 ? TEXT("JumpCancelBoundary")
-			: Case == 4 ? TEXT("FinishBoundary") : Case == 5 ? TEXT("LifecycleBoundary")
-			: Case == 6 ? TEXT("SprintToggleOff") : TEXT("BufferedAim");
+		const TCHAR* Name = ReplayCases[Case];
+		const bool bHoldCase = Case >= 8;
+		const bool bLifecycleCase = Case == 5 || Case == 13;
 		FFixture Fixture;
 		if (!Fixture.Initialize(*this)) return false;
 		auto* Movement = Fixture.Movement;
 		auto* Shooter = Fixture.Shooter;
+		if (Case == 9)
+		{
+			// Slide 종료 후에도 Aim을 유지할 수 있는 실제 총기를 준비한다. 비무장 상태는 ADS 대상이 아니다.
+			UClass* PistolClass = LoadClass<ARangedWeaponBase>(nullptr,
+				TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
+			if (!TestNotNull(TEXT("Hold Aim replay firearm class"), PistolClass)) return false;
+			FActorSpawnParameters WeaponSpawn;
+			WeaponSpawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ARangedWeaponBase* Pistol = Fixture.World->SpawnActor<ARangedWeaponBase>(PistolClass, WeaponSpawn);
+			if (!TestNotNull(TEXT("Hold Aim replay firearm"), Pistol)) return false;
+			Pistol->SetActorEnableCollision(false);
+			Shooter->AFirstPersonCharacter::EquipWeapon(Pistol);
+			Shooter->RefreshWeaponMode();
+		}
 		// 이 World는 BeginPlay 없이 물리만 직접 실행한다. 엔진 보정은 비활성 CMC를 무시하므로 명시적으로 활성화한다.
 		Movement->Activate(true);
 		if (!TestTrue(TEXT("Native correction fixture movement is active"), Movement->IsActive())) return false;
@@ -670,9 +701,17 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		Input.CrouchRequest = 10;
 		Input.ActionRequest = 10;
 		Input.bSprint = Input.bCrouch = Input.bSprintAtCrouch = true;
+		Input.bHoldSprint = bHoldCase;
 		Movement->MoveInput = Movement->AppliedMovementInput = Movement->LiveMovementInput = Input;
 		Movement->ProcessedCrouchRequest = Movement->ActiveSlideRequest = 10;
 		Movement->ProcessedActionRequest = 10;
+		if (bHoldCase)
+		{
+			// 기준 보정도 Hold를 승인한 상태로 만든다. 이후 검증은 실제 SavedMove 재생 경로를 사용한다.
+			Movement->SetSprintInputMode(EOutlierSprintInputMode::Hold);
+			Movement->ProcessedActionRequest = 9;
+			Movement->ApplyActionInput(10, Input.Epoch, true, false, 0, true);
+		}
 		Movement->PerformMovement(0.25f);
 		FShooterSlideSnapshot ServerSlide = Movement->CaptureSlideSnapshot();
 		const FShooterJumpSnapshot ServerJump = Movement->CaptureJumpSnapshot();
@@ -680,7 +719,7 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		FVector ServerVelocity = Movement->Velocity;
 		UCapsuleComponent* Capsule = Shooter->GetCapsuleComponent();
 		const float StandingHalfHeight = Shooter->GetClass()->GetDefaultObject<AShooterCharacter>()->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
-		if (Case == 0 || Case == 5)
+		if (Case == 0 || bLifecycleCase)
 		{
 			// 서버가 이미 거절한 요청의 입력을 재전송/재생해도 진입 조건을 다시 평가해서는 안 된다.
 			ServerSlide.bActive = false;
@@ -690,7 +729,7 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 			ServerLocation.Z += (StandingHalfHeight - Capsule->GetUnscaledCapsuleHalfHeight())
 				* Capsule->GetScaledCapsuleHalfHeight() / Capsule->GetUnscaledCapsuleHalfHeight();
 			ServerSlide.EndReason = uint8(ESlideEndReason::ForcedCancel);
-			if (Case == 5)
+			if (bLifecycleCase)
 			{
 				// 새 위치/조종에서 승인한 비활성 상태 뒤로 이전 수명주기의 SavedMove가 남아 있는 경우다.
 				ServerSlide.AppliedInput = {};
@@ -734,23 +773,55 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 			Input.bSprint = false;
 			Input.ActionRequest = 12;
 		}
-		else if (Case >= 6)
+		else if (Case == 6 || Case == 7)
 		{
 			// 실제 보정 후 두 SavedMove를 재생해도 OFF를 재반전하거나 대기 Aim을 잃지 않아야 한다.
 			Input.ActionRequest = 12;
 			Input.bSprint = false;
 			Input.bAim = Case == 7;
 		}
+		else if (bHoldCase)
+		{
+			Input.ActionRequest = 12;
+			Input.bSprint = Case != 8;
+			Input.bAim = Case == 9;
+			Input.bFire = Case == 10 || Case == 11 || Case == 13;
+		}
 		for (int32 Index = 0; Index < 2; ++Index)
 		{
 			if (Case == 3) Input.JumpCancelRequest = 11;
+			if (Index == 1 && (Case == 11 || Case == 12))
+			{
+				// 두 저장 이동 사이의 Release/방식 변경도 결과 의도로 기록한다.
+				// 재생 시점에는 로컬 설정이 Toggle이어도 앞선 이동의 Hold 정책을 바꾸지 않는다.
+				Input.ActionRequest = 13;
+				if (Case == 11) Input.bFire = false;
+				else
+				{
+					Movement->SetSprintInputMode(EOutlierSprintInputMode::Toggle);
+					Input.bSprint = false;
+				}
+			}
 			Movement->MoveInput = Movement->LiveMovementInput = Input;
 			Movement->bUsingMovementInput = true;
 			Shooter->CheckJumpInput(0.05f);
 			FSavedMovePtr Move = SaveMove(1.05f + Index * 0.05f);
 			Movement->PerformMovement(0.05f);
 			Move->PostUpdate(Shooter, FSavedMove_Character::PostUpdate_Record);
+			if (bHoldCase)
+			{
+				FShooterAudioMoveData WireMove;
+				WireMove.ClientFillNetworkMoveData(*Move, FCharacterNetworkMoveData::ENetworkMoveType::NewMove);
+				TestTrue(TEXT("Saved Hold policy reaches packed movement"), WireMove.MovementInput.bHoldSprint);
+				TestEqual(TEXT("Packed move preserves the recorded Sprint result"), WireMove.MovementInput.bSprint, Input.bSprint);
+				TestEqual(TEXT("Packed move preserves the recorded Fire result"), WireMove.MovementInput.bFire, Input.bFire);
+			}
 			Movement->bUsingMovementInput = false;
+		}
+		if (bHoldCase && Case != 12)
+		{
+			// 보정 뒤 과거 이동을 재생할 때 다른 현재 선호도를 읽는 회귀를 드러낸다.
+			Movement->SetSprintInputMode(EOutlierSprintInputMode::Toggle);
 		}
 		TestFalse(TEXT("Slide or custom input boundary does not combine"),
 			Acked->CanCombineWith(ClientData->SavedMoves.Last(), Shooter, 0.125f));
@@ -766,6 +837,13 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		Response.SlideSnapshot = ServerSlide;
 		Response.JumpSnapshot = ServerJump;
 		const int32 JumpCount = Shooter->JumpCurrentCount;
+		if (Case == 3)
+		{
+			// 점프로 일어선 예측을 서버의 앉은 Walking 상태로 되돌리는 순서 회귀를 검증한다.
+			TestTrue(TEXT("Jump correction starts from a falling prediction"), Movement->IsFalling());
+			TestFalse(TEXT("Jump prediction has already uncrouched before correction"), bool(Shooter->bIsCrouched));
+			TestTrue(TEXT("Jump correction restores a crouched server posture"), ServerSlide.bCrouched);
+		}
 		if (!TestTrue(TEXT("Correction timestamp identifies an unacknowledged saved move"),
 			ClientData->GetSavedMoveIndex(Response.ClientAdjustment.TimeStamp) != INDEX_NONE)) continue;
 		Movement->ClientHandleMoveResponse(Response);
@@ -774,7 +852,14 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Native correction acknowledges the matching move"),
 			ClientData->LastAckedMove.IsValid() && ClientData->LastAckedMove->TimeStamp == 1.0f);
 		TestEqual(TEXT("Native correction leaves exactly two unacknowledged moves"), ClientData->SavedMoves.Num(), 2);
-		TestTrue(TEXT("Native correction applies server location before replay"), Shooter->GetActorLocation().Equals(ServerLocation, 0.01));
+		TestTrue(FString::Printf(TEXT("Native correction applies server location before replay: Case=%s Expected=%s Actual=%s"),
+			Name, *ServerLocation.ToString(), *Shooter->GetActorLocation().ToString()),
+			Shooter->GetActorLocation().Equals(ServerLocation, 0.01));
+		if (Case == 3)
+		{
+			TestTrue(TEXT("Jump correction restores Walking before replay"), Movement->IsMovingOnGround());
+			TestTrue(TEXT("Jump correction finds the floor using the server capsule posture"), Movement->CurrentFloor.IsWalkableFloor());
+		}
 		TestEqual(TEXT("Slide restore preserves native corrected velocity"), Movement->Velocity, ServerVelocity);
 		TestEqual(TEXT("Correction restores authoritative crouched posture before replay"), bool(Shooter->bIsCrouched), ServerSlide.bCrouched);
 		const float ExpectedHalfHeight = ServerSlide.bCrouched
@@ -793,7 +878,7 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Slide Jump replay transitions to Falling"), Movement->IsFalling());
 			TestFalse(TEXT("Slide Jump replay clears the old crouch hold"), Fixture.Input->WantsToCrouch());
 		}
-		if (Case == 1 || Case == 2 || Case >= 6)
+		if (Case == 1 || Case == 2 || (Case >= 6 && !bLifecycleCase))
 		{
 			TestTrue(TEXT("Approved/new Slide remains active after replay"), Movement->IsSlideSimulating());
 			TestTrue(TEXT("Replay advances from server state without restarting each move"),
@@ -806,11 +891,34 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 				TestFalse(TEXT("Replay preserves released crouch hold after a short tap"), Fixture.Input->WantsToCrouch());
 				TestFalse(TEXT("Replay preserves Sprint Toggle OFF after entry"), Fixture.Input->WantsToSprint());
 			}
-			if (Case >= 6)
+			if (Case == 6 || Case == 7)
 			{
 				TestFalse(TEXT("Native replay applies Sprint OFF without toggling it back on"), Fixture.Input->WantsToSprint());
 				TestEqual(TEXT("Native replay preserves the shared action watermark"), Movement->ProcessedActionRequest, uint32(12));
 				TestEqual(TEXT("Native replay preserves the latest buffered Aim"), Shooter->WantsToAim(), Case == 7);
+			}
+			if (bHoldCase)
+			{
+				const bool bExpectedSprint = Case != 8 && Case != 12;
+				TestTrue(TEXT("Native replay uses the recorded Hold policy under current Toggle settings"), Movement->IsHoldSprintInput());
+				TestEqual(TEXT("Native replay preserves the final Hold Sprint result"), Fixture.Input->WantsToSprint(), bExpectedSprint);
+				TestEqual(TEXT("Native replay preserves held Aim"), Shooter->WantsToAim(), Case == 9);
+				TestEqual(TEXT("Native replay preserves held Fire across the weapon idle gap"),
+					Shooter->CombatComponent->IsFireInputHeld(), Case == 10);
+				TestEqual(TEXT("Native replay consumes each Hold transition once"), Movement->ProcessedActionRequest,
+					uint32(Case == 11 || Case == 12 ? 13 : 12));
+				// Slide가 끝난 뒤에도 남은 전투 제한이 우선하고, Release/방식 변경의 OFF는 되살아나지 않는다.
+				Fixture.Input->StopSlide(ESlideEndReason::ForcedCancel);
+				Fixture.Input->HandleCrouchReleased();
+				Movement->UnCrouch(false);
+				Fixture.Input->RefreshMovementState();
+				if (Case == 9)
+				{
+					TestTrue(TEXT("Slide unlock restores replayed held Aim on the equipped firearm"),
+						Shooter->WantsToAim() && Shooter->IsAiming());
+				}
+				TestEqual(FString::Printf(TEXT("Leaving Slide respects replayed Hold combat restrictions and cancellation: Case=%s"), Name),
+					Fixture.Input->IsSprinting(), Case == 11);
 			}
 		}
 		else
@@ -818,11 +926,12 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 			Fixture.CheckRestored(*this);
 			TestEqual(TEXT("Rejected/canceled/finished Slide is not restarted by later saved moves"), Movement->SlideSimulationSerial, BeforeReplaySerial);
 			if (Case == 3) TestEqual(TEXT("Replay retains JumpCancel reason"), Movement->SlideEndReason, uint8(ESlideEndReason::JumpCancel));
-			if (Case == 5)
+			if (bLifecycleCase)
 			{
 				TestEqual(TEXT("Native correction adopts the server lifecycle"), Movement->MovementEpoch, uint32(1));
 				TestFalse(TEXT("Old-lifecycle replay cannot restore Sprint hold"), Fixture.Input->WantsToSprint());
 				TestFalse(TEXT("Old-lifecycle replay cannot restore crouch hold"), Fixture.Input->WantsToCrouch());
+				TestFalse(TEXT("Old-lifecycle replay cannot restore Fire hold"), Shooter->CombatComponent->IsFireInputHeld());
 			}
 			if (Case == 4)
 			{

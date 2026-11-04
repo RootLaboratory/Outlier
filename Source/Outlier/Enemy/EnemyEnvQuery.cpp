@@ -107,24 +107,23 @@ FVector MakeApproachCandidate(const FVector& Center, const FVector& Radial, floa
 	return Center + Radial.RotateAngleAxis(Degrees, FVector::UpVector) * Radius;
 }
 
-bool CanProvideVisibleTarget(const AEnemyBase* Enemy)
+bool CanProvideTrackedTarget(const AEnemyBase* Enemy)
 {
 	if (!Enemy || !Enemy->HasAuthority() || !Enemy->CanUseEnemyPerception())
 	{
 		return false;
 	}
 	return !Enemy->IsDead() && Enemy->GetCombatState() != EEnemyCombatState::Stun
-		&& Enemy->IsPlayerCurrentlyVisible();
+		&& Enemy->HasTrackableTarget();
 }
 
-AActor* GetVisibleEnvQueryTarget(const AEnemyBase* Enemy)
+AActor* GetTrackedEnvQueryTarget(const AEnemyBase* Enemy)
 {
-	if (!CanProvideVisibleTarget(Enemy))
+	if (!CanProvideTrackedTarget(Enemy))
 	{
 		return nullptr;
 	}
-	const AEnemyAIController* Controller = Cast<AEnemyAIController>(Enemy->GetController());
-	return Controller ? Controller->GetCachedVisibleTarget() : nullptr;
+	return Enemy->GetTrackedTarget();
 }
 
 bool CanCheckFlightDestination(const AEnemyBase* Enemy, const UWorld* World, const UCapsuleComponent* Capsule)
@@ -224,7 +223,7 @@ UEnemyEnvQueryGenerator_Search::UEnemyEnvQueryGenerator_Search()
 void UEnemyEnvQueryGenerator_Search::GenerateItems(FEnvQueryInstance& QueryInstance) const
 {
 	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
-	if (!Enemy || !Enemy->GetSearchEpisode().bActive || Enemy->IsPlayerCurrentlyVisible()
+	if (!Enemy || !Enemy->GetSearchEpisode().bActive || Enemy->IsPlayerCurrentlyVisible() || Enemy->HasTrackableTarget()
 		|| !QueryInstance.NamedParams.Contains(SearchCenterX)
 		|| !QueryInstance.NamedParams.Contains(SearchCenterY)
 		|| !QueryInstance.NamedParams.Contains(SearchCenterZ)
@@ -274,7 +273,7 @@ UEnemyEnvQueryGenerator_Retreat::UEnemyEnvQueryGenerator_Retreat()
 void UEnemyEnvQueryGenerator_Retreat::GenerateItems(FEnvQueryInstance& QueryInstance) const
 {
 	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
-	const AActor* Target = GetVisibleEnvQueryTarget(Enemy);
+	const AActor* Target = GetTrackedEnvQueryTarget(Enemy);
 	if (!Target) return;
 	FVector Start = Enemy->GetActorLocation();
 	FVector Center = Target->GetActorLocation();
@@ -395,7 +394,7 @@ UEnemyEnvQueryGenerator_Chase::UEnemyEnvQueryGenerator_Chase()
 void UEnemyEnvQueryGenerator_Chase::GenerateItems(FEnvQueryInstance& QueryInstance) const
 {
 	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
-	const AActor* Target = GetVisibleEnvQueryTarget(Enemy);
+	const AActor* Target = GetTrackedEnvQueryTarget(Enemy);
 	if (!Target)
 	{
 		LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("ChaseNoVisibleTarget"));
@@ -428,7 +427,7 @@ UEnemyEnvQueryGenerator_Orbit::UEnemyEnvQueryGenerator_Orbit()
 void UEnemyEnvQueryGenerator_Orbit::GenerateItems(FEnvQueryInstance& QueryInstance) const
 {
 	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
-	const AActor* Target = GetVisibleEnvQueryTarget(Enemy);
+	const AActor* Target = GetTrackedEnvQueryTarget(Enemy);
 	if (!Target) return;
 	FVector Start = Enemy->GetActorLocation();
 	FVector Center = Target->GetActorLocation();
@@ -458,7 +457,7 @@ void UEnemyEnvQueryContext_VisibleTarget::ProvideContext(
 	FEnvQueryInstance& QueryInstance, FEnvQueryContextData& ContextData) const
 {
 	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
-	if (AActor* Target = GetVisibleEnvQueryTarget(Enemy))
+	if (AActor* Target = GetTrackedEnvQueryTarget(Enemy))
 	{
 		UEnvQueryItemType_Actor::SetContextHelper(ContextData, Target);
 	}
@@ -472,7 +471,7 @@ UEnemyEnvQueryGenerator_Approach::UEnemyEnvQueryGenerator_Approach()
 void UEnemyEnvQueryGenerator_Approach::GenerateItems(FEnvQueryInstance& QueryInstance) const
 {
 	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
-	AActor* Target = GetVisibleEnvQueryTarget(Enemy);
+	AActor* Target = GetTrackedEnvQueryTarget(Enemy);
 	UWorld* World = QueryInstance.World;
 	if (!Target || !World || !FMath::IsFinite(PreferredDistance) || !FMath::IsFinite(DistanceSpread)
 		|| !FMath::IsFinite(HalfAngleDegrees) || !FMath::IsFinite(FlightHeight)

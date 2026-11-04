@@ -2537,6 +2537,7 @@ void ARangedWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 bool ARangedWeaponBase::CanAttack() const
 {
 	return Super::CanAttack()
+		&& (!GetWorld() || GetWorld()->GetTimeSeconds() >= PreservedAttackReadyAt)
 		&& !bAttackOnCooldown
 		&& !IsOnReuseCooldown()
 		&& !bOnPostBurstCooldown
@@ -2596,14 +2597,19 @@ void ARangedWeaponBase::StartAttack()
 		return;
 	}
 
+	const bool bResumeTargetAttack = PreservedAttackReadyAt > 0.0;
+	PreservedAttackReadyAt = 0.0;
 	if (IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
-		MuzzleProvider && MuzzleProvider->UsesIndependentMuzzleShots())
+		!bResumeTargetAttack && MuzzleProvider && MuzzleProvider->UsesIndependentMuzzleShots())
 	{
 		MuzzleProvider->ResetWeaponMuzzleSequence();
 	}
 
-	CurrentBurstShotCount = 0;
-	LastAttackMuzzleShotCount = 1;
+	if (!bResumeTargetAttack)
+	{
+		CurrentBurstShotCount = 0;
+		LastAttackMuzzleShotCount = 1;
+	}
 	bIsAttacking = true;
 	PerformAttack(); // 첫 발 즉시 발사
 
@@ -2629,6 +2635,8 @@ void ARangedWeaponBase::StartAttack()
 void ARangedWeaponBase::StopAttack()
 {
 	Super::StopAttack();
+	PreservedAttackReadyAt = 0.0;
+	LastAttackGroupReadyAt = 0.0;
 
 	if (GetWorld())
 	{
@@ -2640,12 +2648,47 @@ void ARangedWeaponBase::StopAttack()
 	CurrentBurstShotCount = 0;
 }
 
+void ARangedWeaponBase::PauseTargetAttack()
+{
+	if (!HasAuthority() || !GetWorld()) return;
+	const FTimerManager& Timers = GetWorld()->GetTimerManager();
+	// 연사 Timer의 다음 호출은 발사 허용 시각과 다르다. 벽 때문에 건너뛴 콜백으로 대기를 늘리지 않는다.
+	// 실제로 발사한 총구 그룹의 간격과 아직 남은 탄환 쿨다운만 보존한다.
+	const double ReadyAt = FMath::Max(FMath::Max(PreservedAttackReadyAt, LastAttackGroupReadyAt),
+		GetWorld()->GetTimeSeconds() + FMath::Max(0.0f, Timers.GetTimerRemaining(AttackCooldownTimerHandle)));
+	const int32 BurstCount = CurrentBurstShotCount;
+	StopAttack();
+	PreservedAttackReadyAt = ReadyAt;
+	CurrentBurstShotCount = BurstCount;
+}
+
+bool ARangedWeaponBase::HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint) const
+{
+	FTransform Shot;
+	if (!HasAuthority() || !IsValid(Target) || !GetWorld() || !FMath::IsFinite(EffectiveRange)
+		|| EffectiveRange <= 0.0f || AimPoint.ContainsNaN() || !ResolveShotTransform(NAME_None, Shot)
+		|| FVector::DistSquared(Shot.GetLocation(), AimPoint) > FMath::Square(EffectiveRange)) return false;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyTargetAttackPath), false);
+	AddWeaponTraceIgnoredActors(Params);
+	// 실제 탄환 채널과 시야 차단을 함께 검사한다. 타깃 자신에게 닿는 것은 열린 사선이다.
+	for (const ECollisionChannel Channel : {ECC_PhysicsBody, ECC_Visibility})
+	{
+		FHitResult Hit;
+		if (GetWorld()->LineTraceSingleByChannel(Hit, Shot.GetLocation(), AimPoint, Channel, Params)
+			&& Hit.GetActor() != Target) return false;
+	}
+	return true;
+}
+
 void ARangedWeaponBase::PerformAttack()
 {
 	if (!HasAuthority())
 	{
 		return;
 	}
+	// 자동 연사 Timer는 StateTree Tick 사이에도 실행된다. 실제 소비/발사 직전에 다시 검증한다.
+	if (AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner);
+		Enemy && Enemy->HasActiveTargetAttack() && !Enemy->RefreshTargetAttackForShot()) return;
 
 	if (!Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || !HasUsableAmmo())
 	{
@@ -2710,6 +2753,8 @@ void ARangedWeaponBase::PerformAttack()
 		StopAttack();
 		return;
 	}
+
+	LastAttackGroupReadyAt = GetWorld()->GetTimeSeconds() + GetAutomaticFireInterval();
 
 	if (bIndependentMuzzleShots)
 	{
