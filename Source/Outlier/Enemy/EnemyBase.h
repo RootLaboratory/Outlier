@@ -39,6 +39,8 @@ class UGeometryCollection;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UEnemyAdaptationSubsystem;
+class UEnemyAdaptationShieldComponent;
+class UNiagaraSystem;
 class UEnemyHudWidget;
 class AEnemyBase;
 class AEnemyAIController;
@@ -107,7 +109,8 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability", meta = (ClampMin = "1", ClampMax = "255"))
+	/** 기존 직렬화 설정을 유지한다. 가독성 표현에는 공통 예약 비트(16)를 사용한다. */
+	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability")
 	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
 
 	virtual void InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil) override;
@@ -329,6 +332,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AutoAim")
 	TObjectPtr<USceneComponent> AutoAimBodyAnchor;
 
+	// 내성 단계 표현 전용 방어막이다. 메시/머티리얼과 반경은 Enemy BP에서 지정한다.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Adaptation")
+	TObjectPtr<UEnemyAdaptationShieldComponent> AdaptationShieldComponent;
+
 	// 기존 BP 설정을 유지하기 위한 추가 오프셋이다. 새로 배치할 때는 0으로 두고 Anchor를 이동한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, AdvancedDisplay, Category = "Enemy|AutoAim",
 		meta = (Units = "cm", ToolTip = "AutoAimBodyAnchor 기준 추가 오프셋입니다. 0으로 두면 컴포넌트 원점이 몸통 조준점입니다. 위치는 BP 뷰포트에서 AutoAimBodyAnchor를 이동해 조절하세요."))
@@ -394,7 +401,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")
 	FName CoreBoneName = TEXT("CoreBone");
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_InCombat, Category = "Enemy|State")
 	uint8 bInCombat : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
@@ -522,6 +529,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Adaptation")
 	EEnemyAdaptationState GetAdaptationState() const { return AdaptationState; }
 
+	UFUNCTION(BlueprintPure, Category = "Enemy|Adaptation")
+	UEnemyAdaptationShieldComponent* GetAdaptationShieldComponent() const { return AdaptationShieldComponent; }
+
 	// 중앙 내성 시스템이 계산한 현재 단계를 Enemy의 복제 표현 상태로 투영한다.
 	// Stack의 원본은 Subsystem만 소유하며 Enemy는 방어막 표현에 필요한 단계만 보관한다.
 	void ApplyAdaptationState(EEnemyAdaptationState NewState);
@@ -532,6 +542,9 @@ public:
 		float DamageAmount,
 		float StunDurationSeconds,
 		UObject* EffectSource);
+
+	// 서버 전용. 파괴 직전 단계에서 방어막이 보였던 Enemy만 모든 클라이언트에 파괴 VFX를 보낸다.
+	void PlayAdaptationShieldBreak(EEnemyAdaptationState BrokenState, UNiagaraSystem* BreakVFX);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void RemoveEnemyTraitForTesting(FGameplayTag TraitTag) { EnemyTraits.RemoveTag(TraitTag); }
@@ -697,6 +710,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void EnterStun();
 
+	// 권총 스턴이 처음 적용될 때만 게임 플로우당 한 번 보낸다. EMP/내성 파괴 스턴은 제외한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Event", meta = (Categories = "Event"))
+	FGameplayTag StunEventTag;
+
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void RestoreStateAfterStun();
 
@@ -777,6 +794,15 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
 	FGameplayTag AppearAudioContext;
+
+	// 전투 상태 동안 반복 재생한다. 비워 두면 재생하지 않는다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag CombatLoopAudioContext;
+
+	virtual bool ShouldPlayCombatLoopAudio() const;
+
+	UFUNCTION()
+	void OnRep_InCombat();
 
 	UFUNCTION()
 	void OnRep_RuntimeStat();
@@ -880,7 +906,7 @@ protected:
 	// 행동 중단 여부는 기존 상태 로직이 결정하고, 파생 클래스는 작은 피격 연출만 정리한다.
 	virtual void InterruptDamagePresentation(float BlendOutTime) {}
 	// 서버 로컬 상태 변경과 GAS 통지를 표현에 반영한다. 게임플레이 상태는 변경하지 않는다.
-	virtual void RefreshCombatStatePresentation() {}
+	virtual void RefreshCombatStatePresentation() { RefreshEnemyAudioState(); }
 	virtual void OnPoolStateApplied(EEnemyPoolState PreviousState) {}
 	virtual bool ShouldResetPoolMontages() const { return true; }
 
@@ -913,6 +939,14 @@ protected:
 	// 서버에서 모든 클라이언트에 폭발 반응 방향과 연출 강도를 전달한다.
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastExplosionReaction(FVector_NetQuantizeNormal Direction, float ReactionScale);
+
+	// 내성 방어막이 보이는 동안 총기 피격 위치만 전달한다. 놓쳐도 파문 하나가 빠질 뿐이다.
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastAdaptationShieldHit(FVector_NetQuantize ImpactLocation);
+
+	// 내성 파괴는 한 번뿐인 큰 연출이라 놓치면 방어막이 그냥 사라져 보이므로 Reliable 을 쓴다.
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastAdaptationShieldBreak(UNiagaraSystem* BreakVFX);
 
 	// 파편은 놓치면 적이 그냥 사라져 보이므로 Reliable 을 쓴다.
 	// ( 폭발 VFX/사운드는 GameplayCue 로 나가고 그쪽은 unreliable 이다 )

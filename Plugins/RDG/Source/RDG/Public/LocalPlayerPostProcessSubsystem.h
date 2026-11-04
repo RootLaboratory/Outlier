@@ -12,6 +12,11 @@ class FOutlierPostProcessSceneViewExtension;
 class APostProcessVolume;
 class UTexture2D;
 
+enum class EDroneDamagePreviewAction : uint8 { Start, Damage, Reset, Stop };
+// HUD 생성은 게임 모듈이 담당하며, RDG는 게임 및 UI 클래스에 의존하지 않는다.
+DECLARE_DELEGATE_OneParam(FOnDroneDamagePreviewRequested, EDroneDamagePreviewAction);
+DECLARE_DELEGATE_RetVal(FString, FDroneDamagePreviewStatus);
+
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionCovered);
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionFinished);
 DECLARE_MULTICAST_DELEGATE(FOnSplitPrismSettled);
@@ -50,6 +55,8 @@ class RDG_API ULocalPlayerPostProcessSubsystem : public ULocalPlayerSubsystem, p
 	friend class FOutlierGameOverPostProcessPauseTest;
 	
 public:
+	FOnDroneDamagePreviewRequested OnDroneDamagePreviewRequested;
+	FDroneDamagePreviewStatus DroneDamagePreviewStatus;
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	virtual void Tick(float DeltaTime) override;
@@ -60,6 +67,8 @@ public:
 	// 리로드 중 사망 연출 / GameOver 암막은 새 Pawn 빙의까지 유지할 수 있다.
 	UFUNCTION(BlueprintCallable, Category = "RDG")
 	void ResetAllPostProcess(bool bPreserveDeathTransition = false);
+	void BeginEndingPresentation();
+	bool IsEndingPresentationActive() const;
 
 	// 메뉴가 열린 동안 Slate 이후 효과의 출력만 숨긴다. 원본 설정/타임라인은 유지한다.
 	// 사망/빙의/리스폰 화면 전환은 계속 그려 콜백과 암막 상태를 보존한다.
@@ -231,6 +240,7 @@ public:
 	bool IsDirty();
 
 private:
+	TWeakObjectPtr<UWorld> EndingWorld;
 	friend class FOutlierRDGPostProcessResetTest;
 	bool bUIEffectsSuspended = false;
 

@@ -66,11 +66,63 @@ FOutlierScreenTransitionTiming AOutlierPostProcessVolume::ResolveScreenTransitio
 	return Selected ? Selected->ScreenTransitionTiming : GetDefault<AOutlierPostProcessVolume>()->ScreenTransitionTiming;
 }
 
+AOutlierPostProcessVolume::AOutlierPostProcessVolume()
+{
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
+}
+
+void AOutlierPostProcessVolume::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	if (!bPartnerShieldPostProcessEnabled) return;
+	PartnerShieldWaveElapsed = FMath::Fmod(PartnerShieldWaveElapsed + DeltaSeconds,
+		FMath::Max(PartnerShieldWavePeriod, 0.01f));
+	UpdatePartnerShieldMaterialParameters();
+}
+
+void AOutlierPostProcessVolume::SetPartnerShieldPostProcessEnabled(bool bInEnabled)
+{
+	if (bPartnerShieldPostProcessEnabled != bInEnabled) PartnerShieldWaveElapsed = 0.0f;
+	bPartnerShieldPostProcessEnabled = bInEnabled;
+	SetActorTickEnabled(bInEnabled);
+	if (bInEnabled) UpdatePartnerShieldMaterialParameters();
+	SetBlendableWeight(EOutlierPostProcessMaterialType::PartnerShield, bInEnabled ? 1.0f : 0.0f);
+}
+
+void AOutlierPostProcessVolume::UpdatePartnerShieldMaterialParameters() const
+{
+	const auto* Material = PostProcessMaterials.Find(EOutlierPostProcessMaterialType::PartnerShield);
+	UMaterialInstanceDynamic* MID = Material ? Cast<UMaterialInstanceDynamic>(Material->Get()) : nullptr;
+	if (!MID) return;
+	const float Min = FMath::Clamp(FMath::Min(PartnerShieldMaskMin, PartnerShieldMaskMax), 0.0f, 1.0f);
+	const float Max = FMath::Clamp(FMath::Max(PartnerShieldMaskMin, PartnerShieldMaskMax), 0.0f, 1.0f);
+	const float Alpha = 0.5f - 0.5f * FMath::Cos(2.0f * PI * PartnerShieldWaveElapsed
+		/ FMath::Max(PartnerShieldWavePeriod, 0.01f));
+	MID->SetScalarParameterValue(TEXT("HP_Portion"), FMath::Lerp(Min, Max, Alpha));
+	MID->SetVectorParameterValue(TEXT("DamagedColor"), PartnerShieldColor);
+}
+
 void AOutlierPostProcessVolume::BeginPlay()
 {
 	Super::BeginPlay();
 
+	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Scan);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Damaged);
+	// BP의 PostProcessMaterials에 지정된 Damaged 머티리얼을 별도의 MID와 블렌드 가중치로 재사용한다.
+	if (!HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerShield))
+	{
+		const auto* Damaged = PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Damaged);
+		UMaterialInterface* Source = Damaged ? Damaged->Get() : nullptr;
+		if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Source)) Source = MID->Parent;
+		if (Source)
+		{
+			PostProcessMaterials.Add(EOutlierPostProcessMaterialType::PartnerShield,
+				UMaterialInstanceDynamic::Create(Source, this));
+		}
+	}
+	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::PartnerShield);
+	SetPartnerShieldPostProcessEnabled(false);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Readability);
@@ -229,6 +281,9 @@ void AOutlierPostProcessVolume::SetPostProcessEnabled(EOutlierPostProcessMateria
 		bDamagedPostProcessEnabled = bInEnabled;
 		//UE_LOG(LogTemp, Error, TEXT("[DamagedPPDebug] SetEnabled=%d Weight=%.2f"), bDamagedPostProcessEnabled ? 1 : 0, TargetWeight);
 		break;
+	case EOutlierPostProcessMaterialType::PartnerShield:
+		SetPartnerShieldPostProcessEnabled(bInEnabled);
+		break;
 	case EOutlierPostProcessMaterialType::Magnetic:
 		bMagneticPostProcessEnabled = bInEnabled;
 		break;
@@ -269,7 +324,9 @@ void AOutlierPostProcessVolume::SetDamagedMaterialParameters(float InRatio)
 
 void AOutlierPostProcessVolume::ResetPostProcessMaterialParameters()
 {
+	SetPartnerShieldPostProcessEnabled(false);
 	SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
+	SetScanEdgeDissolve(-1.0f, 0.3f);
 	UpdateDamagedMaterialParameters(1.0f);
 	ResetMagneticMaterialParameters();
 	ScanRangeRange = 0.0f;
@@ -318,6 +375,18 @@ void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, 
 
 	ScanRangeRange = Range;
 
+}
+
+void AOutlierPostProcessVolume::SetScanEdgeDissolve(float StartTime, float Duration) const
+{
+	// 스캔 머티리얼 자체의 패턴 효과를 종료한다. 상시 외곽선 패스는
+	// 스캔 종료 애니메이션에 참여하지 않는다.
+	const TObjectPtr<UMaterialInterface>* Material = PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Scan);
+	if (UMaterialInstanceDynamic* Instance = Material ? Cast<UMaterialInstanceDynamic>(Material->Get()) : nullptr)
+	{
+		Instance->SetScalarParameterValue(TEXT("ScanGlitchStartTime"), StartTime);
+		Instance->SetScalarParameterValue(TEXT("ScanGlitchDuration"), FMath::Max(Duration, KINDA_SMALL_NUMBER));
+	}
 }
 
 void AOutlierPostProcessVolume::UpdateScanMaterialParameters(FVector ScanLocation, float ScanRadius) const
@@ -515,6 +584,7 @@ void AOutlierPostProcessVolume::UpdateDamagedMaterialParameters(float InPlayerHP
 
 void AOutlierPostProcessVolume::DisableAllBlendablesHard()
 {
+	SetPartnerShieldPostProcessEnabled(false);
 	for (FWeightedBlendable& Blendable : Settings.WeightedBlendables.Array)
 	{
 		Blendable.Weight = 0.0f;

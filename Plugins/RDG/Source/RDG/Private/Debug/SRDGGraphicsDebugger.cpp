@@ -3621,9 +3621,31 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDroneDamageFeedbackSection()
 		];
 	};
 
-	AddRow(SNew(STextBlock)
-		.AutoWrapText(true)
-		.Text(FText::FromString(TEXT("Masks are bound by Enemy HUD while a drone is possessed. Check a corner to reveal it."))));
+	auto PreviewButton = [Resolve](const TCHAR* Label, EDroneDamagePreviewAction Action)
+	{
+		return SNew(SButton)
+			.Text(FText::FromString(Label))
+			.IsEnabled_Lambda([Resolve]()
+			{
+				const auto* Subsystem = Resolve();
+				return Subsystem && Subsystem->OnDroneDamagePreviewRequested.IsBound();
+			})
+			.OnClicked_Lambda([Resolve, Action]()
+			{
+				if (auto* Subsystem = Resolve()) Subsystem->OnDroneDamagePreviewRequested.ExecuteIfBound(Action);
+				return FReply::Handled();
+			});
+	};
+	AddRow(PreviewButton(TEXT("Preview Drone HUD"), EDroneDamagePreviewAction::Start));
+	AddRow(PreviewButton(TEXT("Damage -20%"), EDroneDamagePreviewAction::Damage));
+	AddRow(PreviewButton(TEXT("Reset / Reshuffle"), EDroneDamagePreviewAction::Reset));
+	AddRow(PreviewButton(TEXT("Stop Preview / Restore HUD"), EDroneDamagePreviewAction::Stop));
+	AddRow(SNew(STextBlock).AutoWrapText(true).Text_Lambda([Resolve]()
+	{
+		const auto* Subsystem = Resolve();
+		return FText::FromString(Subsystem && Subsystem->DroneDamagePreviewStatus.IsBound()
+			? Subsystem->DroneDamagePreviewStatus.Execute() : TEXT("Start PIE to preview the Drone HUD."));
+	}));
 	AddRow(MaskRow(EDroneDamageMask::LeftTop, TEXT("Left Top")));
 	AddRow(MaskRow(EDroneDamageMask::LeftBottom, TEXT("Left Bottom")));
 	AddRow(MaskRow(EDroneDamageMask::RightTop, TEXT("Right Top")));

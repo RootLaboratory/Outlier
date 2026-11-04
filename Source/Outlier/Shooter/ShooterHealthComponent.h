@@ -45,6 +45,8 @@ public:
 
 private:
 	uint8 bShieldRecoveryAbled : 1 = true;
+	// 자연 회복 한 주기의 시작/완료 사운드를 한 번씩만 내기 위한 상태.
+	uint8 bShieldRecharging : 1 = false;
 	float ShieldRecoveryDelayRemaining = 0.f;
 	float RecoveryAccumulated = 0.f;
 };

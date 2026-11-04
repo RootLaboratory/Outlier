@@ -4,6 +4,8 @@
 #include "Engine/Texture.h"
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "CurvedRetainerBox.h"
+#include "ShieldSphericalProjection.h"
 
 namespace
 {
@@ -24,6 +26,7 @@ static_assert(
 void UShooterReflectionBarrier::NativeConstruct()
 {
 	Super::NativeConstruct();
+	CachedShieldCurvedRetainer = Cast<UCurvedRetainerBox>(GetWidgetFromName(TEXT("ShieldCurvedRetainer")));
 
 	if (BarrierTexture && ActivationMaterial)
 	{
@@ -40,6 +43,7 @@ void UShooterReflectionBarrier::NativeConstruct()
 				SampleTextureParameterName,
 				SampleTexture);
 		}
+
 	}
 
 	Init();
@@ -134,6 +138,13 @@ void UShooterReflectionBarrier::PlayHitRipple(const FVector& IncomingOrigin)
 
 	CenterUV.X = FMath::Clamp(CenterUV.X, 0.025f, 0.975f);
 	CenterUV.Y = FMath::Clamp(CenterUV.Y, 0.025f, 0.975f);
+	if (CachedShieldCurvedRetainer && CachedShieldCurvedRetainer->bEnableCurvature)
+	{
+		CenterUV = ShieldScreenToSourceUV(CenterUV,
+			CachedShieldCurvedRetainer->HorizontalArcDegrees, CachedShieldCurvedRetainer->VerticalArcDegrees,
+			CachedShieldCurvedRetainer->SourceHFovDegrees, CachedShieldCurvedRetainer->SourceVFovDegrees,
+			CachedShieldCurvedRetainer->WarpAmount, CachedShieldCurvedRetainer->TextureScale);
+	}
 
 	const int32 SlotIndex = FindRippleSlotForNewHit();
 	FShooterReflectionRippleSlot& SlotS = RippleSlots[SlotIndex];

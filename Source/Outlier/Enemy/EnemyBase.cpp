@@ -1,9 +1,11 @@
 #include "Enemy/EnemyBase.h"
+#include "Event/OutlierEventSubsystem.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Enemy/AutoTurret.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
@@ -14,6 +16,7 @@
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "EnhancedInputComponent.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyAdaptationShieldComponent.h"
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/EnemyTargetRules.h"
@@ -102,6 +105,29 @@ namespace
 		}
 	}
 
+	// 공격한 플레이어에게만 명중/처치 확인음을 2D로 들려준다. 빙의 드론 공격도 Partner 컨트롤러로 판정된다.
+	void PlayAttackerConfirmAudio(const FOutlierDamageRequest& Request, bool bKilled)
+	{
+		AController* Attacker = Request.EventInstigator;
+		if (!Attacker && Request.DamageCauser)
+		{
+			Attacker = Request.DamageCauser->GetInstigatorController();
+		}
+
+		if (Cast<AShooterPlayerController>(Attacker))
+		{
+			OutlierAudioFeedback::Owner(Attacker, bKilled
+				? TEXT("Audio.Context.Player.01.State.KillConfirm")
+				: TEXT("Audio.Context.Player.01.State.HitConfirm"));
+		}
+		else if (Cast<APartnerPlayerController>(Attacker))
+		{
+			OutlierAudioFeedback::Owner(Attacker, bKilled
+				? TEXT("Audio.Context.Player.02.State.KillConfirm")
+				: TEXT("Audio.Context.Player.02.State.HitConfirm"));
+		}
+	}
+
 	// 위젯 컴포넌트도 UMeshComponent 라서 실제 메시 종류만 등장 디졸브 대상으로 넘긴다.
 	void AppendSpawnPresentationMeshes(const AActor* Actor, TArray<UMeshComponent*>& OutMeshes)
 	{
@@ -124,6 +150,7 @@ AEnemyBase::AEnemyBase()
 	AIControllerClass = AEnemyAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 	EnemyTraits.AddTag(OutlierGameplayTags::Enemy::Adaptation::Target());
+	StunEventTag = FGameplayTag::RequestGameplayTag(TEXT("Event.013_Drone_Stun"));
 
 	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
 		TEXT("AbilitySystemComponent"));
@@ -167,6 +194,10 @@ AEnemyBase::AEnemyBase()
 	AutoAimBodyAnchor = CreateDefaultSubobject<USceneComponent>(TEXT("AutoAimBodyAnchor"));
 	AutoAimBodyAnchor->SetupAttachment(GetMesh());
 	AutoAimBodyAnchor->PrimaryComponentTick.bCanEverTick = false;
+
+	AdaptationShieldComponent = CreateDefaultSubobject<UEnemyAdaptationShieldComponent>(
+		TEXT("AdaptationShieldComponent"));
+	AdaptationShieldComponent->SetupAttachment(GetRootComponent());
 }
 
 void AEnemyBase::ResetPatrolPoints()
@@ -902,6 +933,10 @@ void AEnemyBase::ApplyAdaptationState(EEnemyAdaptationState NewState)
 	AdaptationState = NewState;
 	if (GetNetMode() != NM_DedicatedServer)
 	{
+		if (AdaptationShieldComponent)
+		{
+			AdaptationShieldComponent->ApplyAdaptationState(AdaptationState);
+		}
 		OnAdaptationStateChanged(PreviousState, AdaptationState);
 	}
 	UE_LOG(
@@ -959,6 +994,10 @@ FEnemyAdaptationBreakApplicationResult AEnemyBase::ApplyAdaptationBreakEffects(
 
 void AEnemyBase::OnRep_AdaptationState(EEnemyAdaptationState PreviousState)
 {
+	if (AdaptationShieldComponent)
+	{
+		AdaptationShieldComponent->ApplyAdaptationState(AdaptationState);
+	}
 	OnAdaptationStateChanged(PreviousState, AdaptationState);
 	UE_LOG(
 		LogOutlier,
@@ -999,6 +1038,10 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 
 	const bool bIdle = PoolState == EEnemyPoolState::Idle;
 	const bool bCombatActive = PoolState == EEnemyPoolState::CombatActive;
+	if (bIdle || PoolState == EEnemyPoolState::DeathPresentation)
+	{
+		if (auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()) Stencils->ClearActorEffects(this);
+	}
 	if (bIdle)
 	{
 		NextFlightPathRequestTime = 0.0;
@@ -1543,9 +1586,6 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	if (bIsPossessed)
 	{
 		ReleasePatrolDestination();
-	}
-	if (bIsPossessed)
-	{
 		CancelCommittedAction();
 		EndImpactReaction();
 	}
@@ -2463,9 +2503,14 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		&& Request.StunDurationSeconds > 0.0f
 		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
-		OutlierAbilitySystemComponent->ApplyStunStateToSelf(
+		const bool bStunApplied = OutlierAbilitySystemComponent->ApplyStunStateToSelf(
 			Request.StunDurationSeconds,
-			Request.DamageCauser);
+			Request.DamageCauser).IsValid();
+		// 위 내성 파괴가 LastAccepted 카테고리를 소비할 수 있으므로 원인은 요청 기준으로 판정한다.
+		if (bStunApplied && Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol)
+		{
+			UOutlierEventSubsystem::EventCallOnce(this, StunEventTag);
+		}
 	}
 	if (bCoreWeakPointHit)
 	{
@@ -2484,7 +2529,20 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 
 	if (AppliedDamage > 0.0f)
 	{
+		PlayAttackerConfirmAudio(Request, IsDead());
 		BroadcastDamageCue(Request, AppliedDamage);
+	}
+
+	// 피해 판정과 무관한 표현이다. 내성 대상인 총기 피격만 방어막 파문으로 보여준다.
+	if (AppliedDamage > 0.0f
+		&& bAdaptationGunDamage
+		&& !IsDead()
+		&& AdaptationShieldComponent
+		&& AdaptationShieldComponent->ShouldShowForState(AdaptationState))
+	{
+		MulticastAdaptationShieldHit(Request.HitResult.bBlockingHit
+			? FVector(Request.HitResult.ImpactPoint)
+			: (Request.DamageOrigin.IsZero() ? GetActorLocation() : Request.DamageOrigin));
 	}
 
 	return AppliedDamage;
@@ -3620,6 +3678,7 @@ void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 		{
 			InitializeCombatMovementPreferences();
 			bInCombat = true;
+			RefreshEnemyAudioState();
 			RefreshPerceptionConfigForCurrentState();
 		}
 		return;
@@ -4083,6 +4142,32 @@ void AEnemyBase::HandleDeath()
 	}
 }
 
+void AEnemyBase::MulticastAdaptationShieldHit_Implementation(FVector_NetQuantize ImpactLocation)
+{
+	if (AdaptationShieldComponent)
+	{
+		AdaptationShieldComponent->NotifyShieldHit(ImpactLocation);
+	}
+}
+
+void AEnemyBase::PlayAdaptationShieldBreak(EEnemyAdaptationState BrokenState, UNiagaraSystem* BreakVFX)
+{
+	if (HasAuthority()
+		&& AdaptationShieldComponent
+		&& AdaptationShieldComponent->ShouldShowForState(BrokenState))
+	{
+		MulticastAdaptationShieldBreak(BreakVFX);
+	}
+}
+
+void AEnemyBase::MulticastAdaptationShieldBreak_Implementation(UNiagaraSystem* BreakVFX)
+{
+	if (AdaptationShieldComponent)
+	{
+		AdaptationShieldComponent->PlayBreak(BreakVFX);
+	}
+}
+
 void AEnemyBase::MulticastPlayDeathDebris_Implementation(FTransform SourceTransform, FVector_NetQuantize100 DeathVelocity)
 {
 	// 판정 제거는 데디케이티드 서버를 포함한 모든 인스턴스에서 한다.
@@ -4204,6 +4289,7 @@ void AEnemyBase::PerformDeathCleanup()
 	}
 	bDeathCleanupPerformed = true;
 	EndHackEffect(EEnemyHackEffectEndReason::TargetDied);
+	if (auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()) Stencils->ClearActorEffects(this);
 	RefreshCombatStatePresentation();
 	InterruptDamagePresentation(0.0f);
 
@@ -4497,7 +4583,19 @@ void AEnemyBase::PlaySpawnAppearAudio()
 
 void AEnemyBase::RefreshEnemyAudioState()
 {
-	if (!HoverAudioContext.IsValid()) return;
 	const bool bActive = !IsDead() && (!IsPoolManaged() || PoolState == EEnemyPoolState::CombatActive);
-	OutlierAudioFeedback::Loop(this, *HoverAudioContext.ToString(), bActive, TEXT("Audio.Type.Enemy"));
+	if (HoverAudioContext.IsValid())
+		OutlierAudioFeedback::Loop(this, *HoverAudioContext.ToString(), bActive, TEXT("Audio.Type.Enemy"));
+	if (CombatLoopAudioContext.IsValid())
+		OutlierAudioFeedback::Loop(this, *CombatLoopAudioContext.ToString(), bActive && ShouldPlayCombatLoopAudio(), TEXT("Audio.Type.Enemy"));
+}
+
+bool AEnemyBase::ShouldPlayCombatLoopAudio() const
+{
+	return bInCombat;
+}
+
+void AEnemyBase::OnRep_InCombat()
+{
+	RefreshEnemyAudioState();
 }

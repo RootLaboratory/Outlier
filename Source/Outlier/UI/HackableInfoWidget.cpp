@@ -1,5 +1,6 @@
 #include "UI/HackableInfoWidget.h"
 
+#include "Audio/OutlierAudioFeedback.h"
 #include "Components/Border.h"
 #include "Components/Image.h"
 #include "Components/ProgressBar.h"
@@ -35,6 +36,7 @@ void UHackableInfoWidget::PlayPopup()
 	{
 		PopupRetainerBox->PlayOpen();
 	}
+	SetPopupAudioOpen(true);
 }
 
 void UHackableInfoWidget::ResetPopup()
@@ -43,6 +45,17 @@ void UHackableInfoWidget::ResetPopup()
 	{
 		PopupRetainerBox->ResetPopup();
 	}
+	SetPopupAudioOpen(false);
+}
+
+void UHackableInfoWidget::SetPopupAudioOpen(bool bOpen)
+{
+	if (bPopupAudioOpen == bOpen)
+	{
+		return;
+	}
+	bPopupAudioOpen = bOpen;
+	OutlierAudioFeedback::Local(this, bOpen ? TEXT("Audio.Context.UI.Ingame.Open") : TEXT("Audio.Context.UI.Ingame.Close"));
 }
 
 FVector2D UHackableInfoWidget::GetOffsetForDistance(float Distance) const
@@ -60,6 +73,17 @@ void UHackableInfoWidget::NativeConstruct()
 	ResetPopup();
 	UpdateInfoText();
 	SetHackProgress(0.0f);
+}
+
+void UHackableInfoWidget::NativeDestruct()
+{
+	// 마커가 사라지며 열린 정보창이 함께 닫히는 경우에도 닫힘음을 낸다. 월드 정리 중에는 생략한다.
+	const UWorld* World = GetWorld();
+	if (World && !World->bIsTearingDown)
+	{
+		SetPopupAudioOpen(false);
+	}
+	Super::NativeDestruct();
 }
 
 bool UHackableInfoWidget::ResolveHackInfoTag(FGameplayTag& OutHackInfoTag) const

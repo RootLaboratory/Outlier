@@ -2,6 +2,7 @@
 
 
 #include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "PostProcess/OutlierStealthVisualTarget.h"
@@ -24,9 +25,6 @@ namespace
 // BoundPostProcessVolume 이 없을 때 쓰는 값. 볼륨이 있으면 항상 볼륨 값이 우선한다.
 constexpr float DefaultStealthFadeDuration = 0.25f;
 
-// 상시 PartnerOutline 패스에서 근접 타깃을 표시할 때 사용하는 값.
-constexpr int32 MeleeTargetOutlineStencilValue = 1;
-
 // 이번 틱에 이 메시가 어떤 머티리얼을 어느 페이드로 물고 있어야 하는지.
 struct FOutlierStealthMeshTarget
 {
@@ -37,6 +35,7 @@ struct FOutlierStealthMeshTarget
 
 void UMaterialPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
+	Collection.InitializeDependency<UOutlierStencilSubsystem>();
 	Super::Initialize(Collection);
 	Refresh();
 }
@@ -77,10 +76,21 @@ void UMaterialPostProcessSubsystem::Tick(float DeltaTime)
 
 	TickStealth(DeltaTime);
 	TickMeleeOutlineTarget();
+	if (PartnerShieldSource.IsStale()
+		|| (PartnerShieldSource.IsValid() && (!PartnerShieldSource->IsLocallyControlled() || PartnerShieldSource->IsDead())))
+	{
+		PartnerShieldSource.Reset();
+		if (IsValid(BoundPostProcessVolume)) BoundPostProcessVolume->SetPartnerShieldPostProcessEnabled(false);
+	}
 }
 
 void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume)
 {
+	if (bEndingPresentation)
+	{
+		if (InPostProcessVolume) InPostProcessVolume->bEnabled = false;
+		return;
+	}
 	if (!InPostProcessVolume)
 	{
 		return;
@@ -90,6 +100,7 @@ void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProces
 		&& !InPostProcessVolume->HasStealthMeshMaterials()
 		&& !InPostProcessVolume->HasEnemySpawnDissolveMaterial()
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Damaged)
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerShield)
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic)
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline)
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Readability))
@@ -97,7 +108,10 @@ void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProces
 		return;
 	}
 
+	if (IsValid(BoundPostProcessVolume) && BoundPostProcessVolume != InPostProcessVolume)
+		BoundPostProcessVolume->SetPartnerShieldPostProcessEnabled(false);
 	BoundPostProcessVolume = InPostProcessVolume;
+	BoundPostProcessVolume->SetPartnerShieldPostProcessEnabled(PartnerShieldSource.IsValid());
 	ApplyAlwaysOnPostProcess();
 }
 
@@ -113,6 +127,7 @@ void UMaterialPostProcessSubsystem::SetPostProcessEnabled(EOutlierPostProcessMat
 
 void UMaterialPostProcessSubsystem::Refresh()
 {
+	if (bEndingPresentation) return;
 	if (!BoundPostProcessVolume)
 	{
 		return;
@@ -123,16 +138,25 @@ void UMaterialPostProcessSubsystem::Refresh()
 	FlushScanStencilRestoreStates();
 	// 하드 디스에이블로 상시 패스까지 꺼졌으므로 되살린다.
 	ApplyAlwaysOnPostProcess();
+	BoundPostProcessVolume->SetPartnerShieldPostProcessEnabled(PartnerShieldSource.IsValid());
+}
+
+void UMaterialPostProcessSubsystem::BeginEndingPresentation()
+{
+	bEndingPresentation = true;
+	ResetAllPostProcess(false);
 }
 
 void UMaterialPostProcessSubsystem::ResetAllPostProcess(bool bRestoreAlwaysOnPostProcess)
 {
+	PartnerShieldSource.Reset();
 	ClearMeleeOutlineTarget();
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(MagneticDisableTimerHandle);
 	}
 	FlushScanStencilRestoreStates();
+	if (auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()) Stencils->ResetTransientEffects();
 	FlushStealthRestoreStates();
 	// 등장 디졸브 위에 은신이 적용될 수 있으므로, 은신을 먼저 떼어낸다.
 	FlushEnemySpawnPresentations();
@@ -147,7 +171,7 @@ void UMaterialPostProcessSubsystem::ResetAllPostProcess(bool bRestoreAlwaysOnPos
 	{
 		BoundPostProcessVolume->DisableAllBlendablesHard();
 		BoundPostProcessVolume->ResetPostProcessMaterialParameters();
-		if (bRestoreAlwaysOnPostProcess)
+		if (bRestoreAlwaysOnPostProcess && !bEndingPresentation)
 		{
 			ApplyAlwaysOnPostProcess();
 		}
@@ -167,7 +191,16 @@ void UMaterialPostProcessSubsystem::StartScanPostProcess(
 	}
 
 	BoundPostProcessVolume->SetScanMaterialParameters(ScanOrigin, CurrentScanRadius, Range);
+	BoundPostProcessVolume->SetScanEdgeDissolve(-1.0f, 0.3f);
 	BoundPostProcessVolume->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Scan ,true);
+}
+
+void UMaterialPostProcessSubsystem::BeginScanEdgeDissolve(float Duration)
+{
+	if (!ShouldSkipRenderingWork() && IsValid(BoundPostProcessVolume) && GetWorld())
+	{
+		BoundPostProcessVolume->SetScanEdgeDissolve(GetWorld()->GetTimeSeconds(), Duration);
+	}
 }
 
 void UMaterialPostProcessSubsystem::UpdateScanPostProcess(
@@ -206,25 +239,8 @@ void UMaterialPostProcessSubsystem::SetMeleeOutlineTarget(AActor* Target, AShoot
 		return;
 	}
 
-	TArray<UPrimitiveComponent*> PrimitiveComponents;
-	Target->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
-	for (UPrimitiveComponent* Component : PrimitiveComponents)
-	{
-		if (!IsValid(Component))
-		{
-			continue;
-		}
-		const TWeakObjectPtr<UPrimitiveComponent> Key(Component);
-		if (!MeleeOutlineRestoreStates.Contains(Key))
-		{
-			FScanStencilRestoreState Original;
-			Original.bRenderCustomDepth = Component->bRenderCustomDepth;
-			Original.CustomDepthStencilValue = Component->CustomDepthStencilValue;
-			MeleeOutlineRestoreStates.Add(Key, Original);
-		}
-		Component->SetRenderCustomDepth(true);
-		Component->SetCustomDepthStencilValue(MeleeTargetOutlineStencilValue);
-	}
+	GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()->SetEffect(
+		Target, this, EOutlierStencilEffect::Melee);
 }
 
 void UMaterialPostProcessSubsystem::ClearMeleeOutlineTarget(AActor* Target)
@@ -234,15 +250,11 @@ void UMaterialPostProcessSubsystem::ClearMeleeOutlineTarget(AActor* Target)
 		return;
 	}
 
-	for (const auto& Pair : MeleeOutlineRestoreStates)
+	if (GetWorld())
 	{
-		if (UPrimitiveComponent* Component = Pair.Key.Get())
-		{
-			Component->SetRenderCustomDepth(Pair.Value.bRenderCustomDepth);
-			Component->SetCustomDepthStencilValue(Pair.Value.CustomDepthStencilValue);
-		}
+		if (auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>())
+			Stencils->ClearEffect(MeleeOutlineTarget.Get(), this, EOutlierStencilEffect::Melee);
 	}
-	MeleeOutlineRestoreStates.Reset();
 	MeleeOutlineTarget.Reset();
 	MeleeOutlineSource.Reset();
 	bMeleeOutlineActive = false;
@@ -615,6 +627,22 @@ UMaterialInterface* UMaterialPostProcessSubsystem::GetThirdPersonStealthMaterial
 		: BoundPostProcessVolume->GetFirstPersonStealthGlassMaterial();
 }
 
+void UMaterialPostProcessSubsystem::SetPartnerShieldPostProcess(AShooterCharacter* Source, bool bEnabled)
+{
+	if (ShouldSkipRenderingWork() || !Source) return;
+	if (bEnabled)
+	{
+		if (!Source->IsLocallyControlled() || Source->IsDead()) return;
+		PartnerShieldSource = Source;
+	}
+	else
+	{
+		if (PartnerShieldSource.Get() != Source) return;
+		PartnerShieldSource.Reset();
+	}
+	if (IsValid(BoundPostProcessVolume)) BoundPostProcessVolume->SetPartnerShieldPostProcessEnabled(bEnabled);
+}
+
 void UMaterialPostProcessSubsystem::UpdateDamagedPostProcess(float InHPRatio)
 {
 	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
@@ -635,19 +663,25 @@ void UMaterialPostProcessSubsystem::UpdateDamagedPostProcess(float InHPRatio, FV
 	BoundPostProcessVolume->UpdateDamagedMaterialParameters(InHPRatio, Color);
 }
 
-void UMaterialPostProcessSubsystem::EndScanPostProcess()
+void UMaterialPostProcessSubsystem::EndScanPostProcess(UObject* Source)
 {
 	if (ShouldSkipRenderingWork())
 	{
 		return;
 	}
 
+	// 원래 액터 목록이 바뀐 요청까지 포함해 이 Source의 요청만 취소한다.
+	// Source 없는 호출은 모든 스캐너를 명시적으로 초기화한다.
+	auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>();
+	if (Source) Stencils->ClearSourceEffects(Source, EOutlierStencilEffect::Scan);
+	else ClearAllScanStencils();
+	if (Stencils->HasEffect(EOutlierStencilEffect::Scan)) return;
 	if (BoundPostProcessVolume)
 	{
+		BoundPostProcessVolume->SetScanEdgeDissolve(-1.0f, 0.3f);
 		BoundPostProcessVolume->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Scan, false);
 		BoundPostProcessVolume->SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
 	}
-	ClearAllScanStencils();
 }
 
 void UMaterialPostProcessSubsystem::EndDamagedPostProcess()
@@ -752,6 +786,11 @@ void UMaterialPostProcessSubsystem::EndMagneticPostProcess()
 
 void UMaterialPostProcessSubsystem::StartEnemySpawnPresentation(AActor* Target, FSimpleDelegate OnFinished)
 {
+	if (bEndingPresentation)
+	{
+		OnFinished.ExecuteIfBound();
+		return;
+	}
 	if (!Target)
 	{
 		OnFinished.ExecuteIfBound();
@@ -932,64 +971,18 @@ void UMaterialPostProcessSubsystem::FlushEnemySpawnPresentations()
 	SpawnPresentations.Reset();
 }
 
-void UMaterialPostProcessSubsystem::ApplyScanStencil(AActor* Actor, int32 StencilValue)
+void UMaterialPostProcessSubsystem::ApplyScanStencil(AActor* Actor, int32 StencilValue, UObject* Source)
 {
-	if (ShouldSkipRenderingWork() || !Actor)
-	{
-		return;
-	}
-
-	TArray<UPrimitiveComponent*> PrimitiveComponents;
-	Actor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
-
-	//BP에서 설정하면 상관없긴 하다만.
-
-	for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
-	{
-		if (!PrimitiveComponent)
-		{
-			continue;
-		}
-
-		TWeakObjectPtr<UPrimitiveComponent> ComponentKey(PrimitiveComponent);
-		if (!ScanStencilRestoreStates.Contains(ComponentKey))
-		{
-			FScanStencilRestoreState RestoreState;
-			RestoreState.bRenderCustomDepth = PrimitiveComponent->bRenderCustomDepth;
-			RestoreState.CustomDepthStencilValue = PrimitiveComponent->CustomDepthStencilValue;
-			ScanStencilRestoreStates.Add(ComponentKey, RestoreState);
-		}
-
-		PrimitiveComponent->SetRenderCustomDepth(true);
-		PrimitiveComponent->SetCustomDepthStencilValue(StencilValue);
-	}
+	if (ShouldSkipRenderingWork() || !IsValid(Actor)) return;
+	GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()->SetEffect(
+		Actor, Source ? Source : Actor, EOutlierStencilEffect::Scan, StencilValue);
 }
 
-void UMaterialPostProcessSubsystem::ClearScanStencil(AActor* Actor)
+void UMaterialPostProcessSubsystem::ClearScanStencil(AActor* Actor, UObject* Source)
 {
-	if (ShouldSkipRenderingWork() || !Actor)
-	{
-		return;
-	}
-
-	TArray<UPrimitiveComponent*> PrimitiveComponents;
-	Actor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
-
-	for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
-	{
-		if (!PrimitiveComponent)
-		{
-			continue;
-		}
-
-		TWeakObjectPtr<UPrimitiveComponent> ComponentKey(PrimitiveComponent);
-		if (const FScanStencilRestoreState* RestoreState = ScanStencilRestoreStates.Find(ComponentKey))
-		{
-			PrimitiveComponent->SetRenderCustomDepth(RestoreState->bRenderCustomDepth);
-			PrimitiveComponent->SetCustomDepthStencilValue(RestoreState->CustomDepthStencilValue);
-			ScanStencilRestoreStates.Remove(ComponentKey);
-		}
-	}
+	if (ShouldSkipRenderingWork() || !Actor) return;
+	GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()->ClearEffect(
+		Actor, Source ? Source : Actor, EOutlierStencilEffect::Scan);
 }
 
 void UMaterialPostProcessSubsystem::ApplyAlwaysOnPostProcess()
@@ -1024,21 +1017,16 @@ void UMaterialPostProcessSubsystem::ApplyAlwaysOnPostProcess()
 bool UMaterialPostProcessSubsystem::ShouldSkipRenderingWork() const
 {
 	const UWorld* World = GetWorld();
-	return !World || World->GetNetMode() == NM_DedicatedServer;
+	return bEndingPresentation || !World || World->GetNetMode() == NM_DedicatedServer;
 }
 
 void UMaterialPostProcessSubsystem::ClearAllScanStencils()
 {
-	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState>& Pair : ScanStencilRestoreStates)
+	if (GetWorld())
 	{
-		if (UPrimitiveComponent* PrimitiveComponent = Pair.Key.Get())
-		{
-			PrimitiveComponent->SetRenderCustomDepth(Pair.Value.bRenderCustomDepth);
-			PrimitiveComponent->SetCustomDepthStencilValue(Pair.Value.CustomDepthStencilValue);
-		}
+		if (auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>())
+			Stencils->ClearEffectsOfType(EOutlierStencilEffect::Scan);
 	}
-
-	ScanStencilRestoreStates.Reset();
 }
 
 void UMaterialPostProcessSubsystem::DisableAllBoundPostProcessMaterials()
@@ -1058,17 +1046,7 @@ void UMaterialPostProcessSubsystem::DisableAllBoundPostProcessMaterials()
 
 void UMaterialPostProcessSubsystem::FlushScanStencilRestoreStates()
 {
-	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState>& Pair
-		: ScanStencilRestoreStates)
-	{
-		if (UPrimitiveComponent* PrimitiveComponent = Pair.Key.Get())
-		{
-			PrimitiveComponent->SetRenderCustomDepth(Pair.Value.bRenderCustomDepth);
-			PrimitiveComponent->SetCustomDepthStencilValue(Pair.Value.CustomDepthStencilValue);
-		}
-	}
-
-	ScanStencilRestoreStates.Reset();
+	ClearAllScanStencils();
 }
 
 void UMaterialPostProcessSubsystem::FlushPostProcessMaterialParameters()

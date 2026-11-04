@@ -1,4 +1,5 @@
 #include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 
 #include "Components/MeshComponent.h"
 #include "Blueprint/UserWidget.h"
@@ -454,45 +455,17 @@ void AOutlierWorldGuideManager::RefreshPresentation()
 void AOutlierWorldGuideManager::AddOutline(UOutlierWorldGuideTargetComponent* Target)
 {
 	if (!Target || !Target->GetOwner() || OutlinedTargets.Contains(Target)) return;
-	TArray<UMeshComponent*> Meshes;
-	Target->GetOwner()->GetComponents<UMeshComponent>(Meshes);
-	auto& Used = OutlinedTargets.Add(Target);
-	for (UMeshComponent* Mesh : Meshes)
-	{
-		if (!IsValid(Mesh) || Mesh->IsA<UWidgetComponent>()) continue;
-		FOutlierGuideStencilState& State = StencilStates.FindOrAdd(Mesh);
-		if (State.Users++ == 0)
-		{
-			State.bOriginalCustomDepth = Mesh->bRenderCustomDepth;
-			State.OriginalStencil = Mesh->CustomDepthStencilValue;
-			State.AppliedStencil = FMath::Clamp(OutlineStencilValue, 1, 255);
-			Mesh->SetRenderCustomDepth(true);
-			Mesh->SetCustomDepthStencilValue(State.AppliedStencil);
-		}
-		Used.Add(Mesh);
-	}
+	OutlinedTargets.Add(Target);
+	GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()->SetEffect(
+		Target->GetOwner(), Target, EOutlierStencilEffect::Guide);
 }
 
 void AOutlierWorldGuideManager::RemoveOutline(UOutlierWorldGuideTargetComponent* Target)
 {
 	if (!Target) return;
-	TArray<TWeakObjectPtr<UPrimitiveComponent>> Used;
-	if (!OutlinedTargets.RemoveAndCopyValue(Target, Used)) return;
-	for (const auto& MeshKey : Used)
-	{
-		FOutlierGuideStencilState* State = StencilStates.Find(MeshKey);
-		if (!State || --State->Users > 0) continue;
-		if (UPrimitiveComponent* Mesh = MeshKey.Get())
-		{
-			// 가이드 활성 중 다른 효과가 설정한 Stencil은 덮어쓰지 않는다.
-			if (Mesh->CustomDepthStencilValue == State->AppliedStencil)
-			{
-				Mesh->SetCustomDepthStencilValue(State->OriginalStencil);
-				Mesh->SetRenderCustomDepth(State->bOriginalCustomDepth);
-			}
-		}
-		StencilStates.Remove(MeshKey);
-	}
+	if (!OutlinedTargets.Remove(Target)) return;
+	GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()->ClearEffect(
+		Target->GetOwner(), Target, EOutlierStencilEffect::Guide);
 }
 
 void AOutlierWorldGuideManager::OnRep_ActiveContext()

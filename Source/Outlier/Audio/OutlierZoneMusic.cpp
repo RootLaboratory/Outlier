@@ -21,6 +21,7 @@ namespace
 void UOutlierAudioSubsystem::SetZoneMusic(const UObject* Requester, FGameplayTag Context, bool bEnabled,
 	float FadeInDuration, float FadeOutDuration)
 {
+	if (IsEndingPresentationActive()) return;
 	if (bStoppingAllLocalAudio || !Requester || !Context.IsValid()) return;
 	UWorld* World = Requester->GetWorld();
 	if (!World || World->GetNetMode() == NM_DedicatedServer) return;

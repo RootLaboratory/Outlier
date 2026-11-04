@@ -78,6 +78,8 @@ public:
 	// 로컬 HUD가 늦게 생성되거나 교체됐는지 확인할 때 현재 등록된 인스턴스를 반환한다.
 	UMainUIBase* GetMainUI() const;
 	void FlushMainUITransientWidgets();
+	void BeginEndingPresentation();
+	bool IsEndingPresentationActive() const;
 	// 사망 중 늦게 도착한 피격 표시가 다시 쌓이지 않게 한다.
 	void SetTransientWidgetsSuppressed(bool bSuppressed);
 	void OnRep_PlayerStateChanged(EUIPlayerState State);
@@ -128,8 +130,11 @@ public:
 	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityDisabledByDistance();
 	void OnAbilityEnabledByDistance();
+	// 파트너 경계 이탈 복제 결과. MainUI가 늦게 생겨도 RegisterMainUI에서 재생한다.
+	void OnPartnerConnectionChanged(bool bLost);
 
 private:
+	TWeakObjectPtr<UWorld> EndingWorld;
 	void ApplyLegacyVitalityPresentation(EOutlierVitalityChannel Channel, float Current, float Maximum);
 	void ApplyCachedVitalityToModule(UEventDrivenUI* Module, bool bImmediate,
 		EOutlierVitalityChannel Channel = EOutlierVitalityChannel::Count);
@@ -163,6 +168,8 @@ private:
 	// 슈트 획득 신호는 MainUI 가 생기기 전에 도착할 수 있다(OnRep 은 값이 바뀌는 순간 한 번뿐).
 	// 마지막 상태를 들고 있다가 RegisterMainUI 에서 새 위젯에 그대로 물려준다.
 	bool bShooterSuitAcquired = false;
+
+	bool bPartnerConnectionLost = false;
 
 	bool bTransientWidgetsSuppressed = false;
 };

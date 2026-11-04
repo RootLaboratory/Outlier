@@ -580,6 +580,7 @@ protected:
 	FDelegateHandle HealthChangedHandle;
 	FDelegateHandle ShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
+	FDelegateHandle PartnerShieldTagChangedHandle;
 	FDelegateHandle BulletReflectionTagChangedHandle;
 	FDelegateHandle QuantumLeapTagChangedHandle;
 	FDelegateHandle WeaponOverchargeTagChangedHandle;
@@ -663,6 +664,10 @@ protected:
 	virtual void UnPossessed() override;
 	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandlePartnerShieldTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void RefreshPartnerShieldPostProcess();
+	UFUNCTION(Client, Reliable)
+	void ClientSetPartnerShieldPostProcess(bool bEnabled);
 	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleQuantumLeapTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void PushReflectionBarrierWidget();

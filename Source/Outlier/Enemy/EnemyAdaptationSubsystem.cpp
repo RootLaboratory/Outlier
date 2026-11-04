@@ -4,6 +4,7 @@
 #include "Enemy/EnemyBase.h"
 #include "Engine/World.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "NiagaraSystem.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Outlier.h"
 #include "OutlierArenaSettings.h"
@@ -53,6 +54,7 @@ void UEnemyAdaptationSubsystem::Deinitialize()
 	ResetActiveEnemies();
 	ResetAdaptationState();
 	ActiveDefinition = nullptr;
+	ShieldBreakVFX = nullptr;
 	OnAdaptationUpdated.Clear();
 	Super::Deinitialize();
 }
@@ -366,6 +368,9 @@ void UEnemyAdaptationSubsystem::ApplyAdaptationBreakToCombatField(
 			continue;
 		}
 
+		// 피해로 죽어 풀로 돌아가기 전에 방어막 자리에서 파괴 연출을 먼저 보낸다.
+		Target->PlayAdaptationShieldBreak(Result.PreviousState, ShieldBreakVFX);
+
 		// 파괴 피해로 사망하면 Enemy가 즉시 등록 목록에서 빠질 수 있다. 위에서 복사한
 		// 약한 참조만 순회하므로 다음 대상은 등록부 변경과 무관하게 안전하게 처리된다.
 		const FEnemyAdaptationBreakApplicationResult Application =
@@ -583,6 +588,9 @@ void UEnemyAdaptationSubsystem::LoadConfiguredDefinition()
 	ActiveDefinition = Settings
 		? Settings->EnemyAdaptationDefinition.LoadSynchronous()
 		: nullptr;
+	ShieldBreakVFX = ActiveDefinition
+		? ActiveDefinition->ShieldBreakVFX.LoadSynchronous()
+		: nullptr;
 	RefreshResolvedState();
 }
 
@@ -664,6 +672,7 @@ void UEnemyAdaptationSubsystem::HandleArenaReleased()
 	ResetActiveEnemies();
 	ResetAdaptationState();
 	ActiveDefinition = nullptr;
+	ShieldBreakVFX = nullptr;
 	UE_LOG(
 		LogOutlier,
 		Display,

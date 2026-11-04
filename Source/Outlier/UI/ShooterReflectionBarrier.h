@@ -7,6 +7,7 @@
 class UImage;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
+class UCurvedRetainerBox;
 
 // 피격 리플 1개분. 머티리얼에는 Ripple0~3 = (u, v, 경과 초, 진행도) 로 넘어간다.
 struct FShooterReflectionRippleSlot
@@ -55,6 +56,7 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Reflection Barrier|Ripple", meta = (ClampMin = "0.0"))
 	float RippleScreenMargin = 0.1f;
 
+
 private:
 	void Update(float DeltaTime);
 	void UpdateRipples(float DeltaTime);
@@ -64,6 +66,10 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ActivationMaterialInstance;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UCurvedRetainerBox> CachedShieldCurvedRetainer;
+
 
 	float Progress = 0.0f;
 	bool bIsProgressUpdating = false;

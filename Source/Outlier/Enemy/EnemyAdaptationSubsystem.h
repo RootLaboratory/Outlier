@@ -7,6 +7,7 @@
 
 class AEnemyBase;
 class UEnemyAdaptationDefinition;
+class UNiagaraSystem;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(
 	FOnEnemyAdaptationUpdated,
@@ -109,6 +110,9 @@ private:
 	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyRegistration> ActiveEnemies;
 	UPROPERTY(Transient)
 	TObjectPtr<UEnemyAdaptationDefinition> ActiveDefinition;
+	// 파괴 순간 동기 로드로 끊기지 않도록 정의를 읽을 때 미리 잡아둔다.
+	UPROPERTY(Transient)
+	TObjectPtr<UNiagaraSystem> ShieldBreakVFX;
 	int32 CurrentGunAdaptationStack = 0;
 	EEnemyAdaptationState CurrentAdaptationState = EEnemyAdaptationState::Normal;
 	uint32 ActiveGameplayGeneration = 0;

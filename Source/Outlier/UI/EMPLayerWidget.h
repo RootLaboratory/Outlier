@@ -38,6 +38,10 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UProgressBar> EMPProgressBar;
 
+	// Fill Image 머티리얼에 전달할 경과 시간 / 할당 시간 (0~1).
+	UPROPERTY(EditDefaultsOnly, Category = "EMP|Progress")
+	FName ProgressParameterName = TEXT("Progress");
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UImage> EMPRevealImage;
 
@@ -81,6 +85,8 @@ protected:
 	FName RevealRadiusParameterName = TEXT("RevealRadius");
 
 private:
+	void EnsureProgressMaterial();
+	void UpdateProgress(float Progress);
 	void ExpireEMP();
 	void StartReveal();
 	void UpdateReveal(float InDeltaTime);
@@ -91,6 +97,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> RevealMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> ProgressMaterial;
 
 	UPROPERTY()
 	TMap<TObjectPtr<AActor>, TObjectPtr<UEMPMarkWidget>> MarkWidgets;

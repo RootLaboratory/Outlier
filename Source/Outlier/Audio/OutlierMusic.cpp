@@ -59,6 +59,7 @@ void UOutlierAudioSubsystem::HandleMusicContext(FGameplayTag Context)
 
 void UOutlierAudioSubsystem::StartFrontendMusic()
 {
+	if (IsEndingPresentationActive()) return;
 	if (bFrontendMusic) return;
 	bFrontendMusic = true;
 	bCombatMusic = false;

@@ -358,6 +358,7 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 				*GetNameSafe(Turret), *GetNameSafe(Weapon), *GetNameSafe(Data.TargetActor), Turret->IsPlayerCurrentlyVisible(), *Data.LockedAimLocation.ToCompactString());
 		}
 		Turret->PlayFireMontage();
+		Turret->PlayAttackAudio();
 		Data.Phase = EEnemyTurretSniperTaskPhase::BeamPresentation;
 		Data.ElapsedTime = 0.0f;
 		Data.bAttackStarted = true;

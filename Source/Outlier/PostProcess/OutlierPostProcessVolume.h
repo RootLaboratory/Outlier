@@ -44,7 +44,8 @@ enum class EOutlierPostProcessMaterialType : uint8
 	// 파트너 아웃라인. 게임플레이 이벤트와 무관하게 상시 켜져 있다.
 	PartnerOutline UMETA(DisplayName = "Partner Outline"),
 	// Append only: existing Blueprint map keys retain their serialized values.
-	Readability UMETA(DisplayName = "Character Readability")
+	Readability UMETA(DisplayName = "Character Readability"),
+	PartnerShield UMETA(DisplayName = "Partner Shield")
 
 };
 
@@ -54,6 +55,23 @@ class OUTLIER_API AOutlierPostProcessVolume : public APostProcessVolume
 	GENERATED_BODY()
 
 public:
+	AOutlierPostProcessVolume();
+	virtual void Tick(float DeltaSeconds) override;
+	void SetPartnerShieldPostProcessEnabled(bool bInEnabled);
+	void UpdatePartnerShieldMaterialParameters() const;
+
+	UPROPERTY(EditAnywhere, Category = "Partner Shield", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float PartnerShieldMaskMin = 0.55f;
+
+	UPROPERTY(EditAnywhere, Category = "Partner Shield", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float PartnerShieldMaskMax = 0.8f;
+
+	UPROPERTY(EditAnywhere, Category = "Partner Shield", meta = (ClampMin = "0.01", Units = "s"))
+	float PartnerShieldWavePeriod = 2.0f;
+
+	UPROPERTY(EditAnywhere, Category = "Partner Shield")
+	FLinearColor PartnerShieldColor = FLinearColor(0.15f, 1.0f, 0.65f, 1.0f);
+
 	/** Highest-priority enabled volume containing Location; falls back to the volume class defaults. */
 	static FOutlierScreenTransitionTiming ResolveScreenTransitionTiming(UWorld* World, const FVector& Location);
 
@@ -69,6 +87,8 @@ public:
 	void ResetPostProcessMaterialParameters();
 
 	void UpdateScanMaterialParameters(FVector ScanLocation, float ScanRadius) const;
+	// 기존 이름을 유지한다. 노이즈 디졸브 없이 OT 스캔 머티리얼의 종료 글리치를 제어한다.
+	void SetScanEdgeDissolve(float StartTime, float Duration) const;
 
 	// 자기장 렌즈. Scan 과 달리 원점 / 반경이 펄스 동안 고정이라 매 틱 갱신이 없다.
 	// 진행도는 머티리얼이 Time 노드로 직접 계산하므로 여기서는 시작 / 종료 시각만 넘긴다.
@@ -115,6 +135,8 @@ protected:
 
 private:
 	bool SetBlendableWeight(EOutlierPostProcessMaterialType MaterialType, float Weight);
+	bool bPartnerShieldPostProcessEnabled = false;
+	float PartnerShieldWaveElapsed = 0.0f;
 	void InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType MaterialType);
 
 public:

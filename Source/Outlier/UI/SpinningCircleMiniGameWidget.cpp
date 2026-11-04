@@ -5,6 +5,7 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Framework/Application/SlateApplication.h"
 #include "UI/HackCircleBorderWidget.h"
+#include "UI/SpinningCircleSweep.h"
 
 void USpinningCircleMiniGameWidget::OnMiniGameStarted()
 {
@@ -43,7 +44,9 @@ void USpinningCircleMiniGameWidget::OnMiniGameUpdated(float DeltaTime)
 
 	if (bJudgementActive)
 	{
-		const EMouseAreaResult MouseAreaResult = EvaluateMouseArea();
+		const FVector2D MouseLocalPosition = GetMouseLocalPosition();
+		const EMouseAreaResult MouseAreaResult = EvaluateMouseArea(MouseLocalPosition, DeltaTime);
+		PreviousMouseLocalPosition = MouseLocalPosition;
 		if (MouseAreaResult == EMouseAreaResult::Finished)
 		{
 			FinishMiniGame(EHackResult::Success);
@@ -272,9 +275,12 @@ void USpinningCircleMiniGameWidget::ResetMouseToInitialPosition()
 
 	const FVector2D TargetAbsolute = CircleCanvas->GetCachedGeometry().LocalToAbsolute(InitialMouseLocalPosition);
 	FSlateApplication::Get().SetCursorPos(TargetAbsolute);
+	// 커서 강제 이동 후 플랫폼의 픽셀 반올림까지 반영한 실제 커서 위치를 사용한다.
+	PreviousMouseLocalPosition = GetMouseLocalPosition();
 }
 
-USpinningCircleMiniGameWidget::EMouseAreaResult USpinningCircleMiniGameWidget::EvaluateMouseArea() const
+USpinningCircleMiniGameWidget::EMouseAreaResult USpinningCircleMiniGameWidget::EvaluateMouseArea(
+	const FVector2D& MouseLocalPosition, float DeltaTime) const
 {
 	if (CircleLayers.Num() < 2)
 	{
@@ -282,10 +288,9 @@ USpinningCircleMiniGameWidget::EMouseAreaResult USpinningCircleMiniGameWidget::E
 	}
 
 	const FVector2D CenterLocal = GetCircleCenterLocal();
-	const FVector2D ToMouse = GetMouseLocalPosition() - CenterLocal;
+	const FVector2D ToMouse = MouseLocalPosition - CenterLocal;
 
 	const float MouseRadius = ToMouse.Size();
-	const float MouseAngleDegrees = FMath::Fmod(FMath::RadiansToDegrees(FMath::Atan2(ToMouse.Y, ToMouse.X)) + 360.0f, 360.0f);
 
 	//const float OuterLimit = CircleLayers[0].Radius + CircleThickness * 0.5f;
 	//const float InnerLimit = CircleLayers.Last().Radius - CircleThickness * 0.5f;
@@ -301,19 +306,15 @@ USpinningCircleMiniGameWidget::EMouseAreaResult USpinningCircleMiniGameWidget::E
 		return EMouseAreaResult::Reset;
 	}
 
-	for (const FSpinningCircleLayer& Layer : CircleLayers)
+	// 가장 바깥쪽의 닫힌 원은 위의 OuterLimit 검사에서 처리한다.
+	for (int32 Index = 1; Index < CircleLayers.Num(); ++Index)
 	{
-		if (Layer.GapSize <= 0.0f)
-		{
-			continue;
-		}
-
-		if (FMath::Abs(MouseRadius - Layer.Radius) > HalfHitTolerance)
-		{
-			continue;
-		}
-
-		if (!IsAngleInsideGap(Layer, MouseAngleDegrees))
+		const FSpinningCircleLayer& Layer = CircleLayers[Index];
+		const float RotationDelta = Layer.BorderWidget && Layer.bSpinning
+			? Layer.RotationSpeedDegrees * DeltaTime : 0.0f;
+		if (SpinningCircleSweep::HitsWall(PreviousMouseLocalPosition - CenterLocal, ToMouse,
+			Layer.Radius, FMath::Max(0.0f, HalfHitTolerance), Layer.GapSize,
+			Layer.AngleDegrees - RotationDelta, RotationDelta))
 		{
 			return EMouseAreaResult::Reset;
 		}

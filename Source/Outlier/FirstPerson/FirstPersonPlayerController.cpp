@@ -2,6 +2,8 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "Cinematic/OutlierCinematicSubsystem.h"
+#include "InputKeyEventArgs.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Audio/OutlierAudioFeedback.h"
@@ -25,6 +27,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "LocalPlayerUISubSystem.h"
 #include "OutlierGameInstance.h"
+#include "OutlierPlayerState.h"
 #include "OutlierGameMode.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
@@ -374,6 +377,13 @@ void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
 
 	if (!LayerSubsystem->PushWidget(Request).IsValid())
 	{
+		return;
+	}
+
+	if (UUILayerKeyHintWidget* KeyHint = Cast<UUILayerKeyHintWidget>(
+		LayerSubsystem->FindWidgetByOwnerAndClass(Request.RequestOwner, Request.WidgetClass)))
+	{
+		KeyHint->SetVisibility(ESlateVisibility::HitTestInvisible);
 		return;
 	}
 
@@ -731,6 +741,7 @@ void AFirstPersonPlayerController::ClientPopInGameSettingLayer_Implementation(
 void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation(
 	const FGuid& RoundId, bool bImmediateSelections)
 {
+	if (IsEndingPresentationActive()) return;
 	if (!IsLocalController() || !RoundId.IsValid() || GameOverRoundId == RoundId)
 	{
 		return;
@@ -777,6 +788,7 @@ void AFirstPersonPlayerController::HandleDeathBlackNoiseStarted()
 
 void AFirstPersonPlayerController::PushGameOverWidget()
 {
+	if (IsEndingPresentationActive()) return;
 	if (!IsLocalController() || !GameOverRoundId.IsValid() || bGameOverReadySent)
 	{
 		return;
@@ -1022,6 +1034,7 @@ void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation
 	float Scale,
 	bool bAllowInactivePawn)
 {
+	if (IsEndingPresentationActive()) return;
 	if (AFirstPersonPlayerCameraManager* CameraManager =
 		Cast<AFirstPersonPlayerCameraManager>(PlayerCameraManager))
 	{
@@ -1031,6 +1044,7 @@ void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation
 
 bool AFirstPersonPlayerController::SetFirstPersonInputMode(FGameplayTag NewInputMode)
 {
+	if (IsEndingPresentationActive() && NewInputMode != FirstPersonInputModeTags::UI()) return false;
 	if (!IsLocalController() || !NewInputMode.IsValid())
 	{
 		return false;
@@ -1100,6 +1114,7 @@ bool AFirstPersonPlayerController::TryRestoreFirstPersonDefaultInputMode(FGamepl
 
 bool AFirstPersonPlayerController::RestoreFirstPersonDefaultInputMode()
 {
+	if (IsEndingPresentationActive()) return false;
 	if (!IsLocalController())
 	{
 		return false;
@@ -1299,6 +1314,19 @@ void AFirstPersonPlayerController::OnRep_PlayerState()
 	InitializeOutlierPlayerState();
 }
 
+bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+	if (IsLocalController() && Params.Event == IE_Pressed)
+	{
+		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+		{
+			// 완료 키가 위젯 확인이나 메뉴 열기도 실행하지 않도록 Enhanced Input보다 먼저 처리한다.
+			if (Cinematic->HandleCompleteCinematicKey(Params.Key)) return true;
+		}
+	}
+	return Super::InputKey(Params);
+}
+
 void AFirstPersonPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
@@ -1414,6 +1442,11 @@ void AFirstPersonPlayerController::Destroyed()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (ULocalPlayer* Local = GetLocalPlayer(); Local && Local->PlayerController == this)
+	{
+		if (auto* Cinematic = Local->GetSubsystem<UOutlierCinematicSubsystem>())
+			Cinematic->ClearLevelCinematics();
+	}
 	ClearVitalitySources();
 	GameOverRoundId.Invalidate();
 	ClearLocalElevatorFade();
@@ -2367,6 +2400,36 @@ void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(
 	TryNotifyArenaStartReady();
 }
 
+void AFirstPersonPlayerController::ClientPrepareArenaIntro_Implementation(const FGuid& IntroId)
+{
+	if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+		Cinematic->PrepareInitialIntro(this, IntroId);
+}
+
+void AFirstPersonPlayerController::ClientStartArenaIntro_Implementation(const FGuid& IntroId)
+{
+	if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+		Cinematic->StartCinematic(IntroId);
+}
+
+void AFirstPersonPlayerController::ClientCompleteArenaIntro_Implementation(const FGuid& IntroId)
+{
+	if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+		Cinematic->CompleteCinematic(IntroId);
+}
+
+void AFirstPersonPlayerController::ClientReleaseArenaIntro_Implementation(const FGuid& IntroId)
+{
+	if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+		Cinematic->ReleaseCinematic(IntroId);
+}
+
+void AFirstPersonPlayerController::ServerNotifyCinematic_Implementation(const FOutlierCinematicContext& Context)
+{
+	if (auto* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+		GM->HandleCinematicContext(this, Context);
+}
+
 void AFirstPersonPlayerController::TryNotifyArenaStartReady()
 {
 	if (!bWaitingForArenaStart || !IsLocalController() || !bHasPendingArenaRequest
@@ -2626,7 +2689,10 @@ void AFirstPersonPlayerController::ControlMainWidget(bool InFlag) const
 
 	if (ShooterUIInstance)
 	{
-		ShooterUIInstance->ModulesControl(InFlag);
+		// 해킹 및 EMP 취소 후 HUD를 복원할 때도 슈트 획득 조건을 적용한다.
+		const AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+		const bool bSuitAcquired = OutlierPlayerState && OutlierPlayerState->GetAcquiredSuit();
+		ShooterUIInstance->ModulesControl(InFlag && bSuitAcquired);
 	}
 }
 

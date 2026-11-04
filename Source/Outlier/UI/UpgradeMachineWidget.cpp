@@ -1,4 +1,5 @@
 #include "UI/UpgradeMachineWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/Button.h"
 #include "Components/Image.h"
@@ -267,7 +268,12 @@ void UUpgradeMachineWidget::TryPopMachineLayer()
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
 		: nullptr;
-	if (LayerSubsystem && LayerSubsystem->PopWidget(this) && bUIOpenedReported)
+	if (!LayerSubsystem || !LayerSubsystem->PopWidget(this))
+	{
+		return;
+	}
+	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.Object.SavePoint.EXIT"), TEXT("Audio.Type.Interactable"));
+	if (bUIOpenedReported)
 	{
 		bUIOpenedReported = false;
 		if (AOutlierPlayerState* PlayerState = OpenedPlayerState.Get())

@@ -43,6 +43,7 @@ bool ULocalPlayerUISubSystem::DispatchInfoRequest(UInfoCanvasBase* Canvas, const
 
 bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest& Pending)
 {
+	if (IsEndingPresentationActive()) return false;
 	UWorld* World = GetWorld();
 	if (bIsDeinitializing || bClearingEventInfo || !World || World->bIsTearingDown || !Pending.Request.EventTag.IsValid())
 	{
@@ -204,6 +205,11 @@ void ULocalPlayerUISubSystem::RefreshEventUI()
 
 void ULocalPlayerUISubSystem::HandleInfoWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
+	if (EndingWorld.Get() == World)
+	{
+		EndingWorld.Reset();
+		bTransientWidgetsSuppressed = false;
+	}
 	if (World == GetWorld() || World == VitalityWorld.Get()) ResetVitalityPresentation();
 	PendingInfoRequests.RemoveAll([World](const FOutlierPendingInfoRequest& Pending)
 	{
@@ -233,6 +239,11 @@ void ULocalPlayerUISubSystem::Deinitialize()
 
 void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 {
+	if (IsEndingPresentationActive())
+	{
+		if (IsValid(InMainUI)) InMainUI->RemoveFromParent();
+		return;
+	}
 	if (!IsValid(InMainUI)) return;
 	if (MainUIInstance != InMainUI)
 	{
@@ -248,6 +259,7 @@ void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 	// 마지막으로 받은 슈트 상태를 새 MainUI 에 물려준다.
 	// 위젯이 신호보다 늦게 생겨도 게이트가 맞도록 하는 유일한 경로다.
 	OnShooterSuitAcquiredChanged(bShooterSuitAcquired);
+	OnPartnerConnectionChanged(bPartnerConnectionLost);
 	RefreshVitalityPresentation();
 	RefreshEventUI();
 }
@@ -258,6 +270,22 @@ void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 	{
 		ClearEventInfo();
 		MainUIInstance = nullptr;
+	}
+}
+
+bool ULocalPlayerUISubSystem::IsEndingPresentationActive() const
+{
+	return EndingWorld.IsValid() && EndingWorld.Get() == GetWorld();
+}
+
+void ULocalPlayerUISubSystem::BeginEndingPresentation()
+{
+	EndingWorld = GetWorld();
+	SetTransientWidgetsSuppressed(true);
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->SetVisibility(ESlateVisibility::Collapsed);
+		MainUI->RemoveFromParent();
 	}
 }
 
@@ -272,6 +300,7 @@ void ULocalPlayerUISubSystem::FlushMainUITransientWidgets()
 
 void ULocalPlayerUISubSystem::SetTransientWidgetsSuppressed(bool bSuppressed)
 {
+	if (!bSuppressed && IsEndingPresentationActive()) return;
 	bTransientWidgetsSuppressed = bSuppressed;
 	if (bSuppressed)
 	{
@@ -305,6 +334,7 @@ UEventDrivenUI* ULocalPlayerUISubSystem::GetModuleAny(
 
 void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 {
+	if (IsEndingPresentationActive()) return;
 	UMainUIBase* MainUI = GetMainUI();
 	if (!MainUI)
 	{
@@ -465,24 +495,14 @@ void ULocalPlayerUISubSystem::ResetVitalityPresentation()
 
 void ULocalPlayerUISubSystem::OnShooterSuitAcquiredChanged(bool bAcquired)
 {
-	// 이 함수는 UI 갱신 때마다 반복해서 불린다. 크로스헤어 초기화는 상태가 실제로
-	// 바뀐 순간에만 해야 한다 — 매번 하면 플레이 중 확산이 계속 0 으로 밟힌다.
-	const bool bChanged = (bShooterSuitAcquired != bAcquired);
 	bShooterSuitAcquired = bAcquired;
-
 	if (UGangTongMainUI* PartnerMainUI = Cast<UGangTongMainUI>(GetMainUI()))
 	{
 		PartnerMainUI->SetSuitGatedModulesEnabled(bAcquired);
 	}
-
-	// 슈트 이전에 쏜 흔적(확산/조준 상태)이 남아 있으면 획득 후 무기를 다시 꺼낼 때
-	// 그대로 되살아난다. 획득 시점에 양쪽 크로스헤어를 초기값으로 되돌린다.
-	if (bAcquired && bChanged)
+	if (UShooterMainWidget* ShooterMainUI = Cast<UShooterMainWidget>(GetMainUI()))
 	{
-		if (UShooterMainWidget* ShooterMainUI = Cast<UShooterMainWidget>(GetMainUI()))
-		{
-			ShooterMainUI->ResetCrossHairs();
-		}
+		ShooterMainUI->SetCrosshairSuitAcquired(bAcquired);
 	}
 }
 
@@ -689,11 +709,9 @@ void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 
 void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate, float InElapsedTime)
 {
-	// 슈트 전에는 크로스헤어 상태를 아예 건드리지 않는다 (HUD 가 꺼져 있는 구간).
-	if (!bShooterSuitAcquired)
-	{
-		return;
-	}
+	// Shooter의 선택된 모듈에서 라이플의 슈트 조건을 검사한다. 권총은 항상 사용할 수 있다.
+	// Partner는 기존 슈트 획득 조건을 유지한다.
+	if (!bShooterSuitAcquired && !Cast<UShooterMainWidget>(GetMainUI())) return;
 
 	UEventDrivenUI* CrossHairModule = GetModuleAny(TagDrivenUITags::Shooter::CrossHair(), TagDrivenUITags::Partner::CrossHair());
 	if (!CrossHairModule)
@@ -760,6 +778,15 @@ void ULocalPlayerUISubSystem::OnAbilityEnabledByDistance()
 	if (UMainUIBase* MainUI = GetMainUI())
 	{
 		MainUI->On_RepAbilityabledByDistance();
+	}
+}
+
+void ULocalPlayerUISubSystem::OnPartnerConnectionChanged(bool bLost)
+{
+	bPartnerConnectionLost = bLost;
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->SetConnectionLost(bLost);
 	}
 }
 

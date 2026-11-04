@@ -26,6 +26,9 @@ public:
 	void InitializeForEnemy(AEnemyBase* InEnemy);
 	UFUNCTION(BlueprintPure, Category = "Enemy HUD")
 	AEnemyBase* GetOwningEnemy() const;
+	// 빙의 액터나 GAS 상태 변경 없이 동일한 마스크, 섞기 및 20% 임계값을 사용한다.
+	bool InitializeDamagePreview(int32 Seed);
+	void SetDamagePreviewHealthRatio(float HealthRatio);
 
 	// Pop 직전에 PartnerPC가 부른다. 체력/시간 구독을 끊고 RDG 마스크를 지운다.
 	void ReleaseDamageFeedback(bool bPreserveHackExpiry = false);
@@ -71,6 +74,8 @@ private:
 	void BindDamageFeedback();
 	void HandleVitalAttributeChanged(const FOnAttributeChangeData& ChangeData);
 	void RefreshDamageStage();
+	bool InitializeDamageMasks(int32 Seed);
+	void ApplyDamageLostRatio(float LostRatio);
 	ULocalPlayerPostProcessSubsystem* GetPostProcessSubsystem() const;
 	UTexture2D* GetDamageMaskTexture(int32 MaskIndex) const;
 
@@ -83,4 +88,5 @@ private:
 	uint8 DamageRevealOrder[4] = { 0, 1, 2, 3 };
 	int32 RevealedDamageStageCount = 0;
 	bool bDamageFeedbackBound = false;
+	bool bDamagePreview = false;
 };

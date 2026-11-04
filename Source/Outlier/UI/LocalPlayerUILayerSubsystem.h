@@ -4,6 +4,7 @@
 #include "GameplayTagContainer.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
 #include "UI/UILayerTypes.h"
+#include "Components/SlateWrapperTypes.h"
 #include "LocalPlayerUILayerSubsystem.generated.h"
 
 class UControllerInputConfig;
@@ -13,6 +14,8 @@ class UPanelWidget;
 class UUILayerRootWidget;
 class UUserWidget;
 class UWidget;
+class UEnemyHudWidget;
+enum class EDroneDamagePreviewAction : uint8;
 
 struct FUILayerEntry
 {
@@ -78,6 +81,9 @@ public:
 	bool PopWidget(UUserWidget* Widget);
 	int32 PopLayersByOwner(UObject* RequestOwner);
 	void ClearAllLayers();
+	// 이 월드의 최종 화면 상태다. 사전 검증된 두 위젯만 추가할 수 있다.
+	void BeginEndingPresentation(UUserWidget* Ending, UUserWidget* Hint);
+	bool IsEndingPresentationActive() const;
 
 	bool RefocusLayer(FUILayerHandle Handle, EUILayerFocusTarget FocusTarget);
 	bool IsLayerActive(FGameplayTag LayerTag) const;
@@ -100,6 +106,22 @@ public:
 	const UControllerInputConfig* GetWidgetInputConfig() const { return WidgetInputConfig; }
 
 private:
+	void HandleDroneDamagePreview(EDroneDamagePreviewAction Action);
+	void StopDroneDamagePreview();
+	UFUNCTION()
+	void HandleDronePreviewPawnChanged(APawn* OldPawn, APawn* NewPawn);
+	UPROPERTY(Transient)
+	TObjectPtr<UEnemyHudWidget> DronePreviewHud;
+	TWeakObjectPtr<UMainUIBase> DronePreviewMainUI;
+	TWeakObjectPtr<APlayerController> DronePreviewController;
+	FUILayerHandle DronePreviewLayer;
+	ESlateVisibility DronePreviewPreviousVisibility = ESlateVisibility::Visible;
+	float DronePreviewHealthRatio = 1.0f;
+	FString DronePreviewMessage = TEXT("Preview swaps to Drone HUD. Damage -20% reveals one random corner per step.");
+
+	TWeakObjectPtr<UWorld> EndingWorld;
+	TWeakObjectPtr<UUserWidget> EndingWidget;
+	TWeakObjectPtr<UUserWidget> EndingHint;
 	bool AttachWidgetToLayer(
 		FGameplayTag LayerTag,
 		UUserWidget* Widget,

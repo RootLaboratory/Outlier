@@ -1847,9 +1847,7 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(
 		for (const FTransform& MuzzleTransform : MuzzleTransforms)
 		{
 			const bool bPartnerWeapon = Cast<APartnerCharacter>(WeaponOwner) != nullptr;
-			const FVector Start = bPartnerWeapon
-				? MuzzleTransform.GetLocation()
-				: MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
+			const FVector Start = MuzzleTransform.GetLocation();
 			const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 
 			if (WeaponMuzzle)

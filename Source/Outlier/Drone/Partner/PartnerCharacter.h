@@ -12,6 +12,7 @@
 #include "Damage/OutlierDamageReceiver.h"
 #include "Interface/JumperAffectableInterface.h"
 #include "Settings/OutlierInputUserSettings.h"
+#include "PostProcess/OutlierReadabilityTarget.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -86,7 +87,7 @@ struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
 struct FOnAttributeChangeData;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IWeaponDamageModifierProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IWeaponDamageModifierProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface, public IOutlierReadabilityTarget
 {
 	GENERATED_BODY()
 
@@ -100,6 +101,13 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerEMPComponent;
 	friend class FPartnerStandbyTest;
 	friend class FOutlierSlideSuitRecoveryTest;
+public:
+	/** 기존 직렬화 설정을 유지한다. 가독성 표현에는 공통 예약 비트(16)를 사용한다. */
+	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability")
+	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
+
+	virtual void InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil) override;
+
 	friend class FPartnerSprintInputModeTest;
 protected:
 	// Components
@@ -529,6 +537,7 @@ protected:
 	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
 	void HandlePartnerCooldownTagChanged(const FGameplayTag CooldownTag, int32 NewCount);
 	void HandlePartnerHackChargesChanged(bool bRecovered);
+	void TryActivatePartnerSkill(const FGameplayTag& AbilityTag);
 	FDelegateHandle PartnerCooldownEffectAddedHandle;
 	FDelegateHandle PartnerHackChargesChangedHandle;
 	TMap<FGameplayTag, FDelegateHandle> PartnerCooldownTagHandles;

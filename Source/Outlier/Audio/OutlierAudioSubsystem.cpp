@@ -121,6 +121,7 @@ void UOutlierAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 bool UOutlierAudioSubsystem::PlayLocalVoice(FGameplayTag SoundTag, int32 Priority,
 	FGameplayTag RequestTag, ULocalPlayer* Listener)
 {
+	if (IsEndingPresentationActive()) return false;
 	if (bStoppingAllLocalAudio) return false;
 	UWorld* World = GetWorld();
 	if (!SoundTag.IsValid() || !RequestTag.IsValid() || !IsValid(Listener)
@@ -1207,6 +1208,10 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	const FOutlierAudioPlayRequest& Request,
 	const FOutlierAudioExecutionPolicy& Policy)
 {
+	if (IsEndingPresentationActive()
+		&& (Policy.PlaybackMode != EOutlierAudioPlaybackMode::TwoD
+			|| (Request.EventTag != FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.UI"), false)
+				&& (!EndingAudioContext.IsValid() || !Request.ContextTags.HasTagExact(EndingAudioContext))))) return false;
 	if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
 	{
 		UE_LOG(LogOutlier, Log, TEXT("[AudioTags][Request] World='%s' Emitter='%s' Authority=%s Audience=%s Type='%s' Contexts='%s' Exact=%d Candidates='%s' MovementEvent=%llu"),
@@ -1532,6 +1537,9 @@ bool UOutlierAudioSubsystem::HandleServerRelevantAtLocationRequest(
 bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 	const FOutlierResolvedAudioPlay& DeliveredPlay)
 {
+	if (IsEndingPresentationActive() && (DeliveredPlay.bAtLocation || DeliveredPlay.LegacySound)) return false;
+	if (IsEndingPresentationActive() && DeliveredPlay.MusicContextTag.IsValid()
+		&& !IsEndingAudioAllowed(DeliveredPlay.EventTag, DeliveredPlay.MusicContextTag)) return false;
 	if (bStoppingAllLocalAudio) return false;
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_DedicatedServer) return false;
@@ -1572,13 +1580,14 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 		return false;
 	}
 
+	if (!IsEndingAudioAllowed(ResolvedPlay.EventTag, Entry->RequiredContext)) return false;
 	FPendingPlay PendingPlay;
 	PendingPlay.MovementAudioEmitter = ResolvedPlay.MovementAudioEmitter;
 	PendingPlay.MovementAudioEventId = ResolvedPlay.MovementAudioEventId;
 	PendingPlay.MovementPlaybackToken = ResolvedPlay.MovementPlaybackToken;
 	PendingPlay.World = GetWorld();
 	PendingPlay.bPlayWhenPaused = !ResolvedPlay.bAtLocation
-		&& Entry->RequiredContext.ToString().StartsWith(TEXT("Audio.Context.UI.Menu."));
+		&& (IsEndingPresentationActive() || Entry->RequiredContext.ToString().StartsWith(TEXT("Audio.Context.UI.Menu.")));
 	PendingPlay.SourceName = Entry->SourceName;
 	PendingPlay.bAtLocation = ResolvedPlay.bAtLocation;
 	PendingPlay.Location = ResolvedPlay.Location;
@@ -1669,6 +1678,25 @@ float UOutlierAudioSubsystem::GetVolumeMultiplier(EOutlierAudioVolumeType Volume
 	}
 
 	return 1.0f;
+}
+
+bool UOutlierAudioSubsystem::IsEndingPresentationActive() const
+{
+	return EndingWorld.IsValid() && EndingWorld.Get() == GetWorld();
+}
+
+bool UOutlierAudioSubsystem::IsEndingAudioAllowed(FGameplayTag Type, FGameplayTag Context) const
+{
+	return !IsEndingPresentationActive()
+		|| Type == FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.UI"), false)
+		|| (EndingAudioContext.IsValid() && Context == EndingAudioContext);
+}
+
+void UOutlierAudioSubsystem::BeginEndingPresentation(FGameplayTag AudioContext)
+{
+	EndingWorld = GetWorld();
+	EndingAudioContext = AudioContext;
+	StopAllLocalAudio();
 }
 
 void UOutlierAudioSubsystem::StopAllLocalAudio()
@@ -2492,6 +2520,7 @@ void UOutlierAudioSubsystem::StopLocalEmitterTimedSound(AActor* Emitter, FGamepl
 void UOutlierAudioSubsystem::SetLocalEmitterLoop(AActor* Emitter, FGameplayTag Type,
 	FGameplayTag Context, bool bEnabled, bool bTwoD, float FadeOutDuration)
 {
+	if (IsEndingPresentationActive()) return;
 	if (bStoppingAllLocalAudio) return;
 	UWorld* World = Emitter ? Emitter->GetWorld() : nullptr;
 	if (!World || World->GetNetMode() == NM_DedicatedServer || !Context.IsValid()) return;

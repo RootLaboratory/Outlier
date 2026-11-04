@@ -37,6 +37,7 @@ private:
 	AAutoTurret* FindNearestShieldTurret() const;
 	static constexpr int32 DefaultScanStencilValue = 0;
 	static constexpr float ScanUpdateInterval = 0.03f;
+	static constexpr float ScanEdgeDissolveDuration = 0.3f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Shield")
 	TSubclassOf<APartnerShieldSphere> ShieldActorClass;
@@ -47,6 +48,7 @@ private:
 	FTimerHandle ShieldMonitorTimerHandle;
 	FTimerHandle ScanServerStateTimerHandle;
 	FTimerHandle ScanClientUpdateTimerHandle;
+	FTimerHandle ScanEdgeDissolveTimerHandle;
 
 	float CurrentScanRadius = 0.0f;
 	float ScanElapsedTime = 0.0f;

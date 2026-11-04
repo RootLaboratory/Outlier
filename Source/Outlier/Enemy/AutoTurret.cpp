@@ -757,6 +757,7 @@ void AAutoTurret::SetTurretLifecycleState(EAutoTurretLifecycleState NewState)
 	{
 		ApplyTurretLifecycleState();
 	}
+	RefreshEnemyAudioState();
 
 	if (HasAuthority() && HasActorBegunPlay())
 	{
@@ -1067,11 +1068,24 @@ void AAutoTurret::OnRep_TurretLifecycleState()
 	{
 		ApplyTurretLifecycleState();
 	}
+	RefreshEnemyAudioState();
 
 	if (TurretLifecycleState == EAutoTurretLifecycleState::Active)
 	{
 		OnTurretDeploymentCompleted();
 	}
+}
+
+bool AAutoTurret::ShouldPlayCombatLoopAudio() const
+{
+	// 사망 연출 중이거나 전개 전인 터렛은 전투음을 내지 않는다.
+	return Super::ShouldPlayCombatLoopAudio() && TurretLifecycleState == EAutoTurretLifecycleState::Active;
+}
+
+void AAutoTurret::PlayAttackAudio()
+{
+	if (AttackAudioContext.IsValid())
+		OutlierAudioFeedback::World(this, *AttackAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
 }
 
 void AAutoTurret::MulticastBeginTurretDeployment_Implementation(

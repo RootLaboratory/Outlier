@@ -144,6 +144,8 @@ public:
 	/** 현재 재생과 대기 요청을 모두 정리한다. 이후 UI 재생 요청은 계속 사용할 수 있다. */
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio|Playback")
 	void StopAllLocalAudio();
+	void BeginEndingPresentation(FGameplayTag AudioContext);
+	bool IsEndingPresentationActive() const;
 	/** 메뉴 진입 시 일시적인 피드백만 중단하고 게임플레이가 요청한 루프 상태는 유지한다. */
 	void StopTransientLocalAudio();
 	void StartFrontendMusic();
@@ -177,6 +179,9 @@ public:
 	void MarkMenuAction() { ++MenuAudioSerial; LastMenuAudioFrame = GFrameCounter; }
 
 private:
+	TWeakObjectPtr<UWorld> EndingWorld;
+	FGameplayTag EndingAudioContext;
+	bool IsEndingAudioAllowed(FGameplayTag Type, FGameplayTag Context) const;
 	struct FRuntimeCatalogEntry;
 	friend class FOutlierMovementAudioPredictionTest;
 	struct FMovementAudioKey

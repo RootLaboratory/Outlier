@@ -7,6 +7,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagContainer.h"
 #include "Audio/OutlierAudioTypes.h"
+#include "Cinematic/OutlierCinematicTypes.h"
 #include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
 #include "Save/OutlierCheckpointRestartVote.h"
@@ -26,6 +27,7 @@ class UInGameSettingWidget;
 class UCameraShakeBase;
 class UOutlierUpgradeSetData;
 class UGameOverWidget;
+class UOutlierEndingWidget;
 class UGameOverPendingWidget;
 class UWidget;
 class AActor;
@@ -156,6 +158,10 @@ public:
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
 
 	UFUNCTION(Client, Reliable)
+	void ClientShowEnding(TSubclassOf<UOutlierEndingWidget> EndingWidgetClass);
+	bool IsEndingPresentationActive() const;
+
+	UFUNCTION(Client, Reliable)
 	void ClientShowGameOverPending(const FGameOverPendingRequest& Request, bool bIsRequester);
 
 	UFUNCTION(Client, Reliable)
@@ -272,6 +278,18 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForArenaStart(FVector InSpawnLocation);
 
+	// 로딩 ACK는 빙의를 진행하고, 시네마틱 ACK는 별도로 최초 게임 시작 조건을 제어한다.
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareArenaIntro(const FGuid& IntroId);
+	UFUNCTION(Client, Reliable)
+	void ClientStartArenaIntro(const FGuid& IntroId);
+	UFUNCTION(Client, Reliable)
+	void ClientCompleteArenaIntro(const FGuid& IntroId);
+	UFUNCTION(Client, Reliable)
+	void ClientReleaseArenaIntro(const FGuid& IntroId);
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyCinematic(const FOutlierCinematicContext& Context);
+
 	// 서버에서 계산한 폭발 충격을 소유 클라이언트의 CameraManager에 전달한다.
 	UFUNCTION(Client, Unreliable)
 	void ClientPlayExplosionCameraShake(
@@ -369,6 +387,7 @@ protected:
 
 	// Input Mapping Context Setup
 	virtual void SetupInputComponent() override;
+	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 	void HandleWidgetEscapeInput();
 	void PlayWidgetEscapeLocal2DAudio();
 
