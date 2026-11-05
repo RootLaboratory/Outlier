@@ -47,12 +47,6 @@ protected:
 	TObjectPtr<UProgressBar> HackingProgressbar;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UBorder> hackingInputBorder;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UTextBlock> hackingInputKeytext;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UImage> hackingInfoImage;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|InfoWidget")

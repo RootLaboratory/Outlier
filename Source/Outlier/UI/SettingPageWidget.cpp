@@ -89,7 +89,9 @@ void USettingPageWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTi
 
 void USettingPageWidget::HandlePageScrollBarScrolled(float OffsetFraction)
 {
-	if (!PageScrollBox) return;
+	if (!PageScrollBox || !PageScrollBar || !PageScrollBar->GetIsEnabled()
+		|| PageScrollBar->GetVisibility() == ESlateVisibility::Collapsed
+		|| PageScrollBar->GetVisibility() == ESlateVisibility::Hidden) return;
 	if (PageScrollBarThumbLength > 0.0f && PageScrollBar)
 	{
 		const float TravelFraction = 1.0f - GetFixedThumbFraction();

@@ -61,8 +61,19 @@ void UPreSetLoadWidget::SelectFirstStage()
 
 void UPreSetLoadWidget::MoveStageSelection(int32 Step)
 {
-	const int32 NextIndex = (ChosenStageIndex + Step + 4) % 4;
-	SetChosenStage(static_cast<EOutlierStage>(NextIndex + 1), true);
+	const int32 Direction = Step < 0 ? -1 : 1;
+	int32 NextIndex = (ChosenStageIndex + Step % 4 + 4) % 4;
+	for (int32 Checked = 0; Checked < 4; ++Checked)
+	{
+		const EOutlierStage Stage = static_cast<EOutlierStage>(NextIndex + 1);
+		if (GetStageButton(Stage))
+		{
+			SetChosenStage(Stage, true);
+			return;
+		}
+		// Optional stage buttons must not trap keyboard selection at a missing entry.
+		NextIndex = (NextIndex + Direction + 4) % 4;
+	}
 }
 
 bool UPreSetLoadWidget::ConfirmStageSelection()
@@ -84,12 +95,25 @@ void UPreSetLoadWidget::SetChosenStage(EOutlierStage Stage, bool bFocusButton)
 		return;
 	}
 	ChosenStageIndex = StageIndex;
+	bShowStageSelection = true;
 	ApplyStageSelection();
 	OnPresetStageHoverChanged.Broadcast(Stage, true);
 	if (bFocusButton && GetOwningPlayer())
 	{
 		SetUserFocus(GetOwningPlayer());
 	}
+}
+
+void UPreSetLoadWidget::HandleStageButtonUnhovered(EOutlierStage Stage)
+{
+	// A late Unhovered from the previous button must preserve the new selection's highlight.
+	if (static_cast<int32>(Stage) - 1 == ChosenStageIndex)
+	{
+		bShowStageSelection = false;
+		ApplyStageSelection();
+	}
+	// GameOver forwards this to the separate StagePreviewWidget, hiding its entire hierarchy.
+	OnPresetStageHoverChanged.Broadcast(Stage, false);
 }
 
 void UPreSetLoadWidget::ApplyStageSelection()
@@ -102,11 +126,11 @@ void UPreSetLoadWidget::ApplyStageSelection()
 			continue;
 		}
 		FButtonStyle Style = OriginalStageButtonStyles[Index];
-		if (Index == ChosenStageIndex + 1)
+		if (bShowStageSelection && Index == ChosenStageIndex + 1)
 		{
 			Style.SetNormal(Style.Hovered);
 		}
-		else
+		else if (bShowStageSelection)
 		{
 			Style.SetHovered(Style.Normal);
 		}
@@ -178,7 +202,7 @@ void UPreSetLoadWidget::HandleLevel01ButtonHovered()
 
 void UPreSetLoadWidget::HandleLevel01ButtonUnhovered()
 {
-	OnPresetStageHoverChanged.Broadcast(EOutlierStage::Level01, false);
+	HandleStageButtonUnhovered(EOutlierStage::Level01);
 }
 
 void UPreSetLoadWidget::HandleLevel02ButtonHovered()
@@ -188,7 +212,7 @@ void UPreSetLoadWidget::HandleLevel02ButtonHovered()
 
 void UPreSetLoadWidget::HandleLevel02ButtonUnhovered()
 {
-	OnPresetStageHoverChanged.Broadcast(EOutlierStage::Level02, false);
+	HandleStageButtonUnhovered(EOutlierStage::Level02);
 }
 
 void UPreSetLoadWidget::HandleLevel03ButtonHovered()
@@ -198,7 +222,7 @@ void UPreSetLoadWidget::HandleLevel03ButtonHovered()
 
 void UPreSetLoadWidget::HandleLevel03ButtonUnhovered()
 {
-	OnPresetStageHoverChanged.Broadcast(EOutlierStage::Level03, false);
+	HandleStageButtonUnhovered(EOutlierStage::Level03);
 }
 
 void UPreSetLoadWidget::HandleLevel04ButtonHovered()
@@ -208,5 +232,5 @@ void UPreSetLoadWidget::HandleLevel04ButtonHovered()
 
 void UPreSetLoadWidget::HandleLevel04ButtonUnhovered()
 {
-	OnPresetStageHoverChanged.Broadcast(EOutlierStage::Level04, false);
+	HandleStageButtonUnhovered(EOutlierStage::Level04);
 }

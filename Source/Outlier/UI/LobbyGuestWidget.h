@@ -8,6 +8,8 @@ class UImage;
 class UTextBlock;
 class UTexture2D;
 class UButton;
+class UInputActionKeyDisplayWidget;
+class UMaterialInstanceDynamic;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnLobbyGuestMoveRequested, int32 /* Direction */);
 
@@ -67,11 +69,15 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UImage> ResultImage;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lobby|Guest")
-	TObjectPtr<UTexture2D> DefaultTexture;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UInputActionKeyDisplayWidget> DefaultKey;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lobby|Guest")
 	TObjectPtr<UTexture2D> ConfirmedTexture;
+
+	// M_LobbyButton의 스프라이트 애니메이션 정지 여부 Scalar 파라미터 (0: 재생, 1: 정지).
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lobby|Guest|Material")
+	FName ButtonAnimationPausedParameterName = TEXT("paused");
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Lobby|Guest")
 	void OnGuestStateChanged(ELobbyGuestWidgetState State, bool bIsLocalGuest, bool bIsConfirmed);
@@ -83,6 +89,22 @@ private:
 	UFUNCTION()
 	void HandleRightButtonClicked();
 
+	UFUNCTION()
+	void HandleLeftButtonHovered();
+
+	UFUNCTION()
+	void HandleLeftButtonUnhovered();
+
+	UFUNCTION()
+	void HandleRightButtonHovered();
+
+	UFUNCTION()
+	void HandleRightButtonUnhovered();
+
+	UMaterialInstanceDynamic* InitializeButtonMaterial(UButton* Button);
+	void SetButtonAnimationPaused(UMaterialInstanceDynamic* ButtonMaterial, bool bPaused) const;
+	void SetArrowButtonVisible(UButton* Button, UMaterialInstanceDynamic* ButtonMaterial, bool bVisible) const;
+
 	void RefreshText();
 	void RefreshResultImage();
 	void RefreshPresentation();
@@ -91,4 +113,10 @@ private:
 	ELobbyGuestWidgetState GuestState = ELobbyGuestWidgetState::Default;
 	bool bIsOwningLocalGuest = false;
 	bool bConfirmed = false;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> LeftButtonMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> RightButtonMaterial;
 };

@@ -9,7 +9,7 @@
 #include "GameOverWidget.generated.h"
 
 class UButton;
-class UImage;
+class UStagePreviewWidget;
 class UTexture2D;
 class UGameOverPendingWidget;
 class UUILayerKeyHintWidget;
@@ -67,9 +67,9 @@ protected:
 
 	// PresetLoad의 스테이지 버튼에 hover하는 동안만 보인다. 위치와 크기는 WBP 배치를 따른다.
 	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UImage> StagePreviewImage;
+	TObjectPtr<UStagePreviewWidget> StagePreviewWidget;
 
-	// hover된 스테이지에 맞춰 StagePreviewImage 브러시에 넣을 텍스처.
+	// hover된 스테이지에 맞춰 StagePreviewWidget의 PreviewImage에 넣을 텍스처.
 	UPROPERTY(EditDefaultsOnly, Category = "Game Over|Stage Preview")
 	TMap<EOutlierStage, TObjectPtr<UTexture2D>> StagePreviewTextures;
 

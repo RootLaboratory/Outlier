@@ -28,4 +28,6 @@ protected:
 	virtual void StartInfoPresentation() override;
 	virtual void ResetInfoContent() override;
 	virtual void InfoFinished(const FOutlierInfoWidgetRequest& Request, bool bCompleted) override;
+	/** Input 튜토리얼만 페이드한다. Goal은 자체 팝업 애니메이션을 사용한다. */
+	virtual bool ShouldFadeCurrentInfo() const override;
 };

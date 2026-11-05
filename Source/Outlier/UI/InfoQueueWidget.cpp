@@ -48,7 +48,8 @@ bool UInfoQueueWidget::EnqueueInfo(const FOutlierInfoWidgetRequest& Request)
 	if (!WidgetRequest.OriginEventTag.IsValid()) WidgetRequest.OriginEventTag = WidgetRequest.EventTag;
 	if (!PrepareInfoRequest(WidgetRequest)) return false;
 	// 반복 요청은 원래의 지속 시간과 위치를 유지한다.
-	if ((bHasCurrentInfo && CurrentRequest.EventTag == WidgetRequest.EventTag
+	// Fade out 중인 항목은 이미 끝난 것으로 보고 새 요청을 대기열에 넣는다.
+	if ((bHasCurrentInfo && !IsFadingOut() && CurrentRequest.EventTag == WidgetRequest.EventTag
 		&& CurrentRequest.OriginEventTag == WidgetRequest.OriginEventTag)
 		|| PendingRequests.ContainsByPredicate([&WidgetRequest](const FOutlierInfoWidgetRequest& Pending)
 		{
@@ -94,10 +95,11 @@ void UInfoQueueWidget::AdvanceQueue()
 		bHasCurrentInfo = true;
 		const uint32 Generation = ++PresentationGeneration;
 		const FOutlierInfoWidgetRequest Request = CurrentRequest;
+		// 이전 항목 종료 시 원래 투명도로 복구되므로 매 항목 시작 시 기준값을 캡처한다.
+		PresentationRenderOpacity = GetRenderOpacity();
 		PresentationWarmupFramesRemaining = FMath::Max(0, GetPresentationWarmupFrames());
 		if (PresentationWarmupFramesRemaining > 0)
 		{
-			PresentationRenderOpacity = GetRenderOpacity();
 			LastPresentationWarmupFrame = GFrameCounter;
 			SetRenderOpacity(0.0f);
 		}
@@ -122,6 +124,7 @@ void UInfoQueueWidget::AdvanceQueue()
 				}
 				else
 				{
+					BeginFadeIn();
 					StartInfoPresentation();
 					if (Generation == PresentationGeneration && bHasCurrentInfo)
 					{
@@ -158,7 +161,7 @@ void UInfoQueueWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime
 			if (--PresentationWarmupFramesRemaining == 0)
 			{
 				const FGameplayTag EventTag = CurrentRequest.EventTag;
-				SetRenderOpacity(PresentationRenderOpacity);
+				BeginFadeIn();
 				StartInfoPresentation();
 				if (Generation != PresentationGeneration || !bHasCurrentInfo) return;
 				OnInfoItemShown.Broadcast(EventTag);
@@ -167,27 +170,82 @@ void UInfoQueueWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime
 		// Neither preparation nor the reveal tick consumes the requested display duration.
 		return;
 	}
+	if (TickFade(InDeltaTime) || IsFadingOut()) return;
 	if (CurrentRequest.Duration <= 0.0f) return;
 	RemainingDuration = FMath::Max(0.0f, RemainingDuration - InDeltaTime);
 	if (RemainingDuration <= 0.0f)
 	{
-		FinishCurrentInfo(true);
+		RequestFinishCurrentInfo(true);
 	}
 }
 
 void UInfoQueueWidget::CompleteCurrentInfo()
 {
-	FinishCurrentInfo(true);
+	RequestFinishCurrentInfo(true);
+}
+
+void UInfoQueueWidget::BeginFadeIn()
+{
+	FadeElapsed = 0.0f;
+	if (ShouldFadeCurrentInfo() && FadeInDuration > 0.0f)
+	{
+		FadePhase = EInfoFadePhase::In;
+		SetRenderOpacity(0.0f);
+		return;
+	}
+	FadePhase = EInfoFadePhase::None;
+	SetRenderOpacity(PresentationRenderOpacity);
+}
+
+bool UInfoQueueWidget::TickFade(float DeltaTime)
+{
+	if (FadePhase == EInfoFadePhase::None) return false;
+	FadeElapsed += DeltaTime;
+	if (FadePhase == EInfoFadePhase::In)
+	{
+		const float Alpha = FMath::Clamp(FadeElapsed / FMath::Max(FadeInDuration, UE_KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+		SetRenderOpacity(PresentationRenderOpacity * Alpha);
+		if (Alpha >= 1.0f) FadePhase = EInfoFadePhase::None;
+		return false;
+	}
+	const float Alpha = FMath::Clamp(FadeElapsed / FMath::Max(FadeOutDuration, UE_KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+	SetRenderOpacity(FadeOutStartOpacity * (1.0f - Alpha));
+	if (Alpha < 1.0f) return false;
+	// 완전히 사라진 뒤에 완료 콜백, 체인, 다음 항목을 진행한다.
+	FinishCurrentInfo(bFadeOutCompleted);
+	return true;
+}
+
+void UInfoQueueWidget::RequestFinishCurrentInfo(bool bCompleted)
+{
+	if (!bHasCurrentInfo || bClearingQueue) return;
+	// 이미 사라지는 중이면 첫 완료 결과를 유지한다.
+	if (IsFadingOut()) return;
+	// 아직 보이지 않는 항목(warmup 중, 숨김 상태)은 페이드 없이 바로 끝낸다.
+	if (!ShouldFadeCurrentInfo() || FadeOutDuration <= 0.0f || PresentationWarmupFramesRemaining > 0
+		|| !IsVisible() || GetRenderOpacity() <= 0.0f)
+	{
+		FinishCurrentInfo(bCompleted);
+		return;
+	}
+	FadePhase = EInfoFadePhase::Out;
+	FadeElapsed = 0.0f;
+	// Fade in 도중 끝나도 현재 투명도에서 자연스럽게 내려간다.
+	FadeOutStartOpacity = GetRenderOpacity();
+	bFadeOutCompleted = bCompleted;
 }
 
 void UInfoQueueWidget::ResetPresentationWarmup()
 {
-	if (PresentationWarmupFramesRemaining > 0)
+	if (PresentationWarmupFramesRemaining > 0 || FadePhase != EInfoFadePhase::None)
 	{
 		SetRenderOpacity(PresentationRenderOpacity);
 	}
 	PresentationWarmupFramesRemaining = 0;
 	LastPresentationWarmupFrame = 0;
+	FadePhase = EInfoFadePhase::None;
+	FadeElapsed = 0.0f;
+	bFadeOutCompleted = false;
 }
 
 bool UInfoQueueWidget::TryGetInfoRequest(FGameplayTag EventTag, FOutlierInfoWidgetRequest& OutRequest) const
@@ -230,7 +288,7 @@ bool UInfoQueueWidget::CompleteInfoExact(FGameplayTag RequestTag, FGameplayTag O
 {
 	if (bHasCurrentInfo && CurrentRequest.EventTag == RequestTag && CurrentRequest.OriginEventTag == OriginEventTag)
 	{
-		FinishCurrentInfo(true);
+		RequestFinishCurrentInfo(true);
 		return true;
 	}
 	const int32 Index = PendingRequests.IndexOfByPredicate(
@@ -317,7 +375,7 @@ bool UInfoQueueWidget::CancelInfoExact(FGameplayTag RequestTag, FGameplayTag Ori
 {
 	if (bHasCurrentInfo && CurrentRequest.EventTag == RequestTag && CurrentRequest.OriginEventTag == OriginEventTag)
 	{
-		FinishCurrentInfo(false);
+		RequestFinishCurrentInfo(false);
 		return true;
 	}
 	const int32 Index = PendingRequests.IndexOfByPredicate(
@@ -360,6 +418,7 @@ void UInfoQueueWidget::HandleVisibilityChanged(ESlateVisibility InVisibility)
 {
 	if (InVisibility == ESlateVisibility::Collapsed && bHasCurrentInfo && !bClearingQueue)
 	{
-		FinishCurrentInfo(true);
+		// 외부에서 숨긴 경우 페이드 없이 즉시 끝낸다. Fade out 중이었다면 그 결과를 유지한다.
+		FinishCurrentInfo(IsFadingOut() ? bFadeOutCompleted : true);
 	}
 }

@@ -64,6 +64,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
 	float InputBindingRowYOffset = 48.0f;
 
+	// Show and enable the scroll bar only when the displayed row count exceeds this limit.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Scroll", meta = (ClampMin = "0"))
+	int32 InputBindingRowsWithoutScrollBar = 6;
+
 	// Extra space around every generated binding row, in addition to the Canvas Y offset.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Setting|Input")
 	FMargin InputBindingRowPadding = FMargin(0.0f);
@@ -104,6 +108,7 @@ private:
 	friend struct FInputSettingsPresentationTestAccess;
 	void RefreshSprintInputModeRow();
 	void RefreshDisplayedInputRows();
+	void RefreshInputScrollBarVisibility();
 	void HandleInputSettingsContextChanged(EOutlierPlayerRole Role);
 	UPROPERTY(Transient)
 	TObjectPtr<ULocalPlayerSettingsSubsystem> BoundSettingsSubsystem;

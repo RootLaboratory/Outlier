@@ -2,11 +2,11 @@
 #include "UI/GameOverPendingWidget.h"
 #include "UI/GameOverChoiceWidget.h"
 #include "UI/UILayerKeyHintWidget.h"
+#include "UI/StagePreviewWidget.h"
 
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
-#include "Components/Image.h"
 #include "Blueprint/WidgetTree.h"
 #include "Engine/Texture2D.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
@@ -367,7 +367,7 @@ void UGameOverWidget::HandlePresetStageHoverChanged(EOutlierStage Stage, bool bH
 
 void UGameOverWidget::ShowStagePreview(EOutlierStage Stage)
 {
-	if (!StagePreviewImage)
+	if (!StagePreviewWidget)
 	{
 		return;
 	}
@@ -379,18 +379,20 @@ void UGameOverWidget::ShowStagePreview(EOutlierStage Stage)
 		return;
 	}
 
-	// 크기는 WBP에서 잡은 이미지 크기를 유지한다.
-	StagePreviewImage->SetBrushFromTexture(*PreviewTexture, false);
-	// 이미지가 버튼과 겹쳐도 hover를 가로채지 않도록 HitTestInvisible로 띄운다.
-	StagePreviewImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+	if (!StagePreviewWidget->SetPreviewTexture(*PreviewTexture))
+	{
+		HideStagePreview();
+		return;
+	}
+	StagePreviewWidget->SetPreviewVisible(true);
 	PreviewStage = Stage;
 }
 
 void UGameOverWidget::HideStagePreview()
 {
-	if (StagePreviewImage)
+	if (StagePreviewWidget)
 	{
-		StagePreviewImage->SetVisibility(ESlateVisibility::Collapsed);
+		StagePreviewWidget->SetPreviewVisible(false);
 	}
 	PreviewStage = EOutlierStage::None;
 }

@@ -2,6 +2,8 @@
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/PanelWidget.h"
+#include "Components/ScrollBar.h"
+#include "Components/ScrollBox.h"
 #include "Components/TextBlock.h"
 #include "UI/SprintInputModeWidget.h"
 #include "Blueprint/WidgetTree.h"
@@ -68,6 +70,7 @@ void USettingInputPageWidget::NativeConstruct()
 		DisplayedRole = BoundSettingsSubsystem->GetInputSettingsRole();
 	}
 	if (InputBindingTable) InputBindingTable->OnRowsChanged.AddUObject(this, &ThisClass::RebuildInputBindingList);
+	RefreshInputScrollBarVisibility();
 	RefreshSprintInputModeRow();
 }
 
@@ -242,12 +245,29 @@ void USettingInputPageWidget::RefreshDisplayedInputRows()
 		}
 	}
 	ApplyInputBindingRowPadding();
+	RefreshInputScrollBarVisibility();
 	RefreshSprintInputModeRow();
 	RefreshInputBindingDisplayedKeys();
 	RebuildKeyboardFocusTargets();
 	CurrentFocusedIndex = KeyboardFocusTargets.IndexOfByKey(PreviousFocus);
 	if (CurrentFocusedIndex == INDEX_NONE && !KeyboardFocusTargets.IsEmpty()) CurrentFocusedIndex = 0;
 	if (bInputPageActive) FocusCurrentKeyboardTarget();
+}
+
+void USettingInputPageWidget::RefreshInputScrollBarVisibility()
+{
+	const bool bNeedsScrollBar = InputBindingListHost
+		&& InputBindingListHost->GetChildrenCount() > InputBindingRowsWithoutScrollBar;
+	if (PageScrollBar)
+	{
+		PageScrollBar->SetIsEnabled(bNeedsScrollBar);
+		PageScrollBar->SetVisibility(bNeedsScrollBar ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+	if (!bNeedsScrollBar && PageScrollBox)
+	{
+		PageScrollBox->EndInertialScrolling();
+		PageScrollBox->SetScrollOffset(0.0f);
+	}
 }
 
 void USettingInputPageWidget::SetInputBindingRowPadding(FMargin NewPadding)

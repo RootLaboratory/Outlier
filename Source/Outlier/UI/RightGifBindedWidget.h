@@ -44,6 +44,7 @@ protected:
 	virtual int32 GetPresentationWarmupFrames() const override { return 2; }
 	virtual void ResetInfoContent() override;
 	virtual void InfoFinished(const FOutlierInfoWidgetRequest& Request, bool bCompleted) override;
+	virtual bool ShouldFadeCurrentInfo() const override { return true; }
 
 private:
 	bool TryResolveGifData(const FOutlierInfoWidgetRequest& Request, FOutlierGifDataRow& OutData) const;

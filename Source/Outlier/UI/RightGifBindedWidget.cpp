@@ -59,7 +59,9 @@ void URightGifBindedWidget::NativeTick(const FGeometry& MyGeometry, float InDelt
 		UE_LOG(LogOutlier, Warning, TEXT("[GIF UI] '%s' media end timed out."), *CurrentGifData.Tag.ToString());
 	}
 	const FGameplayTag EventTag = MediaEventTag;
-	StopGifMedia();
+	// Fade out 동안 마지막 프레임을 유지한다. 미디어 정리는 종료 후 ResetInfoContent가 담당한다.
+	bWaitMediaEnd = false;
+	bMediaEndPending = false;
 	FinishSource(EventTag, true);
 }
 
