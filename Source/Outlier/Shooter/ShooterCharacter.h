@@ -45,6 +45,7 @@ class USphereComponent;
 class USkeletalMesh;
 class UAnimInstance;
 class UNiagaraSystem;
+class UNiagaraComponent;
 class UShooterReflectionBarrier;
 class UShooterTeleportLayer;
 struct FOnAttributeChangeData;
@@ -393,6 +394,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Jump")
 	TObjectPtr<UNiagaraSystem> DoubleJumpVFX;
 
+	/** 자동 파괴되는 월드 이펙트를 소유하지 않고 시퀀서 숨김 대상으로만 추적한다. */
+	TArray<TWeakObjectPtr<UNiagaraComponent>> DoubleJumpVFXComponents;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USkeletalMeshComponent* ShadowMesh;
 
@@ -716,6 +720,7 @@ protected:
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
 	void PlayWeaponEquipAudio();
+	virtual void CollectDetachedCinematicVisuals(TArray<USceneComponent*>& OutComponents) const override;
 	// Construction
 	/** Constructor */
 	AShooterCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());

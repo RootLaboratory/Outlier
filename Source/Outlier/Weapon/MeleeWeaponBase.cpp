@@ -18,6 +18,7 @@
 #include "Team/OutlierTeamIds.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/Volume.h"
+#include "Interface/MeleeIgnoreInterface.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -645,7 +646,8 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 		{
 			AActor* Candidate = HitResult.GetActor();
 			// 환경음/방 트리거 등 보이지 않는 Volume은 공격 판정과 표면 연출에서 제외한다.
-			if (Candidate && Candidate->IsA<AVolume>())
+			if (Candidate && (Candidate->IsA<AVolume>()
+				|| Candidate->GetClass()->ImplementsInterface(UMeleeIgnoreInterface::StaticClass())))
 			{
 				continue;
 			}

@@ -485,7 +485,14 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, i
 		}
 
 		const bool bHoldInteraction = InteractableComponent->RequiresHoldInteract();
-		// 번호 없는 요청은 최초 HoldReady 진입만 허용하고, 실제 누르기 완료에는 시도 번호가 필요하다.
+		// 0은 준비 요청이다. 범위 이탈로 클라이언트만 준비 태그를 지웠다면
+		// 이미 준비된 서버 상태를 다시 알려준다. Interact/보상/현재 홀드에는 손대지 않는다.
+		if (bNodeInteraction && bHoldInteraction && HoldAttemptId == 0)
+		{
+			ClientOnInteractSucceeded(TargetActor, EInteractionFlowResult::HoldReady, 0);
+			return;
+		}
+		// 실제 누르기 완료에는 유효한 시도 번호와 완료된 서버 세션이 필요하다.
 		if (bNodeInteraction && bHoldInteraction != (HoldAttemptId != 0))
 		{
 			ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
@@ -542,6 +549,14 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, i
 void AFirstPersonCharacter::ServerCancelHoldInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
 	const AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
+	if (Node && HoldAttemptId == 0)
+	{
+		// 준비 상태는 아직 시도 번호가 없다. 실제 홀드가 없을 때만 서버 준비 상태도 정리한다.
+		// 늦게 온 준비 취소가 이후 시작된 홀드(다른 플레이어 포함)를 끊어서는 안 된다.
+		UInteractableComponent* Component = Node->GetInteractableComponent();
+		if (Component) Component->ResetHoldReadyIfIdle();
+		return;
+	}
 	if (Node && !Node->IsServerHoldAttemptCurrent(this, HoldAttemptId)) return;
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
@@ -1039,9 +1054,11 @@ void AFirstPersonCharacter::GetInteractablesInSphere(
 		}
 
 		UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent();
-		// Only the hack lock may be bypassed for presentation; other restrictions hide the actor.
+		// Outer markers ignore player access; inner prompts still require interaction permissions.
 		if (!IsValid(InteractableComponent)
-			|| !InteractableComponent->CanShowInteractionWidgets(OwnedGameplayTags))
+			|| !(bOutlineSphere
+				? InteractableComponent->CanShowInteractionOutlineWidget()
+				: InteractableComponent->CanShowInteractionWidgets(OwnedGameplayTags)))
 		{
 			continue;
 		}

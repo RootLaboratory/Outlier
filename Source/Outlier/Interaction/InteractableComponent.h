@@ -71,9 +71,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Interaction")
 	bool IsLockedYet() const;
 
-	/** Lock prompts may bypass only the hack lock, never other interaction restrictions. */
+	/** Hack lock prompts ignore player access restrictions, but remain hidden when used or disabled. */
 	UFUNCTION(BlueprintPure, Category = "Interaction")
 	bool CanShowInteractionWidgets(const FGameplayTagContainer& InteractorTags) const;
+
+	/** Outline markers remain visible regardless of player access restrictions. */
+	bool CanShowInteractionOutlineWidget() const;
 
 	bool RequiresHoldInteract() const;
 	bool AllowsConcurrentHold() const;
@@ -83,6 +86,8 @@ public:
 	bool BeginHoldInteract(AFirstPersonCharacter* Interactor, int32 AttemptId = 0);
 	void EndHoldInteract(AFirstPersonCharacter* Interactor, bool bCanceled);
 	void ResetHoldInteraction(AFirstPersonCharacter* Interactor);
+	/** Server-only cancellation of preparation; never interrupts an active hold. */
+	bool ResetHoldReadyIfIdle();
 	bool CanCommitHoldInteraction(const AFirstPersonCharacter* Interactor) const;
 	bool CommitHoldInteraction(AFirstPersonCharacter* Interactor);
 	/** Accepted interaction completion on the server; single-use policy is shared by instant and hold interactions. */

@@ -10,9 +10,23 @@
 #include "GameFramework/GameStateBase.h"
 #include "Net/UnrealNetwork.h"
 #include "Network/OutlierArenaSubsystem.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
+
+namespace
+{
+	// 팀원 외곽선 대상은 쌍 연결이나 역할이 바뀔 때만 다시 찾는다.
+	void MarkStencilTeammatesDirty(const AActor* Context)
+	{
+		UWorld* World = Context ? Context->GetWorld() : nullptr;
+		if (UOutlierStencilSubsystem* Stencils = World ? World->GetSubsystem<UOutlierStencilSubsystem>() : nullptr)
+		{
+			Stencils->MarkTeammatesDirty();
+		}
+	}
+}
 
 void AOutlierPlayerState::OnRep_CheckpointData()
 {
@@ -421,6 +435,7 @@ void AOutlierPlayerState::RefreshCharacterLinks()
 	}
 
 	OnPlayerCharactersChanged.Broadcast(this);
+	MarkStencilTeammatesDirty(this);
 
 	// 캐릭터 포인터가 슈트 플래그보다 늦게 도착하면 OnRep_AcquiredSuit 때는 넘길 곳이 없다.
 	// 링크가 붙는 이 시점에 현재 상태를 한 번 더 투영한다.
@@ -488,6 +503,7 @@ void AOutlierPlayerState::ServerReportStatAllocatorUIState_Implementation(
 
 void AOutlierPlayerState::HandlePlayerRoleChanged()
 {
+	MarkStencilTeammatesDirty(this);
 	OnPlayerRoleChanged.Broadcast(this);
 }
 

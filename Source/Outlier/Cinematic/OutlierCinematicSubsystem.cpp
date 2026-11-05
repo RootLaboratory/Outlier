@@ -10,6 +10,11 @@
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Components/MeshComponent.h"
+#include "Components/LightComponent.h"
+#include "Particles/ParticleSystemComponent.h"
+#include "FirstPerson/FirstPersonCharacter.h"
+#include "GameFramework/GameStateBase.h"
 #include "Input/ControllerInputConfig.h"
 #include "LevelSequenceActor.h"
 #include "LevelSequencePlayer.h"
@@ -17,6 +22,7 @@
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierPlayerState.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/CinematicHintkey.h"
 #include "UI/UILayerGameplayTags.h"
 
 UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_ArenaIntro, "Cinematic.Arena.Intro");
@@ -90,6 +96,7 @@ EOutlierCinematicRegistration UOutlierCinematicSubsystem::BindLevelCinematics(FG
 	}
 	BoundWorld = World;
 	CompleteCinematicKey = Registry->CompleteCinematicKey;
+	CinematicHintkeyClass = Registry->CinematicHintkeyClass;
 	return EOutlierCinematicRegistration::Bound;
 }
 
@@ -198,6 +205,12 @@ bool UOutlierCinematicSubsystem::TickCinematic(float DeltaTime)
 		// 다음 틱에서 검사해 실제 재생 중단만 실패로 처리한다.
 		FailCinematic(TEXT("Sequence Player was removed or stopped without finishing"));
 	}
+	else if (State == EOutlierCinematicState::Playing)
+	{
+		SyncWorldPause();
+		// 늦게 생성된 상대 Pawn/무기/VFX나 재생 중 다시 켜진 시각 요소도 계속 숨긴다.
+		HidePairPawnVisuals();
+	}
 	else if (State == EOutlierCinematicState::Restoring && IsPlayerReady())
 	{
 		AFirstPersonPlayerController* PC = OwningController.Get();
@@ -242,6 +255,7 @@ void UOutlierCinematicSubsystem::StartCinematic(const FGuid& IntroId)
 			return;
 		}
 		State = EOutlierCinematicState::Ready;
+		OwningController->RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
 		OwningController->ServerNotifyCinematic({ActiveIntroId, EOutlierCinematicClientEvent::Ready});
 		return;
 	}
@@ -255,7 +269,14 @@ void UOutlierCinematicSubsystem::StartCinematic(const FGuid& IntroId)
 	Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(Player->GetStartTime().Time, EUpdatePositionMethod::Jump));
 	Player->OnFinished.AddUniqueDynamic(this, &UOutlierCinematicSubsystem::HandleSequenceFinished);
 	State = EOutlierCinematicState::Playing;
+	PushCinematicHint();
+	bPausedByWorld = false;
+	HidePairPawnVisuals();
+	// 시퀀스 Fade 트랙이 암전 상태를 사전 상태로 캡처하지 않도록 재생 전에 같은 프레임에서 해제한다.
+	OwningController->RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
 	Player->Play();
+	// 시작 RPC와 정지 복제가 같은 프레임에 도착해도 첫 프레임부터 멈춰 있게 한다.
+	SyncWorldPause();
 }
 
 bool UOutlierCinematicSubsystem::HandleCompleteCinematicKey(const FKey& Key)
@@ -263,6 +284,8 @@ bool UOutlierCinematicSubsystem::HandleCompleteCinematicKey(const FKey& Key)
 	if (!CompleteCinematicKey.IsValid() || Key != CompleteCinematicKey
 		|| (State != EOutlierCinematicState::Playing && State != EOutlierCinematicState::Restoring
 			&& State != EOutlierCinematicState::Ready)) return false;
+	// 일시정지 중에는 완료 키를 소비하지 않아 일시정지 메뉴가 입력을 받게 한다.
+	if (State == EOutlierCinematicState::Playing && GetWorld() && GetWorld()->IsPaused()) return false;
 	// 서버 요청이나 카메라 복원을 기다리는 동안 반복 입력을 소비한다.
 	if (State == EOutlierCinematicState::Playing && !bCompletionRequested)
 	{
@@ -292,6 +315,8 @@ void UOutlierCinematicSubsystem::HandleSequenceFinished()
 {
 	if (State != EOutlierCinematicState::Playing) return;
 	State = EOutlierCinematicState::Restoring;
+	PopCinematicHint();
+	RestorePairPawnVisuals();
 	StableReadyFrames = 0;
 	WaitLogSeconds = 0.0f;
 	OnCinematicFinished.Broadcast(OutlierCinematicTags::ArenaIntro());
@@ -301,9 +326,15 @@ void UOutlierCinematicSubsystem::FailCinematic(const TCHAR* Reason)
 {
 	if (State == EOutlierCinematicState::Failed) return;
 	State = EOutlierCinematicState::Failed;
+	PopCinematicHint();
+	RestorePairPawnVisuals();
 	UE_LOG(LogTemp, Error, TEXT("[Cinematic] Intro=%s failed: %s"), *ActiveIntroId.ToString(), Reason);
 	if (AFirstPersonPlayerController* PC = OwningController.Get())
+	{
+		// 실패 시 검은 화면에 갇히지 않도록 레벨 로드 암전을 푼다.
+		PC->RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
 		PC->ServerNotifyCinematic({ActiveIntroId, EOutlierCinematicClientEvent::Failed});
+	}
 }
 
 void UOutlierCinematicSubsystem::ReleaseCinematic(const FGuid& IntroId)
@@ -349,7 +380,10 @@ bool UOutlierCinematicSubsystem::PlayTitleCinematic()
 
 void UOutlierCinematicSubsystem::ClearLevelCinematics()
 {
+	PopCinematicHint();
+	CinematicHintkeyClass = nullptr;
 	State = EOutlierCinematicState::Idle;
+	RestorePairPawnVisuals();
 	if (TickerHandle.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
@@ -373,7 +407,134 @@ void UOutlierCinematicSubsystem::ClearLevelCinematics()
 	ActiveIntroId.Invalidate();
 	bSkipUnregisteredCinematic = false;
 	bCompletionRequested = false;
+	bPausedByWorld = false;
 	CompleteCinematicKey = EKeys::Enter;
 	StableReadyFrames = 0;
 	WaitLogSeconds = 0.0f;
+}
+
+void UOutlierCinematicSubsystem::PushCinematicHint()
+{
+	PopCinematicHint();
+	if (!CompleteCinematicKey.IsValid()) return;
+	AFirstPersonPlayerController* PC = OwningController.Get();
+	ULocalPlayerUILayerSubsystem* Layers = GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>();
+	if (!PC || !Layers || !CinematicHintkeyClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Cinematic] Skip hint unavailable: assign CinematicHintkeyClass on the Arena cinematic registry."));
+		return;
+	}
+	CinematicHint = CreateWidget<UCinematicHintkey>(PC, CinematicHintkeyClass);
+	if (!CinematicHint) return;
+	CinematicHint->SetCompleteCinematicKey(CompleteCinematicKey);
+	// 표시 전용: 기존 시네마틱 입력 범위와 일시정지 메뉴의 포커스를 바꾸지 않는다.
+	CinematicHintLayer = Layers->PushWidget(UILayerTags::Gameplay(), CinematicHint,
+		FirstPersonInputModeTags::UI(), this, EUILayerFocusTarget::None, false, false);
+	if (!CinematicHintLayer.IsValid())
+	{
+		CinematicHint = nullptr;
+		UE_LOG(LogTemp, Warning, TEXT("[Cinematic] Failed to push skip hint."));
+	}
+}
+
+void UOutlierCinematicSubsystem::PopCinematicHint()
+{
+	if (CinematicHintLayer.IsValid())
+	{
+		if (ULocalPlayerUILayerSubsystem* Layers = GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>())
+			Layers->PopLayer(CinematicHintLayer);
+		CinematicHintLayer.Reset();
+	}
+	CinematicHint = nullptr;
+}
+
+void UOutlierCinematicSubsystem::HidePairPawnVisuals()
+{
+	const AFirstPersonPlayerController* PC = OwningController.Get();
+	const AOutlierPlayerState* LocalPS = PC ? PC->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	const AGameStateBase* GameState = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	if (!LocalPS || LocalPS->GetPairId() == INDEX_NONE || !GameState) return;
+
+	TArray<AActor*> Actors;
+	for (const APlayerState* Entry : GameState->PlayerArray)
+	{
+		const AOutlierPlayerState* PS = Cast<AOutlierPlayerState>(Entry);
+		APawn* Pawn = PS && PS->GetPairId() == LocalPS->GetPairId() ? PS->GetPawn() : nullptr;
+		if (!IsValid(Pawn)) continue;
+		Actors.Add(Pawn);
+		// 무기 등 Pawn에 부착된 액터도 함께 숨긴다.
+		Pawn->GetAttachedActors(Actors, false, true);
+	}
+
+	for (const AActor* Actor : Actors)
+	{
+		HideActorVisuals(Actor);
+	}
+}
+
+void UOutlierCinematicSubsystem::HideActorVisuals(const AActor* Actor)
+{
+	if (!IsValid(Actor)) return;
+
+	TArray<USceneComponent*> Components;
+	Actor->GetComponents<USceneComponent>(Components, true);
+	if (const AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(Actor))
+	{
+		Character->CollectDetachedCinematicVisuals(Components);
+	}
+	for (USceneComponent* Component : Components)
+	{
+		HideVisualComponentTree(Component);
+	}
+}
+
+void UOutlierCinematicSubsystem::HideVisualComponentTree(USceneComponent* Component)
+{
+	if (!IsValid(Component)) return;
+
+	// SpawnSystemAttached로 붙은 VFX는 Pawn이 소유하지 않을 수 있어 부착 트리도 검사한다.
+	TArray<USceneComponent*> Components;
+	Component->GetChildrenComponents(true, Components);
+	Components.Add(Component);
+	for (USceneComponent* Visual : Components)
+	{
+		if (!IsValid(Visual) || !Visual->IsVisible()) continue;
+		if (!Visual->IsA<UMeshComponent>() && !Visual->IsA<ULightComponent>()
+			&& !Visual->IsA<UFXSystemComponent>()) continue;
+
+		// 자식 전체 전파/Deactivate 없이 렌더링만 끈다. 충돌/게임플레이와 VFX 재생 상태는 유지한다.
+		// SetVisibility(false)는 ShadowMesh의 Hidden Shadow까지 끈다.
+		Visual->SetVisibility(false);
+		HiddenPawnVisuals.AddUnique(Visual);
+	}
+}
+
+void UOutlierCinematicSubsystem::SyncWorldPause()
+{
+	ULevelSequencePlayer* Player = ActivePlayer.Get();
+	const UWorld* World = GetWorld();
+	if (!Player || !World) return;
+	// 서버 SetPause가 WorldSettings로 복제되므로 각 클라이언트가 로컬 시퀀스를 같은 시점에 멈춘다.
+	if (World->IsPaused())
+	{
+		if (!bPausedByWorld && Player->IsPlaying())
+		{
+			Player->Pause();
+			bPausedByWorld = true;
+		}
+	}
+	else if (bPausedByWorld)
+	{
+		bPausedByWorld = false;
+		if (Player->IsPaused()) Player->Play();
+	}
+}
+
+void UOutlierCinematicSubsystem::RestorePairPawnVisuals()
+{
+	for (const TWeakObjectPtr<USceneComponent>& Visual : HiddenPawnVisuals)
+	{
+		if (Visual.IsValid()) Visual->SetVisibility(true);
+	}
+	HiddenPawnVisuals.Reset();
 }

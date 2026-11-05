@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "GameplayTagContainer.h"
+#include "Interface/MeleeIgnoreInterface.h"
 #include "RoomVolume.generated.h"
 
 class UBoxComponent;
@@ -12,7 +13,7 @@ class UBoxComponent;
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnRoomActorOverlapChanged, AActor*, bool /*bEntered*/);
 
 UCLASS()
-class OUTLIER_API ARoomVolume : public AActor
+class OUTLIER_API ARoomVolume : public AActor, public IMeleeIgnoreInterface
 {
 	GENERATED_BODY()
 	

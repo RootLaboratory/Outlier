@@ -19,6 +19,7 @@ class AFirstPersonPlayerController;
 class AFirstPersonCharacter;
 class AShooterCharacter;
 class APartnerCharacter;
+class ARangedWeaponBase;
 class AOutlierCheckpoint;
 class AOutlierPlayerState;
 class AOutlierArenaPausePlayerState;
@@ -82,6 +83,15 @@ public:
 
 	/** Constructor */
 	AOutlierGameMode();
+	// 프리셋 선택 시에만 사용할 고정 지급 무기 BP. 이어하기는 저장 장비를 복원한다.
+	UPROPERTY(EditDefaultsOnly, Category = "Loadout|Restore")
+	TSubclassOf<AWeaponBase> RestoreRifleClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Loadout|Restore")
+	TSubclassOf<AWeaponBase> RestorePistolClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Loadout|Restore")
+	TSubclassOf<ARangedWeaponBase> RestorePartnerWeaponClass;
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 	// 서버와 클라이언트가 같은 맵의 GameMode 설정으로 PIE 테스트 여부를 판단한다.
 	static bool IsDirectPairTestWorld(const UWorld* World);
@@ -159,6 +169,7 @@ public:
 
 
 private:
+	bool BuildFixedRestoreLoadout(FOutlierLoadoutSnapshot& Snapshot) const;
 	friend class FOutlierGameOverPendingFailureTest;
 	friend class FOutlierSettingsPauseTest;
 	friend class FOutlierDirectPairTest;
