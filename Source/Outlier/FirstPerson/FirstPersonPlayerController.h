@@ -49,6 +49,14 @@ struct FHudWidgetCollapseState
 	void Reset() { bCollapsed = false; }
 };
 
+// Controller 단 카메라 암전 사유. 하나라도 남아 있으면 월드 렌더링을 검게 덮는다.
+// Camera Fade는 씬에만 적용되므로 UMG 위젯은 그대로 보인다.
+enum class ECameraBlackoutReason : uint8
+{
+	LevelLoad = 1 << 0, // 레벨 진입 후 인트로 재생(또는 인트로 없는 첫 Possess)까지
+	GameOver = 1 << 1,  // GameOver 위젯 표시부터 리스폰 Possess까지
+};
+
 namespace FirstPersonInputModeTags
 {
 	inline FGameplayTag EMP()
@@ -344,6 +352,14 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ArmDeathTransitionReleaseOnPossess();
 
+	// 사유별로 카메라 암전을 켜고 끈다. 로컬 Controller에서만 동작한다.
+	void AddCameraBlackoutReason(ECameraBlackoutReason Reason);
+	void RemoveCameraBlackoutReason(ECameraBlackoutReason Reason);
+	bool HasCameraBlackoutReason(ECameraBlackoutReason Reason) const
+	{
+		return (CameraBlackoutReasons & static_cast<uint8>(Reason)) != 0;
+	}
+
 	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
 	bool SetFirstPersonInputMode(FGameplayTag NewInputMode);
 
@@ -565,6 +581,14 @@ protected:
 	// 리로드(리스폰) RPC를 받은 뒤 첫 Possess에서 사망 연출을 즉시 끊는다. Possess만으로 판단하면
 	// 연출 도중의 다른 Possess(Partner의 적 해킹 등)까지 연출을 끊어서 위젯이 안 뜨게 된다.
 	bool bReleaseDeathTransitionOnPossess = false;
+
+	// ECameraBlackoutReason 비트 집합. 이 Controller가 켠 Fade만 끄도록 적용 여부를 따로 기록한다.
+	uint8 CameraBlackoutReasons = 0;
+	bool bCameraBlackoutApplied = false;
+	void ApplyCameraBlackout();
+	// 인트로를 준비 중이 아니면 레벨 로드 암전을 해제한다. 인트로가 있으면 시네마틱이 해제한다.
+	void ReleaseLevelLoadBlackoutIfNoIntroPending();
+
 	EOutlierCheckpointRestartVoteView CheckpointRestartVoteView =
 		EOutlierCheckpointRestartVoteView::None;
 };

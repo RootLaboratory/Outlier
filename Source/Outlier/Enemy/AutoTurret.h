@@ -362,6 +362,8 @@ private:
 	void ResetRoomWaveLifecycle(const TCHAR* ResetReason);
 	void InvalidateRoomWaveLifecycle();
 	void ApplyHackedTeamState();
+	// 해킹으로 아군이 된 동안 파트너와 같은 팀원 외곽선(스텐실 32)을 받는다.
+	void RefreshTeammateOutline();
 	static void PlayMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage);
 	static void StopMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage = nullptr);
 

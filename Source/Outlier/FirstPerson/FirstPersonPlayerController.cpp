@@ -48,6 +48,7 @@
 #include "Network/OutlierArenaSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "LocalPlayerPostProcessSubsystem.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "UI/InGamePauseWidget.h"
 #include "UI/InGameSettingWidget.h"
 #include "UI/GameOverWidget.h"
@@ -879,6 +880,8 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 	// 연출 콜백만으로 준비를 알리지 않는다. 실제 위젯 생성과 입력 설정이 끝난 뒤 한 번 통보한다.
 	if (FindGameOverWidget())
 	{
+		// 위젯은 Camera Fade 영향을 받지 않으므로 뒤의 월드(분리된 Pawn 등)만 가린다.
+		AddCameraBlackoutReason(ECameraBlackoutReason::GameOver);
 		bGameOverReadySent = true;
 		ServerNotifyGameOverReady(GameOverRoundId);
 	}
@@ -1168,6 +1171,11 @@ void AFirstPersonPlayerController::BeginPlay()
 	if (IsLocalController())
 		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
 			Audio->EnterGameplayMusic();
+	// Pawn이 붙기 전에는 Controller 시점으로 스트리밍 중인 월드가 보이므로 암전한다.
+	if (IsLocalController() && !GetPawn())
+	{
+		AddCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
+	}
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 		: nullptr)
@@ -1185,6 +1193,12 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 
 	if (IsLocalController())
 	{
+		// 빙의 대상이 바뀌면 "내 Pawn은 팀원 외곽선에서 제외" 판정도 달라진다.
+		if (UOutlierStencilSubsystem* Stencils = GetWorld() ? GetWorld()->GetSubsystem<UOutlierStencilSubsystem>() : nullptr)
+		{
+			Stencils->MarkTeammatesDirty();
+		}
+
 		if (P)
 		{
 			if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
@@ -1197,6 +1211,11 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 		if (bReleaseDeathTransitionOnPossess)
 		{
 			RestoreMainWidgetAfterDeath();
+			RemoveCameraBlackoutReason(ECameraBlackoutReason::GameOver);
+		}
+		if (P)
+		{
+			ReleaseLevelLoadBlackoutIfNoIntroPending();
 		}
 
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
@@ -1233,6 +1252,60 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 void AFirstPersonPlayerController::ArmDeathTransitionReleaseOnPossess_Implementation()
 {
 	bReleaseDeathTransitionOnPossess = true;
+}
+
+void AFirstPersonPlayerController::AddCameraBlackoutReason(ECameraBlackoutReason Reason)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+	CameraBlackoutReasons |= static_cast<uint8>(Reason);
+	ApplyCameraBlackout();
+}
+
+void AFirstPersonPlayerController::RemoveCameraBlackoutReason(ECameraBlackoutReason Reason)
+{
+	CameraBlackoutReasons &= ~static_cast<uint8>(Reason);
+	ApplyCameraBlackout();
+}
+
+void AFirstPersonPlayerController::ApplyCameraBlackout()
+{
+	if (!PlayerCameraManager)
+	{
+		return;
+	}
+	if (CameraBlackoutReasons != 0)
+	{
+		// 씬만 덮는 Manual Fade다. 오디오와 UMG에는 영향을 주지 않는다.
+		PlayerCameraManager->SetManualCameraFade(1.0f, FLinearColor::Black, false);
+		bCameraBlackoutApplied = true;
+	}
+	else if (bCameraBlackoutApplied)
+	{
+		// 다른 시스템이 켠 Fade를 건드리지 않도록 직접 켠 경우에만 끈다.
+		PlayerCameraManager->StopCameraFade();
+		bCameraBlackoutApplied = false;
+	}
+}
+
+void AFirstPersonPlayerController::ReleaseLevelLoadBlackoutIfNoIntroPending()
+{
+	if (!HasCameraBlackoutReason(ECameraBlackoutReason::LevelLoad))
+	{
+		return;
+	}
+	// 인트로 준비 RPC는 Possess보다 먼저 도착한다. 준비 중이면 시네마틱 시작 시점에 해제한다.
+	const UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>()
+		: nullptr;
+	const EOutlierCinematicState State = Cinematic ? Cinematic->GetState() : EOutlierCinematicState::Idle;
+	if (State == EOutlierCinematicState::Preparing || State == EOutlierCinematicState::Prepared)
+	{
+		return;
+	}
+	RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
 }
 
 void AFirstPersonPlayerController::ReportLoadedLevelsVisibilityToServer()
@@ -1290,9 +1363,14 @@ void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
 	}
 
 	// 리슨 서버 호스트는 서버 Possess에서 로컬 UI를 복구한다.
+	if (IsLocalController() && InPawn)
+	{
+		ReleaseLevelLoadBlackoutIfNoIntroPending();
+	}
 	if (IsLocalController() && InPawn && bReleaseDeathTransitionOnPossess)
 	{
 		RestoreMainWidgetAfterDeath();
+		RemoveCameraBlackoutReason(ECameraBlackoutReason::GameOver);
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
 			? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
 			: nullptr)
@@ -1312,6 +1390,11 @@ void AFirstPersonPlayerController::OnRep_PlayerState()
 	Super::OnRep_PlayerState();
 
 	InitializeOutlierPlayerState();
+	// PlayerState 복제와 PC 연결 순서가 고정되지 않으므로 연결 시점에도 팀원 대상을 다시 찾는다.
+	if (UOutlierStencilSubsystem* Stencils = GetWorld() ? GetWorld()->GetSubsystem<UOutlierStencilSubsystem>() : nullptr)
+	{
+		Stencils->MarkTeammatesDirty();
+	}
 }
 
 bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
@@ -2219,6 +2302,8 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 		*GetNameSafe(this), GameplayGeneration, *InSpawnLocation.ToString(),
 		ArenaSubsystem->IsGameplayLevelsReady() ? 1 : 0);
 	ApplyServerArenaSpawnLocation(InSpawnLocation);
+	// 리로드 동안 기존 Pawn이 사라져 Controller 시점이 노출된다. 새 Pawn을 잡을 때 해제된다.
+	AddCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
 	bReleaseDeathTransitionOnPossess = true;
 	bHasPendingArenaRequest = true;
 	PendingGameplayGeneration = GameplayGeneration;
@@ -2926,6 +3011,11 @@ void AFirstPersonPlayerController::ReceivedPlayer()
 	// Listen 전환에서는 최초 서버 Snapshot보다 LocalPlayer 연결이 늦을 수 있다.
 	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
 	{
+		// Listen 호스트는 BeginPlay 시점에 LocalPlayer가 없을 수 있어 여기서도 레벨 로드 암전을 건다.
+		if (!GetPawn())
+		{
+			AddCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
+		}
 		// Controller 교체는 세대 번호의 새 시작점이다. 이전 Controller의 캐시는 이어받지 않는다.
 		if (ULocalPlayerUISubSystem* UI = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
 			UI->ResetVitalityPresentation();

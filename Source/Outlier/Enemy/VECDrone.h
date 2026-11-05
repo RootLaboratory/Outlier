@@ -87,6 +87,8 @@ protected:
 	virtual void ResetPoolPresentationState() override;
 	virtual bool ShouldResetPoolMontages() const override;
 	virtual void RefreshCombatStatePresentation() override;
+	// 해킹(빙의)된 동안 파트너와 같은 팀원 외곽선(스텐실 32)을 받는다.
+	void RefreshTeammateOutline();
 
 	// BP에 이미 배치된 조명을 BeginPlay에서 한 번 찾아 캐시한다.
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Enemy|State Light")

@@ -33,6 +33,7 @@
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 
 #if WITH_EDITOR
 #include "EngineUtils.h"
@@ -685,6 +686,8 @@ void AAutoTurret::ResetRoomWaveLifecycle(const TCHAR* ResetReason)
 	if (PartnerShieldRecipient) PartnerShieldRecipient->ClearShield();
 	bRoomWaveDeploymentRequested = false;
 	bHackedToPlayerTeam = false;
+	// 풀 리셋은 ApplyHackedTeamState를 거치지 않으므로 외곽선 등록을 여기서 직접 해제한다.
+	RefreshTeammateOutline();
 	StopImpactRecovery();
 	DestroyPoolAIController();
 	ResetReusableCombatRuntime(ResetReason);
@@ -1458,8 +1461,17 @@ void AAutoTurret::HandleHackCompleted(const FHackResultContext& Context)
 	}
 }
 
+void AAutoTurret::RefreshTeammateOutline()
+{
+	if (UOutlierStencilSubsystem* Stencils = GetWorld() ? GetWorld()->GetSubsystem<UOutlierStencilSubsystem>() : nullptr)
+	{
+		Stencils->SetActorTeammate(this, bHackedToPlayerTeam && !IsActorBeingDestroyed());
+	}
+}
+
 void AAutoTurret::ApplyHackedTeamState()
 {
+	RefreshTeammateOutline();
 	StopCurrentAttack();
 	SetPlayerCurrentlyVisible(false);
 	RemoveRoomTargetObserver();
@@ -1523,6 +1535,10 @@ void AAutoTurret::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	StopImpactRecovery();
+	if (UOutlierStencilSubsystem* Stencils = GetWorld() ? GetWorld()->GetSubsystem<UOutlierStencilSubsystem>() : nullptr)
+	{
+		Stencils->SetActorTeammate(this, false);
+	}
 	Super::EndPlay(EndPlayReason);
 }
 
