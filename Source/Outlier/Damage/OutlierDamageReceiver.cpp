@@ -53,7 +53,7 @@ namespace
 
 	bool IsEnemyFriendlyFire(const AActor* TargetActor, const FOutlierDamageRequest& Request)
 	{
-		if (Request.bReflectedDamage)
+		if (Request.bReflectedDamage || Request.bAllowFriendlyFire)
 		{
 			return false;
 		}

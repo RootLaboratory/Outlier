@@ -40,7 +40,8 @@ bool UExplosionComponent::Detonate()
 bool UExplosionComponent::DetonateAt(
 	const FVector& ExplosionLocation,
 	AController* EventInstigator,
-	EOutlierAdaptationDamageCategory AdaptationDamageCategory)
+	EOutlierAdaptationDamageCategory AdaptationDamageCategory,
+	bool bAllowFriendlyFire)
 {
 	AActor* Owner = GetOwner();
 	// 서버 Queue에 폭발 요청을 한 번만 추가한다.
@@ -86,7 +87,8 @@ bool UExplosionComponent::DetonateAt(
 				ExplosionLocation,
 				EventInstigator,
 				AdaptationDamageCategory,
-				*RuntimeProfile);
+				*RuntimeProfile,
+				bAllowFriendlyFire);
 			UE_LOG(
 				LogOutlier,
 				Warning,

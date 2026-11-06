@@ -3,6 +3,8 @@
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/EnemyPoolDefinition.h"
+#include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyCombatTestHelpers.h"
 #include "Enemy/EnemyEnvQuery.h"
 #include "Enemy/EnemyStateTreeCombatMovementTasks.h"
@@ -60,6 +62,7 @@ struct FEnemySearchIntegrationWorld
 		if (!World) return;
 
 		FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+		Context.RunAsDedicated = IsRunningDedicatedServer();
 		World->AddToRoot();
 		Context.SetCurrentWorld(World);
 
@@ -76,6 +79,12 @@ struct FEnemySearchIntegrationWorld
 			World->SetGameMode(URL);
 		}
 		World->InitializeActorsForPlay(FURL());
+		if (bStartPlay && IsRunningDedicatedServer())
+		{
+			FURL ListenURL;
+			ListenURL.Port = 0;
+			World->Listen(ListenURL);
+		}
 		if (bStartPlay) World->BeginPlay();
 
 		// BeginPlay에서 로드하는 프로젝트 방 정의 대신, 테스트에 필요한 방만 주입한다.
@@ -1545,7 +1554,7 @@ struct FEnemyCombatIntegrationWorld : FEnemySearchIntegrationWorld
 		if (Tree) Tree->StopLogic(TEXT("Combat integration test complete"));
 	}
 
-	bool Initialize(bool bMelee, const FVector& TargetOffset, bool bInitiallyVisible = true)
+	bool Initialize(bool bMelee, const FVector& TargetOffset, bool bInitiallyVisible = true, bool bStartInCombat = true)
 	{
 		if (!Test.TestTrue(TEXT("Combat room created"), CreateRoom(FVector(6000, 6000, 2500)))) return false;
 		if (!Test.TestNotNull(TEXT("Combat floor created"), SpawnBlockingBox(
@@ -1581,7 +1590,7 @@ struct FEnemyCombatIntegrationWorld : FEnemySearchIntegrationWorld
 		Target->SetCanBeDamaged(false);
 		Target->GetCharacterMovement()->DisableMovement();
 		Target->SetActorTickEnabled(false);
-		Enemy->EnterCombatFromRoom(Target->GetActorLocation(), false);
+		if (bStartInCombat) Enemy->EnterCombatFromRoom(Target->GetActorLocation(), false);
 		Controller->SetEnemyPerceptionEnabled(false);
 		Enemy->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
 		if (bInitiallyVisible) SetSight(true);
@@ -1651,6 +1660,53 @@ struct FEnemyCombatIntegrationWorld : FEnemySearchIntegrationWorld
 		return false;
 	}
 };
+
+bool PrepareReusedPoolCombat(FEnemyCombatIntegrationWorld& Fixture, bool bKeepAutomaticStart = false)
+{
+	UEnemyPoolSubsystem* Pool = Fixture.World->GetSubsystem<UEnemyPoolSubsystem>();
+	if (!Fixture.Test.TestNotNull(TEXT("Actual pool subsystem"), Pool)) return false;
+	UClass* Class = Fixture.Enemy->GetClass();
+	const FTransform SpawnTransform = Fixture.Enemy->GetActorTransform();
+	Fixture.Tree->StopLogic(TEXT("Replace unmanaged setup actor with a pooled lease"));
+	Fixture.Enemy->Destroy();
+	Fixture.Tree = nullptr;
+	Fixture.Controller = nullptr;
+	UEnemyPoolDefinition* Definition = NewObject<UEnemyPoolDefinition>(Fixture.World);
+	FEnemyPoolEntry& Entry = Definition->Entries.AddDefaulted_GetRef();
+	Entry.EnemyClass = Class;
+	Entry.PrewarmCount = Entry.MaxCount = 1;
+	if (!Fixture.Test.TestTrue(TEXT("Production BP pool prewarms"), Pool->PrewarmPool(Definition))) return false;
+	FEnemyPoolLeaseContext Lease;
+	Lease.RoomTag = Fixture.SearchRoomTag;
+	Lease.GameplayGeneration = 3100;
+	AEnemyBase* First = Pool->LeaseEnemy(Class, SpawnTransform, Lease);
+	if (!Fixture.Test.TestNotNull(TEXT("First real pooled lease"), First)) return false;
+	First->SetPoolPresentationAutoCompleteForTesting(false);
+	const int32 OldSerial = First->GetPoolLeaseSerial();
+	First->CompletePoolSpawnPresentation(Lease.GameplayGeneration, OldSerial);
+	First->SimulateDeathPresentationForPoolTesting();
+	if (!Fixture.Test.TestTrue(TEXT("First lease returns after disabling its capsule"), Pool->ReturnEnemy(First, Lease.GameplayGeneration, OldSerial))) return false;
+	++Lease.GameplayGeneration;
+	Fixture.Enemy = Pool->LeaseEnemy(Class, SpawnTransform, Lease);
+	if (!Fixture.Test.TestTrue(TEXT("Second lease reuses the same actor"), Fixture.Enemy == First)) return false;
+	Fixture.Enemy->CompletePoolSpawnPresentation(Lease.GameplayGeneration - 1, OldSerial);
+	for (int32 Frame = 0; Frame < 15; ++Frame) Fixture.Tick(Fixture.Step);
+	Fixture.Test.TestEqual(TEXT("Stale callback and delayed ticks preserve presentation"), Fixture.Enemy->GetEnemyPoolState(), EEnemyPoolState::SpawnPresentation);
+	Fixture.Test.TestFalse(TEXT("No charge while the pooled capsule is intentionally inactive"), CastChecked<ASelfDestructDrone>(Fixture.Enemy)->IsSelfDestructCommitted());
+	Fixture.Enemy->CompletePoolSpawnPresentation(Lease.GameplayGeneration, Fixture.Enemy->GetPoolLeaseSerial());
+	Fixture.Tree = Cast<UEnemyStateTreeComponent>(Fixture.Enemy->GetStateTreeComponent());
+	Fixture.Controller = Cast<AEnemyAIController>(Fixture.Enemy->GetController());
+	if (!Fixture.Test.TestNotNull(TEXT("Reused StateTree"), Fixture.Tree)
+		|| !Fixture.Test.TestNotNull(TEXT("Reused AI controller"), Fixture.Controller)) return false;
+	if (!bKeepAutomaticStart) Fixture.Tree->StopLogic(TEXT("Set up deterministic sight before running the actual pooled tree"));
+	Fixture.Controller->SetEnemyPerceptionEnabled(false);
+	Fixture.Enemy->EnterCombatFromRoom(Fixture.Target->GetActorLocation(), false);
+	Fixture.SetSight(true);
+	Fixture.Test.TestTrue(TEXT("Reused capsule collision restored before StateTree charge"), Fixture.Enemy->GetActorEnableCollision() && Fixture.Enemy->GetCapsuleComponent()->IsQueryCollisionEnabled());
+	Fixture.Test.AddInfo(FString::Printf(TEXT("[PooledCombat] Generation=%d Lease=%d Pool=%d CapsuleCollision=%d"),
+		Fixture.Enemy->GetPoolGameplayGeneration(), Fixture.Enemy->GetPoolLeaseSerial(), int32(Fixture.Enemy->GetEnemyPoolState()), int32(Fixture.Enemy->GetCapsuleComponent()->GetCollisionEnabled())));
+	return true;
+}
 
 bool CheckGunMovingFire(FEnemyCombatIntegrationWorld& Fixture)
 {
@@ -1976,6 +2032,78 @@ bool CheckChargeWallTimeout(FEnemyCombatIntegrationWorld& Fixture)
 	return !Fixture.Test.HasAnyErrors();
 }
 
+bool CheckScheduledChargeWall(FEnemyCombatIntegrationWorld& Fixture, const FString& Scenario, bool bStartTree = true)
+{
+	if (bStartTree) Fixture.Start();
+	else Fixture.Observe(); // Keep the StateTree started by CombatActive without restarting it.
+	if (!Fixture.WaitForTask<FEnemyChargeLastDirectionTask>()) return false;
+	ASelfDestructDrone* Drone = CastChecked<ASelfDestructDrone>(Fixture.Enemy);
+	const float Duration = Fixture.Data<FEnemyChargeLastDirectionTask>()->TelegraphDuration;
+	const float DeltaTime = Scenario.EndsWith(TEXT("Hitch")) ? 0.25f
+		: Scenario.EndsWith(TEXT("LowRate")) ? 1.0f / 15.0f : Fixture.Step;
+	const FVector Start = Drone->GetActorLocation();
+	const float Radius = Drone->GetCapsuleComponent()->GetScaledCapsuleRadius();
+	const bool bOverlapFront = Scenario.EndsWith(TEXT("OverlapFront"));
+	const bool bOverlapBehind = Scenario.EndsWith(TEXT("OverlapBehind"));
+	const bool bPhysicsBody = Scenario.EndsWith(TEXT("PhysicsBody"));
+	const bool bRemoveCollision = Scenario.EndsWith(TEXT("Removed"));
+	const bool bLateCollision = Scenario.EndsWith(TEXT("LateRegister"));
+	const bool bMissingCollision = Scenario.EndsWith(TEXT("Missing"));
+	const bool bExpectedCrossing = bOverlapBehind || bPhysicsBody || bRemoveCollision || bMissingCollision;
+	const float HalfThickness = Scenario.EndsWith(TEXT("Thin")) ? 1.5f : 20.0f;
+	const double WallX = bOverlapFront ? Start.X + 10.0 : bOverlapBehind ? Start.X - 10.0
+		: Start.X + 100.0 + Radius + HalfThickness;
+	AActor* Wall = Fixture.SpawnBlockingBox(FVector(WallX, Start.Y, Start.Z), FVector(HalfThickness, 500, 500));
+	if (!Fixture.Test.TestNotNull(TEXT("Scheduled wall fixture"), Wall)) return false;
+	UBoxComponent* Box = CastChecked<UBoxComponent>(Wall->GetRootComponent());
+	if (bPhysicsBody) Box->SetCollisionObjectType(ECC_PhysicsBody);
+	if (bLateCollision || bMissingCollision) Box->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	bool bTouched = false;
+	bool bCrossed = false;
+	bool bRemoved = false;
+	bool bCollisionStayedActive = true;
+	bool bSawChargeTask = false;
+	double MaxX = Start.X;
+	const int32 MaxFrames = FMath::CeilToInt(Duration / DeltaTime) + 4;
+	for (int32 Frame = 0; Frame < MaxFrames; ++Frame)
+	{
+		if (bLateCollision && Frame == 2) Box->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		if (bRemoveCollision && bTouched && !bRemoved)
+		{
+			Box->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			bRemoved = true;
+		}
+		Fixture.Tick(DeltaTime);
+		Fixture.Observe();
+		// Death disables collision and may start return presentation. Only inspect
+		// live charge frames; those runtime lifecycle changes are tested separately.
+		if (Drone->IsDead()) break;
+		const double X = Drone->GetActorLocation().X;
+		MaxX = FMath::Max(MaxX, X);
+		bCrossed |= X > WallX + HalfThickness + Radius;
+		bTouched |= FMath::Abs(X - (WallX - HalfThickness - Radius)) <= 3.0;
+		bCollisionStayedActive &= Drone->GetActorEnableCollision() && Drone->GetCapsuleComponent()->IsQueryCollisionEnabled();
+		bSawChargeTask |= Fixture.Data<FEnemyChargeLastDirectionTask>() != nullptr;
+		if (Frame < 3 || bCrossed || Frame % 15 == 0)
+			Fixture.Test.AddInfo(FString::Printf(TEXT("[ChargeScheduled] Scenario=%s Frame=%d Time=%.3f Dt=%.4f NetMode=%d Pool=%d ActorCollision=%d CapsuleCollision=%d WallCollision=%d Committed=%d ChargeTask=%d X=%.2f WallX=%.2f Velocity=%s States=%s"),
+				*Scenario, Frame, Fixture.World->GetTimeSeconds(), DeltaTime, int32(Fixture.World->GetNetMode()), int32(Drone->GetEnemyPoolState()),
+				Drone->GetActorEnableCollision(), int32(Drone->GetCapsuleComponent()->GetCollisionEnabled()), int32(Box->GetCollisionEnabled()),
+				Drone->IsSelfDestructCommitted(), Fixture.Data<FEnemyChargeLastDirectionTask>() != nullptr, X, WallX,
+				*Drone->GetVelocity().ToCompactString(), *Fixture.Snapshot.Describe()));
+	}
+	Fixture.Test.TestTrue(TEXT("Real StateTree charge executed through world Tick"), bSawChargeTask);
+	Fixture.Test.TestTrue(TEXT("Live drone retains its capsule collision"), bCollisionStayedActive);
+	Fixture.Test.TestEqual(TEXT("World-scheduled crossing matches the controlled collision condition"), bCrossed, bExpectedCrossing);
+	if (!bExpectedCrossing) Fixture.Test.TestTrue(TEXT("Blocking wall was reached"), bTouched);
+	if (bRemoveCollision) Fixture.Test.TestTrue(TEXT("Wall removal happened after a real blocked contact"), bRemoved);
+	Fixture.Test.TestTrue(TEXT("Scheduled charge reaches its original death path"), Drone->IsDead());
+	Fixture.Test.TestTrue(TEXT("Actual explosion executes"), Drone->GetExplosionComponent()->HasDetonated());
+	if (IsRunningDedicatedServer()) Fixture.Test.TestEqual(TEXT("Dedicated world with a real server driver"), Fixture.World->GetNetMode(), NM_DedicatedServer);
+	Fixture.Test.AddInfo(FString::Printf(TEXT("[ChargeScheduledSummary] Scenario=%s Dt=%.4f MaxX=%.2f WallX=%.2f Touched=%d Crossed=%d ExpectedCrossing=%d"),
+		*Scenario, DeltaTime, MaxX, WallX, bTouched, bCrossed, bExpectedCrossing));
+	return !Fixture.Test.HasAnyErrors();
+}
+
 bool CheckCommittedCharge(FEnemyCombatIntegrationWorld& Fixture, const FString& Scenario)
 {
 	Fixture.Start();
@@ -2031,7 +2159,7 @@ bool CheckCommittedCharge(FEnemyCombatIntegrationWorld& Fixture, const FString& 
 }
 
 IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyCombatWorldTest, "Outlier.Enemy.Combat.Integration",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter)
 
 void FEnemyCombatWorldTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
@@ -2042,7 +2170,12 @@ void FEnemyCombatWorldTest::GetTests(TArray<FString>& Names, TArray<FString>& Co
 		TEXT("Melee.Boundary500"), TEXT("Melee.Boundary501"), TEXT("Melee.Unreachable"), TEXT("Melee.SightLoss"),
 		TEXT("Melee.SpatialRange"), TEXT("Melee.BlockedChargeEntry"), TEXT("Melee.MovementStun"),
 		TEXT("Melee.ChargeSightLoss"), TEXT("Melee.ChargeTargetMove"), TEXT("Melee.ChargeTargetSwitch"), TEXT("Melee.ChargeStun"),
-		TEXT("Melee.ChargeWallTimeout")})
+		TEXT("Melee.ChargeWallTimeout"), TEXT("Melee.ChargeScheduledWallHitch"), TEXT("Melee.ChargeScheduledWallLowRate"),
+		TEXT("Melee.ChargeScheduledWallThin"), TEXT("Melee.ChargeScheduledWallLateRegister"), TEXT("Melee.ChargeScheduledWallOverlapFront"),
+		TEXT("Melee.ChargeScheduledWallOverlapBehind"), TEXT("Melee.ChargeScheduledWallPhysicsBody"),
+		TEXT("Melee.ChargeScheduledWallRemoved"), TEXT("Melee.ChargeScheduledWallMissing"),
+		TEXT("Melee.PoolChargeScheduledWallThin"), TEXT("Melee.PoolChargeScheduledWallHitch"), TEXT("Melee.PoolChargeScheduledWallLateRegister"),
+		TEXT("Melee.PoolAutoChargeWallThin"), TEXT("Melee.PoolAutoChargeWallHitch"), TEXT("Melee.PoolAutoChargeWallLateRegister")})
 	{
 		Names.Add(Scenario);
 		Commands.Add(Scenario);
@@ -2059,7 +2192,7 @@ bool FEnemyCombatWorldTest::RunTest(const FString& Parameters)
 	if (Scenario.StartsWith(TEXT("Boundary"))) Distance = FCString::Atof(*Scenario.Mid(8));
 	else if (Scenario == TEXT("RetreatArrival")) Distance = 900;
 	else if (Scenario == TEXT("Reselection") || Scenario == TEXT("MovingFire")) Distance = 3500;
-	else if (Scenario.StartsWith(TEXT("Charge"))) Distance = 400;
+	else if (Scenario.StartsWith(TEXT("Charge")) || Scenario.StartsWith(TEXT("PoolCharge")) || Scenario.StartsWith(TEXT("PoolAutoCharge"))) Distance = 400;
 	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
 	const FVector Offset = Scenario == TEXT("SpatialRange") ? FVector(300, 0, 450)
 		: Scenario == TEXT("BlockedChargeEntry") ? FVector(400, 0, 0) : FVector(Distance, 0, 0);
@@ -2077,6 +2210,11 @@ bool FEnemyCombatWorldTest::RunTest(const FString& Parameters)
 	if (Scenario == TEXT("BlockedChargeEntry")) return CheckMeleeChargeRejection(Fixture, true);
 	if (Scenario == TEXT("Unreachable")) return CheckMeleeUnreachable(Fixture);
 	if (Scenario == TEXT("ChargeWallTimeout")) return CheckChargeWallTimeout(Fixture);
+	if (Scenario.StartsWith(TEXT("PoolChargeScheduledWall")))
+		return PrepareReusedPoolCombat(Fixture) && CheckScheduledChargeWall(Fixture, Scenario);
+	if (Scenario.StartsWith(TEXT("PoolAutoChargeWall")))
+		return PrepareReusedPoolCombat(Fixture, true) && CheckScheduledChargeWall(Fixture, Scenario, false);
+	if (Scenario.StartsWith(TEXT("ChargeScheduledWall"))) return CheckScheduledChargeWall(Fixture, Scenario);
 	if (Scenario.StartsWith(TEXT("Charge"))) return CheckCommittedCharge(Fixture, Scenario);
 	AddError(TEXT("Unknown combat integration scenario"));
 	return false;

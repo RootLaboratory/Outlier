@@ -38,6 +38,8 @@ struct OUTLIER_API FOutlierDamageRequest
 	FHitResult HitResult;
 	FVector DamageOrigin = FVector::ZeroVector;
 	bool bReflectedDamage = false;
+	// 서버가 생성한 폭발 요청에서만 지정한다. 대상의 무적/피해 수신 검사는 그대로 거친다.
+	bool bAllowFriendlyFire = false;
 	AController* EventInstigator = nullptr;
 	AActor* DamageCauser = nullptr;
 	TSharedPtr<FOutlierStealthSession> StealthSession;

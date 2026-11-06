@@ -33,7 +33,8 @@ public:
 		const FVector& ExplosionLocation,
 		AController* EventInstigator = nullptr,
 		EOutlierAdaptationDamageCategory AdaptationDamageCategory =
-			EOutlierAdaptationDamageCategory::Ignore);
+			EOutlierAdaptationDamageCategory::Ignore,
+		bool bAllowFriendlyFire = false);
 
 	// 폭발 완료 상태를 초기화해 같은 컴포넌트가 다시 폭발할 수 있게 한다.
 	UFUNCTION(BlueprintCallable, Category = "Explosion")

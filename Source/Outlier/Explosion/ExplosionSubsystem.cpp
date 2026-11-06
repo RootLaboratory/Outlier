@@ -22,7 +22,8 @@ void UExplosionSubsystem::RequestExplosion(
 	const FVector& ExplosionLocation,
 	AController* EventInstigator,
 	EOutlierAdaptationDamageCategory AdaptationDamageCategory,
-	const FExplosionProfileRow& Profile)
+	const FExplosionProfileRow& Profile,
+	bool bAllowFriendlyFire)
 {
 	if (!IsValid(SourceComponent) || !GetWorld() || GetWorld()->GetNetMode() == NM_Client)
 	{
@@ -43,6 +44,8 @@ void UExplosionSubsystem::RequestExplosion(
 	Request.AdaptationDamageCategory = AdaptationDamageCategory;
 	Request.Location = ExplosionLocation;
 	Request.Profile = Profile;
+	// 연쇄 폭발로 처리가 지연돼도 각 요청의 허용값을 보존하고 다른 폭발에 전파하지 않는다.
+	Request.bAllowFriendlyFire = bAllowFriendlyFire;
 
 	if (!bIsProcessingQueue)
 	{
@@ -179,6 +182,7 @@ void UExplosionSubsystem::ProcessExplosion(const FPendingExplosion& Request)
 				DamageRequest.DamageOrigin = Request.Location;
 				DamageRequest.EventInstigator = Request.EventInstigator.Get();
 				DamageRequest.DamageCauser = SourceActor;
+				DamageRequest.bAllowFriendlyFire = Request.bAllowFriendlyFire;
 				OutlierDamage::Apply(TargetActor, DamageRequest);
 			}
 		}
