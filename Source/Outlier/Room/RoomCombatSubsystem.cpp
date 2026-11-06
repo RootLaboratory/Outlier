@@ -476,6 +476,20 @@ int32 URoomCombatSubsystem::GetFirstExternalTriggerPhaseIndex(FGameplayTag RoomT
 
 bool URoomCombatSubsystem::FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume, int32 GameplayGeneration)
 {
+	return FinishCombatWithCleanup(RoomVolume, GameplayGeneration, false);
+}
+
+#if WITH_EDITOR
+bool URoomCombatSubsystem::FinishRoomCombatForEditor(FGameplayTag RoomTag)
+{
+	if (!GetWorld() || GetWorld()->WorldType != EWorldType::PIE || !CanRunServerGameplay()) return false;
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return Runtime && FinishCombatWithCleanup(Runtime->RoomVolume.Get(), Runtime->GameplayGeneration, true);
+}
+#endif
+
+bool URoomCombatSubsystem::FinishCombatWithCleanup(ARoomVolume* RoomVolume, int32 GameplayGeneration, bool bFinishRoom)
+{
 	if (!CanRunServerGameplay() || !IsValid(RoomVolume) || RoomVolume->IsActorBeingDestroyed()
 		|| RoomVolume->GetWorld() != GetWorld() || !RoomVolume->HasAuthority())
 	{
@@ -492,12 +506,12 @@ bool URoomCombatSubsystem::FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume,
 	if (!Runtime || Runtime->RoomVolume.Get() != RoomVolume || Runtime->bPhaseCleanupInProgress
 		|| Runtime->GameplayGeneration != GameplayGeneration
 		|| (Arena && static_cast<int32>(Arena->GetGameplayGeneration()) != GameplayGeneration)
-		|| !Definition || !Definition->HasValidPhaseOrder() || !Phase || !NextPhase
-		|| Phase->StartPolicy != ERoomCombatPhaseStartPolicy::InitialDetection
+		|| !Definition || !Definition->HasValidPhaseOrder() || !Phase
+		|| (!bFinishRoom && (!NextPhase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::InitialDetection
 		|| !Phase->bReleaseCombatOnCompletion
-		|| NextPhase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger
+		|| NextPhase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger))
 		|| Runtime->State == ERoomCombatState::Cleared
-		|| Runtime->State == ERoomCombatState::WaitingForTrigger)
+		|| (!bFinishRoom && Runtime->State == ERoomCombatState::WaitingForTrigger))
 	{
 		return false;
 	}
@@ -524,9 +538,9 @@ bool URoomCombatSubsystem::FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume,
 	Runtime->bDeferSpawnExecution = false;
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->InitialSpawnDelayTimer);
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->PhaseDelayTimer);
-	PendingSpawnRequests.RemoveAll([RoomTag, PhaseIndex](const FRoomCombatPendingSpawn& Request)
+	PendingSpawnRequests.RemoveAll([RoomTag, PhaseIndex, bFinishRoom](const FRoomCombatPendingSpawn& Request)
 	{
-		return Request.RoomTag == RoomTag && Request.CombatPhaseIndex == PhaseIndex;
+		return Request.RoomTag == RoomTag && (bFinishRoom || Request.CombatPhaseIndex == PhaseIndex);
 	});
 	Runtime->SpawnAssignments.Reset();
 	Runtime->PendingActivationCount = 0;
@@ -542,10 +556,10 @@ bool URoomCombatSubsystem::FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume,
 		int32 LeaseSerial;
 	};
 	TArray<FEnemyCleanup> Enemies;
-	// 2. 아군화된 적도 소유 차수로 찾는다. 모든 등록을 먼저 끊어 EndPlay가 전투 완료로 집계되지 않게 한다.
+	// 2. 아군화된 적도 전투 소속으로 찾는다. 모든 등록을 먼저 끊어 EndPlay가 전투 완료로 집계되지 않게 한다.
 	for (auto It = RegisteredEnemies.CreateIterator(); It; ++It)
 	{
-		if (It.Value().RoomTag != RoomTag || It.Value().CombatPhaseIndex != PhaseIndex) continue;
+		if (It.Value().RoomTag != RoomTag || (!bFinishRoom && It.Value().CombatPhaseIndex != PhaseIndex)) continue;
 		if (AEnemyBase* Enemy = It.Key().Get())
 		{
 			Enemies.Add({ Enemy, It.Value().bPoolManaged,
@@ -563,7 +577,7 @@ bool URoomCombatSubsystem::FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume,
 	{
 		for (const FRoomCombatWaveTurretRuntime& Entry : *Entries)
 		{
-			if (Entry.CombatPhaseIndex == PhaseIndex) Turrets.Add(Entry.Turret);
+			if (bFinishRoom || Entry.CombatPhaseIndex == PhaseIndex) Turrets.Add(Entry.Turret);
 		}
 	}
 	for (const TWeakObjectPtr<AAutoTurret>& Turret : Turrets)
@@ -617,12 +631,12 @@ bool URoomCombatSubsystem::FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume,
 	}
 	if (!IsCleanupCurrent()) return false;
 
-	// 4. 정리가 끝난 뒤에만 기존 차수 경계 저장/알림을 보낸다. 다음 Phase의 명단은 건드리지 않는다.
+	// 4. 정리가 끝난 뒤 기존 저장/알림 경로로 확정한다. 테스터는 다음 차수도 건너뛰고 방을 완료한다.
 	Runtime = RoomRuntimes.Find(RoomTag);
 	Runtime->bPhaseCleanupInProgress = false;
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Initial phase retired for upgrade. Room=%s Phase=%d Generation=%d Enemies=%d Turrets=%d"),
-		*RoomTag.ToString(), PhaseIndex, GameplayGeneration, Enemies.Num(), Turrets.Num());
-	CompleteCurrentPhase(RoomTag, true);
+	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Combat cleanup finished. Room=%s Phase=%d Generation=%d Enemies=%d Turrets=%d FinishRoom=%d"),
+		*RoomTag.ToString(), PhaseIndex, GameplayGeneration, Enemies.Num(), Turrets.Num(), bFinishRoom);
+	CompleteCurrentPhase(RoomTag, true, bFinishRoom);
 	return true;
 }
 
@@ -3850,7 +3864,8 @@ int32 URoomCombatSubsystem::GetRegisteredWaveTurretCount(
 
 void URoomCombatSubsystem::CompleteCurrentPhase(
 	FGameplayTag RoomTag,
-	bool bCancelRemainingWaves)
+	bool bCancelRemainingWaves,
+	bool bFinishRoom)
 {
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
@@ -3859,7 +3874,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		: nullptr;
 	if (!Runtime || !Definition || !CurrentPhase || Runtime->bPhaseDelayPending || Runtime->bPhaseCleanupInProgress
 		|| Runtime->State == ERoomCombatState::Cleared
-		|| Runtime->State == ERoomCombatState::WaitingForTrigger)
+		|| (!bFinishRoom && Runtime->State == ERoomCombatState::WaitingForTrigger))
 	{
 		return;
 	}
@@ -3868,7 +3883,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	const FGuid RegistrationId = Runtime->RegistrationId;
 	const FGuid ExecutionId = Runtime->CheckpointHoldExecutionId;
 	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
-	const FRoomCombatPhaseDefinition* NextPhase = Definition->FindPhase(NextPhaseIndex);
+	const FRoomCombatPhaseDefinition* NextPhase = bFinishRoom ? nullptr : Definition->FindPhase(NextPhaseIndex);
 	// 옵션은 다음 외부 이벤트 앞에서만 유효하다. 잘못된 조합은 기존 봉쇄 정책을 유지한다.
 	const bool bReleaseCombat = CurrentPhase->bReleaseCombatOnCompletion && NextPhase
 		&& NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger;

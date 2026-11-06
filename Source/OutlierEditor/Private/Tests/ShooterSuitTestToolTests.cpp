@@ -21,6 +21,8 @@
 #include "GameFramework/GameStateBase.h"
 #include "InputKeyEventArgs.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterInventoryComponent.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
 #include "Widgets/Input/SCheckBox.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShooterSuitTestToolNodesTest, "Outlier.Editor.ShooterSuitTester.NodeToggles",
@@ -167,6 +169,14 @@ namespace
 
 struct FShooterSuitTesterInvulnerabilityTestAccess
 {
+	static void GrantPistol(SOutlierShooterSuitTestToolWidget& Widget, AShooterCharacter* Shooter)
+	{
+		Select(Widget, Shooter->GetPlayerState<AOutlierPlayerState>());
+		Widget.SelectedTarget->Shooter = Shooter;
+		Widget.SelectedTarget->ASC = Shooter->GetOutlierAbilitySystemComponent();
+		Widget.SelectedTarget->Upgrades = Shooter->FindComponentByClass<UOutlierUpgradeComponent>();
+		Widget.GrantPistol();
+	}
 	static void Select(SOutlierShooterSuitTestToolWidget& Widget, AOutlierPlayerState* State)
 	{
 		Widget.SelectedTarget = MakeShared<SOutlierShooterSuitTestToolWidget::FTarget>();
@@ -181,6 +191,37 @@ struct FShooterSuitTesterInvulnerabilityTestAccess
 		return Widget.GetInvulnerabilityState() == ECheckBoxState::Checked;
 	}
 };
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShooterSuitTesterPistolTest,
+	"Outlier.Editor.ShooterSuitTester.PistolGrant",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FShooterSuitTesterPistolTest::RunTest(const FString& Parameters)
+{
+	FTesterInvulnerabilityWorld Fixture;
+	if (!Fixture.Initialize(*this)) return false;
+	TSharedRef<SOutlierShooterSuitTestToolWidget> Widget = SNew(SOutlierShooterSuitTestToolWidget);
+	UShooterInventoryComponent* Inventory = Fixture.Shooter->GetInventoryComponent();
+	if (!TestNotNull(TEXT("Shooter inventory"), Inventory)) return false;
+	// 이 Fixture는 Pawn BeginPlay를 생략한다. 인벤토리의 실제 슬롯 초기화만 수행한다.
+	Inventory->BeginPlay();
+	FShooterSuitTesterInvulnerabilityTestAccess::GrantPistol(*Widget, Fixture.Shooter);
+	AWeaponBase* Pistol = Inventory->GetWeaponInSlot(EWeaponSlot::Secondary);
+	if (!TestNotNull(TEXT("Button grants a secondary weapon"), Pistol)) return false;
+	TestEqual(TEXT("Granted weapon is a pistol"), Pistol->GetWeaponType(), EWeaponType::Pistol);
+	const int32 SlotIndex = static_cast<int32>(EWeaponSlot::Secondary);
+	const FOutlierLoadoutSnapshot& Snapshot = Fixture.ShooterState->GetLoadoutSnapshot();
+	TestTrue(TEXT("Grant persists in PlayerState loadout"), Snapshot.SlotSnapshots.IsValidIndex(SlotIndex)
+		&& Snapshot.SlotSnapshots[SlotIndex].WeaponClass == Pistol->GetClass());
+	FShooterSuitTesterInvulnerabilityTestAccess::GrantPistol(*Widget, Fixture.Shooter);
+	TestTrue(TEXT("Repeated button preserves the original pistol"), Inventory->GetWeaponInSlot(EWeaponSlot::Secondary) == Pistol);
+	{
+		TGuardValue<TEnumAsByte<EWorldType::Type>> NonPIE(Fixture.World->WorldType, EWorldType::Game);
+		FShooterSuitTesterInvulnerabilityTestAccess::GrantPistol(*Widget, Fixture.Shooter);
+		TestTrue(TEXT("Non-PIE call preserves inventory"), Inventory->GetWeaponInSlot(EWeaponSlot::Secondary) == Pistol);
+	}
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShooterSuitTesterInvulnerabilityWidgetTest,
 	"Outlier.Editor.ShooterSuitTester.Invulnerability.WidgetSession",

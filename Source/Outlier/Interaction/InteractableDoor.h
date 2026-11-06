@@ -45,6 +45,7 @@ class OUTLIER_API AInteractableDoor : public AActor
 
 public:
 	AInteractableDoor();
+	virtual bool IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const override;
 
 protected:
 	virtual void BeginPlay() override;

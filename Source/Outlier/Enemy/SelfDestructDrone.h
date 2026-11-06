@@ -140,6 +140,9 @@ private:
 	void OnRep_MountedExplosives();
 	void PublishChargeState(bool bActive, float Duration = 0.0f);
 	void StopChargePresentation();
+	void LogChargeDiagnostics(const TCHAR* Event) const;
+	void RefreshChargeDiagnosticTimer();
+	void SampleChargeDiagnostics();
 	FTimerHandle ChargePresentationTimer;
 	TWeakObjectPtr<AGameStateBase> ChargeClock;
 	TWeakObjectPtr<UOutlierAudioSubsystem> ChargeAudio;
@@ -153,4 +156,10 @@ private:
 	bool bCommittedChargeDistanceLimited = false;
 	float CommittedChargeDistanceLimit = 0.0f;
 	float CommittedImpactElapsedTime = 0.0f;
+	// 진단은 실제 이동을 관찰만 한다. 전조/돌진 수명 밖에서는 샘플 타이머를 유지하지 않는다.
+	FTimerHandle ChargeDiagnosticTimer;
+	FVector PreviousChargeDiagnosticLocation = FVector::ZeroVector;
+	double PreviousChargeDiagnosticTime = 0.0;
+	double LastChargeHitDiagnosticTime = -1.0;
+	bool bChargeMovementDiagnosticStarted = false;
 };

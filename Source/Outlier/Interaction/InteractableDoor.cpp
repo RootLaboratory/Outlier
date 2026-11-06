@@ -43,6 +43,13 @@ AInteractableDoor::AInteractableDoor()
 	}
 }
 
+bool AInteractableDoor::IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const
+{
+	// 이동 중 숨긴 출발 문도 도착 준비와 취소 복구에 필요하다. 일반 관련성 검사는
+	// 숨김·충돌 없는 문을 제외하므로, 연출 모드 동안은 양쪽 클라이언트의 문 수명을 유지한다.
+	return bPresentationOnly || Super::IsNetRelevantFor(RealViewer, ViewTarget, SrcLocation);
+}
+
 void AInteractableDoor::BeginPlay()
 {
 	if (HasAuthority())
