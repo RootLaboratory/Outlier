@@ -53,7 +53,10 @@ public:
 
 	void PrepareInitialIntro(AFirstPersonPlayerController* Controller, const FGuid& IntroId);
 	void StartCinematic(const FGuid& IntroId);
-	bool HandleCompleteCinematicKey(const FKey& Key);
+	/** 스킵 키(스페이스 고정) 입력을 받아 홀드 시간을 시작/초기화한다. 소비했으면 true. */
+	bool HandleCompleteCinematicKey(const FKey& Key, EInputEvent Event);
+	/** Clear a pending skip hold when the controller flushes input (including viewport focus loss). */
+	void ResetCompleteHold();
 	void CompleteCinematic(const FGuid& IntroId);
 	void ReleaseCinematic(const FGuid& IntroId);
 	void ClearLevelCinematics();
@@ -72,6 +75,8 @@ public:
 private:
 	void PushCinematicHint();
 	void PopCinematicHint();
+	/** 스킵 홀드를 진행시키고 시간이 차면 완료를 요청한다. */
+	void TickCompleteHold(float DeltaTime);
 	UPROPERTY(Transient)
 	TSubclassOf<UCinematicHintkey> CinematicHintkeyClass;
 	UPROPERTY(Transient)
@@ -108,7 +113,9 @@ private:
 	bool bCompletionRequested = false;
 	/** 월드 정지로 이 서브시스템이 직접 멈춘 경우에만 재개한다. */
 	bool bPausedByWorld = false;
-	FKey CompleteCinematicKey = EKeys::Enter;
+	/** 스킵 키는 스페이스로 고정이다. 홀드 시간은 힌트 위젯(WBP)의 HoldSeconds를 사용한다. */
+	float CompleteHoldElapsed = 0.0f;
+	bool bCompleteKeyHeld = false;
 	int32 StableReadyFrames = 0;
 	float WaitLogSeconds = 0.0f;
 };

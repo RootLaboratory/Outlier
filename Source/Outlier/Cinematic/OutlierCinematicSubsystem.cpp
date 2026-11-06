@@ -95,7 +95,6 @@ EOutlierCinematicRegistration UOutlierCinematicSubsystem::BindLevelCinematics(FG
 		Cinematics.Add(Entry.Key, Entry.Value.Get());
 	}
 	BoundWorld = World;
-	CompleteCinematicKey = Registry->CompleteCinematicKey;
 	CinematicHintkeyClass = Registry->CinematicHintkeyClass;
 	return EOutlierCinematicRegistration::Bound;
 }
@@ -208,6 +207,7 @@ bool UOutlierCinematicSubsystem::TickCinematic(float DeltaTime)
 	else if (State == EOutlierCinematicState::Playing)
 	{
 		SyncWorldPause();
+		TickCompleteHold(DeltaTime);
 		// 늦게 생성된 상대 Pawn/무기/VFX나 재생 중 다시 켜진 시각 요소도 계속 숨긴다.
 		HidePairPawnVisuals();
 	}
@@ -269,6 +269,8 @@ void UOutlierCinematicSubsystem::StartCinematic(const FGuid& IntroId)
 	Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(Player->GetStartTime().Time, EUpdatePositionMethod::Jump));
 	Player->OnFinished.AddUniqueDynamic(this, &UOutlierCinematicSubsystem::HandleSequenceFinished);
 	State = EOutlierCinematicState::Playing;
+	bCompletionRequested = false;
+	ResetCompleteHold();
 	PushCinematicHint();
 	bPausedByWorld = false;
 	HidePairPawnVisuals();
@@ -279,22 +281,65 @@ void UOutlierCinematicSubsystem::StartCinematic(const FGuid& IntroId)
 	SyncWorldPause();
 }
 
-bool UOutlierCinematicSubsystem::HandleCompleteCinematicKey(const FKey& Key)
+bool UOutlierCinematicSubsystem::HandleCompleteCinematicKey(const FKey& Key, EInputEvent Event)
 {
-	if (!CompleteCinematicKey.IsValid() || Key != CompleteCinematicKey
-		|| (State != EOutlierCinematicState::Playing && State != EOutlierCinematicState::Restoring
-			&& State != EOutlierCinematicState::Ready)) return false;
+	if (Key != EKeys::SpaceBar) return false;
+	// 떼면 언제든 홀드를 초기화한다. 상태와 무관하게 먼저 처리해 홀드가 남지 않게 한다.
+	if (Event == IE_Released) ResetCompleteHold();
+	if (State != EOutlierCinematicState::Playing && State != EOutlierCinematicState::Restoring
+		&& State != EOutlierCinematicState::Ready) return false;
 	// 일시정지 중에는 완료 키를 소비하지 않아 일시정지 메뉴가 입력을 받게 한다.
-	if (State == EOutlierCinematicState::Playing && GetWorld() && GetWorld()->IsPaused()) return false;
-	// 서버 요청이나 카메라 복원을 기다리는 동안 반복 입력을 소비한다.
-	if (State == EOutlierCinematicState::Playing && !bCompletionRequested)
+	if (State == EOutlierCinematicState::Playing && GetWorld() && GetWorld()->IsPaused())
 	{
-		AFirstPersonPlayerController* PC = OwningController.Get();
-		if (!PC || !PC->IsLocalController() || !ActiveIntroId.IsValid()) return false;
-		bCompletionRequested = true;
-		PC->ServerNotifyCinematic({ActiveIntroId, EOutlierCinematicClientEvent::CompleteRequested});
+		ResetCompleteHold();
+		return false;
 	}
+	if (Event == IE_Pressed && State == EOutlierCinematicState::Playing && !bCompletionRequested)
+	{
+		bCompleteKeyHeld = true;
+		CompleteHoldElapsed = 0.0f;
+		// 홀드 시간이 0이면 즉시 완료한다.
+		TickCompleteHold(0.0f);
+	}
+	// 홀드 중 반복/해제 입력과 서버 요청·카메라 복원 대기 중 입력도 소비한다.
 	return true;
+}
+
+void UOutlierCinematicSubsystem::TickCompleteHold(float DeltaTime)
+{
+	if (!bCompleteKeyHeld || bCompletionRequested || State != EOutlierCinematicState::Playing) return;
+	if (GetWorld() && GetWorld()->IsPaused())
+	{
+		ResetCompleteHold();
+		return;
+	}
+	CompleteHoldElapsed += DeltaTime;
+	// 힌트 위젯이 없으면 클래스 기본값(WBP에서 지정한 값), 그것도 없으면 2초를 쓴다.
+	const UCinematicHintkey* HintDefaults = CinematicHint ? CinematicHint.Get()
+		: (CinematicHintkeyClass ? CinematicHintkeyClass->GetDefaultObject<UCinematicHintkey>() : nullptr);
+	const float HoldSeconds = HintDefaults ? HintDefaults->GetHoldSeconds() : 2.0f;
+	const float Progress = HoldSeconds > 0.0f
+		? FMath::Clamp(CompleteHoldElapsed / HoldSeconds, 0.0f, 1.0f) : 1.0f;
+	if (CinematicHint) CinematicHint->SetHoldProgress(Progress);
+	if (Progress < 1.0f) return;
+
+	AFirstPersonPlayerController* PC = OwningController.Get();
+	if (!PC || !PC->IsLocalController() || !ActiveIntroId.IsValid())
+	{
+		ResetCompleteHold();
+		return;
+	}
+	bCompleteKeyHeld = false;
+	bCompletionRequested = true;
+	PC->ServerNotifyCinematic({ActiveIntroId, EOutlierCinematicClientEvent::CompleteRequested});
+}
+
+void UOutlierCinematicSubsystem::ResetCompleteHold()
+{
+	bCompleteKeyHeld = false;
+	CompleteHoldElapsed = 0.0f;
+	// 완료 요청 이후에는 꽉 찬 상태를 유지한다.
+	if (CinematicHint && !bCompletionRequested) CinematicHint->SetHoldProgress(0.0f);
 }
 
 void UOutlierCinematicSubsystem::CompleteCinematic(const FGuid& IntroId)
@@ -408,7 +453,8 @@ void UOutlierCinematicSubsystem::ClearLevelCinematics()
 	bSkipUnregisteredCinematic = false;
 	bCompletionRequested = false;
 	bPausedByWorld = false;
-	CompleteCinematicKey = EKeys::Enter;
+	CompleteHoldElapsed = 0.0f;
+	bCompleteKeyHeld = false;
 	StableReadyFrames = 0;
 	WaitLogSeconds = 0.0f;
 }
@@ -416,7 +462,6 @@ void UOutlierCinematicSubsystem::ClearLevelCinematics()
 void UOutlierCinematicSubsystem::PushCinematicHint()
 {
 	PopCinematicHint();
-	if (!CompleteCinematicKey.IsValid()) return;
 	AFirstPersonPlayerController* PC = OwningController.Get();
 	ULocalPlayerUILayerSubsystem* Layers = GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>();
 	if (!PC || !Layers || !CinematicHintkeyClass)
@@ -426,7 +471,7 @@ void UOutlierCinematicSubsystem::PushCinematicHint()
 	}
 	CinematicHint = CreateWidget<UCinematicHintkey>(PC, CinematicHintkeyClass);
 	if (!CinematicHint) return;
-	CinematicHint->SetCompleteCinematicKey(CompleteCinematicKey);
+	CinematicHint->SetHoldProgress(0.0f);
 	// 표시 전용: 기존 시네마틱 입력 범위와 일시정지 메뉴의 포커스를 바꾸지 않는다.
 	CinematicHintLayer = Layers->PushWidget(UILayerTags::Gameplay(), CinematicHint,
 		FirstPersonInputModeTags::UI(), this, EUILayerFocusTarget::None, false, false);

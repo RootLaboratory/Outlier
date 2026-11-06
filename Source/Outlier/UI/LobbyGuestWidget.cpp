@@ -43,18 +43,15 @@ void ULobbyGuestWidget::NativeConstruct()
 	if (LeftButton)
 	{
 		LeftButton->OnClicked.AddUniqueDynamic(this, &ThisClass::HandleLeftButtonClicked);
-		LeftButton->OnHovered.AddUniqueDynamic(this, &ThisClass::HandleLeftButtonHovered);
-		LeftButton->OnUnhovered.AddUniqueDynamic(this, &ThisClass::HandleLeftButtonUnhovered);
 	}
 	if (RightButton)
 	{
 		RightButton->OnClicked.AddUniqueDynamic(this, &ThisClass::HandleRightButtonClicked);
-		RightButton->OnHovered.AddUniqueDynamic(this, &ThisClass::HandleRightButtonHovered);
-		RightButton->OnUnhovered.AddUniqueDynamic(this, &ThisClass::HandleRightButtonUnhovered);
 	}
 
 	LeftButtonMaterial = InitializeButtonMaterial(LeftButton);
 	RightButtonMaterial = InitializeButtonMaterial(RightButton);
+	UpdateButtonAnimations(0.0f);
 
 	RefreshText();
 	RefreshResultImage();
@@ -66,14 +63,10 @@ void ULobbyGuestWidget::NativeDestruct()
 	if (LeftButton)
 	{
 		LeftButton->OnClicked.RemoveDynamic(this, &ThisClass::HandleLeftButtonClicked);
-		LeftButton->OnHovered.RemoveDynamic(this, &ThisClass::HandleLeftButtonHovered);
-		LeftButton->OnUnhovered.RemoveDynamic(this, &ThisClass::HandleLeftButtonUnhovered);
 	}
 	if (RightButton)
 	{
 		RightButton->OnClicked.RemoveDynamic(this, &ThisClass::HandleRightButtonClicked);
-		RightButton->OnHovered.RemoveDynamic(this, &ThisClass::HandleRightButtonHovered);
-		RightButton->OnUnhovered.RemoveDynamic(this, &ThisClass::HandleRightButtonUnhovered);
 	}
 	Super::NativeDestruct();
 }
@@ -93,7 +86,6 @@ UMaterialInstanceDynamic* ULobbyGuestWidget::InitializeButtonMaterial(UButton* B
 	if (UMaterialInstanceDynamic* ExistingMaterial = Cast<UMaterialInstanceDynamic>(NormalResource);
 		ExistingMaterial && ExistingMaterial->GetOuter() == this)
 	{
-		SetButtonAnimationPaused(ExistingMaterial, false);
 		return ExistingMaterial;
 	}
 
@@ -120,59 +112,58 @@ UMaterialInstanceDynamic* ULobbyGuestWidget::InitializeButtonMaterial(UButton* B
 	{
 		Style.Pressed.SetResourceObject(ButtonMaterial);
 	}
+	if (Style.Disabled.GetResourceObject() == SourceMaterial)
+	{
+		Style.Disabled.SetResourceObject(ButtonMaterial);
+	}
 	Button->SetStyle(Style);
 
-	SetButtonAnimationPaused(ButtonMaterial, false);
 	return ButtonMaterial;
 }
 
-void ULobbyGuestWidget::SetButtonAnimationPaused(UMaterialInstanceDynamic* ButtonMaterial, bool bPaused) const
+void ULobbyGuestWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
-	if (ButtonMaterial && !ButtonAnimationPausedParameterName.IsNone())
+	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	UpdateButtonAnimations(InDeltaTime);
+}
+
+void ULobbyGuestWidget::UpdateButtonAnimations(float DeltaTime)
+{
+	if (ButtonAnimationTimeParameterName.IsNone())
 	{
-		// 0: 재생(기본), 1: 정지. 머티리얼에서는 OneMinus(paused)를 Phase에 곱한다.
-		ButtonMaterial->SetScalarParameterValue(ButtonAnimationPausedParameterName, bPaused ? 1.0f : 0.0f);
+		return;
+	}
+
+	const bool bAnyButtonHovered = (LeftButton && LeftButton->IsHovered())
+		|| (RightButton && RightButton->IsHovered());
+	const bool bAnyButtonActive = (LeftButton && LeftButton->GetIsEnabled() && LeftButton->IsVisible())
+		|| (RightButton && RightButton->GetIsEnabled() && RightButton->IsVisible());
+
+	// A shared clock keeps both arrows in sync, including when one arrow is hidden.
+	if (bIsOwningLocalGuest && bAnyButtonActive && !bAnyButtonHovered)
+	{
+		ButtonAnimationTime += FMath::Max(DeltaTime, 0.0f);
+	}
+	if (LeftButtonMaterial)
+	{
+		LeftButtonMaterial->SetScalarParameterValue(ButtonAnimationTimeParameterName, ButtonAnimationTime);
+	}
+	if (RightButtonMaterial)
+	{
+		RightButtonMaterial->SetScalarParameterValue(ButtonAnimationTimeParameterName, ButtonAnimationTime);
 	}
 }
 
-void ULobbyGuestWidget::SetArrowButtonVisible(
-	UButton* Button,
-	UMaterialInstanceDynamic* ButtonMaterial,
-	bool bVisible) const
+void ULobbyGuestWidget::SetArrowButtonVisible(UButton* Button, bool bVisible) const
 {
 	if (!Button)
 	{
 		return;
 	}
 
-	// 자리를 유지해야 Frame 중심 기준 역할 위치 계산이 흔들리지 않으므로 Collapsed 대신 Hidden을 쓴다.
+	// Preserve layout so role offsets measured from the frame center remain stable.
 	Button->SetVisibility(bVisible ? ESlateVisibility::Visible : ESlateVisibility::Hidden);
-
-	// 숨겨지는 동안에는 Unhovered가 오지 않을 수 있어 정지 상태를 여기서 풀어준다.
-	if (!bVisible)
-	{
-		SetButtonAnimationPaused(ButtonMaterial, false);
-	}
-}
-
-void ULobbyGuestWidget::HandleLeftButtonHovered()
-{
-	SetButtonAnimationPaused(LeftButtonMaterial, true);
-}
-
-void ULobbyGuestWidget::HandleLeftButtonUnhovered()
-{
-	SetButtonAnimationPaused(LeftButtonMaterial, false);
-}
-
-void ULobbyGuestWidget::HandleRightButtonHovered()
-{
-	SetButtonAnimationPaused(RightButtonMaterial, true);
-}
-
-void ULobbyGuestWidget::HandleRightButtonUnhovered()
-{
-	SetButtonAnimationPaused(RightButtonMaterial, false);
 }
 
 void ULobbyGuestWidget::HandleLeftButtonClicked()
@@ -258,6 +249,6 @@ void ULobbyGuestWidget::RefreshPresentation()
 	}
 
 	// 이미 끝 방향(Shooter=왼쪽, Partner=오른쪽)에 있으면 그 방향 버튼을 숨긴다.
-	SetArrowButtonVisible(LeftButton, LeftButtonMaterial, GuestState != ELobbyGuestWidgetState::Shooter);
-	SetArrowButtonVisible(RightButton, RightButtonMaterial, GuestState != ELobbyGuestWidgetState::Partner);
+	SetArrowButtonVisible(LeftButton, GuestState != ELobbyGuestWidgetState::Shooter);
+	SetArrowButtonVisible(RightButton, GuestState != ELobbyGuestWidgetState::Partner);
 }

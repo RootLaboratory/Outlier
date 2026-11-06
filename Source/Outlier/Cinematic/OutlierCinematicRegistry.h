@@ -21,10 +21,7 @@ public:
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Cinematic")
 	TMap<FGameplayTag, TObjectPtr<ALevelSequenceActor>> Cinematics;
 
-	// 참가자 중 한 명이 키를 누르면 두 플레이어의 인트로를 함께 완료한다.
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cinematic|Input")
-	FKey CompleteCinematicKey = EKeys::Enter;
-
+	// 각 플레이어가 로컬에서 스페이스를 위젯의 HoldSeconds만큼 누르면 두 플레이어의 인트로를 함께 완료한다.
 	// 각 플레이어가 로컬 UI 레이어에 재생 시작부터 종료까지 표시한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cinematic|UI")
 	TSubclassOf<UCinematicHintkey> CinematicHintkeyClass;

@@ -30,6 +30,7 @@ public:
 	virtual void NativePreConstruct() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 	FOnLobbyGuestMoveRequested OnMoveRequested;
 
@@ -75,9 +76,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lobby|Guest")
 	TObjectPtr<UTexture2D> ConfirmedTexture;
 
-	// M_LobbyButton의 스프라이트 애니메이션 정지 여부 Scalar 파라미터 (0: 재생, 1: 정지).
+	// 양쪽 버튼이 공유하는 누적 재생 시간. 하나라도 Hover 중이면 값을 유지한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lobby|Guest|Material")
-	FName ButtonAnimationPausedParameterName = TEXT("paused");
+	FName ButtonAnimationTimeParameterName = TEXT("LobbyButtonTime");
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Lobby|Guest")
 	void OnGuestStateChanged(ELobbyGuestWidgetState State, bool bIsLocalGuest, bool bIsConfirmed);
@@ -89,21 +90,9 @@ private:
 	UFUNCTION()
 	void HandleRightButtonClicked();
 
-	UFUNCTION()
-	void HandleLeftButtonHovered();
-
-	UFUNCTION()
-	void HandleLeftButtonUnhovered();
-
-	UFUNCTION()
-	void HandleRightButtonHovered();
-
-	UFUNCTION()
-	void HandleRightButtonUnhovered();
-
 	UMaterialInstanceDynamic* InitializeButtonMaterial(UButton* Button);
-	void SetButtonAnimationPaused(UMaterialInstanceDynamic* ButtonMaterial, bool bPaused) const;
-	void SetArrowButtonVisible(UButton* Button, UMaterialInstanceDynamic* ButtonMaterial, bool bVisible) const;
+	void UpdateButtonAnimations(float DeltaTime);
+	void SetArrowButtonVisible(UButton* Button, bool bVisible) const;
 
 	void RefreshText();
 	void RefreshResultImage();
@@ -113,6 +102,7 @@ private:
 	ELobbyGuestWidgetState GuestState = ELobbyGuestWidgetState::Default;
 	bool bIsOwningLocalGuest = false;
 	bool bConfirmed = false;
+	float ButtonAnimationTime = 0.0f;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> LeftButtonMaterial;
