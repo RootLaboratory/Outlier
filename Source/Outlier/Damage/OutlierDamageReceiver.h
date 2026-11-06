@@ -59,6 +59,8 @@ public:
 
 namespace OutlierDamage
 {
+	// 고정 피해량이 아니라 현재 생명력 전체를 소진하는 환경 피해다. 기존 면역 검사는 유지한다.
+	OUTLIER_API FGameplayTag InstantKillTag();
 	OUTLIER_API bool IsFromEnemy(const FOutlierDamageRequest& Request);
 	OUTLIER_API float Apply(AActor* TargetActor, const FOutlierDamageRequest& Request);
 }

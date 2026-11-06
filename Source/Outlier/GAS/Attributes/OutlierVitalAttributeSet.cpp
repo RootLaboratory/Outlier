@@ -2,6 +2,7 @@
 
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "GameplayEffectExtension.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "Net/UnrealNetwork.h"
 
 UOutlierVitalAttributeSet::UOutlierVitalAttributeSet()
@@ -35,9 +36,12 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 	}
 
 	float RemainingDamage = Damage;
+	const bool bInstantKill = Data.EffectSpec.GetDynamicAssetTags().HasTagExact(OutlierDamage::InstantKillTag());
 	if (const UOutlierShieldAttributeSet* ShieldSet = AbilitySystem->GetSet<UOutlierShieldAttributeSet>())
 	{
-		const float PartnerAbsorption = FMath::Min(ShieldSet->GetPartnerShield(), RemainingDamage);
+		// 즉사도 일반 피해와 같은 실드 → 체력 순서로 처리한다. 큰 수의 합산/반올림에 의존하지 않는다.
+		const float PartnerAbsorption = bInstantKill ? ShieldSet->GetPartnerShield()
+			: FMath::Min(ShieldSet->GetPartnerShield(), RemainingDamage);
 		if (PartnerAbsorption > 0.0f)
 		{
 			AbilitySystem->SetNumericAttributeBase(
@@ -46,7 +50,8 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 			RemainingDamage -= PartnerAbsorption;
 		}
 
-		const float ShieldAbsorption = FMath::Min(ShieldSet->GetShield(), RemainingDamage);
+		const float ShieldAbsorption = bInstantKill ? ShieldSet->GetShield()
+			: FMath::Min(ShieldSet->GetShield(), RemainingDamage);
 		if (ShieldAbsorption > 0.0f)
 		{
 			AbilitySystem->SetNumericAttributeBase(
@@ -56,11 +61,11 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 		}
 	}
 
-	if (RemainingDamage > 0.0f)
+	if (bInstantKill || RemainingDamage > 0.0f)
 	{
 		AbilitySystem->SetNumericAttributeBase(
 			GetHealthAttribute(),
-			FMath::Max(GetHealth() - RemainingDamage, 0.0f));
+			bInstantKill ? 0.0f : FMath::Max(GetHealth() - RemainingDamage, 0.0f));
 	}
 }
 

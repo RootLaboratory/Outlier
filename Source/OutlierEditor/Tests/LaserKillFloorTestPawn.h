@@ -18,6 +18,7 @@ public:
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	int32 DamageCount = 0;
+	bool bRejectDamage = false;
 	FOutlierDamageRequest LastDamageRequest;
 
 private:

@@ -191,7 +191,8 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	const AOutlierPlayerState* PartnerState = GetPlayerState<AOutlierPlayerState>();
 	const TWeakObjectPtr<AShooterCharacter> ShooterAtHit = CachedShooterCharacter.Get();
 	const bool bTriggerPairGameOver = PartnerState && !PartnerState->IsPairSuitAcquired()
-		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())
+		&& (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())
+			|| Request.DamageTag == OutlierDamage::InstantKillTag())
 		&& ShooterAtHit.IsValid();
 	if (bTriggerPairGameOver && ShooterAtHit->IsDead())
 	{
@@ -200,7 +201,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	const float HealthBefore = OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
 	bool bApplied = false;
 	{
-		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 슈트 전 사격은 Reboot를 먼저 시작하지 않는다.
+		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 슈트 전 사격/즉사는 Reboot 대신 GameOver로 이어진다.
 		TGuardValue<bool> RebootGuard(PartnerVitalityComponent->bSuppressRebootForDamage, bTriggerPairGameOver);
 		bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
 			Request.DamageAmount,

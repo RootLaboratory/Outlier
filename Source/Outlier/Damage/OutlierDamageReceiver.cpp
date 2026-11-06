@@ -6,9 +6,11 @@
 #include "GameFramework/Actor.h"
 #include "Outlier.h"
 #include "Team/OutlierTeamIds.h"
+#include "NativeGameplayTags.h"
 
 namespace
 {
+	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_EnvironmentInstantKill, "Damage.Environment.InstantKill");
 	FGenericTeamId ResolveActorTeam(const AActor* Actor)
 	{
 		return IsValid(Actor)
@@ -56,6 +58,11 @@ namespace
 		return ResolveActorTeam(TargetActor).GetId() == EnemyTeamId
 			&& ResolveDamageSourceTeam(Request).GetId() == EnemyTeamId;
 	}
+}
+
+FGameplayTag OutlierDamage::InstantKillTag()
+{
+	return TAG_EnvironmentInstantKill;
 }
 
 bool OutlierDamage::IsFromEnemy(const FOutlierDamageRequest& Request)
