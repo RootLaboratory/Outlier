@@ -238,6 +238,7 @@ public:
 		FName ClientBaseBoneName, uint8 ClientMovementMode) override;
 
 protected:
+	virtual void TickCharacterPose(float DeltaTime) override;
 	virtual void BeginPlay() override;
 	virtual void OnClientCorrectionReceived(FNetworkPredictionData_Client_Character& ClientData, float TimeStamp,
 		FVector NewLocation, FVector NewVelocity, UPrimitiveComponent* NewBase, FName NewBaseBoneName,

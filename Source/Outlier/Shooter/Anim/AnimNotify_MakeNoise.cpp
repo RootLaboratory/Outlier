@@ -3,8 +3,9 @@
 
 #include "Shooter/Anim/AnimNotify_MakeNoise.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Enemy/EnemyRoomSubsystem.h"
-#include "OutlierPlayerState.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "Enemy/EnemyBase.h"
+#include "Team/OutlierTeamIds.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Perception/AISense_Hearing.h"
 
@@ -18,29 +19,25 @@ void UAnimNotify_MakeNoise::Notify(USkeletalMeshComponent* MeshComp, UAnimSequen
 	}
 
 
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(MeshComp->GetOwner());
-	if (!IsValid(Shooter) || !Shooter->HasAuthority())
+	AActor* Source = MeshComp->GetOwner();
+	if (!IsValid(Source) || !Source->HasAuthority())
 	{
 		return;
 	}
 
-	const FGameplayTag CurrentRoomTag = Shooter->GetCurrentRoomTag();
-	if (CurrentRoomTag.IsValid())
+	const AEnemyBase* EnemySource = Cast<AEnemyBase>(Source);
+	if (!Source->IsA<AShooterCharacter>() && !Source->IsA<APartnerCharacter>()
+		&& (!EnemySource || EnemySource->GetGenericTeamId() != FGenericTeamId(OutlierTeamIds::Player)))
 	{
-		if (const UEnemyRoomSubsystem* RoomSubsystem = MeshComp->GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-		{
-			if (RoomSubsystem->IsRoomInCombat(CurrentRoomTag))
-			{
-				return;
-			}
-		}
+		return;
 	}
 
+	// 전투 중에도 보고한다. 조사에 사용할지는 실제로 들은 Enemy가 판단한다.
 	UAISense_Hearing::ReportNoiseEvent(
 		MeshComp->GetWorld(),
-		Shooter->GetActorLocation(),
+		Source->GetActorLocation(),
 		Loudness,
-		Shooter,
+		Source,
 		MaxRange,
 		NoiseTag
 	);

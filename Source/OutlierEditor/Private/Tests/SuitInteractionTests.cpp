@@ -22,6 +22,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "AbilitySystemComponent.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "TimerManager.h"
 #include "ReferenceSkeleton.h"
 #include "OutlierPlayerState.h"
@@ -2082,6 +2083,172 @@ bool FOutlierTransitionRecoveryTest::RunTest(const FString& Parameters)
 	Partner->ReleaseSuitTransitionBlock(RebootId);
 	TestFalse(TEXT("Reboot prevents automatic reload on unlock"), PartnerRifle->IsReloading());
 	Partner->GetAbilitySystemComponent()->RemoveLooseGameplayTag(OutlierGameplayTags::State::Rebooting());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierWeaponOverchargeFireContinuityTest,
+	"Outlier.Weapon.Overcharge.FireContinuity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierWeaponOverchargeFireContinuityTest::RunTest(const FString& Parameters)
+{
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* RifleClass = LoadClass<ARangedWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+	if (!TestNotNull(TEXT("Actual Shooter Blueprint loads"), ShooterClass)
+		|| !TestNotNull(TEXT("Actual Rifle Blueprint loads"), RifleClass)) return false;
+
+	// 입력 순서와 재장전 취소를 별도 월드에서 검증하여 앞 사례의 타이머/몽타주가 섞이지 않게 한다.
+	enum class EStart { FireFirst, OverchargeFirst, LastRoundReload, ReleasedDuringReload,
+		ReleasedBeforeRetry, LockedBeforeRetry, SwappedBeforeRetry };
+	for (const EStart Start : { EStart::FireFirst, EStart::OverchargeFirst,
+		EStart::LastRoundReload, EStart::ReleasedDuringReload, EStart::ReleasedBeforeRetry,
+		EStart::LockedBeforeRetry, EStart::SwappedBeforeRetry })
+	{
+		AddInfo(FString::Printf(TEXT("[OverchargeFireTest] Scenario=%d"), static_cast<int32>(Start)));
+		FScopedSuitInteractionTestWorld TestWorld;
+		if (!TestWorld.Initialize(*this)) return false;
+		UWorld* World = TestWorld.World;
+		AShooterCharacter* Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass);
+		ARangedWeaponBase* Rifle = World->SpawnActor<ARangedWeaponBase>(RifleClass);
+		ASuitTransitionTestPlayerController* Controller = World->SpawnActor<ASuitTransitionTestPlayerController>();
+		AOutlierPlayerState* PlayerState = World->SpawnActor<AOutlierPlayerState>();
+		ASuitFireContinuityTarget* Target = World->SpawnActor<ASuitFireContinuityTarget>(
+			FVector(1500.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+		if (!TestNotNull(TEXT("Shooter spawns"), Shooter) || !TestNotNull(TEXT("Rifle spawns"), Rifle)
+			|| !TestNotNull(TEXT("Controller spawns"), Controller) || !TestNotNull(TEXT("PlayerState spawns"), PlayerState)
+			|| !TestNotNull(TEXT("Hitscan damage receiver spawns"), Target)) return false;
+		Shooter->SetPlayerState(PlayerState);
+		Controller->SetPlayerState(PlayerState);
+		PlayerState->SetAcquiredSuit(true);
+		if (!Shooter->HasActorBegunPlay()) Shooter->DispatchBeginPlay();
+		if (!Rifle->HasActorBegunPlay()) Rifle->DispatchBeginPlay();
+		Controller->Possess(Shooter);
+		Controller->SetControlRotation(FRotator::ZeroRotator);
+		// 사격 수명주기 검사 동안 지면 없는 임시 월드에서 낙하하지 않도록 이동만 멈춘다.
+		Shooter->GetCharacterMovement()->DisableMovement();
+		Shooter->AFirstPersonCharacter::EquipWeapon(Rifle);
+		UShooterCombatComponent* Combat = Shooter->FindComponentByClass<UShooterCombatComponent>();
+		UOutlierAbilitySystemComponent* ASC = Shooter->GetOutlierAbilitySystemComponent();
+		if (!TestNotNull(TEXT("Combat component exists"), Combat)
+			|| !TestNotNull(TEXT("Pawn-owned ASC exists"), ASC)) return false;
+		Combat->RefreshWeaponMode();
+		const FFloatProperty* IntervalProperty = FindFProperty<FFloatProperty>(RifleClass, TEXT("AttackInterval"));
+		const FBoolProperty* AutomaticProperty = FindFProperty<FBoolProperty>(RifleClass, TEXT("bIsAutomatic"));
+		FBoolProperty* InfiniteAmmoProperty = FindFProperty<FBoolProperty>(RifleClass, TEXT("bInfiniteAmmo"));
+		if (!TestNotNull(TEXT("Attack interval property exists"), IntervalProperty)
+			|| !TestNotNull(TEXT("Automatic property exists"), AutomaticProperty)
+			|| !TestNotNull(TEXT("Infinite ammo property exists"), InfiniteAmmoProperty)) return false;
+		const float Interval = IntervalProperty->GetPropertyValue_InContainer(Rifle);
+		if (!TestTrue(TEXT("Actual BP_Rifle uses automatic fire"), AutomaticProperty->GetPropertyValue_InContainer(Rifle))
+			|| !TestTrue(TEXT("Actual BP_Rifle has a positive interval"), Interval > KINDA_SMALL_NUMBER)) return false;
+		AddInfo(FString::Printf(TEXT("[OverchargeFireTest] Rifle=%s Interval=%.4f Magazine=%d ConfiguredInfiniteAmmo=%d"),
+			*RifleClass->GetPathName(), Interval, Rifle->GetMagazineSize(),
+			InfiniteAmmoProperty->GetPropertyValue_InContainer(Rifle)));
+		// DataTable의 무한 탄약 여부와 무관하게 종료 뒤 실제 발사를 탄약 감소로도 확인한다.
+		InfiniteAmmoProperty->SetPropertyValue_InContainer(Rifle, false);
+		const bool bReloadStart = Start != EStart::FireFirst && Start != EStart::OverchargeFirst;
+		const bool bExpectContinuousFire = Start == EStart::FireFirst || Start == EStart::OverchargeFirst
+			|| Start == EStart::LastRoundReload;
+		Rifle->RestoreCheckpointAmmo(bReloadStart ? 1 : Rifle->GetMagazineSize());
+		const FGameplayTag OverchargeTag = OutlierGameplayTags::State::WeaponOvercharged();
+		// 후보가 없는 오토에임도 일반 조준으로 발사해야 한다. 실제 업그레이드 태그로 분기를 연다.
+		ASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::WeaponOvercharge::AutoAim());
+		if (Start != EStart::OverchargeFirst)
+		{
+			Combat->ApplyFireInput(true);
+			Combat->TryStartAttack();
+			if (!TestEqual(TEXT("Initial press resolves an actual server shot"), Target->ShotTimes.Num(), 1)) return false;
+			if (bReloadStart && !TestTrue(TEXT("Last round enters actual automatic reload"),
+				Combat->IsReloading() && Rifle->IsReloading())) return false;
+		}
+		if (Start == EStart::ReleasedDuringReload)
+		{
+			Combat->ApplyFireInput(false);
+			Combat->TryStopAttack();
+		}
+
+		// 실제 능력과 같은 순서: 상태 효과가 태그를 부여한 뒤 재장전 취소/탄창 충전을 요청한다.
+		const int32 BeforeTransition = Target->ShotTimes.Num();
+		ASC->AddLooseGameplayTag(OverchargeTag);
+		if (!TestTrue(TEXT("Overcharge starts on the actual primary rifle"), Shooter->BeginWeaponOvercharge())) return false;
+		TestTrue(TEXT("Actual auto-aim upgrade is active during overcharge"), Shooter->IsAutoAimEnabled());
+		TestFalse(TEXT("Overcharge cancels character reload"), Combat->IsReloading());
+		TestFalse(TEXT("Overcharge cancels weapon reload"), Rifle->IsReloading());
+		TestEqual(TEXT("Overcharge refills the magazine"), Rifle->GetCurrentAmmo(), Rifle->GetMagazineSize());
+		TestEqual(TEXT("Transition cannot bypass the preceding shot cooldown"), Target->ShotTimes.Num(), BeforeTransition);
+		TestTrue(TEXT("Repeated begin remains safe"), Shooter->BeginWeaponOvercharge());
+		TestEqual(TEXT("Repeated begin cannot inject an extra shot"), Target->ShotTimes.Num(), BeforeTransition);
+		if (Start == EStart::OverchargeFirst)
+		{
+			Combat->ApplyFireInput(true);
+			Combat->TryStartAttack();
+		}
+		else if (Start == EStart::ReleasedBeforeRetry)
+		{
+			Combat->ApplyFireInput(false);
+			Combat->TryStopAttack();
+		}
+		else if (Start == EStart::LockedBeforeRetry)
+		{
+			Shooter->BeginActionLock(EShooterActionLock::Equip);
+		}
+		else if (Start == EStart::SwappedBeforeRetry)
+		{
+			Shooter->AFirstPersonCharacter::EquipWeapon(nullptr);
+			Combat->RefreshWeaponMode();
+		}
+		TestWorld.AdvanceTime(Interval * 3.5f);
+		if (!bExpectContinuousFire)
+		{
+			TestEqual(TEXT("Released, locked or swapped state cannot resume pending fire"), Target->ShotTimes.Num(), BeforeTransition);
+		}
+		else
+		{
+			TestTrue(TEXT("Held input keeps producing actual hits during overcharge"), Target->ShotTimes.Num() > BeforeTransition + 1);
+			TestTrue(TEXT("Held attack remains active without switching weapons"), Rifle->IsAttacking());
+		}
+		const int32 BeforeEnd = Target->ShotTimes.Num();
+		ASC->RemoveLooseGameplayTag(OverchargeTag);
+		Shooter->FinishWeaponOvercharge(0.0f);
+		TestWorld.AdvanceTime(Interval * 3.5f);
+		if (!bExpectContinuousFire)
+		{
+			TestEqual(TEXT("Overcharge expiry cannot bypass the continuation guards"), Target->ShotTimes.Num(), BeforeEnd);
+			TestEqual(TEXT("Blocked continuation preserves refilled ammo after expiry"), Rifle->GetCurrentAmmo(), Rifle->GetMagazineSize());
+		}
+		else
+		{
+			TestTrue(TEXT("Held fire continues after overcharge expiry"), Target->ShotTimes.Num() > BeforeEnd);
+			TestTrue(TEXT("Post-overcharge shots consume actual ammo"), Rifle->GetCurrentAmmo() < Rifle->GetMagazineSize());
+		}
+		// 발사 시각을 관찰해 중복 Begin이 연사 타이머 두 개를 만든 경우도 검출한다.
+		const float RateMultiplier = FMath::Max(ASC->GetShooterSuitConfig().WeaponOvercharge.FireRateMultiplier, 1.0f);
+		const float MinimumShotGap = Interval / RateMultiplier - 1.0f / 60.0f - KINDA_SMALL_NUMBER;
+		for (int32 ShotIndex = 1; ShotIndex < Target->ShotTimes.Num(); ++ShotIndex)
+		{
+			TestTrue(TEXT("Transitions preserve cadence without duplicate automatic timers"),
+				Target->ShotTimes[ShotIndex] - Target->ShotTimes[ShotIndex - 1] >= MinimumShotGap);
+		}
+		Combat->ApplyFireInput(false);
+		Combat->TryStopAttack();
+		if (Start == EStart::LockedBeforeRetry) Shooter->EndActionLock(EShooterActionLock::Equip);
+		const int32 BeforeReleaseWait = Target->ShotTimes.Num();
+		TestWorld.AdvanceTime(Interval * 2.5f);
+		TestEqual(TEXT("Release cancels every pending continuation"), Target->ShotTimes.Num(), BeforeReleaseWait);
+		if (Start == EStart::SwappedBeforeRetry)
+		{
+			// 보고된 교체 복구도 실제 같은 Rifle을 다시 장착하여 검증한다.
+			Shooter->AFirstPersonCharacter::EquipWeapon(Rifle);
+			Combat->RefreshWeaponMode();
+			Combat->ApplyFireInput(true);
+			Combat->TryStartAttack();
+			TestEqual(TEXT("The same BP_Rifle fires normally after re-equipping"), Target->ShotTimes.Num(), BeforeReleaseWait + 1);
+			Combat->TryStopAttack();
+		}
+	}
 	return true;
 }
 

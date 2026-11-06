@@ -10,6 +10,8 @@ class OUTLIER_API UAnimNotify_MeleeHit : public UAnimNotify
 	GENERATED_BODY()
 
 public:
+	virtual void BranchingPointNotify(FBranchingPointNotifyPayload& Payload) override;
+
 	virtual void Notify(
 		USkeletalMeshComponent* MeshComp,
 		UAnimSequenceBase* Animation,

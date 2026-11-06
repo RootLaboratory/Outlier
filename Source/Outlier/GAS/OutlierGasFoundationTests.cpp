@@ -1742,6 +1742,21 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 		ApplyDamageRequest(Enemy, 10.0f, FriendlyExplosionDamageEvent, nullptr, Enemy),
 		0.0f);
 	TestEqual(TEXT("Rejected Enemy friendly fire preserves GAS Health"), Enemy->GetCurrentHealth(), 100.0f);
+	// 자폭 드론의 폭발은 진영 필터만 건너뛰고 실제 피해 수신/GAS 경로로 전달한다.
+	FriendlyExplosionDamageEvent.bAllowFriendlyFire = true;
+	TestEqual(TEXT("Explicit friendly explosion damage reaches the receiver"),
+		ApplyDamageRequest(Enemy, 10.0f, FriendlyExplosionDamageEvent, nullptr, Enemy), 10.0f);
+	TestEqual(TEXT("Allowed friendly explosion reduces actual GAS Health"), Enemy->GetCurrentHealth(), 90.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	Enemy->SetCanBeDamaged(false);
+	TestEqual(TEXT("Friendly explosion permission preserves receiver damage immunity"),
+		ApplyDamageRequest(Enemy, 10.0f, FriendlyExplosionDamageEvent, nullptr, Enemy), 0.0f);
+	Enemy->SetCanBeDamaged(true);
+	FriendlyExplosionDamageEvent.bAllowFriendlyFire = false;
+	TestEqual(TEXT("Friendly explosion permission does not leak to later requests"),
+		ApplyDamageRequest(Enemy, 10.0f, FriendlyExplosionDamageEvent, nullptr, Enemy), 0.0f);
+	TestEqual(TEXT("Ordinary friendly weapon damage remains blocked"),
+		ApplyDamageRequest(Enemy, 10.0f, WeaponDamageEvent, nullptr, Enemy), 0.0f);
 	WeaponDamageEvent.StunDurationSeconds = 0.0f;
 
 	// 보정 여부를 피해 요청에 전달하지 않는다. 몸통은 일반 피해, 코어는 아래 검사처럼 약점 피해다.

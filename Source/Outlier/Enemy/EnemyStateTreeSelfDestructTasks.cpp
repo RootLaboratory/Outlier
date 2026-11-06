@@ -126,6 +126,8 @@ EEnemyChargeEligibility EnemyCharge::Assess(const ASelfDestructDrone* Drone, con
 	if (Drone->IsSelfDestructCommitted()) return EEnemyChargeEligibility::AlreadyCommitted;
 	if (Drone->IsDead() || !Drone->CanUseEnemyPerception() || Drone->GetCombatState() != EEnemyCombatState::Combat)
 		return EEnemyChargeEligibility::NotInCombat;
+	// 이미 커밋된 돌진은 위에서 유지하고, 소리 조사 중 새 준비만 보류한다.
+	if (Drone->IsNoiseInvestigationActive()) return EEnemyChargeEligibility::NoVisibleTarget;
 	if (!Controller || Drone->GetController() != Controller || Controller->GetPawn() != Drone
 		|| !IsValid(Target) || Drone->GetTrackedTarget() != Target)
 		return EEnemyChargeEligibility::NoVisibleTarget;

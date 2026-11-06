@@ -131,6 +131,10 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerDebugWorldGuide(FName Command, FGameplayTag WidgetID, FGameplayTag NextWidgetID);
 
+	// TODO: 테스트 종료 후 제거. Shipping에서도 소유 클라이언트의 F1 요청을 허용한다.
+	UFUNCTION(Server, Reliable)
+	void ServerDebugTogglePairInvulnerability();
+
 	// 서버가 시작 당시 확보한 두 Controller에만 전달한다. Listen Host도 같은 로컬 처리 함수를 사용한다.
 	void SendSuitTransitionPhaseFromServer(AShooterCharacter* Shooter, const FGuid& TransitionId,
 		ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing);

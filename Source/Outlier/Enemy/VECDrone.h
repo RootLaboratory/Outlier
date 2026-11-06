@@ -36,12 +36,18 @@ struct OUTLIER_API FDroneStateLightSettings
 };
 
 UCLASS()
-class OUTLIER_API AVECDrone : public AEnemyBase, public IWeaponMuzzleProvider
+class OUTLIER_API AVECDrone : public AEnemyBase, public IWeaponMuzzleProvider, public IAISightTargetInterface
 {
 	GENERATED_BODY()
 
 public:
 	AVECDrone();
+	// 실제 빙의 가능한 드론만 본 시야를 사용한다. 터렛의 별도 감지 경로까지 확장하지 않는다.
+	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(
+		const FCanBeSeenFromContext& Context, FVector& OutSeenLocation,
+		int32& OutNumberOfLoSChecksPerformed, int32& OutNumberOfAsyncLosCheckRequested,
+		float& OutSightStrength, int32* UserData = nullptr,
+		const FOnPendingVisibilityQueryProcessedDelegate* Delegate = nullptr) override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	UFUNCTION(BlueprintPure, Category = "VECDrone|Camera")

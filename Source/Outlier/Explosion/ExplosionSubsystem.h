@@ -24,7 +24,8 @@ public:
 		const FVector& ExplosionLocation,
 		AController* EventInstigator,
 		EOutlierAdaptationDamageCategory AdaptationDamageCategory,
-		const FExplosionProfileRow& Profile);
+		const FExplosionProfileRow& Profile,
+		bool bAllowFriendlyFire = false);
 
 	// 중심과 대상 사이 거리를 기준으로 최대 피해에서 최소 피해까지 선형 감쇠한다.
 	static float CalculateFalloffRatio(float Distance, float OuterRadius, float FalloffExponent);
@@ -44,6 +45,7 @@ private:
 			EOutlierAdaptationDamageCategory::Ignore;
 		FVector Location = FVector::ZeroVector;
 		FExplosionProfileRow Profile;
+		bool bAllowFriendlyFire = false;
 	};
 
 	// 대기 중인 폭발을 순서대로 처리하며, 처리 도중 추가된 연쇄 폭발도 같은 흐름에서 이어서 처리한다.

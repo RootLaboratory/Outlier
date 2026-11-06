@@ -282,6 +282,17 @@ struct FEnemySearchSessionTaskInstanceData
 	bool bShouldRestart = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bLocalGuard = false;
+
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bNoiseInvestigationSearch = false;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float NoiseSearchDuration = 5.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bShouldInvestigateNoise = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNoiseSearchComplete = false;
+	uint64 CapturedNoiseSerial = 0;
+	double NoiseSearchStartedAt = 0.0;
 };
 
 // Lost/Shared/LocalGuard를 모두 포함하는 부모 State에 둔다. 자식 이동 완료를 기다리지 않는다.
@@ -307,7 +318,8 @@ enum class EEnemySearchProgress : uint8
 	AnchorArrived,
 	SelectCurrentPoint,
 	PointChecked,
-	LocalGuard
+	LocalGuard,
+	FinishNoiseInvestigation
 };
 
 USTRUCT()

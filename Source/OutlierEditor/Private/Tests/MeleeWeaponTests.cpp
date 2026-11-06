@@ -21,6 +21,11 @@
 #include "Shooter/ShooterMovementComponent.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "Level/OutlierEndingTriggerVolume.h"
+#include "Room/RoomVolume.h"
+#include "Save/OutlierCheckpoint.h"
+#include "Tutorial/Actors/Tuto_EventTriggerVolume.h"
+#include "Tutorial/Actors/Tuto_PassageTransitionVolume.h"
 
 namespace
 {
@@ -755,6 +760,34 @@ bool FOutlierMeleeSurfaceDoesNotConsumeHitTest::RunTest(const FString& Parameter
 	Weapon->ResetSwingForTest();
 	const FVector Initial(1000, 0, 100);
 	const FVector Impact(1000, 100, 100);
+	// These trigger actors do not inherit AVolume, including the event trigger's children.
+	Trigger->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	for (UClass* VolumeClass : { ARoomVolume::StaticClass(), ATuto_EventTriggerVolume::StaticClass(),
+		ATuto_PassageTransitionVolume::StaticClass(), AOutlierEndingTriggerVolume::StaticClass(),
+		AOutlierCheckpoint::StaticClass() })
+	{
+		AActor* Volume = World->SpawnActor<AActor>(VolumeClass, Initial, FRotator::ZeroRotator, SpawnParameters);
+		if (!TestNotNull(*VolumeClass->GetName(), Volume)) return false;
+		UBoxComponent* VolumeBox = Volume->FindComponentByClass<UBoxComponent>();
+		if (!TestNotNull(TEXT("Volume collision box"), VolumeBox)) return false;
+		VolumeBox->SetGenerateOverlapEvents(false);
+		VolumeBox->SetBoxExtent(FVector(20));
+		VolumeBox->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		VolumeBox->SetCollisionObjectType(ECC_WorldDynamic);
+		VolumeBox->SetCollisionResponseToAllChannels(ECR_Overlap);
+
+		TArray<FHitResult> RawHits;
+		World->SweepMultiByObjectType(RawHits, Initial, Initial + FVector::UpVector * 10,
+			FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldDynamic), FCollisionShape::MakeSphere(12));
+		TestTrue(TEXT("Volume is present in the unfiltered melee sweep"),
+			RawHits.ContainsByPredicate([Volume](const FHitResult& Hit) { return Hit.GetActor() == Volume; }));
+		Weapon->SweepForTest(Initial, Initial);
+		TestEqual(TEXT("Volume produces no surface feedback"), Weapon->GetSurfaceTargetCountForTest(), 0);
+		TestEqual(TEXT("Volume does not consume a damage target"), Weapon->GetDamageTargetCountForTest(), 0);
+		TestEqual(TEXT("Volume receives no damage"), Weapon->GetAppliedTargetCount(), 0);
+		Volume->Destroy();
+	}
+	Trigger->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	Weapon->SweepForTest(Initial, Initial);
 	TestEqual(TEXT("Trigger contact does not consume the single damage target"), Weapon->GetDamageTargetCountForTest(), 0);
 	TestEqual(TEXT("Trigger contact applies no damage"), Weapon->GetAppliedTargetCount(), 0);
@@ -807,6 +840,163 @@ bool FOutlierMeleeSurfaceDoesNotConsumeHitTest::RunTest(const FString& Parameter
 	Weapon->SweepForTest(HeadLocation + FVector(0, 60, 0), HeadLocation);
 	TestEqual(TEXT("A real wall between view and impact still blocks damage"), Weapon->GetAppliedTargetCount(), 0);
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierMeleeCancelBoundariesTest,
+	"Outlier.Weapon.Melee.CancelBoundaries",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierMeleeCancelBoundariesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedMeleeTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) return false;
+	UWorld* World = TestWorld.World;
+	ACharacter* Owner = World->SpawnActor<ACharacter>(FVector(0, 0, 1000), FRotator::ZeroRotator);
+	AMeleeWeaponTestActor* Weapon = World->SpawnActor<AMeleeWeaponTestActor>();
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(FVector(150, 0, 1000), FRotator::ZeroRotator);
+	if (!TestNotNull(TEXT("Cancellation owner"), Owner)
+		|| !TestNotNull(TEXT("Cancellation weapon"), Weapon)
+		|| !TestNotNull(TEXT("Cancellation target"), Enemy)) return false;
+	Weapon->DispatchBeginPlay();
+	Enemy->GetCapsuleComponent()->SetCapsuleSize(10, 20);
+	Enemy->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	Enemy->GetCapsuleComponent()->SetCollisionObjectType(ECC_Pawn);
+	Enemy->GetCapsuleComponent()->SetCollisionResponseToAllChannels(ECR_Ignore);
+	Enemy->GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+	const FVector TargetLocation = Enemy->GetActorLocation();
+
+	// 준비/활성 Trace/Trace 종료 후 회복의 각 지점에 실제 취소 진입점을 교차 적용한다.
+	for (int32 Phase = 0; Phase < 3; ++Phase)
+	for (int32 Cancel = 0; Cancel < 3; ++Cancel)
+	{
+		Weapon->SetTestOwner(Owner);
+		Weapon->ResetAppliedTarget();
+		Weapon->SetTestMeleeTraceSockets(true, TargetLocation, TargetLocation + FVector::UpVector * 10);
+		Weapon->StartAttack();
+		const int32 CancelledSequence = Weapon->GetAttackSequence();
+		if (Phase > 0)
+		{
+			TestTrue(TEXT("Active trace begins before cancellation"), Weapon->BeginMeleeTrace());
+			TestEqual(TEXT("One valid hit exists before cancellation"), Weapon->GetAppliedTargetCount(), 1);
+			if (Phase == 2) Weapon->EndMeleeTrace();
+		}
+		const int32 HitsBeforeCancel = Weapon->GetAppliedTargetCount();
+		if (Cancel == 0) Weapon->StopAttack();
+		else if (Cancel == 1) Weapon->OnUnequipped();
+		else Weapon->OnDropped(FTransform(FVector(0, 500, 1000)));
+
+		TestEqual(TEXT("Cancellation returns the attack to Idle"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Idle);
+		TestFalse(TEXT("Cancellation closes the trace"), Weapon->IsTraceActiveForTest());
+		TestFalse(TEXT("Cancellation clears previous trace coordinates and sequence"), Weapon->HasTraceHistoryForTest());
+		TestFalse(TEXT("Cancellation clears both attack timers"), Weapon->HasPendingAttackTimers());
+		TestFalse(TEXT("Cancellation clears held attack intent"), Weapon->WantsToAttackForTest());
+		TestEqual(TEXT("Cancellation clears damage target history"), Weapon->GetDamageTargetCountForTest(), 0);
+		TestEqual(TEXT("Cancellation clears surface target history"), Weapon->GetSurfaceTargetCountForTest(), 0);
+
+		// 이미 적용한 타격은 보존하되 늦은 Tick과 타이머가 추가 피해나 반복 공격을 만들면 안 된다.
+		Weapon->TickMeleeTrace();
+		Weapon->CommitAttack(CancelledSequence);
+		Weapon->FinishAttack(CancelledSequence);
+		World->GetTimerManager().Tick(1.0f);
+		TestEqual(TEXT("Cancelled callbacks preserve the previous hit count"), Weapon->GetAppliedTargetCount(), HitsBeforeCancel);
+		TestEqual(TEXT("Cancelled timers do not restart an attack"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Idle);
+
+		Weapon->SetTestOwner(Owner);
+		Weapon->StartAttack();
+		const int32 NextSequence = Weapon->GetAttackSequence();
+		TestTrue(TEXT("Next attack receives a new sequence"), NextSequence != CancelledSequence);
+		Weapon->CommitAttack(CancelledSequence);
+		Weapon->FinishAttack(CancelledSequence);
+		TestEqual(TEXT("Old timers cannot change the next preparation"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Attack);
+		TestTrue(TEXT("Next valid attack starts its trace"), Weapon->BeginMeleeTrace());
+		TestEqual(TEXT("The same target is hittable in the next attack"), Weapon->GetAppliedTargetCount(), HitsBeforeCancel + 1);
+		Weapon->ReleaseAttack();
+		Weapon->FinishAttack(NextSequence);
+		AddInfo(FString::Printf(TEXT("[MeleeCancel] Phase=%d Cancel=%d PreviousSequence=%d NextSequence=%d Hits=%d"),
+			Phase, Cancel, CancelledSequence, NextSequence, Weapon->GetAppliedTargetCount()));
+	}
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierMeleeTraceSocketLossTest,
+	"Outlier.Weapon.Melee.TraceSocketLoss",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierMeleeTraceSocketLossTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedMeleeTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) return false;
+	ACharacter* Owner = TestWorld.World->SpawnActor<ACharacter>();
+	AMeleeWeaponTestActor* Weapon = TestWorld.World->SpawnActor<AMeleeWeaponTestActor>();
+	if (!TestNotNull(TEXT("Socket-loss owner"), Owner) || !TestNotNull(TEXT("Socket-loss weapon"), Weapon)) return false;
+	Weapon->DispatchBeginPlay();
+	Weapon->SetTestOwner(Owner);
+	Weapon->StartAttack();
+	TestTrue(TEXT("Valid sockets start the first trace"), Weapon->BeginMeleeTrace());
+	Weapon->SetTestMeleeTraceSockets(false, FVector::ZeroVector, FVector::ZeroVector);
+	Weapon->TickMeleeTrace();
+	TestFalse(TEXT("Losing sockets closes the active trace"), Weapon->IsTraceActiveForTest());
+	TestFalse(TEXT("Losing sockets clears old coordinates"), Weapon->HasTraceHistoryForTest());
+	TestEqual(TEXT("Missing sockets never forward origin damage"), Weapon->GetAppliedTargetCount(), 0);
+	Weapon->SetTestMeleeTraceSockets(true, FVector(0, 10000, 0), FVector(0, 10000, 10));
+	Weapon->TickMeleeTrace();
+	TestFalse(TEXT("Restoring sockets does not resume an invalidated trace"), Weapon->IsTraceActiveForTest());
+	Weapon->ReleaseAttack();
+	Weapon->FinishAttack(Weapon->GetAttackSequence());
+	Weapon->StartAttack();
+	TestTrue(TEXT("A later valid attack can trace again"), Weapon->BeginMeleeTrace());
+	Weapon->StopAttack();
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierMeleeTraceOwnerChangeTest,
+	"Outlier.Weapon.Melee.TraceOwnerChange",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierMeleeTraceOwnerChangeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedMeleeTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) return false;
+	ACharacter* FirstOwner = TestWorld.World->SpawnActor<ACharacter>();
+	ACharacter* NextOwner = TestWorld.World->SpawnActor<ACharacter>(FVector(0, 500, 0), FRotator::ZeroRotator);
+	AMeleeWeaponTestActor* Weapon = TestWorld.World->SpawnActor<AMeleeWeaponTestActor>();
+	AEnemyBase* Enemy = TestWorld.World->SpawnActor<AEnemyBase>(FVector(150, 0, 0), FRotator::ZeroRotator);
+	if (!TestNotNull(TEXT("Original trace owner"), FirstOwner)
+		|| !TestNotNull(TEXT("Replacement trace owner"), NextOwner)
+		|| !TestNotNull(TEXT("Owner-change weapon"), Weapon)
+		|| !TestNotNull(TEXT("Owner-change damage target"), Enemy)) return false;
+	Enemy->GetCapsuleComponent()->SetCapsuleSize(10, 20);
+	Enemy->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	Enemy->GetCapsuleComponent()->SetCollisionObjectType(ECC_Pawn);
+	Enemy->GetCapsuleComponent()->SetCollisionResponseToAllChannels(ECR_Ignore);
+	Enemy->GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+	const FVector TargetLocation = Enemy->GetActorLocation();
+	Weapon->DispatchBeginPlay();
+	Weapon->SetTestOwner(FirstOwner);
+	Weapon->SetTestMeleeTraceSockets(true, TargetLocation + FVector(0, 80, 0), TargetLocation + FVector(0, 80, 10));
+	Weapon->StartAttack();
+	TestTrue(TEXT("Original owner starts an active trace"), Weapon->BeginMeleeTrace());
+	TestEqual(TEXT("Initial trace leaves the target untouched"), Weapon->GetAppliedTargetCount(), 0);
+	// 무기 소유자만 바꾼 뒤 표적을 가로지른다. 이전 좌표가 남으면 새 소유자의 피해로 잘못 전달된다.
+	Weapon->SetTestOwner(NextOwner);
+	Weapon->SetTestMeleeTraceSockets(true, TargetLocation + FVector(0, -80, 0), TargetLocation + FVector(0, -80, 10));
+	Weapon->TickMeleeTrace();
+	TestFalse(TEXT("Changing owner invalidates the previous trace"), Weapon->IsTraceActiveForTest());
+	TestFalse(TEXT("Changing owner clears previous trace coordinates"), Weapon->HasTraceHistoryForTest());
+	TestEqual(TEXT("Owner change does not forward a stale hit"), Weapon->GetAppliedTargetCount(), 0);
+	Weapon->StopAttack();
+	Weapon->SetTestMeleeTraceSockets(true, TargetLocation, TargetLocation + FVector::UpVector * 10);
+	Weapon->StartAttack();
+	TestTrue(TEXT("Replacement owner can start a fresh trace"), Weapon->BeginMeleeTrace());
+	TestEqual(TEXT("Replacement owner's fresh attack hits the target"), Weapon->GetAppliedTargetCount(), 1);
+	Weapon->StopAttack();
+	return !HasAnyErrors();
 }
 
 #endif

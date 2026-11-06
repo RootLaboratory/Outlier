@@ -48,6 +48,13 @@ public:
 	void ResetSwingForTest() { ResetMeleeTraceState(); }
 	int32 GetDamageTargetCountForTest() const { return HitActorsThisSwing.Num(); }
 	int32 GetSurfaceTargetCountForTest() const { return SurfaceActorsThisSwing.Num(); }
+	bool IsTraceActiveForTest() const { return bMeleeTraceActive; }
+	bool WantsToAttackForTest() const { return bWantsToAttack; }
+	bool HasTraceHistoryForTest() const
+	{
+		return ActiveMeleeTraceSequence != 0 || !PreviousMeleeTraceStart.IsZero()
+			|| !PreviousMeleeTraceEnd.IsZero();
+	}
 
 	void ResetAppliedTarget()
 	{

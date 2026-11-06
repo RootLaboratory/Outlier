@@ -79,6 +79,21 @@ struct FEnemyStateTreeSyncTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = Output)
 	FVector PatrolPointB = FVector::ZeroVector;
+
+	// 지식 출력(TargetActor)과 분리된 행동 의도. 실제 조사 전환은 소비 Task가 담당한다.
+	UPROPERTY(EditAnywhere, Category = Output)
+	EEnemyPerceptionGoalType PerceptionGoalType = EEnemyPerceptionGoalType::None;
+
+	UPROPERTY(EditAnywhere, Category = Output)
+	FVector PerceptionGoalLocation = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, Category = Output)
+	TObjectPtr<AActor> PerceptionGoalTarget = nullptr;
+
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNoiseInvestigationActive = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNoiseSearchActive = false;
 };
 
 USTRUCT(meta = (

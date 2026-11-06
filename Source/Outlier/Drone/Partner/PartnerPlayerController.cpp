@@ -41,7 +41,7 @@ bool APartnerPlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// Enhanced Input의 재구성/Flush 콜백과 달리 실제 새 Press만 재입력을 허용한다.
 	if (Params.Event == IE_Pressed)
 	{
-		if (APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn())) Partner->NotifyAccelerateKeyPressed(Params.Key);
+		if (APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn())) Partner->NotifyActionKeyPressed(Params.Key);
 	}
 	return Super::InputKey(Params);
 }
@@ -346,6 +346,9 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 			*GetNameSafe(EnemyTarget));
 #endif
 	}
+
+	// PossessedBy에서는 아직 실패 복귀가 가능하다. 성공 확정 뒤에만 기존 스턴을 해제한다.
+	EnemyTarget->ClearStunForCommittedPossession();
 
 	// 실제 빙의와 쿨타임 세션이 확정된 시점의 값만 복사한다.
 	if (const UOutlierAbilitySystemComponent* PartnerASC = PartnerCharacter->GetOutlierAbilitySystemComponent())

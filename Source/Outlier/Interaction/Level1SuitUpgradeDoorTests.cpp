@@ -589,6 +589,191 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Duplicate retry completions do not replay Level1 opening"), OpenedCount, OpenedBeforeSafety + 1);
 	TestEqual(TEXT("Duplicate retry signals do not restart combat"), CombatStartCount, CombatBeforeSafety + 1);
 
+	// 같은 Volume의 Phase0 배치 전투와 Phase1 문 이벤트를 검증한다. 위의 기존 단일 외부 차수
+	// 회귀와 fixture를 공유하되, 리로드 경계에서 전투·문·저장 상태를 모두 끊고 새 구성을 적용한다.
+	UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+	const uint32 BoundaryGeneration = Arena->ReserveGameplayGeneration();
+	Arena->OnArenaGameplayReloadStarted.Broadcast(BoundaryGeneration);
+	Save->ResetRuntimeCheckpointState();
+	FRoomCombatPhaseDefinition MainPhase = RoomDefinition.CombatPhases[0];
+	MainPhase.DelayBeforeStartSeconds = 0.0f;
+	RoomDefinition.CombatPhases.Reset();
+	FRoomCombatPhaseDefinition& InitialPhase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
+	InitialPhase.bReleaseCombatOnCompletion = true;
+	InitialPhase.Waves.AddDefaulted();
+	RoomDefinition.CombatPhases.Add(MainPhase);
+	RoomDefinition.CombatPhases.Add(MainPhase);
+	TestEqual(TEXT("The door locates its external phase after the preplaced fight"),
+		Combat->GetFirstExternalTriggerPhaseIndex(RoomTag), 1);
+	Door->TargetRoomVolume = CombatRoom;
+	CombatRoom->SetActorLocation(FVector::ZeroVector);
+	Shooter->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+	Partner->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+	TestTrue(TEXT("Combined room registers its initial detection phase"), Combat->RegisterRoom(CombatRoom, RoomTag));
+	AEnemyBase* InitialEnemy = World->SpawnActor<AEnemyBase>();
+	if (!TestNotNull(TEXT("Preplaced fight fixture exists"), InitialEnemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+	InitialEnemy->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+	Combat->RegisterPreplacedEnemy(InitialEnemy);
+	TestTrue(TEXT("The preplaced fight starts"), Combat->NotifyRoomCombatStarted(RoomTag));
+	Arena->OnArenaGameplayReady.Broadcast(BoundaryGeneration);
+	Door->EvaluateReopen();
+	TestEqual(TEXT("Closing starts without prematurely finishing Phase0"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 0);
+	TestEqual(TEXT("The remaining Phase0 enemy survives before close completion"), Combat->GetAliveEnemyCount(RoomTag), 1);
+	TestFalse(TEXT("Closing cannot commit an upgrade save"), Door->bUpgradeSaveCommitted);
+	TestFalse(TEXT("Before closing finishes there is no failed-save retry"),
+		World->GetTimerManager().IsTimerActive(Door->UpgradeSaveRetryTimer));
+	TestFalse(TEXT("Closing does not record door progression"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, Door->DoorId));
+
+	// 이전 세대의 닫힘 통지는 실제 닫힘 완료가 아니다. 같은 Actor가 아직 살아 있어도
+	// 전투 정리나 닫힘 완료 플래그를 현재 세대에 적용하지 않아야 한다.
+	Door->GameplayGeneration = BoundaryGeneration - 1;
+	Door->HandleDoorMotionFinished(Door, false);
+	Door->EvaluateReopen();
+	TestEqual(TEXT("A stale generation cannot finish Phase0"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 0);
+	TestFalse(TEXT("A stale generation cannot confirm closing"), Door->bCloseFinished);
+	Door->GameplayGeneration = BoundaryGeneration;
+
+	// 실제 안전 감지로 닫힘을 중단한다. 안전 개방 완료는 정상 닫힘 완료를 대신하지 않는다.
+	static_cast<AActor*>(Door)->Tick(0.4f);
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	if (!TestTrue(TEXT("Phase0 safety fixture detects the paired player"), Door->HasBlockingPlayer()))
+	{
+		CleanupWorld();
+		return false;
+	}
+	static_cast<AActor*>(Door)->Tick(0.7f);
+	TestTrue(TEXT("Safety interrupts closing toward open"), Door->IsDoorOpen());
+	TestEqual(TEXT("Safety reopening cannot finish Phase0"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 0);
+	TestEqual(TEXT("Safety reopening preserves the remaining Phase0 enemy"), Combat->GetAliveEnemyCount(RoomTag), 1);
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	static_cast<AActor*>(Door)->Tick(0.5f);
+	TestEqual(TEXT("Safety opening completion does not finish Phase0"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 0);
+	AdvanceDelay(0.11f);
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestFalse(TEXT("The normal close completes without either upgrade UI confirmation"),
+		ShooterPS->IsStatAllocatorUICompletedForGeneration(BoundaryGeneration)
+		|| PartnerPS->IsStatAllocatorUICompletedForGeneration(BoundaryGeneration));
+	TestEqual(TEXT("Normal closing forcibly selects the door's external phase"),
+		Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+	TestEqual(TEXT("Normal closing removes the remaining Phase0 enemy from combat"),
+		Combat->GetAliveEnemyCount(RoomTag), 0);
+	TestFalse(TEXT("The upgrade interval releases the combined room reservation"),
+		Combat->IsRoomCombatReserved(RoomTag));
+	TestFalse(TEXT("The upgrade interval releases the combined room exit block"), Combat->IsExitBlocked(RoomTag));
+	TestFalse(TEXT("Phase0 cleanup alone does not open the door before the upgrade UIs finish"), Door->IsDoorOpen());
+	TestFalse(TEXT("Phase0 cleanup alone does not attempt upgrade saving"),
+		World->GetTimerManager().IsTimerActive(Door->UpgradeSaveRetryTimer));
+	ShooterPS->ReportStatAllocatorUIOpened(BoundaryGeneration);
+	ShooterPS->ReportStatAllocatorUIClosed(BoundaryGeneration);
+	PartnerPS->ReportStatAllocatorUIOpened(BoundaryGeneration);
+	PartnerPS->ReportStatAllocatorUIClosed(BoundaryGeneration);
+	TestFalse(TEXT("An unavailable disk save keeps the completed-upgrade door closed"), Door->IsDoorOpen());
+	TestFalse(TEXT("Failed upgrade save does not retain opened-door progression"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, Door->DoorId));
+	TestTrue(TEXT("Completed UIs retry upgrade saving after the close released combat"),
+		World->GetTimerManager().IsTimerActive(Door->UpgradeSaveRetryTimer));
+	// 디스크 저장 없는 fixture이므로 성공 경계만 주입한다. 실제 저장 실패/성공의 디스크 원자성은
+	// Save 테스트가 맡고, 이 테스트는 성공 전 대기와 성공 후 문/전투 순서를 확인한다.
+	SupplyUpgradeSave();
+	Door->EvaluateReopen();
+	const int32 BeforeMainStart = CombatStartCount;
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestTrue(TEXT("The upgrade interval opens the door after save success"), Door->IsDoorOpen());
+	TestTrue(TEXT("Main first matching point registers"), Combat->RegisterSpawnPoint(
+		SecondPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestTrue(TEXT("Main second matching point registers"), Combat->RegisterSpawnPoint(
+		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestTrue(TEXT("Main fight reserves and blocks the room before spawning"),
+		Combat->IsRoomCombatReserved(RoomTag) && Combat->IsExitBlocked(RoomTag));
+	TestEqual(TEXT("Main fight does not spawn on door completion"), Combat->GetAliveEnemyCount(RoomTag), 0);
+	AdvanceDelay(2.99f);
+	TestEqual(TEXT("Main fight waits for the full spawn delay"), Combat->GetAliveEnemyCount(RoomTag), 0);
+	AdvanceDelay(0.02f);
+	TestEqual(TEXT("Main fight starts exactly once"), CombatStartCount, BeforeMainStart + 1);
+	TestEqual(TEXT("Main fight starts Phase1 instead of replaying Phase0"),
+		Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+
+	// Phase0 경계 저장의 ID는 입구 ID와 다르다. 열린 문과 Phase1 대기 진행도가 있으면
+	// ID 차이만으로 본 전투를 이미 시작했다고 판단하지 않고 준비된 명단에서 한 번 재개한다.
+	FOutlierCheckpointSnapshot UpgradeBoundary;
+	UpgradeBoundary.CheckpointId = TEXT("Room.Level01.Phase.1");
+	UpgradeBoundary.RoomTag = RoomTag;
+	UpgradeBoundary.NextPhaseIndex = 1;
+	UpgradeBoundary.SaveReason = EOutlierCheckpointSaveReason::PhaseTransition;
+	UpgradeBoundary.RoomPhaseProgress.Add(RoomTag).NextPhaseIndex = 1;
+	const auto RestoreBoundary = [Arena, Save, Door, this](const FOutlierCheckpointSnapshot& Snapshot)
+	{
+		const uint32 RestoredGeneration = Arena->ReserveGameplayGeneration();
+		Arena->OnArenaGameplayReloadStarted.Broadcast(RestoredGeneration);
+		Save->ResetRuntimeCheckpointState();
+		TestTrue(TEXT("The boundary checkpoint is selected"), Save->CommitCheckpointSnapshotForTesting(Snapshot));
+		Save->RestoreCurrentRoomPhaseProgress(Snapshot.RoomPhaseProgress);
+		Save->SetWorldProgressState(EOutlierWorldProgressType::OpenedDoor, Door->DoorId, true);
+		Arena->OnArenaGameplayReady.Broadcast(RestoredGeneration);
+	};
+	RestoreBoundary(UpgradeBoundary);
+	TestTrue(TEXT("Upgrade boundary restore snaps the door open"), Door->IsDoorOpen());
+	TestFalse(TEXT("A different checkpoint ID does not mark waiting Phase1 as started"), Door->bCombatStartSucceeded);
+	const int32 BeforeBoundaryResume = CombatStartCount;
+	TestTrue(TEXT("Waiting Phase1 room registers after restore"), Combat->RegisterRoom(CombatRoom, RoomTag));
+	TestFalse(TEXT("Waiting Phase1 restore does not reserve the room before the roster is ready"),
+		Combat->IsRoomCombatReserved(RoomTag));
+	TestTrue(TEXT("Restored main first point registers"), Combat->RegisterSpawnPoint(
+		SecondPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestTrue(TEXT("Restored main second point registers"), Combat->RegisterSpawnPoint(
+		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestTrue(TEXT("Restored main fight reapplies exit blocking before spawning"), Combat->IsExitBlocked(RoomTag));
+	AdvanceDelay(3.01f);
+	TestEqual(TEXT("Waiting Phase1 resumes once after its saved door boundary"),
+		CombatStartCount, BeforeBoundaryResume + 1);
+	Door->ReconcileRestoredProgress();
+	TestEqual(TEXT("Repeated restore reconciliation cannot start Phase1 twice"),
+		CombatStartCount, BeforeBoundaryResume + 1);
+
+	UpgradeBoundary.CheckpointId = TEXT("Room.Level01.Phase.2");
+	UpgradeBoundary.NextPhaseIndex = 2;
+	UpgradeBoundary.RoomPhaseProgress.FindChecked(RoomTag).NextPhaseIndex = 2;
+	RestoreBoundary(UpgradeBoundary);
+	TestTrue(TEXT("A later phase restore marks the door's first combat as already handled"), Door->bCombatStartSucceeded);
+	TestTrue(TEXT("Later external phase room registers"), Combat->RegisterRoom(CombatRoom, RoomTag));
+	TestEqual(TEXT("Later restore retains Phase2"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 2);
+	// 문 플래그 외에도 현재 차수를 검사해 후속 외부 차수의 시작 권한을 가져가지 않음을 확인한다.
+	Door->bCombatStartSucceeded = false;
+	TestFalse(TEXT("The door cannot start a later external phase"), Door->TryStartCombat());
+	TestEqual(TEXT("Rejected door request leaves the later phase waiting"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+
+	// 이미 닫힌 문은 Timeline 완료를 기다릴 수 없다. 입장 확정 경로 자체가 같은 Phase0 정리를 수행한다.
+	const uint32 ClosedEntryGeneration = Arena->ReserveGameplayGeneration();
+	Arena->OnArenaGameplayReloadStarted.Broadcast(ClosedEntryGeneration);
+	Save->ResetRuntimeCheckpointState();
+	Door->bInitiallyOpen = false;
+	TestTrue(TEXT("Initially closed fixture room registers"), Combat->RegisterRoom(CombatRoom, RoomTag));
+	AEnemyBase* ClosedEntryEnemy = World->SpawnActor<AEnemyBase>();
+	if (!TestNotNull(TEXT("Initially closed fixture has a remaining Phase0 enemy"), ClosedEntryEnemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+	ClosedEntryEnemy->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+	Combat->RegisterPreplacedEnemy(ClosedEntryEnemy);
+	TestTrue(TEXT("Initially closed fixture starts Phase0"), Combat->NotifyRoomCombatStarted(RoomTag));
+	Arena->OnArenaGameplayReady.Broadcast(ClosedEntryGeneration);
+	TestTrue(TEXT("An already closed entry confirms its close gate immediately"), Door->bCloseFinished);
+	TestFalse(TEXT("An already closed entry needs no door animation"), Door->IsActorTickEnabled());
+	TestEqual(TEXT("An already closed entry forcibly finishes Phase0"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+	TestEqual(TEXT("An already closed entry removes remaining Phase0 combatants"), Combat->GetAliveEnemyCount(RoomTag), 0);
+	TestFalse(TEXT("An already closed entry releases combat reservation"), Combat->IsRoomCombatReserved(RoomTag));
+	TestFalse(TEXT("An already closed entry waits for upgrade UI completion"), Door->bUpgradeSaveCommitted);
+	TestFalse(TEXT("An already closed entry remains closed during upgrades"), Door->IsDoorOpen());
+
 	CleanupWorld();
 	return true;
 }

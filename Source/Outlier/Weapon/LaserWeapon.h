@@ -53,6 +53,7 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
+	virtual bool UsesShooterWallShot() const override { return false; }
 	virtual void InitializeFromDataTables() override;
 	virtual void OnRep_EquippedState() override;
 	virtual void OnHitscanShotResolved(const FVector& ShotStart, const FVector& TraceEnd, const FVector& ImpactNormal,

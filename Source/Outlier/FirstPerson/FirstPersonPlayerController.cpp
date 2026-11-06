@@ -1414,6 +1414,12 @@ bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
 	if (IsLocalController())
 	{
+		// Pawn/입력 모드가 바뀌어도 같은 키를 사용하며, 무적 변경은 서버에서만 확정한다.
+		if (Params.Key == EKeys::F1)
+		{
+			ServerDebugTogglePairInvulnerability();
+			return true;
+		}
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
 		{
 			// 스킵 홀드 키(누름/반복/해제)가 점프·위젯 확인 등으로 새지 않도록 Enhanced Input보다 먼저 처리한다.
@@ -1421,6 +1427,35 @@ bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
 		}
 	}
 	return Super::InputKey(Params);
+}
+
+void AFirstPersonPlayerController::ServerDebugTogglePairInvulnerability_Implementation()
+{
+	const AOutlierPlayerState* Requester = GetPlayerState<AOutlierPlayerState>();
+	if (!HasAuthority() || !Requester || Requester->GetPairId() == INDEX_NONE) return;
+
+	// Shooter 상태를 단일 기준으로 사용한다. Partner가 빙의 중이거나 Pawn이 없어도 페어로 찾는다.
+	AOutlierPlayerState* ShooterState = Requester->IsShooterPlayer() ? GetPlayerState<AOutlierPlayerState>() : nullptr;
+	if (!ShooterState && Requester->IsPartnerPlayer())
+	{
+		const AGameStateBase* GameState = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+		if (!GameState) return;
+		for (APlayerState* State : GameState->PlayerArray)
+		{
+			AOutlierPlayerState* Candidate = Cast<AOutlierPlayerState>(State);
+			if (Candidate && Candidate->IsShooterPlayer() && Candidate->GetPairId() == Requester->GetPairId())
+			{
+				ShooterState = Candidate;
+				break;
+			}
+		}
+	}
+	if (!ShooterState) return;
+	const bool bEnabled = !ShooterState->IsDebugPairInvulnerable();
+	if (!ShooterState->SetDebugPairInvulnerable(bEnabled)) return;
+	ClientMessage(bEnabled ? TEXT("Shooter / Partner Invulnerability ON") : TEXT("Shooter / Partner Invulnerability OFF"));
+	UE_LOG(LogOutlier, Log, TEXT("[DebugInvulnerability] Pair=%d Enabled=%d RequestedBy=%s"),
+		ShooterState->GetPairId(), bEnabled, *GetName());
 }
 
 void AFirstPersonPlayerController::SetupInputComponent()

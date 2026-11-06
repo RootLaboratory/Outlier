@@ -5,6 +5,7 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyPoolDefinition.h"
+#include "Enemy/SelfDestructDrone.h"
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
@@ -12,10 +13,15 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Misc/AutomationTest.h"
+#include "NativeGameplayTags.h"
 #include "Perception/AISense_Hearing.h"
 #include "Perception/AISense_Sight.h"
+#include "Perception/AIPerceptionComponent.h"
+#include "Perception/AIPerceptionSystem.h"
+#include "Perception/AISenseConfig_Hearing.h"
 #include "Room/RoomTagComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/Anim/AnimNotify_MakeNoise.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "AbilitySystemComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -23,13 +29,15 @@
 
 namespace
 {
+UE_DEFINE_GAMEPLAY_TAG_STATIC(NoiseCompletionRoomTag, "Room.NoiseCompletionTest01.1.1");
+
 // 기존 Room/Pool 테스트와 동일한 서버 권한 World를 사용하고 실패 경로에서도 정리한다.
 struct FEnemySearchTestWorld
 {
 	UWorld* World = nullptr;
 	UGameInstance* GameInstance = nullptr;
 
-	FEnemySearchTestWorld()
+	explicit FEnemySearchTestWorld(bool bCreateAISystem = false)
 	{
 		const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
 			EUniqueObjectNameOptions::GloballyUnique);
@@ -42,6 +50,9 @@ struct FEnemySearchTestWorld
 		GameInstance = NewObject<UGameInstance>(GEngine);
 		World->SetGameInstance(GameInstance);
 		GameInstance->Init();
+		// 실제 감지 파이프라인을 사용하는 테스트만 AI System을 생성한다.
+		// Game 타입 임시 월드에는 기본 생성되지 않으므로 Controller 등록보다 먼저 준비한다.
+		if (bCreateAISystem) World->CreateAISystem();
 		World->InitializeActorsForPlay(FURL());
 	}
 
@@ -74,6 +85,17 @@ struct FEnemySearchTestWorld
 	{
 		++GFrameCounter;
 		World->GetTimerManager().Tick(Seconds);
+	}
+
+	AShooterCharacter* SpawnPlayer(const FVector& Location = FVector::ZeroVector) const
+	{
+		// ShooterCharacter는 추상 클래스다. 기존 통합 테스트와 같은 실제 BP를 사용한다.
+		UClass* PlayerClass = LoadClass<AShooterCharacter>(nullptr,
+			TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+		if (!PlayerClass) return nullptr;
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		return World->SpawnActor<AShooterCharacter>(PlayerClass, FTransform(Location), Spawn);
 	}
 };
 }
@@ -166,6 +188,12 @@ bool FEnemySearchEpisodeTest::RunTest(const FString& Parameters)
 	Enemy->CompleteSearchPoint();
 	TestTrue(TEXT("One point also finishes without refill"), Enemy->GetSearchEpisode().bLocalGuard);
 
+	// 직접 시야는 bool만으로 성립하지 않는다. 추적 갱신이 검증할 실제 대상과 Controller 캐시를 준비한다.
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* Target = Fixture.SpawnPlayer(Hint);
+	if (!Controller || !TestNotNull(TEXT("Direct rediscovery has a valid player"), Target)) return false;
+	Controller->Possess(Enemy);
+	Controller->SetCachedVisibleTargetForTesting(Target);
 	Enemy->SetPlayerCurrentlyVisible(true);
 	TestFalse(TEXT("Direct sight ends the search episode"), Enemy->GetSearchEpisode().bActive);
 	Enemy->ApplySharedTargetContact(Hint, true, 12);
@@ -316,29 +344,41 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySightCombatJoinTest,
 bool FEnemySightCombatJoinTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	FEnemySearchTestWorld Fixture;
+	FEnemySearchTestWorld Fixture(true);
 	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	if (!TestNotNull(TEXT("Perception system exists before listener creation"),
+		UAIPerceptionSystem::GetCurrent(Fixture.World))) return false;
 	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
 	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AEnemyAIController* OtherController = Fixture.World->SpawnActor<AEnemyAIController>();
 	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
 	const FGameplayTag OtherRoom = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.2")));
 	AEnemyBase* JoiningEnemy = Fixture.SpawnEnemy(Room, FVector::ZeroVector, false);
 	AEnemyBase* OtherEnemy = Fixture.SpawnEnemy(OtherRoom, FVector(1000, 0, 0), false);
-	AEnemyBase* Target = Fixture.SpawnEnemy(OtherRoom, FVector(300, 200, 350), false);
+	AShooterCharacter* Target = Fixture.SpawnPlayer(FVector(300, 200, 350));
 	if (!TestNotNull(TEXT("Room subsystem exists"), Rooms)
-		|| !Controller || !JoiningEnemy || !OtherEnemy || !Target) return false;
+		|| !TestNotNull(TEXT("Player BP spawned"), Target)
+		|| !Controller || !OtherController || !JoiningEnemy || !OtherEnemy) return false;
 	const FVector SeenLocation = Target->GetActorLocation();
 	const FAIStimulus Seen(*GetDefault<UAISense_Sight>(), 1.0f, SeenLocation, FVector::ZeroVector);
 	Rooms->SetActiveRoomTargetForTesting(Room, FVector::ZeroVector, false);
+	Controller->Possess(JoiningEnemy);
+	OtherController->Possess(OtherEnemy);
+	// RegisterStimulus는 Sense ID를 배열 인덱스로 사용한다. 초기화 실패는 크래시 대신 테스트 실패로 남긴다.
+	if (!TestTrue(TEXT("Sight stimulus has a registered sense"), Seen.Type.IsValid())
+		|| !TestTrue(TEXT("Joining listener is registered"), Controller->EnemyPerceptionComponent->GetListenerId().IsValid())
+		|| !TestTrue(TEXT("Other listener is registered"), OtherController->EnemyPerceptionComponent->GetListenerId().IsValid())) return false;
 
-	// 실제 Sight 콜백의 전투 합류를 검사한다. 비전투 방은 기존 Alert 절차를 유지해야 한다.
-	Controller->HandleSightStimulus(JoiningEnemy, Target, Seen);
+	// Sight 캐시에 자극을 넣은 뒤 콜백을 처리한다. 직접 호출만 하면 실제 감지 목록은 비어 있다.
+	Controller->EnemyPerceptionComponent->RegisterStimulus(Target, Seen);
+	Controller->EnemyPerceptionComponent->ProcessStimuli();
 	TestEqual(TEXT("Successful sight joins active room immediately"),
 		JoiningEnemy->GetCombatState(), EEnemyCombatState::Combat);
 	TestTrue(TEXT("Sight retains direct visibility"), JoiningEnemy->IsPlayerCurrentlyVisible());
 	TestTrue(TEXT("Sight remembers the observed location"),
 		JoiningEnemy->GetLastKnownPlayerLocation().Equals(SeenLocation));
-	Controller->HandleSightStimulus(OtherEnemy, Target, Seen);
+	OtherController->EnemyPerceptionComponent->RegisterStimulus(Target, Seen);
+	OtherController->EnemyPerceptionComponent->ProcessStimuli();
 	TestEqual(TEXT("Sight in another inactive room still enters Alert"),
 		OtherEnemy->GetCombatState(), EEnemyCombatState::Alert);
 	TestFalse(TEXT("Sight does not immediately start the inactive room's combat"),
@@ -361,42 +401,722 @@ bool FEnemyHearingCombatJoinTest::RunTest(const FString& Parameters)
 	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
 	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
 	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AEnemyAIController* AlertController = Fixture.World->SpawnActor<AEnemyAIController>();
+	AEnemyAIController* OtherController = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* NoiseSource = Fixture.SpawnPlayer();
 	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
 	const FGameplayTag OtherRoom = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.2")));
 	AEnemyBase* JoiningEnemy = Fixture.SpawnEnemy(Room, FVector::ZeroVector, false);
 	AEnemyBase* AlertEnemy = Fixture.SpawnEnemy(Room, FVector(1000, 0, 0), false);
 	AEnemyBase* OtherEnemy = Fixture.SpawnEnemy(OtherRoom, FVector(2000, 0, 0), false);
 	if (!TestNotNull(TEXT("Room subsystem exists"), Rooms)
-		|| !Controller || !JoiningEnemy || !AlertEnemy || !OtherEnemy) return false;
+		|| !TestNotNull(TEXT("Noise source BP spawned"), NoiseSource)
+		|| !Controller || !AlertController || !OtherController || !JoiningEnemy || !AlertEnemy || !OtherEnemy) return false;
 	const FVector HeardLocation(300, 200, 350);
 	const FAIStimulus Heard(*GetDefault<UAISense_Hearing>(), 1.0f, HeardLocation, FVector::ZeroVector);
 	Rooms->SetActiveRoomTargetForTesting(Room, FVector::ZeroVector, false);
 
 	// 공유 접촉과 직접 시야가 없어도 전투 중인 자신의 방으로 즉시 합류한다.
+	Controller->Possess(JoiningEnemy);
+	AlertController->Possess(AlertEnemy);
+	OtherController->Possess(OtherEnemy);
 	Controller->HandleHearingStimulus(JoiningEnemy, nullptr, FAIStimulus());
 	TestEqual(TEXT("Failed hearing does not join combat"), JoiningEnemy->GetCombatState(), EEnemyCombatState::NonCombat);
-	Controller->HandleHearingStimulus(JoiningEnemy, nullptr, Heard);
+	Controller->HandleHearingStimulus(JoiningEnemy, NoiseSource, Heard);
 	TestEqual(TEXT("Successful hearing joins active room immediately"), JoiningEnemy->GetCombatState(), EEnemyCombatState::Combat);
 	TestFalse(TEXT("Hearing does not invent direct sight"), JoiningEnemy->IsPlayerCurrentlyVisible());
 	TestFalse(TEXT("Joining does not require or publish shared contact"), JoiningEnemy->HasSharedTargetContact());
 	TestTrue(TEXT("Joining remembers the heard location"), JoiningEnemy->GetLastKnownPlayerLocation().Equals(HeardLocation));
 
 	AlertEnemy->EnterAlertFromPerception(FVector::ZeroVector);
-	Controller->HandleHearingStimulus(AlertEnemy, nullptr, Heard);
+	AlertController->HandleHearingStimulus(AlertEnemy, NoiseSource, Heard);
 	TestEqual(TEXT("Alert enemy also joins active room on hearing"), AlertEnemy->GetCombatState(), EEnemyCombatState::Combat);
-	Controller->HandleHearingStimulus(OtherEnemy, nullptr, Heard);
+	OtherController->HandleHearingStimulus(OtherEnemy, NoiseSource, Heard);
 	TestEqual(TEXT("Another room's combat does not bypass Alert"), OtherEnemy->GetCombatState(), EEnemyCombatState::Alert);
 	TestFalse(TEXT("Hearing in inactive room does not start room combat"), Rooms->IsRoomInCombat(OtherRoom));
 
 	// 반복 청각은 현재 수색 회차를 건드리지 않고, Stun도 강제로 해제하지 않는다.
 	TestTrue(TEXT("Combat participant can begin hidden-target search"), JoiningEnemy->BeginSearchEpisode());
 	const uint64 SearchSerial = JoiningEnemy->GetSearchEpisode().Serial;
-	Controller->HandleHearingStimulus(JoiningEnemy, nullptr, Heard);
+	Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+	Controller->HandleHearingStimulus(JoiningEnemy, NoiseSource, Heard);
 	TestTrue(TEXT("Repeated hearing preserves active search"), JoiningEnemy->GetSearchEpisode().bActive);
 	TestEqual(TEXT("Repeated hearing does not restart search"), JoiningEnemy->GetSearchEpisode().Serial, SearchSerial);
 	AlertEnemy->EnterStun();
-	Controller->HandleHearingStimulus(AlertEnemy, nullptr, Heard);
+	AlertController->HandleHearingStimulus(AlertEnemy, NoiseSource, Heard);
 	TestEqual(TEXT("Combat join preserves active stun"), AlertEnemy->GetCombatState(), EEnemyCombatState::Stun);
+	AEnemyBase* StunnedEnemy = Fixture.SpawnEnemy(Room, FVector(0, 5000, 0), false);
+	AEnemyAIController* StunnedController = Fixture.World->SpawnActor<AEnemyAIController>();
+	if (!StunnedEnemy || !StunnedController) return false;
+	StunnedController->Possess(StunnedEnemy);
+	StunnedEnemy->EnterStun();
+	StunnedController->HandleHearingStimulus(StunnedEnemy, NoiseSource, Heard);
+	TestEqual(TEXT("Hearing never ends stun early"), StunnedEnemy->GetCombatState(), EEnemyCombatState::Stun);
+	StunnedEnemy->RestoreStateAfterStun();
+	TestEqual(TEXT("Hearing promotes the suspended noncombat state to room combat"), StunnedEnemy->GetCombatState(), EEnemyCombatState::Combat);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyHearingMemoryTest,
+	"Outlier.Enemy.Perception.HearingMemory", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyHearingMemoryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(FGameplayTag(), FVector::ZeroVector, false);
+	AEnemyBase* Ally = Fixture.SpawnEnemy(FGameplayTag(), FVector(2000, 0, 0), false);
+	AShooterCharacter* Source = Fixture.SpawnPlayer();
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	if (!TestNotNull(TEXT("Noise source BP spawned"), Source) || !Enemy || !Ally || !Controller) return false;
+	Controller->Possess(Enemy);
+	for (int32 Step = 0; Step < 32; ++Step) Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+	const double Now = Fixture.World->GetTimeSeconds();
+	const FVector HeardLocation(100, 200, 300);
+	FEnemyHeardNoise Noise;
+	TestFalse(TEXT("No noise initially"), Enemy->TryGetHeardNoise(Noise));
+	TestFalse(TEXT("Enemy sound is rejected"), Enemy->RecordHeardNoise(Ally, HeardLocation, Now));
+	TestFalse(TEXT("Future timestamp is rejected"), Enemy->RecordHeardNoise(Source, HeardLocation, Now + 1.0));
+	TestTrue(TEXT("Fresh player noise is recorded"), Enemy->RecordHeardNoise(Source, HeardLocation, Now - 0.5));
+	TestFalse(TEXT("Out-of-order noise in the same cluster is rejected"), Enemy->RecordHeardNoise(Source, HeardLocation, Now - 0.75));
+	TestFalse(TEXT("Duplicate does not extend lifetime"), Enemy->RecordHeardNoise(Source, HeardLocation, Now - 0.5));
+	TestTrue(TEXT("Fresh noise can be queried"), Enemy->TryGetHeardNoise(Noise));
+	TestTrue(TEXT("Location is an occurrence snapshot"), Noise.Location.Equals(HeardLocation));
+	TestEqual(TEXT("Timestamp is preserved"), Noise.OccurredAt, Now - 0.5);
+	Source->SetActorLocation(FVector(1000, 0, 0));
+	TestTrue(TEXT("Moving source does not move heard location"), Enemy->TryGetHeardNoise(Noise) && Noise.Location.Equals(HeardLocation));
+	TestFalse(TEXT("Noise does not grant direct sight"), Enemy->IsPlayerCurrentlyVisible());
+	TestFalse(TEXT("Noise does not grant actual-position tracking"), Enemy->HasTrackableTarget());
+	TestFalse(TEXT("Noise is not shared to another enemy"), Ally->TryGetHeardNoise(Noise));
+
+	// 소리 만료는 World 시각으로 판정한다. 타이머만 진행하면 이 경계를 검증할 수 없다.
+	for (int32 Step = 0; Step < 80; ++Step) Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+	TestFalse(TEXT("Noise expires exactly at three seconds"), Enemy->TryGetHeardNoise(Noise));
+	TestTrue(TEXT("Failed query clears output"), Noise.OccurredAt < 0.0 && !Noise.Source.IsValid());
+	TestFalse(TEXT("Expired input cannot start a new lifetime"), Enemy->RecordHeardNoise(Source, HeardLocation, Now - 0.5));
+	const double Later = Fixture.World->GetTimeSeconds();
+	TestTrue(TEXT("Same-position newer noise is accepted"), Enemy->RecordHeardNoise(Source, HeardLocation, Later));
+	Controller->UnPossess();
+	Controller->Possess(Enemy);
+	TestFalse(TEXT("Controller replacement clears noise"), Enemy->TryGetHeardNoise(Noise));
+
+	FAIStimulus Heard(*GetDefault<UAISense_Hearing>(), 1.0f, HeardLocation, FVector::ZeroVector);
+	Heard.SetStimulusAge(1.0f);
+	Controller->HandleHearingStimulus(Enemy, Source, Heard);
+	TestTrue(TEXT("Hearing callback records a player event"), Enemy->TryGetHeardNoise(Noise));
+	TestEqual(TEXT("Hearing age is not reset on receipt"), Noise.OccurredAt, Later - 1.0);
+	TestEqual(TEXT("Legacy hearing still enters Alert"), Enemy->GetCombatState(), EEnemyCombatState::Alert);
+	Enemy->ClearHeardNoise();
+	Enemy->HeardNoiseLifetime = 0.5f;
+	TestFalse(TEXT("Lifetime override applies to incoming noise"), Enemy->RecordHeardNoise(Source, HeardLocation, Later - 0.5));
+	TestTrue(TEXT("Noise inside the configured lifetime is accepted"), Enemy->RecordHeardNoise(Source, HeardLocation, Later - 0.25));
+	Source->Destroy();
+	TestFalse(TEXT("Destroyed source cannot expose a usable noise"), Enemy->TryGetHeardNoise(Noise));
+	AShooterCharacter* ReusedSource = Fixture.SpawnPlayer();
+	if (!TestNotNull(TEXT("Another player exists for the pool scenario"), ReusedSource)) return false;
+	TestTrue(TEXT("Pool scenario starts with fresh noise"), Enemy->RecordHeardNoise(ReusedSource, HeardLocation, Later));
+	Enemy->PrepareForPoolSpawn(Fixture.World->GetSubsystem<UEnemyPoolSubsystem>());
+	TestFalse(TEXT("Pool reuse clears heard noise"), Enemy->TryGetHeardNoise(Noise));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyPerceptionGoalTest,
+	"Outlier.Enemy.Perception.Goal", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyPerceptionGoalTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : { TEXT("DirectSight"), TEXT("SharedDistance"), TEXT("Hysteresis"),
+		TEXT("SharedExpiry"), TEXT("RetainExpiredNoise"), TEXT("NewerThanGrace"), TEXT("OlderThanGrace"),
+		TEXT("AlternativeLiveTarget"), TEXT("Lifecycle"), TEXT("CommittedCharge") })
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyPerceptionGoalTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchTestWorld Fixture(true);
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.1"));
+	AEnemyBase* Observer = Fixture.SpawnEnemy(Room, FVector(3000, 0, 300));
+	AEnemyBase* Receiver = Fixture.SpawnEnemy(Room, FVector(0, 0, 300));
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* Target = Fixture.SpawnPlayer(FVector(1000, 0, 300));
+	AShooterCharacter* Source = Fixture.SpawnPlayer(FVector(2000, 100, 300));
+	if (!TestNotNull(TEXT("Room subsystem exists"), Rooms) || !Observer || !Receiver || !Controller
+		|| !TestNotNull(TEXT("Shared player BP exists"), Target) || !TestNotNull(TEXT("Noise source BP exists"), Source)) return false;
+	Controller->Possess(Receiver);
+	Receiver->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Target->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Source->GetCharacterMovement()->SetComponentTickEnabled(false);
+	auto Advance = [&](float Seconds)
+	{
+		for (int32 Step = 0; Step < FMath::RoundToInt(Seconds * 32.0f); ++Step)
+		{
+			++GFrameCounter;
+			Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+			Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+		}
+	};
+	auto ExpectGoal = [&](const TCHAR* Message, EEnemyPerceptionGoalType Type)
+	{
+		TestEqual(Message, Receiver->GetPerceptionGoal().Type, Type);
+	};
+	auto Hear = [&](float Distance, double Age = 0.0)
+	{
+		return Receiver->RecordHeardNoise(Source, FVector(Distance, 0, 300), Fixture.World->GetTimeSeconds() - Age);
+	};
+	Advance(1.0f);
+	Rooms->SetActiveRoomTargetForTesting(Room, Target->GetActorLocation(), false);
+	Rooms->ReportRoomTargetContact(Observer, Target, Target->GetActorLocation());
+	Receiver->RefreshTargetTracking();
+	if (!TestEqual(TEXT("Baseline retains shared target"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target))) return false;
+	ExpectGoal(TEXT("Shared observation starts combat intent"), EEnemyPerceptionGoalType::Combat);
+
+	if (Parameters == TEXT("DirectSight"))
+	{
+		Controller->SetCachedVisibleTargetForTesting(Source);
+		Receiver->SetPlayerCurrentlyVisible(true);
+		TestTrue(TEXT("Near noise is stored"), Hear(100));
+		ExpectGoal(TEXT("Any direct player sight blocks noise"), EEnemyPerceptionGoalType::Combat);
+		TestEqual(TEXT("Goal uses visible player"), Receiver->GetPerceptionGoal().Target.Get(), static_cast<AActor*>(Source));
+		TestEqual(TEXT("Decision does not rewrite the combat tracking target"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+	}
+	else if (Parameters == TEXT("OlderThanGrace") || Parameters == TEXT("NewerThanGrace"))
+	{
+		Rooms->RemoveRoomTargetObserver(Observer);
+		Advance(0.5f);
+		TestTrue(TEXT("Noise accepted during tracking grace"), Hear(100, Parameters == TEXT("OlderThanGrace") ? 0.75 : 0.0));
+		ExpectGoal(TEXT("Only newer information overrides grace"), Parameters == TEXT("OlderThanGrace")
+			? EEnemyPerceptionGoalType::Combat : EEnemyPerceptionGoalType::InvestigateNoise);
+		TestEqual(TEXT("Sound never replaces live-position tracking knowledge"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+	}
+	else if (Parameters == TEXT("AlternativeLiveTarget"))
+	{
+		AEnemyBase* OtherObserver = Fixture.SpawnEnemy(Room, FVector(4000, 0, 300));
+		if (!TestNotNull(TEXT("Other observer exists"), OtherObserver)) return false;
+		Rooms->RemoveRoomTargetObserver(Observer);
+		Rooms->ReportRoomTargetContact(OtherObserver, Source, Source->GetActorLocation());
+		FEnemyRoomTargetObservationSnapshot Live;
+		TestTrue(TEXT("Live-only selection skips the retained grace target"), Rooms->TrySelectRoomTarget(Receiver, Live, true));
+		TestEqual(TEXT("Alternative live source selected"), Live.TargetActor.Get(), static_cast<AActor*>(Source));
+	}
+	else if (Parameters == TEXT("CommittedCharge"))
+	{
+		ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>();
+		AEnemyAIController* DroneController = Fixture.World->SpawnActor<AEnemyAIController>();
+		if (!TestNotNull(TEXT("Drone exists"), Drone) || !DroneController) return false;
+		DroneController->Possess(Drone);
+		if (!TestTrue(TEXT("Charge commits"), Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 10.0f, 100.0f, 1000.0f))) return false;
+		TestTrue(TEXT("Charge can hear"), Drone->RecordHeardNoise(Source, FVector(100, 0, 300), Fixture.World->GetTimeSeconds()));
+		TestEqual(TEXT("Noise cannot replace committed intent"), Drone->GetPerceptionGoal().Type, EEnemyPerceptionGoalType::CommittedAction);
+		TestTrue(TEXT("Charge remains committed"), Drone->IsSelfDestructCommitted());
+	}
+	else
+	{
+		TestTrue(TEXT("Near sound accepted despite simultaneous live report"), Hear(100));
+		ExpectGoal(TEXT("Near sound wins over live sharing"), EEnemyPerceptionGoalType::InvestigateNoise);
+		TestNull(TEXT("Investigation does not expose an attack target"), Receiver->GetPerceptionGoal().Target.Get());
+		TestEqual(TEXT("Existing tracking knowledge is preserved"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+		if (Parameters == TEXT("SharedDistance"))
+		{
+			// 설정 변경도 다음 평가에 반영하며, 거리 차이 경계와 0의 동거리 규칙을 검증한다.
+			Receiver->NoiseGoalSwitchDistance = 1000.0f;
+			Receiver->RefreshPerceptionGoal();
+			ExpectGoal(TEXT("Larger margin retains the chosen noise"), EEnemyPerceptionGoalType::InvestigateNoise);
+			Advance(0.25f);
+			Receiver->ClearHeardNoise();
+			TestTrue(TEXT("Sound exactly one margin farther is accepted"), Hear(2000));
+			ExpectGoal(TEXT("Exact configured margin switches to sharing"), EEnemyPerceptionGoalType::Combat);
+			Receiver->NoiseGoalSwitchDistance = 0.0f;
+			Advance(0.25f);
+			Receiver->ClearHeardNoise();
+			TestTrue(TEXT("Equal-distance sound is accepted"), Hear(1000));
+			ExpectGoal(TEXT("Zero margin ties retain combat"), EEnemyPerceptionGoalType::Combat);
+			Advance(0.25f);
+			TestTrue(TEXT("Closer sound is accepted with zero margin"), Hear(999));
+			ExpectGoal(TEXT("Zero margin still switches for a strict advantage"), EEnemyPerceptionGoalType::InvestigateNoise);
+		}
+		else if (Parameters == TEXT("Hysteresis"))
+		{
+			Advance(0.25f);
+			Receiver->SetActorLocation(FVector(600, 0, 300));
+			Receiver->RefreshPerceptionGoal();
+			ExpectGoal(TEXT("Small distance reversal retains investigation"), EEnemyPerceptionGoalType::InvestigateNoise);
+			Advance(0.25f);
+			Receiver->SetActorLocation(FVector(800, 0, 300));
+			Receiver->RefreshPerceptionGoal();
+			ExpectGoal(TEXT("Significantly closer shared target restores combat"), EEnemyPerceptionGoalType::Combat);
+			Advance(0.25f);
+			Receiver->SetActorLocation(FVector(0, 0, 300));
+			Receiver->ClearHeardNoise();
+			TestTrue(TEXT("Small sound advantage accepted"), Hear(900));
+			ExpectGoal(TEXT("Small advantage retains combat"), EEnemyPerceptionGoalType::Combat);
+		}
+		else if (Parameters == TEXT("Lifecycle"))
+		{
+			Controller->UnPossess();
+			ExpectGoal(TEXT("Unpossess clears adopted goal"), EEnemyPerceptionGoalType::None);
+			Controller->Possess(Receiver);
+			Receiver->RefreshPerceptionGoal();
+			ExpectGoal(TEXT("Old noise cannot resume after controller reset"), EEnemyPerceptionGoalType::Search);
+		}
+		else
+		{
+			if (Parameters == TEXT("RetainExpiredNoise"))
+			{
+				FVector Destination;
+				if (!TestTrue(TEXT("Only an adopted snapshot survives expiry"), Receiver->BeginNoiseInvestigation(Destination))) return false;
+				Rooms->RemoveRoomTargetObserver(Observer);
+			}
+			Advance(3.0f);
+			FEnemyHeardNoise ExpiredNoise;
+			TestFalse(TEXT("Noise is invalid at the exact lifetime boundary"), Receiver->TryGetHeardNoise(ExpiredNoise));
+			// TimerManager는 예약 시각을 초과한 틱에 콜백을 실행한다.
+			// 3초 경계의 정보 만료와 다음 틱의 자동 의도 갱신을 별도로 검증한다.
+			Advance(1.0f / 32.0f);
+			ExpectGoal(TEXT("Expiry returns to live sharing or retains adopted snapshot"), Parameters == TEXT("SharedExpiry")
+				? EEnemyPerceptionGoalType::Combat : EEnemyPerceptionGoalType::InvestigateNoise);
+			if (Parameters == TEXT("RetainExpiredNoise"))
+			{
+				Source->SetActorLocation(FVector(5000, 0, 300));
+				Receiver->RefreshPerceptionGoal();
+				TestTrue(TEXT("Adopted goal never follows the sound source"), Receiver->GetPerceptionGoal().Location.Equals(FVector(100, 0, 300)));
+			}
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseInvestigationTest,
+	"Outlier.Enemy.Perception.Investigation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNoiseInvestigationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : { TEXT("FixedSnapshot"), TEXT("DestinationThrottle"), TEXT("SearchWithSharedTarget"),
+		TEXT("NewNoiseDuringSearch"), TEXT("CompletionConsumesNoise"), TEXT("DirectReacquire"),
+		TEXT("ControllerReset"), TEXT("ReachableSearchCenter"), TEXT("ExpiredPendingDestination") })
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNoiseInvestigationTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchTestWorld Fixture(true);
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.1"));
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	AEnemyBase* Observer = Fixture.SpawnEnemy(Room, FVector(3000, 0, 300));
+	AEnemyBase* Receiver = Fixture.SpawnEnemy(Room, FVector(0, 0, 300));
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* Target = Fixture.SpawnPlayer(FVector(1000, 0, 300));
+	AShooterCharacter* Source = Fixture.SpawnPlayer(FVector(2000, 100, 300));
+	if (!TestNotNull(TEXT("Room subsystem exists"), Rooms) || !Observer || !Receiver || !Controller
+		|| !TestNotNull(TEXT("Shared player BP exists"), Target) || !TestNotNull(TEXT("Noise source BP exists"), Source)) return false;
+	Controller->Possess(Receiver);
+	Receiver->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Target->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Source->GetCharacterMovement()->SetComponentTickEnabled(false);
+	auto Advance = [&](float Seconds)
+	{
+		for (int32 Step = 0; Step < FMath::RoundToInt(Seconds * 32.0f); ++Step)
+		{
+			++GFrameCounter;
+			Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+			Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+		}
+	};
+	auto Hear = [&](const FVector& Location)
+	{
+		return Receiver->RecordHeardNoise(Source, Location, Fixture.World->GetTimeSeconds());
+	};
+	Advance(1.0f);
+	Rooms->SetActiveRoomTargetForTesting(Room, Target->GetActorLocation(), false);
+	Rooms->ReportRoomTargetContact(Observer, Target, Target->GetActorLocation());
+	Receiver->RefreshTargetTracking();
+	if (!TestEqual(TEXT("Baseline has real shared tracking"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target))) return false;
+	const bool bTestsRetarget = Parameters == TEXT("DestinationThrottle") || Parameters == TEXT("NewNoiseDuringSearch")
+		|| Parameters == TEXT("ExpiredPendingDestination");
+	const FVector FirstNoise(bTestsRetarget ? 800 : 100, 0, 300);
+	if (!TestTrue(TEXT("Nearby player sound is accepted"), Hear(FirstNoise))) return false;
+	FVector Destination = FVector::ZeroVector;
+	if (!TestTrue(TEXT("Selected noise starts an investigation"), Receiver->BeginNoiseInvestigation(Destination))) return false;
+	const uint64 FirstSerial = Receiver->GetNoiseInvestigationSerial();
+	TestTrue(TEXT("Investigation owns a current movement episode"), Receiver->IsNoiseInvestigationCurrent(FirstSerial));
+	TestTrue(TEXT("Movement starts at the heard snapshot"), Destination.Equals(FirstNoise));
+	TestEqual(TEXT("Investigating does not erase shared knowledge"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+
+	if (Parameters == TEXT("FixedSnapshot"))
+	{
+		Source->SetActorLocation(FVector(5000, 500, 300));
+		Advance(0.5f);
+		Receiver->RefreshPerceptionGoal();
+		TestFalse(TEXT("A moving source cannot retarget investigation without another sound"), Receiver->TryUpdateNoiseInvestigationDestination(Destination));
+		TestTrue(TEXT("Selected goal remains the occurrence location"), Receiver->GetPerceptionGoal().Location.Equals(FirstNoise));
+		TestTrue(TEXT("Investigation never grants direct visibility"), !Receiver->IsPlayerCurrentlyVisible());
+	}
+	else if (Parameters == TEXT("DestinationThrottle"))
+	{
+		Receiver->NoiseDestinationChangeDistance = 100.0f;
+		Advance(0.5f);
+		const FVector SecondNoise(600, 0, 300);
+		TestTrue(TEXT("Latest sound is remembered before the movement interval"), Hear(SecondNoise));
+		TestFalse(TEXT("A meaningful shift cannot bypass the minimum interval"), Receiver->TryUpdateNoiseInvestigationDestination(Destination));
+		Advance(0.5f);
+		Receiver->RefreshPerceptionGoal();
+		TestTrue(TEXT("Pending shift applies at the interval boundary"), Receiver->TryUpdateNoiseInvestigationDestination(Destination));
+		TestTrue(TEXT("Destination uses the newest eligible snapshot"), Destination.Equals(SecondNoise));
+		Advance(0.5f);
+		TestTrue(TEXT("New occurrence at the same position is remembered"), Hear(SecondNoise));
+		TestFalse(TEXT("Same position does not request another path"), Receiver->TryUpdateNoiseInvestigationDestination(Destination));
+		TestEqual(TEXT("Same-position sound does not replace the movement episode"), Receiver->GetNoiseInvestigationSerial(), FirstSerial);
+		Advance(0.5f);
+		// 거리 이득 조건을 분리해 좌표 차이 100cm 제한 자체를 검증한다.
+		Receiver->NoiseCandidateSwitchDistance = 0.0f;
+		TestTrue(TEXT("Small closer position shift is remembered"), Hear(SecondNoise - FVector(99, 0, 0)));
+		TestFalse(TEXT("Sub-threshold displacement does not request another path"), Receiver->TryUpdateNoiseInvestigationDestination(Destination));
+	}
+	else if (Parameters == TEXT("ExpiredPendingDestination"))
+	{
+		Rooms->RemoveRoomTargetObserver(Observer);
+		Receiver->NoiseDestinationUpdateInterval = 5.0f;
+		Advance(0.5f);
+		TestTrue(TEXT("A newer sound waits for the destination interval"), Hear(FVector(600, 0, 300)));
+		TestFalse(TEXT("Pending sound cannot bypass the interval"), Receiver->TryUpdateNoiseInvestigationDestination(Destination));
+		Advance(5.0f);
+		Receiver->RefreshPerceptionGoal();
+		TestFalse(TEXT("Expired unadopted sound cannot become a destination"), Receiver->TryUpdateNoiseInvestigationDestination(Destination));
+		TestTrue(TEXT("Only the already adopted destination survives expiry"), Destination.Equals(FirstNoise));
+		TestTrue(TEXT("Published intent returns to the adopted snapshot"), Receiver->GetPerceptionGoal().Location.Equals(FirstNoise));
+	}
+	else if (Parameters == TEXT("DirectReacquire") || Parameters == TEXT("ControllerReset"))
+	{
+		if (Parameters == TEXT("DirectReacquire"))
+		{
+			Controller->SetCachedVisibleTargetForTesting(Target);
+			Receiver->SetPlayerCurrentlyVisible(true);
+			TestEqual(TEXT("Direct reacquisition restores combat intent"), Receiver->GetPerceptionGoal().Type, EEnemyPerceptionGoalType::Combat);
+		}
+		else Controller->UnPossess();
+		TestFalse(TEXT("Higher-priority perception or controller reset cancels investigation"), Receiver->IsNoiseInvestigationActive());
+		TestFalse(TEXT("Cancelled movement serial is no longer current"), Receiver->IsNoiseInvestigationCurrent(FirstSerial));
+		TestFalse(TEXT("Cancelled search reservations are released"), Receiver->GetSearchEpisode().bActive);
+		if (Parameters == TEXT("DirectReacquire"))
+		{
+			Controller->SetCachedVisibleTargetForTesting(nullptr);
+			Receiver->SetPlayerCurrentlyVisible(false);
+			Rooms->RemoveRoomTargetObserver(Observer);
+		}
+		else Controller->Possess(Receiver);
+		Advance(0.5f);
+		TestTrue(TEXT("A later sound remains eligible"), Hear(FVector(200, 0, 300)));
+		if (!TestTrue(TEXT("A new investigation can start"), Receiver->BeginNoiseInvestigation(Destination))) return false;
+		const uint64 NewSerial = Receiver->GetNoiseInvestigationSerial();
+		TestTrue(TEXT("A replacement episode has a new serial"), NewSerial != FirstSerial);
+		TestFalse(TEXT("Old movement completion cannot start replacement search"), Receiver->BeginNoiseInvestigationSearch(FirstSerial, Receiver->GetActorLocation()));
+		TestTrue(TEXT("Rejected old completion preserves new movement"), Receiver->IsNoiseInvestigationCurrent(NewSerial));
+	}
+	else
+	{
+		if (Parameters == TEXT("ReachableSearchCenter"))
+		{
+			TestFalse(TEXT("Unreached sound-side point cannot become a fallback center"),
+				Receiver->BeginNoiseInvestigationSearch(FirstSerial, FirstNoise));
+			TestTrue(TEXT("Rejected fallback preserves active movement"), Receiver->IsNoiseInvestigationCurrent(FirstSerial));
+		}
+		const FVector ReachedLocation = Receiver->GetActorLocation();
+		if (!TestTrue(TEXT("Physically reached location starts local search"), Receiver->BeginNoiseInvestigationSearch(FirstSerial, ReachedLocation))) return false;
+		TestTrue(TEXT("Investigation changes to its search phase"), Receiver->IsNoiseSearchActive());
+		TestEqual(TEXT("Arrival publishes search intent"), Receiver->GetPerceptionGoal().Type, EEnemyPerceptionGoalType::Search);
+		if (!Receiver->GetSearchEpisode().bActive)
+			TestTrue(TEXT("Noise search can start while shared tracking remains valid"), Receiver->BeginSearchEpisode());
+		TestTrue(TEXT("Search owns a fixed reached center"), Receiver->GetSearchEpisode().Center.Equals(ReachedLocation));
+		TestEqual(TEXT("Noise search does not destroy a valid shared target"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+		if (Parameters == TEXT("NewNoiseDuringSearch"))
+		{
+			Advance(1.0f);
+			// 수색 중 이동한 위치에서 기존 중심보다 2m 가까운 새 소리를 듣는다.
+			Receiver->SetActorLocation(FVector(-400, 0, 300));
+			const FVector NewLocation(-200, 0, 300);
+			TestTrue(TEXT("A newer nearby sound arrives during local search"), Hear(NewLocation));
+			TestEqual(TEXT("New sound requests investigation movement"), Receiver->GetPerceptionGoal().Type, EEnemyPerceptionGoalType::InvestigateNoise);
+			if (!TestTrue(TEXT("New goal can start movement from the search phase"), Receiver->BeginNoiseInvestigation(Destination))) return false;
+			TestTrue(TEXT("Restarted movement uses the new heard location"), Destination.Equals(NewLocation));
+			TestFalse(TEXT("Restart releases the previous search episode"), Receiver->GetSearchEpisode().bActive);
+			TestFalse(TEXT("Previous movement cannot complete after retarget"), Receiver->BeginNoiseInvestigationSearch(FirstSerial, Receiver->GetActorLocation()));
+		}
+		else if (Parameters == TEXT("CompletionConsumesNoise"))
+		{
+			Receiver->EndNoiseInvestigation();
+			Receiver->RefreshPerceptionGoal();
+			TestFalse(TEXT("Completed investigation is inactive"), Receiver->IsNoiseInvestigationActive());
+			TestFalse(TEXT("Completion releases local search reservations"), Receiver->GetSearchEpisode().bActive);
+			TestFalse(TEXT("Consumed sound cannot start another investigation"), Receiver->BeginNoiseInvestigation(Destination));
+			Advance(0.5f);
+			TestTrue(TEXT("A later occurrence at the old position is fresh evidence"), Hear(FirstNoise));
+			TestTrue(TEXT("New evidence can start an investigation after completion"), Receiver->BeginNoiseInvestigation(Destination));
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseCandidateTest,
+	"Outlier.Enemy.Perception.NoiseCandidates", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNoiseCandidateTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : { TEXT("Nearest"), TEXT("HoldBoundary"), TEXT("HoldTimer"), TEXT("EqualQueued"),
+		TEXT("Farther"), TEXT("InsufficientBenefit"), TEXT("ExpiredPending"), TEXT("UnadoptedExpiry"),
+		TEXT("ObservationFilter"), TEXT("Capacity"), TEXT("ControllerReset") })
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNoiseCandidateTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchTestWorld Fixture(true);
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(FGameplayTag());
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* Source = Fixture.SpawnPlayer(FVector(10000, 0, 0));
+	AShooterCharacter* OtherSource = Fixture.SpawnPlayer(FVector(12000, 0, 0));
+	if (!Enemy || !Controller || !Source || !OtherSource) return false;
+	Controller->Possess(Enemy);
+	Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Source->GetCharacterMovement()->SetComponentTickEnabled(false);
+	OtherSource->GetCharacterMovement()->SetComponentTickEnabled(false);
+	auto Advance = [&](int32 Frames)
+	{
+		for (int32 Frame = 0; Frame < Frames; ++Frame)
+		{
+			++GFrameCounter;
+			Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+			Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+		}
+	};
+	auto Hear = [&](const FVector& Location)
+	{
+		return Enemy->RecordHeardNoise(Source, Location, Fixture.World->GetTimeSeconds());
+	};
+	Advance(128);
+	const double Now = Fixture.World->GetTimeSeconds();
+	const FVector Original(800, 0, 0);
+	const double InitialAge = Parameters == TEXT("ExpiredPending") ? 2.5 : 0.0;
+	if (!TestTrue(TEXT("Initial candidate is accepted"), Enemy->RecordHeardNoise(Source, Original, Now - InitialAge))) return false;
+
+	if (Parameters == TEXT("Nearest"))
+	{
+		const FVector Near(300, 0, 0);
+		TestTrue(TEXT("Older sound from another source remains eligible"), Enemy->RecordHeardNoise(OtherSource, Near, Now - 0.25));
+		Advance(1);
+		TestTrue(TEXT("Newest distant sound remains a candidate"), Hear(FVector(1000, 0, 0)));
+		FVector Destination;
+		if (!TestTrue(TEXT("Nearest sound starts movement"), Enemy->BeginNoiseInvestigation(Destination))) return false;
+		TestTrue(TEXT("Distance wins over occurrence order"), Destination.Equals(Near));
+		Enemy->EndNoiseInvestigation();
+		TestFalse(TEXT("Completion consumes unselected old candidates too"), Enemy->BeginNoiseInvestigation(Destination));
+		return true;
+	}
+	if (Parameters == TEXT("UnadoptedExpiry"))
+	{
+		Advance(97);
+		Enemy->RefreshPerceptionGoal();
+		FVector Destination;
+		TestFalse(TEXT("Expired queued intent cannot start movement"), Enemy->BeginNoiseInvestigation(Destination));
+		return true;
+	}
+	if (Parameters == TEXT("ObservationFilter"))
+	{
+		Controller->SetCachedVisibleTargetForTesting(Source);
+		Enemy->SetPlayerCurrentlyVisible(true);
+		Enemy->RefreshPerceptionGoal();
+		Controller->SetCachedVisibleTargetForTesting(nullptr);
+		Enemy->SetPlayerCurrentlyVisible(false);
+		Advance(1);
+		TestTrue(TEXT("Post-observation farther sound is accepted"), Hear(FVector(1200, 0, 0)));
+		TestTrue(TEXT("Ineligible close sound cannot hide newer evidence"), Enemy->GetPerceptionGoal().Location.Equals(FVector(1200, 0, 0)));
+		return true;
+	}
+	if (Parameters == TEXT("Capacity"))
+	{
+		for (int32 Index = 0; Index < 10; ++Index)
+		{
+			Advance(1);
+			Hear(FVector(1100 + Index * 200, 0, 0));
+		}
+		Advance(1);
+		TestTrue(TEXT("A close candidate replaces a full buffer entry"), Hear(FVector(200, 0, 0)));
+		FVector Destination;
+		if (!TestTrue(TEXT("Bounded candidate buffer remains usable"), Enemy->BeginNoiseInvestigation(Destination))) return false;
+		TestTrue(TEXT("Overflow preserves the nearest evidence"), Destination.Equals(FVector(200, 0, 0)));
+		return true;
+	}
+
+	FVector Destination;
+	if (!TestTrue(TEXT("Original destination is adopted"), Enemy->BeginNoiseInvestigation(Destination))) return false;
+	const uint64 Serial = Enemy->GetNoiseInvestigationSerial();
+	Advance(1);
+	FVector Candidate(600, 0, 0);
+	if (Parameters == TEXT("EqualQueued")) Candidate = FVector(-800, 0, 0);
+	if (Parameters == TEXT("Farther")) Candidate = FVector(1000, 0, 0);
+	if (Parameters == TEXT("InsufficientBenefit")) Candidate = FVector(700, 0, 0);
+	if (Parameters == TEXT("ExpiredPending"))
+		TestTrue(TEXT("Aged candidate waits without extending its lifetime"), Enemy->RecordHeardNoise(Source, Candidate, Now - 2.25));
+	else TestTrue(TEXT("New sound is recorded during hold"), Hear(Candidate));
+	TestFalse(TEXT("Receipt cannot bypass the one-second hold"), Enemy->TryUpdateNoiseInvestigationDestination(Destination));
+	TestTrue(TEXT("Pending sound cannot rotate the published goal"), Enemy->GetPerceptionGoal().Location.Equals(Original));
+	if (Parameters == TEXT("ControllerReset"))
+	{
+		Controller->UnPossess();
+		Controller->Possess(Enemy);
+		Advance(33);
+		FEnemyHeardNoise Noise;
+		TestFalse(TEXT("Controller reset clears all candidates"), Enemy->TryGetHeardNoise(Noise));
+		TestFalse(TEXT("Old hold timer cannot restore old ownership"), Enemy->IsNoiseInvestigationCurrent(Serial));
+		return true;
+	}
+	if (Parameters == TEXT("EqualQueued"))
+	{
+		Advance(1);
+		Candidate = FVector(0, 800, 0);
+		TestTrue(TEXT("Another equal-distance sound joins the queue"), Hear(Candidate));
+		Advance(29);
+	}
+	else Advance(30);
+	TestFalse(TEXT("Destination remains fixed immediately before one second"), Enemy->TryUpdateNoiseInvestigationDestination(Destination));
+	Advance(1);
+	// TimerManager는 경계를 초과한 다음 틱에 실행한다. 이 사례는 수동 Refresh 없이 예약 자체를 검증한다.
+	if (Parameters == TEXT("HoldTimer")) Advance(1);
+	else Enemy->RefreshPerceptionGoal();
+	const bool bShouldSwitch = Parameters == TEXT("HoldBoundary") || Parameters == TEXT("HoldTimer") || Parameters == TEXT("EqualQueued");
+	TestEqual(TEXT("Only equal or sufficiently closer valid evidence can replace the destination"),
+		Enemy->TryUpdateNoiseInvestigationDestination(Destination), bShouldSwitch);
+	TestTrue(TEXT("Exactly one final candidate is adopted"), Destination.Equals(bShouldSwitch ? Candidate : Original));
+	TestFalse(TEXT("Queued intermediate sounds cannot cause another immediate switch"), Enemy->TryUpdateNoiseInvestigationDestination(Destination));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseCompletionTest,
+	"Outlier.Enemy.Perception.Investigation.Completion", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNoiseCompletionTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : { TEXT("AlertReturn"), TEXT("CombatReturn"), TEXT("ActiveRoomGuard"), TEXT("NewNoise"), TEXT("ReacquiredTarget") })
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNoiseCompletionTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemySearchTestWorld Fixture(true);
+	if (!TestNotNull(TEXT("Completion world exists"), Fixture.World)) return false;
+	const FGameplayTag Room = NoiseCompletionRoomTag.GetTag();
+	if (!TestTrue(TEXT("Completion uses a child Room with return-home semantics"), URoomTagComponent::IsValidChildRoomTag(Room))) return false;
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(Room, FVector::ZeroVector, Parameters != TEXT("AlertReturn"));
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* Source = Fixture.SpawnPlayer(FVector(10000, 0, 0));
+	if (!Enemy || !Controller || !TestNotNull(TEXT("Completion noise source exists"), Source)) return false;
+	Controller->Possess(Enemy);
+	Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Source->GetCharacterMovement()->SetComponentTickEnabled(false);
+	if (Parameters == TEXT("AlertReturn")) Enemy->EnterAlertFromPerception(FVector(100, 0, 0));
+	if (Parameters == TEXT("ActiveRoomGuard"))
+		Fixture.World->GetSubsystem<UEnemyRoomSubsystem>()->SetActiveRoomTargetForTesting(Room, FVector(100, 0, 0), false);
+	// World의 최대 DeltaTime 제한을 피하면서 목적지 갱신 간격까지 실제 World 시간을 진행한다.
+	auto Advance = [&](int32 Frames)
+	{
+		for (int32 Frame = 0; Frame < Frames; ++Frame)
+		{
+			++GFrameCounter;
+			Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		}
+	};
+	Advance(32);
+	if (!TestTrue(TEXT("Completion starts from a player noise"), Enemy->RecordHeardNoise(Source, FVector(100, 0, 0), Fixture.World->GetTimeSeconds()))) return false;
+	FVector Destination;
+	if (!TestTrue(TEXT("Completion owns an investigation"), Enemy->BeginNoiseInvestigation(Destination))
+		|| !TestTrue(TEXT("Completion begins reached-position search"), Enemy->BeginNoiseInvestigationSearch(
+			Enemy->GetNoiseInvestigationSerial(), Enemy->GetActorLocation()))) return false;
+	if (Parameters == TEXT("NewNoise"))
+	{
+		Advance(32);
+		Enemy->SetActorLocation(FVector(-400, 0, 0));
+		TestTrue(TEXT("Newer closer evidence arrives before completion"), Enemy->RecordHeardNoise(Source, FVector(-200, 0, 0), Fixture.World->GetTimeSeconds()));
+		TestFalse(TEXT("Old completion cannot consume the new movement intent"), Enemy->CompleteNoiseInvestigation());
+		TestEqual(TEXT("New evidence still requests movement"), Enemy->GetPerceptionGoal().Type, EEnemyPerceptionGoalType::InvestigateNoise);
+		return true;
+	}
+	if (Parameters == TEXT("ReacquiredTarget"))
+	{
+		Controller->SetCachedVisibleTargetForTesting(Source);
+		Enemy->SetPlayerCurrentlyVisible(true);
+		TestFalse(TEXT("Old completion cannot return a reacquired combatant home"), Enemy->CompleteNoiseInvestigation());
+		TestEqual(TEXT("Reacquisition retains combat state"), Enemy->GetCombatState(), EEnemyCombatState::Combat);
+		return true;
+	}
+	FEnemySearchProgressTaskInstanceData Finish;
+	Finish.Enemy = Enemy;
+	Finish.Action = EEnemySearchProgress::FinishNoiseInvestigation;
+	TestEqual(TEXT("Production progress task resolves completed investigation"), EnemySearchTesting::Progress(Finish), EStateTreeRunStatus::Succeeded);
+	TestFalse(TEXT("Completion releases investigation ownership"), Enemy->IsNoiseInvestigationActive());
+	TestFalse(TEXT("Completion releases local search reservations"), Enemy->GetSearchEpisode().bActive);
+	// 도착 Room을 만들지 않은 fixture다. 유효한 소속 방이 미등록이면 귀환 상태로 등록 복구를 기다린다.
+	TestEqual(TEXT("Only active Room combat prevents return"), Enemy->GetCombatState(),
+		Parameters == TEXT("ActiveRoomGuard") ? EEnemyCombatState::Combat : EEnemyCombatState::Returning);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyHearingNotifyTest,
+	"Outlier.Enemy.Perception.HearingNotify", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyHearingNotifyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture(true);
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(Room);
+	AShooterCharacter* Source = Fixture.SpawnPlayer();
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	UAIPerceptionSystem* Perception = UAIPerceptionSystem::GetCurrent(Fixture.World);
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	if (!TestNotNull(TEXT("Noise source BP spawned"), Source) || !Enemy || !Controller || !TestNotNull(TEXT("Perception system exists"), Perception)
+		|| !TestNotNull(TEXT("Room subsystem exists"), Rooms)) return false;
+	Source->GetRoomTagComp()->AssignDefaultRoomTag(Room);
+	Source->SetActorLocation(FVector(100, 0, 0));
+	Rooms->SetActiveRoomTargetForTesting(Room, FVector::ZeroVector, false);
+	Controller->Possess(Enemy);
+	if (!TestTrue(TEXT("Hearing sense is registered"), UAISense::GetSenseID<UAISense_Hearing>().IsValid())
+		|| !TestTrue(TEXT("Hearing listener is registered"), Controller->EnemyPerceptionComponent->GetListenerId().IsValid())) return false;
+	Controller->EnemyPerceptionComponent->SetSenseEnabled(UAISense_Sight::StaticClass(), false);
+	// native 테스트 Pawn에는 DataTable이 없다. 실제 청각 파이프라인의 거리만 명시한다.
+	Controller->HearingConfig->HearingRange = 1000.0f;
+	Controller->EnemyPerceptionComponent->ConfigureSense(*Controller->HearingConfig);
+	Controller->EnemyPerceptionComponent->RequestStimuliListenerUpdate();
+	TestEqual(TEXT("Emitter is in the active combat room"), Source->GetCurrentRoomTag(), Room);
+	UAnimNotify_MakeNoise* Notify = NewObject<UAnimNotify_MakeNoise>();
+	Notify->Loudness = 1.0f;
+	Notify->Notify(Source->GetMesh(), nullptr, FAnimNotifyEventReference());
+	// 콜백을 직접 부르지 않고 Notify → Hearing Sense → Perception 콜백까지 진행한다.
+	for (int32 Step = 0; Step < 4; ++Step)
+	{
+		Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		Perception->Tick(1.0f / 32.0f);
+	}
+	FEnemyHeardNoise Noise;
+	TestTrue(TEXT("Notify is heard even while the room is in combat"), Enemy->TryGetHeardNoise(Noise));
+	TestTrue(TEXT("Notify keeps the sound's occurrence location"), Noise.Location.Equals(Source->GetActorLocation()));
+	TestFalse(TEXT("Hearing does not invent sight"), Enemy->IsPlayerCurrentlyVisible());
 	return true;
 }
 

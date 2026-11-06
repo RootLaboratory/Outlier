@@ -28,7 +28,7 @@ public:
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Level 1 Door", meta = (DisplayName = "Entry Room Volume"))
 	TObjectPtr<ARoomVolume> TargetRoomVolume;
 
-	// 체크포인트 저장 성공 뒤 ExternalTrigger 전투를 시작할 별도 Room.
+	// 체크포인트 저장 성공 뒤 ExternalTrigger 전투를 시작할 Room. 입장 Room과 같아도 된다.
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Level 1 Door")
 	TObjectPtr<ARoomVolume> CombatRoomVolume;
 

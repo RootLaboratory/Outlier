@@ -5,6 +5,8 @@
 #include "Shooter/ShooterCombatComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Weapon/MeleeWeaponBase.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -769,6 +771,32 @@ uint64 UShooterCharacterMovementComponent::GetMovementAudioEventId(bool bLanding
 {
 	const uint32 Id = bLanding ? AudioAirborneId : AudioMoveId;
 	return Id ? (uint64(Id) << 1) | uint64(bLanding) : 0;
+}
+
+void UShooterCharacterMovementComponent::TickCharacterPose(float DeltaTime)
+{
+	Super::TickCharacterPose(DeltaTime);
+	if (!HasValidData())
+	{
+		return;
+	}
+
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(CharacterOwner);
+	const AMeleeWeaponBase* Melee = Shooter ? Cast<AMeleeWeaponBase>(Shooter->GetCurrentWeapon()) : nullptr;
+	if (!Shooter || !Shooter->HasAuthority() || Shooter->IsLocallyControlled()
+		|| !Melee || Melee->GetAttackPhase() == EMeleeAttackPhase::Idle)
+	{
+		return;
+	}
+
+	// 원격 Move는 포즈 평가 전에 몽타주 Notify를 먼저 전달할 수 있다.
+	// 여기서 뼈 평가를 마치면 FinalizeBoneTransform이 최신 소켓으로 Notify를 한 번 전달하고,
+	// 엔진 MoveAutonomous의 조기 전달/큐 정리가 같은 NotifyState를 끊지 않는다.
+	// Notify 내부에서 포즈를 재평가하지 않으므로 Notify 재진입도 피한다.
+	if (USkeletalMeshComponent* Mesh = Shooter->GetMesh())
+	{
+		Mesh->RefreshBoneTransforms();
+	}
 }
 
 void UShooterCharacterMovementComponent::MoveAutonomous(float ClientTimeStamp, float DeltaTime,

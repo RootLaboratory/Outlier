@@ -236,6 +236,7 @@ bool UOutlierAbilitySystemComponent::ApplyDamageToSelf(
 	const FGameplayTag& DamageTag)
 {
 	if (!IsOwnerActorAuthoritative() || DamageAmount <= 0.0f
+		|| OutlierDamage::IsEditorInvulnerable(GetAvatarActor())
 		|| HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()))
 	{
 		return false;

@@ -21,6 +21,7 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "OutlierPlayerState.h"
 #include "Room/RoomCombatBarrier.h"
 #include "Room/RoomCombatDefinition.h"
@@ -1456,6 +1457,436 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Reentrant external start retains Combat"), Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
 	Combat->CombatEventObserverForTesting = nullptr;
 	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatPhaseCompletionReleaseTest,
+	"Outlier.Room.PhaseCompletionRelease",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatPhaseCompletionReleaseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Phase release world exists"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	World->InitializeActorsForPlay(FURL());
+	ON_SCOPE_EXIT
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		GameInstance->Shutdown();
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
+	UOutlierSaveSubSystem* Saves = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	AActor* Requester = World->SpawnActor<AActor>();
+	ARoomCombatSpawnPoint* Point = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(), FTransform(FVector(5000.0f, 0.0f, 0.0f)));
+	if (!TestNotNull(TEXT("Combat"), Combat) || !TestNotNull(TEXT("Pool"), Pool)
+		|| !TestNotNull(TEXT("Saves"), Saves) || !TestNotNull(TEXT("Room"), Room)
+		|| !TestNotNull(TEXT("Requester"), Requester) || !TestNotNull(TEXT("Point"), Point))
+	{
+		return false;
+	}
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	ARoomCombatBarrier* Barrier = SpawnTestBarrier(World, RoomTag);
+	if (!TestNotNull(TEXT("Room barrier"), Barrier))
+	{
+		return false;
+	}
+	UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
+	FEnemyPoolEntry& PoolEntry = PoolDefinition->Entries.AddDefaulted_GetRef();
+	PoolEntry.EnemyClass = AEnemyBase::StaticClass();
+	PoolEntry.PrewarmCount = 1;
+	PoolEntry.MaxCount = 1;
+	TestTrue(TEXT("Phase restart pool prewarms"), Pool->PrewarmPool(PoolDefinition));
+
+	// 같은 배치 전투를 기본 유지/명시적 해제/암살/미완료 소환 경로로 각각 진행한다.
+	// 이전 시나리오의 저장 진행을 비워 각 경계가 독립적인 새 전투인지 보장한다.
+	for (int32 Scenario = 0; Scenario < 5; ++Scenario)
+	{
+		const bool bRelease = Scenario != 0;
+		const bool bStealth = Scenario == 2;
+		const bool bPendingSpawn = Scenario == 3;
+		const bool bPendingTurret = Scenario == 4;
+		Combat->ResetRuntimeCombatState();
+		Saves->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+		Saves->RestoreCurrentRoomPhaseProgress(TMap<FGameplayTag, FOutlierRoomPhaseProgress>());
+		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+		FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
+		FRoomCombatPhaseDefinition Initial;
+		Initial.bReleaseCombatOnCompletion = bRelease;
+		Initial.Waves.AddDefaulted();
+		if (bPendingSpawn || bPendingTurret)
+		{
+			FRoomCombatWaveDefinition& Reinforcements = Initial.Waves.AddDefaulted_GetRef();
+			Reinforcements.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+			if (bPendingSpawn)
+			{
+				Reinforcements.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
+			}
+			else
+			{
+				Reinforcements.ExpectedWaveTurretCount = 1;
+			}
+		}
+		RoomDefinition.CombatPhases.Add(Initial);
+		FRoomCombatPhaseDefinition External;
+		External.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		External.DelayBeforeStartSeconds = 0.0f;
+		FRoomCombatWaveDefinition& ExternalWave = External.Waves.AddDefaulted_GetRef();
+		ExternalWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		ExternalWave.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
+		RoomDefinition.CombatPhases.Add(External);
+		Combat->SetCombatDefinitionForTesting(Definition);
+		TestTrue(TEXT("Initial room registers"), Combat->RegisterRoom(Room, RoomTag));
+		Point->SetRuntimeActive(true);
+		Point->SetForceSpawnLocationFailureForTesting(bPendingSpawn);
+		Combat->RegisterSpawnPoint(Point, RoomTag, FGameplayTagContainer(), FGameplayTag());
+		AEnemyBase* FirstEnemy = SpawnTestEnemy(World, RoomTag);
+		AEnemyBase* LastEnemy = SpawnTestEnemy(World, RoomTag);
+		if (!TestNotNull(TEXT("First placed Enemy"), FirstEnemy)
+			|| !TestNotNull(TEXT("Last placed Enemy"), LastEnemy))
+		{
+			return false;
+		}
+		Combat->RegisterPreplacedEnemy(FirstEnemy);
+		Combat->RegisterPreplacedEnemy(LastEnemy);
+		int32 CompletedPhases = 0;
+		int32 ClearedRooms = 0;
+		Combat->CombatEventObserverForTesting = [&](FGameplayTag, ERoomCombatEvent Event, int32)
+		{
+			CompletedPhases += Event == ERoomCombatEvent::PhaseCompleted ? 1 : 0;
+			ClearedRooms += Event == ERoomCombatEvent::RoomCleared ? 1 : 0;
+		};
+		if (!bStealth)
+		{
+			// 실제 감지 경로와 같이 합류 준비를 확정해야 전투 점유와 출구 봉쇄가 함께 시작된다.
+			FRoomCombatPreparationContext Preparation;
+			TestTrue(TEXT("Placed combat reserves its preparation"),
+				Combat->BeginInitialDetectionPreparation(RoomTag, Requester, Preparation));
+			TestTrue(TEXT("Placed combat starts after preparation"),
+				Combat->CompleteInitialDetectionPreparation(Preparation));
+			TestTrue(TEXT("Placed combat holds exits"), Barrier->IsBlocked());
+		}
+		Combat->NotifyEnemyDefeated(FirstEnemy);
+		TestEqual(TEXT("One living placed Enemy keeps Phase0"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 0);
+		TestEqual(TEXT("One living placed Enemy cannot complete a phase"), CompletedPhases, 0);
+		if (!bStealth)
+		{
+			TestTrue(TEXT("One living placed Enemy keeps ownership"), Combat->IsRoomCombatReserved(RoomTag));
+		}
+		Combat->NotifyEnemyDefeated(LastEnemy);
+		if (bPendingSpawn || bPendingTurret)
+		{
+			TestEqual(TEXT("Incomplete reinforcements keep Phase0"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 0);
+			TestTrue(TEXT("Incomplete reinforcements keep ownership"), Combat->IsRoomCombatReserved(RoomTag));
+			TestTrue(TEXT("Incomplete reinforcements keep the barrier"), Barrier->IsBlocked());
+			TestEqual(TEXT("Incomplete reinforcements do not emit completion"), CompletedPhases, 0);
+			TestEqual(TEXT("The expected work remains pending"),
+				bPendingSpawn ? Combat->GetPendingSpawnCount(RoomTag) : Combat->GetPendingActivationCount(RoomTag), 1);
+		}
+		else
+		{
+			TestEqual(TEXT("Completion selects Phase1"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+			TestEqual(TEXT("Phase1 waits for its external event"),
+				Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+			TestEqual(TEXT("Only an explicit release opens exits"), Combat->IsExitBlocked(RoomTag), !bRelease);
+			TestEqual(TEXT("Barrier reads the settled completion boundary"), Barrier->IsBlocked(), !bRelease);
+			TestEqual(TEXT("Only an explicit release frees ownership"), Combat->HasActiveCombatReservation(), !bRelease);
+			TestEqual(TEXT("A placed phase completes once"), CompletedPhases, 1);
+			TestEqual(TEXT("A phase release is not a room clear"), ClearedRooms, 0);
+			TestFalse(TEXT("Phase0 does not record encounter completion"), Saves->HasWorldProgress(
+				EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()));
+			Combat->NotifyEnemyDefeated(LastEnemy);
+			TestEqual(TEXT("A duplicate defeat cannot complete Phase1"), CompletedPhases, 1);
+			const FOutlierRoomPhaseProgress* Progress = Saves->GetCurrentRoomPhaseProgress().Find(RoomTag);
+			if (!TestNotNull(TEXT("The boundary records phase progress"), Progress))
+			{
+				Combat->CombatEventObserverForTesting = nullptr;
+				return false;
+			}
+			TestEqual(TEXT("The snapshot keeps Phase1"), Progress->NextPhaseIndex, 1);
+			TestEqual(TEXT("The snapshot keeps the released block state"), Progress->bExitBlockActive, !bRelease);
+			TestFalse(TEXT("The boundary does not resume an already started phase"), Progress->bResumeCurrentPhase);
+			if (Scenario == 1)
+			{
+				// 실제 재로드처럼 Room 런타임만 폐기하고 저장된 외부 대기 경계를 복원한다.
+				Combat->ResetRuntimeCombatState();
+				TestTrue(TEXT("Released room re-registers"), Combat->RegisterRoom(Room, RoomTag));
+				TestEqual(TEXT("Restore skips the completed placed phase"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+				TestEqual(TEXT("Restore still needs an external event"), Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+				TestFalse(TEXT("Restore keeps ownership released"), Combat->HasActiveCombatReservation());
+				TestFalse(TEXT("Restore keeps the barrier open"), Barrier->IsBlocked());
+				Combat->RegisterPreplacedEnemy(FirstEnemy);
+				TestEqual(TEXT("Phase0 Enemy cannot rejoin the restored phase"), Combat->GetAliveEnemyCount(RoomTag), 0);
+				Point->SetRuntimeActive(true);
+				Combat->RegisterSpawnPoint(Point, RoomTag, FGameplayTagContainer(), FGameplayTag());
+				FRoomCombatTriggerContext Context;
+				TestTrue(TEXT("Phase1 accepts a fresh context"), Combat->CreateTriggerContext(Requester, RoomTag, FGameplayTag(), Context));
+				TestTrue(TEXT("Phase1 starts with delayed spawning"), Combat->StartTriggeredSequenceWithSpawnDelay(Requester, Context, 3.0f));
+				TestTrue(TEXT("Phase1 reacquires ownership before spawning"), Combat->IsRoomCombatReserved(RoomTag));
+				TestTrue(TEXT("Phase1 blocks exits before spawning"), Barrier->IsBlocked());
+				TestEqual(TEXT("Phase1 waits three seconds before leasing"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 0);
+				++GFrameCounter;
+				World->GetTimerManager().Tick(0.0f);
+				++GFrameCounter;
+				World->GetTimerManager().Tick(3.1f);
+				TestEqual(TEXT("Phase1 eventually spawns its own roster"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 1);
+				TestFalse(TEXT("An accepted Phase1 context cannot restart combat"), Combat->StartTriggeredSequence(Requester, Context));
+			}
+		}
+		Combat->CombatEventObserverForTesting = nullptr;
+		Combat->ResetRuntimeCombatState();
+		FirstEnemy->Destroy();
+		LastEnemy->Destroy();
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatUpgradeInitialPhaseFinishTest,
+	"Outlier.Room.UpgradeInitialPhaseFinish",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatUpgradeInitialPhaseFinishTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// 미발각 배치 적, 소환 중인 전투, 아군화된 Pool 적이 남은 전투를 각각 문 닫힘 경계에서 정리한다.
+	for (int32 Scenario = 0; Scenario < 3; ++Scenario)
+	{
+		const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+			EUniqueObjectNameOptions::GloballyUnique);
+		FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+		UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+		if (!TestNotNull(TEXT("Upgrade phase finish world exists"), World))
+		{
+			GEngine->DestroyWorldContext(World);
+			return false;
+		}
+		World->AddToRoot();
+		WorldContext.SetCurrentWorld(World);
+		UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+		World->SetGameInstance(GameInstance);
+		GameInstance->Init();
+		TestTrue(TEXT("Upgrade phase finish world has authority"), World->SetGameMode(FURL()));
+		World->InitializeActorsForPlay(FURL());
+		ON_SCOPE_EXIT
+		{
+			GEngine->ShutdownWorldNetDriver(World);
+			World->DestroyWorld(true);
+			GameInstance->Shutdown();
+			World->SetPhysicsScene(nullptr);
+			GEngine->DestroyWorldContext(World);
+			World->RemoveFromRoot();
+		};
+		URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+		UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
+		UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
+		UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+		UOutlierSaveSubSystem* Saves = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+		ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+		ARoomVolume* OtherRoom = World->SpawnActor<ARoomVolume>();
+		AActor* Requester = World->SpawnActor<AActor>();
+		ARoomCombatSpawnPoint* Point = World->SpawnActor<ARoomCombatSpawnPoint>(
+			ARoomCombatSpawnPoint::StaticClass(), FTransform(FVector(5000.0f, 0.0f, 0.0f)));
+		if (!TestNotNull(TEXT("Combat"), Combat) || !TestNotNull(TEXT("Pool"), Pool)
+			|| !TestNotNull(TEXT("Adaptation"), Adaptation) || !TestNotNull(TEXT("Arena"), Arena)
+			|| !TestNotNull(TEXT("Saves"), Saves) || !TestNotNull(TEXT("Room"), Room)
+			|| !TestNotNull(TEXT("Other Room"), OtherRoom) || !TestNotNull(TEXT("Requester"), Requester)
+			|| !TestNotNull(TEXT("SpawnPoint"), Point))
+		{
+			return false;
+		}
+		Adaptation->OnWorldBeginPlay(*World);
+		const int32 Generation = static_cast<int32>(Arena->GetGameplayGeneration());
+		const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+		const FGameplayTag OtherTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.2")));
+		FStructProperty* RoomTagProperty = FindFProperty<FStructProperty>(ARoomVolume::StaticClass(), TEXT("RoomTag"));
+		if (!TestNotNull(TEXT("RoomVolume exposes its configured room tag"), RoomTagProperty)) return false;
+		*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(Room) = RoomTag;
+		*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(OtherRoom) = OtherTag;
+		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+		AddMixedWaveTurretDefinition(Definition, RoomTag, 2);
+		FRoomCombatRoomDefinition& RoomDefinition = Definition->RoomDefinitions[0];
+		RoomDefinition.CombatPhases[0].bReleaseCombatOnCompletion = true;
+		RoomDefinition.CombatPhases[0].Waves[1].Enemies[0].Count = 2;
+		FRoomCombatPhaseDefinition External;
+		External.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		External.DelayBeforeStartSeconds = 0.0f;
+		FRoomCombatWaveDefinition& ExternalWave = External.Waves.AddDefaulted_GetRef();
+		ExternalWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		ExternalWave.ExpectedWaveTurretCount = 1;
+		RoomDefinition.CombatPhases.Add(External);
+		AddSingleWaveDefinition(Definition, OtherTag);
+		Combat->SetCombatDefinitionForTesting(Definition);
+		TestTrue(TEXT("Upgrade combat Room registers"), Combat->RegisterRoom(Room, RoomTag));
+		TestTrue(TEXT("Unrelated Room registers"), Combat->RegisterRoom(OtherRoom, OtherTag));
+		AEnemyBase* Enemy = SpawnTestEnemy(World, RoomTag);
+		AEnemyBase* Ally = SpawnTestEnemy(World, RoomTag);
+		AEnemyBase* OtherEnemy = SpawnTestEnemy(World, OtherTag);
+		if (!TestNotNull(TEXT("Phase0 hostile"), Enemy) || !TestNotNull(TEXT("Phase0 ally"), Ally)
+			|| !TestNotNull(TEXT("Unrelated hostile"), OtherEnemy))
+		{
+			return false;
+		}
+		Combat->RegisterPreplacedEnemy(Enemy);
+		Combat->RegisterPreplacedEnemy(Ally);
+		Combat->RegisterPreplacedEnemy(OtherEnemy);
+		Ally->SetEnemyPossessed(true);
+		Combat->NotifyEnemyAllied(Ally);
+		TestEqual(TEXT("An allied phase actor is excluded from alive tracking"), Combat->GetAliveEnemyCount(RoomTag), 1);
+		auto SpawnTurret = [World, RoomTag](int32 Phase, int32 Wave, FName Id)
+		{
+			AAutoTurret* Turret = World->SpawnActorDeferred<AAutoTurret>(AAutoTurret::StaticClass(), FTransform::Identity);
+			if (Turret)
+			{
+				Turret->ConfigureWaveRegistrationForTesting(RoomTag, Phase, Wave, Id);
+				Turret->FinishSpawning(FTransform::Identity);
+				DispatchBeginPlayForTest(Turret);
+			}
+			return Turret;
+		};
+		AAutoTurret* InitialTurret = SpawnTurret(0, 1, TEXT("Turret.Upgrade.Initial"));
+		AAutoTurret* NextTurret = SpawnTurret(1, 0, TEXT("Turret.Upgrade.Next"));
+		if (!TestNotNull(TEXT("Initial phase turret"), InitialTurret) || !TestNotNull(TEXT("Next phase turret"), NextTurret))
+		{
+			return false;
+		}
+		UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
+		FEnemyPoolEntry& Entry = PoolDefinition->Entries.AddDefaulted_GetRef();
+		Entry.EnemyClass = AEnemyBase::StaticClass();
+		Entry.PrewarmCount = 1;
+		Entry.MaxCount = 1;
+		TestTrue(TEXT("Upgrade phase pool prewarms"), Pool->PrewarmPool(PoolDefinition));
+		Point->SetRuntimeActive(true);
+		Point->SetForceSpawnLocationFailureForTesting(Scenario == 1);
+		Combat->RegisterSpawnPoint(Point, RoomTag, FGameplayTagContainer(), FGameplayTag());
+		AEnemyBase* Leased = nullptr;
+		int32 LeaseGeneration = INDEX_NONE;
+		int32 LeaseSerial = INDEX_NONE;
+		if (Scenario > 0)
+		{
+			FRoomCombatPreparationContext Preparation;
+			TestTrue(TEXT("Initial phase begins preparing"), Combat->BeginInitialDetectionPreparation(RoomTag, Requester, Preparation));
+			TestTrue(TEXT("Initial phase begins combat"), Combat->CompleteInitialDetectionPreparation(Preparation));
+			TestTrue(TEXT("The unfinished mixed Wave starts"), Combat->StartWaveSpawning(RoomTag, 0, 1));
+			TestTrue(TEXT("Unfinished spawn work remains"), Combat->GetPendingSpawnCount(RoomTag) > 0);
+			TestEqual(TEXT("The mixed Wave is waiting for deployment"), Combat->GetPendingActivationCount(RoomTag), 2);
+			if (Scenario == 2)
+			{
+				for (TActorIterator<AEnemyBase> It(World); It; ++It)
+				{
+					if (It->IsPoolManaged() && It->GetEnemyPoolState() != EEnemyPoolState::Idle)
+					{
+						Leased = *It;
+						break;
+					}
+				}
+				if (!TestNotNull(TEXT("The mixed Wave leased an Enemy"), Leased)) return false;
+				LeaseGeneration = Leased->GetPoolGameplayGeneration();
+				LeaseSerial = Leased->GetPoolLeaseSerial();
+				Leased->SetEnemyPossessed(true);
+				Combat->NotifyEnemyAllied(Leased);
+			}
+		}
+		const int32 TurretGeneration = InitialTurret->GetRoomWaveGameplayGeneration();
+		const int32 ActivationSerial = InitialTurret->GetRoomWaveActivationSerial();
+		TestFalse(TEXT("A missing Volume cannot finish a phase"), Combat->FinishInitialPhaseForUpgrade(nullptr, Generation));
+		TestFalse(TEXT("A stale generation cannot finish the initial phase"), Combat->FinishInitialPhaseForUpgrade(Room, Generation + 1));
+		TestFalse(TEXT("Another registered Volume cannot impersonate the target phase"), Combat->FinishInitialPhaseForUpgrade(OtherRoom, Generation));
+		Definition->RoomDefinitions[0].CombatPhases[0].bReleaseCombatOnCompletion = false;
+		TestFalse(TEXT("An ordinary phase cannot be force-finished"), Combat->FinishInitialPhaseForUpgrade(Room, Generation));
+		Definition->RoomDefinitions[0].CombatPhases[0].bReleaseCombatOnCompletion = true;
+		TestFalse(TEXT("Rejected requests preserve the hostile"), Enemy->IsActorBeingDestroyed());
+		TestFalse(TEXT("Rejected requests preserve the allied actor"), Ally->IsActorBeingDestroyed());
+		TestTrue(TEXT("Door close finishes its initial phase"), Combat->FinishInitialPhaseForUpgrade(Room, Generation));
+		TestTrue(TEXT("The hostile is removed without a damage death"), Enemy->IsActorBeingDestroyed() && !Enemy->IsDead());
+		TestTrue(TEXT("An allied actor is also removed"), Ally->IsActorBeingDestroyed());
+		TestTrue(TEXT("The initial phase turret is removed"), InitialTurret->IsActorBeingDestroyed());
+		TestFalse(TEXT("The next phase turret remains"), NextTurret->IsActorBeingDestroyed());
+		TestFalse(TEXT("An unrelated room Enemy remains"), OtherEnemy->IsActorBeingDestroyed());
+		TestEqual(TEXT("The unrelated Room retains its enemy"), Combat->GetAliveEnemyCount(OtherTag), 1);
+		TestEqual(TEXT("The next phase retains its turret registration"), Combat->GetRegisteredWaveTurretCount(RoomTag, 1, 0), 1);
+		TestEqual(TEXT("Forced finish selects Phase1"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+		TestEqual(TEXT("Phase1 waits for the door event"), Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+		TestFalse(TEXT("Forced finish releases combat ownership"), Combat->IsRoomCombatReserved(RoomTag));
+		TestFalse(TEXT("Forced finish removes exit blocking"), Combat->IsExitBlocked(RoomTag));
+		TestEqual(TEXT("Forced finish cancels pending spawns"), Combat->GetPendingSpawnCount(RoomTag), 0);
+		TestEqual(TEXT("Forced finish cancels pending deployments"), Combat->GetPendingActivationCount(RoomTag), 0);
+		TestEqual(TEXT("Forced finish returns every phase lease"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 0);
+		TestTrue(TEXT("Turret cleanup is not recorded as a kill"), Saves->GetCurrentDestroyedTurretIds().IsEmpty());
+		TestFalse(TEXT("Initial cleanup is not encounter completion"), Saves->HasWorldProgress(
+			EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()));
+		const FOutlierRoomPhaseProgress* Progress = Saves->GetCurrentRoomPhaseProgress().Find(RoomTag);
+		if (TestNotNull(TEXT("Forced finish records the existing phase boundary"), Progress))
+		{
+			TestEqual(TEXT("Forced finish saves Phase1"), Progress->NextPhaseIndex, 1);
+			TestFalse(TEXT("Forced finish saves the released block state"), Progress->bExitBlockActive);
+			TestFalse(TEXT("Forced finish does not resume old combat"), Progress->bResumeCurrentPhase);
+		}
+		TestFalse(TEXT("A duplicate close cannot finish Phase1"), Combat->FinishInitialPhaseForUpgrade(Room, Generation));
+
+		// 종료 전 토큰으로 늦게 온 소환/전개 완료와 사망 통보는 새 대기 경계를 바꾸면 안 된다.
+		TestFalse(TEXT("A late turret deployment cannot complete the next phase"),
+			Combat->NotifyWaveTurretDeploymentFinished(InitialTurret, TurretGeneration, ActivationSerial));
+		Combat->NotifyEnemyDefeated(Enemy);
+		if (Leased)
+		{
+			Leased->CompletePoolSpawnPresentation(LeaseGeneration, LeaseSerial);
+			TestEqual(TEXT("A late spawn presentation cannot reclaim a returned lease"), Leased->GetEnemyPoolState(), EEnemyPoolState::Idle);
+		}
+		Point->SetForceSpawnLocationFailureForTesting(false);
+		Combat->RetryPendingSpawnsForTesting();
+		TestEqual(TEXT("Cancelled requests cannot respawn after cleanup"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 0);
+		TestEqual(TEXT("Late callbacks retain Phase1"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+		TestEqual(TEXT("Late callbacks leave Phase1 waiting"), Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+		if (Scenario == 0)
+		{
+			// 재로드 시 터렛이 Room보다 먼저 등록될 수 있다. 저장 진행과 Room 복원 양쪽 경로에서
+			// 정리된 Phase0만 제거하고 아직 시작하지 않은 Phase1의 배치 터렛은 유지한다.
+			NextTurret->Destroy();
+			Combat->ResetRuntimeCombatState();
+			AAutoTurret* BeforeRoomTurret = SpawnTurret(0, 1, TEXT("Turret.Upgrade.Initial.BeforeRoom"));
+			if (TestNotNull(TEXT("Phase0 turret loads before its Room"), BeforeRoomTurret))
+			{
+				TestTrue(TEXT("Saved progress removes a Phase0 turret before Room registration"), BeforeRoomTurret->IsActorBeingDestroyed());
+			}
+			TestTrue(TEXT("The Room restores its released boundary"), Combat->RegisterRoom(Room, RoomTag));
+			AAutoTurret* AfterRoomTurret = SpawnTurret(0, 1, TEXT("Turret.Upgrade.Initial.AfterRoom"));
+			AAutoTurret* RestoredNextTurret = SpawnTurret(1, 0, TEXT("Turret.Upgrade.Next.Restored"));
+			if (TestNotNull(TEXT("Phase0 turret loads after its Room"), AfterRoomTurret))
+			{
+				TestTrue(TEXT("Restored runtime removes a Phase0 turret"), AfterRoomTurret->IsActorBeingDestroyed());
+			}
+			if (TestNotNull(TEXT("Phase1 turret restores"), RestoredNextTurret))
+			{
+				TestFalse(TEXT("Restore preserves the waiting Phase1 turret"), RestoredNextTurret->IsActorBeingDestroyed());
+				TestEqual(TEXT("Restore keeps Phase1 turret registration"), Combat->GetRegisteredWaveTurretCount(RoomTag, 1, 0), 1);
+			}
+			TestEqual(TEXT("Restored Phase0 has no registered turrets"), Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 1), 0);
+			TestEqual(TEXT("Turret registration does not advance restored Phase1"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+			TestFalse(TEXT("Restored turret cleanup does not block exits"), Combat->IsExitBlocked(RoomTag));
+			TestTrue(TEXT("Restored turret cleanup still records no kill"), Saves->GetCurrentDestroyedTurretIds().IsEmpty());
+		}
+	}
 	return true;
 }
 

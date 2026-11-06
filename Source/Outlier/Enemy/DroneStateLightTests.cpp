@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Enemy/VECDrone.h"
+#include "Enemy/SelfDestructDrone.h"
 #include "Components/SpotLightComponent.h"
 #include "Engine/Engine.h"
 #include "EngineGlobals.h"
@@ -14,6 +15,14 @@
 
 struct FDroneStateLightTestAccess
 {
+	static void Configure(AVECDrone& Drone, const FDroneStateLightSettings& Settings)
+	{
+		Drone.NonCombatLightSettings = Settings;
+		Drone.AlertLightSettings = Settings;
+		Drone.CombatLightSettings = Settings;
+		Drone.PossessedLightSettings = Settings;
+	}
+	static const FDroneStateLightSettings& SourceSettings(const AVECDrone& Drone) { return Drone.PossessedLightSettings; }
 	static void Initialize(AVECDrone& Drone)
 	{
 		Drone.InitializeStateSpotLight();
@@ -116,14 +125,16 @@ struct FDroneStateLightWorld
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
 	}
-	AVECDrone* Spawn()
+	AVECDrone* Spawn(UClass* DroneClass = AVECDrone::StaticClass(), const FDroneStateLightSettings* Settings = nullptr)
 	{
 		FActorSpawnParameters SpawnParameters;
 		SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		AVECDrone* Drone = World
-			? World->SpawnActor<AVECDrone>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParameters) : nullptr;
+			? World->SpawnActor<AVECDrone>(DroneClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParameters) : nullptr;
 		if (Drone)
 		{
+			// BP 생성 이후의 설정을 준비한 뒤 실제 조명 초기화/상태 선택 경로로 검증한다.
+			if (Settings) FDroneStateLightTestAccess::Configure(*Drone, *Settings);
 			// 네이티브 드론은 조명을 생성하지 않는다. BP의 기존 컴포넌트에 해당하는 조명을 준비한다.
 			USpotLightComponent* ExistingLight = NewObject<USpotLightComponent>(Drone, TEXT("SpotLight"));
 			Drone->AddInstanceComponent(ExistingLight);
@@ -349,6 +360,53 @@ bool FDroneStateLightSettingsTest::RunTest(const FString& Parameters)
 	Settings.MaxIntensity = -1.0f;
 	FDroneStateLightTestAccess::Apply(*Drone, Settings);
 	TestEqual(TEXT("Negative fixed maximum clamps to zero"), Light.Intensity, 0.0f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDroneStateLightConfiguredLifecycleTest,
+	"Outlier.Enemy.StateLight.ConfiguredLifecycle", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDroneStateLightConfiguredLifecycleTest::RunTest(const FString& Parameters)
+{
+	FDroneStateLightWorld Fixture;
+	int32 Variant = 0;
+	for (UClass* Class : { AVECDrone::StaticClass(), ASelfDestructDrone::StaticClass() })
+	{
+		FDroneStateLightSettings Settings;
+		Settings.LightColor = Variant++ == 0 ? FLinearColor::Green : FLinearColor::Blue;
+		Settings.bPulseEnabled = true;
+		Settings.MinIntensity = 120.0f * Variant;
+		Settings.MaxIntensity = 600.0f * Variant;
+		Settings.PulsePeriod = 2.0f * Variant;
+		AVECDrone* Drone = Fixture.Spawn(Class, &Settings);
+		if (!TestNotNull(TEXT("Configured drone"), Drone)) return false;
+		USpotLightComponent& Light = FDroneStateLightTestAccess::Light(*Drone);
+		TestTrue(TEXT("Initialization applies configured color"), Light.GetLightColor().Equals(Settings.LightColor));
+		TestEqual(TEXT("Initialization uses configured minimum"), Light.Intensity, Settings.MinIntensity);
+		Drone->EnterAlert(FVector::ZeroVector);
+		FDroneStateLightTestAccess::SampleAt(*Drone, Settings.PulsePeriod / 2.0f);
+		TestTrue(TEXT("Configured period reaches maximum at half cycle"), FMath::IsNearlyEqual(Light.Intensity, Settings.MaxIntensity));
+		FDroneStateLightTestAccess::ReceiveState(*Drone, EEnemyCombatState::Combat);
+		TestTrue(TEXT("Combat keeps configured color"), Light.GetLightColor().Equals(Settings.LightColor));
+		FDroneStateLightTestAccess::ReceivePossession(*Drone, true);
+		TestTrue(TEXT("Possession uses configured pulse"), FDroneStateLightTestAccess::IsPulsing(*Drone));
+		TestEqual(TEXT("Possession starts from configured minimum"), Light.Intensity, Settings.MinIntensity);
+		FDroneStateLightTestAccess::ReceiveState(*Drone, EEnemyCombatState::Stun);
+		TestFalse(TEXT("Stun hides configured light"), Light.IsVisible());
+		FDroneStateLightTestAccess::ReceiveState(*Drone, EEnemyCombatState::Combat);
+		TestTrue(TEXT("Stun recovery restores configured color"), Light.GetLightColor().Equals(Settings.LightColor));
+		FDroneStateLightTestAccess::SetLease(*Drone, 1, 1, EEnemyPoolState::Idle);
+		TestFalse(TEXT("Pool return hides configured light"), Light.IsVisible());
+		FDroneStateLightTestAccess::SetLease(*Drone, 2, 2, EEnemyPoolState::CombatActive);
+		TestEqual(TEXT("New lease restores configured minimum"), Light.Intensity, Settings.MinIntensity);
+		TestTrue(TEXT("New lease restores configured color"), Light.GetLightColor().Equals(Settings.LightColor));
+		const FDroneStateLightSettings& Source = FDroneStateLightTestAccess::SourceSettings(*Drone);
+		TestTrue(TEXT("Lifecycle preserves source color"), Source.LightColor.Equals(Settings.LightColor));
+		TestEqual(TEXT("Lifecycle preserves source minimum"), Source.MinIntensity, Settings.MinIntensity);
+		TestEqual(TEXT("Lifecycle preserves source maximum"), Source.MaxIntensity, Settings.MaxIntensity);
+		TestEqual(TEXT("Lifecycle preserves source period"), Source.PulsePeriod, Settings.PulsePeriod);
+		TestEqual(TEXT("Lifecycle preserves source pulse flag"), Source.bPulseEnabled, Settings.bPulseEnabled);
+	}
 	return true;
 }
 

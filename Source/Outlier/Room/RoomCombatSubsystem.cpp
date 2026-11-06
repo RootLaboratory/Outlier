@@ -28,6 +28,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerPlayerController.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -319,7 +320,8 @@ bool URoomCombatSubsystem::IsActiveCombatRuntime(
 	FGameplayTag RoomTag,
 	const FRoomCombatRuntime& Runtime) const
 {
-	return Runtime.State == ERoomCombatState::Combat && IsRoomCombatReserved(RoomTag);
+	return !Runtime.bPhaseCleanupInProgress
+		&& Runtime.State == ERoomCombatState::Combat && IsRoomCombatReserved(RoomTag);
 }
 
 bool URoomCombatSubsystem::CanReserveCombatRoom(FGameplayTag RoomTag) const
@@ -454,6 +456,174 @@ bool URoomCombatSubsystem::IsSingleExternalTriggerEncounter(FGameplayTag RoomTag
 	}
 	const FRoomCombatPhaseDefinition& Phase = Definition->CombatPhases[0];
 	return Phase.StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger;
+}
+
+int32 URoomCombatSubsystem::GetFirstExternalTriggerPhaseIndex(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
+	if (Definition && Definition->HasValidPhaseOrder())
+	{
+		for (int32 Index = 0; Index < Definition->CombatPhases.Num(); ++Index)
+		{
+			if (Definition->CombatPhases[Index].StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger)
+			{
+				return Index;
+			}
+		}
+	}
+	return INDEX_NONE;
+}
+
+bool URoomCombatSubsystem::FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume, int32 GameplayGeneration)
+{
+	if (!CanRunServerGameplay() || !IsValid(RoomVolume) || RoomVolume->IsActorBeingDestroyed()
+		|| RoomVolume->GetWorld() != GetWorld() || !RoomVolume->HasAuthority())
+	{
+		return false;
+	}
+	const FGameplayTag RoomTag = RoomVolume->GetRoomTag();
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
+	const FRoomCombatPhaseDefinition* Phase = Runtime && Definition
+		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex) : nullptr;
+	const FRoomCombatPhaseDefinition* NextPhase = Runtime && Definition
+		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex + 1) : nullptr;
+	const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	if (!Runtime || Runtime->RoomVolume.Get() != RoomVolume || Runtime->bPhaseCleanupInProgress
+		|| Runtime->GameplayGeneration != GameplayGeneration
+		|| (Arena && static_cast<int32>(Arena->GetGameplayGeneration()) != GameplayGeneration)
+		|| !Definition || !Definition->HasValidPhaseOrder() || !Phase || !NextPhase
+		|| Phase->StartPolicy != ERoomCombatPhaseStartPolicy::InitialDetection
+		|| !Phase->bReleaseCombatOnCompletion
+		|| NextPhase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger
+		|| Runtime->State == ERoomCombatState::Cleared
+		|| Runtime->State == ERoomCombatState::WaitingForTrigger)
+	{
+		return false;
+	}
+	const int32 PhaseIndex = Runtime->CurrentCombatPhaseIndex;
+	const FGuid RegistrationId = Runtime->RegistrationId;
+	auto IsCleanupCurrent = [this, RoomTag, RoomVolume, GameplayGeneration, PhaseIndex, RegistrationId]()
+	{
+		const FRoomCombatRuntime* Current = RoomRuntimes.Find(RoomTag);
+		const UOutlierArenaSubsystem* CurrentArena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+		return Current && Current->RoomVolume.Get() == RoomVolume
+			&& Current->RegistrationId == RegistrationId && Current->GameplayGeneration == GameplayGeneration
+			&& (!CurrentArena || static_cast<int32>(CurrentArena->GetGameplayGeneration()) == GameplayGeneration)
+			&& Current->CurrentCombatPhaseIndex == PhaseIndex && Current->bPhaseCleanupInProgress;
+	};
+
+	// 1. 진행과 지연 작업을 먼저 닫는다. 제거 중 발생하는 사망/전개 콜백은 차수를 넘길 수 없다.
+	Runtime->bPhaseCleanupInProgress = true;
+	Runtime->PreparationId.Invalidate();
+	Runtime->PreparingAnchorPlayer.Reset();
+	Runtime->bInitialDetectionPendingJoin = false;
+	Runtime->bPreparationOwnsReservation = false;
+	Runtime->bPreparationExitBlockWasActive = false;
+	Runtime->bPhaseDelayPending = false;
+	Runtime->bDeferSpawnExecution = false;
+	GetWorld()->GetTimerManager().ClearTimer(Runtime->InitialSpawnDelayTimer);
+	GetWorld()->GetTimerManager().ClearTimer(Runtime->PhaseDelayTimer);
+	PendingSpawnRequests.RemoveAll([RoomTag, PhaseIndex](const FRoomCombatPendingSpawn& Request)
+	{
+		return Request.RoomTag == RoomTag && Request.CombatPhaseIndex == PhaseIndex;
+	});
+	Runtime->SpawnAssignments.Reset();
+	Runtime->PendingActivationCount = 0;
+	Runtime->PendingWaveTurretActivations.Reset();
+	RefreshSpawnPointWorkStates(RoomTag, false);
+	if (PendingSpawnRequests.IsEmpty()) CancelSpawnRetry();
+
+	struct FEnemyCleanup
+	{
+		TWeakObjectPtr<AEnemyBase> Enemy;
+		bool bPoolManaged;
+		int32 PoolGeneration;
+		int32 LeaseSerial;
+	};
+	TArray<FEnemyCleanup> Enemies;
+	// 2. 아군화된 적도 소유 차수로 찾는다. 모든 등록을 먼저 끊어 EndPlay가 전투 완료로 집계되지 않게 한다.
+	for (auto It = RegisteredEnemies.CreateIterator(); It; ++It)
+	{
+		if (It.Value().RoomTag != RoomTag || It.Value().CombatPhaseIndex != PhaseIndex) continue;
+		if (AEnemyBase* Enemy = It.Key().Get())
+		{
+			Enemies.Add({ Enemy, It.Value().bPoolManaged,
+				Enemy->GetPoolGameplayGeneration(), Enemy->GetPoolLeaseSerial() });
+			Runtime->TrackedAliveEnemies.Remove(Enemy);
+			if (TSet<TWeakObjectPtr<AEnemyBase>>* Pending = PendingPreplacedEnemies.Find(RoomTag))
+			{
+				Pending->Remove(Enemy);
+			}
+		}
+		It.RemoveCurrent();
+	}
+	TArray<TWeakObjectPtr<AAutoTurret>> Turrets;
+	if (TArray<FRoomCombatWaveTurretRuntime>* Entries = WaveTurretsByRoom.Find(RoomTag))
+	{
+		for (const FRoomCombatWaveTurretRuntime& Entry : *Entries)
+		{
+			if (Entry.CombatPhaseIndex == PhaseIndex) Turrets.Add(Entry.Turret);
+		}
+	}
+	for (const TWeakObjectPtr<AAutoTurret>& Turret : Turrets)
+	{
+		if (Turret.IsValid()) UnregisterWaveTurret(Turret.Get());
+	}
+	ClearForcedJoinProtectionsForRoom(RoomTag);
+	if (!IsCleanupCurrent()) return false;
+
+	// 3. 처치/피해 API를 사용하지 않는다. 빙의는 원래 Partner로 복구하고 풀 대여 토큰까지 확인한다.
+	UEnemyPoolSubsystem* Pool = GetWorld()->GetSubsystem<UEnemyPoolSubsystem>();
+	for (const FEnemyCleanup& Entry : Enemies)
+	{
+		if (!IsCleanupCurrent()) return false;
+		AEnemyBase* Enemy = Entry.Enemy.Get();
+		if (!Enemy || (Entry.bPoolManaged && !Enemy->MatchesPoolLease(Entry.PoolGeneration, Entry.LeaseSerial))) continue;
+		Enemy->CancelPossessionProcess();
+		if (!IsCleanupCurrent()) return false;
+		Enemy = Entry.Enemy.Get();
+		if (!Enemy || (Entry.bPoolManaged && !Enemy->MatchesPoolLease(Entry.PoolGeneration, Entry.LeaseSerial))) continue;
+		if (APartnerPlayerController* Controller = Cast<APartnerPlayerController>(Enemy->GetController()))
+		{
+			Controller->ReleaseEnemyPossessionForCleanup();
+		}
+		if (!IsCleanupCurrent()) return false;
+		Enemy = Entry.Enemy.Get();
+		if (!Enemy || (Entry.bPoolManaged && !Enemy->MatchesPoolLease(Entry.PoolGeneration, Entry.LeaseSerial))) continue;
+		if (Entry.bPoolManaged)
+		{
+			const bool bReturned = Pool && Pool->ReturnEnemy(Enemy, Entry.PoolGeneration, Entry.LeaseSerial);
+			// 손상된 풀 등록 때문에 반환에 실패해도 적을 월드에 남기지는 않는다.
+			// 콜백에서 새로 대여된 Actor는 이전 토큰으로 제거하지 않는다.
+			Enemy = Entry.Enemy.Get();
+			if (!bReturned && IsCleanupCurrent() && Enemy
+				&& Enemy->MatchesPoolLease(Entry.PoolGeneration, Entry.LeaseSerial))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[RoomCombat] Upgrade cleanup pool return failed; removing old lease. Enemy=%s Room=%s"),
+					*GetNameSafe(Enemy), *RoomTag.ToString());
+				Enemy->Destroy();
+			}
+		}
+		else
+		{
+			Enemy->Destroy();
+		}
+	}
+	for (const TWeakObjectPtr<AAutoTurret>& Turret : Turrets)
+	{
+		if (!IsCleanupCurrent()) return false;
+		if (Turret.IsValid()) Turret->Destroy();
+	}
+	if (!IsCleanupCurrent()) return false;
+
+	// 4. 정리가 끝난 뒤에만 기존 차수 경계 저장/알림을 보낸다. 다음 Phase의 명단은 건드리지 않는다.
+	Runtime = RoomRuntimes.Find(RoomTag);
+	Runtime->bPhaseCleanupInProgress = false;
+	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Initial phase retired for upgrade. Room=%s Phase=%d Generation=%d Enemies=%d Turrets=%d"),
+		*RoomTag.ToString(), PhaseIndex, GameplayGeneration, Enemies.Num(), Turrets.Num());
+	CompleteCurrentPhase(RoomTag, true);
+	return true;
 }
 
 bool URoomCombatSubsystem::IsElevatorEncounter(FGameplayTag RoomTag) const
@@ -1303,18 +1473,38 @@ bool URoomCombatSubsystem::RegisterWaveTurret(
 					return Entry.Turret.Get() == Turret;
 				})
 			: nullptr;
-		if (Existing && *ExistingRoomTag == RoomTag
-			&& Existing->CombatPhaseIndex == CombatPhaseIndex
-			&& Existing->WaveIndex == WaveIndex)
+		if (!Existing || *ExistingRoomTag != RoomTag
+			|| Existing->CombatPhaseIndex != CombatPhaseIndex
+			|| Existing->WaveIndex != WaveIndex)
 		{
-			return true;
+			UE_LOG(LogTemp, Error,
+				TEXT("[RoomCombat] Wave turret was registered with different settings. Turret=%s ExistingRoom=%s NewRoom=%s"),
+				*GetNameSafe(Turret), *ExistingRoomTag->ToString(), *RoomTag.ToString());
+			return false;
 		}
+	}
 
-		UE_LOG(LogTemp, Error,
-			TEXT("[RoomCombat] Wave turret was registered with different settings. Turret=%s ExistingRoom=%s NewRoom=%s"),
-			*GetNameSafe(Turret), *ExistingRoomTag->ToString(), *RoomTag.ToString());
+	// 강제 정리는 처치 기록을 남기지 않는다. 복원/늦은 등록에서도 완료된 선행 차수의 터렛을 되살리지 않는다.
+	const FRoomCombatPhaseDefinition* TurretPhase = Definition->FindPhase(CombatPhaseIndex);
+	const FRoomCombatPhaseDefinition* FollowingPhase = Definition->FindPhase(CombatPhaseIndex + 1);
+	const FRoomCombatRuntime* ProgressRuntime = RoomRuntimes.Find(RoomTag);
+	const UOutlierSaveSubSystem* Saves = World->GetGameInstance()
+		? World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	const FOutlierRoomPhaseProgress* SavedProgress = Saves
+		? Saves->GetCurrentRoomPhaseProgress().Find(RoomTag) : nullptr;
+	const int32 ProgressPhaseIndex = ProgressRuntime ? ProgressRuntime->CurrentCombatPhaseIndex
+		: SavedProgress ? SavedProgress->NextPhaseIndex : INDEX_NONE;
+	if (TurretPhase && TurretPhase->bReleaseCombatOnCompletion
+		&& TurretPhase->StartPolicy == ERoomCombatPhaseStartPolicy::InitialDetection
+		&& FollowingPhase && FollowingPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger
+		&& (ProgressPhaseIndex > CombatPhaseIndex || (ProgressRuntime
+			&& ProgressRuntime->bPhaseCleanupInProgress && ProgressPhaseIndex == CombatPhaseIndex)))
+	{
+		UnregisterWaveTurret(Turret);
+		Turret->Destroy();
 		return false;
 	}
+	if (RegisteredWaveTurretRooms.Contains(TurretPtr)) return true;
 
 	CompactWaveTurrets(RoomTag);
 	if (GetRegisteredWaveTurretCount(RoomTag, CombatPhaseIndex, WaveIndex)
@@ -1569,7 +1759,7 @@ void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
 	}
 
 	if (Runtime->State == ERoomCombatState::Cleared
-		|| Runtime->CurrentCombatPhaseIndex > 0)
+		|| Runtime->CurrentCombatPhaseIndex > 0 || Runtime->bPhaseCleanupInProgress)
 	{
 		RegisteredEnemies.Remove(EnemyPtr);
 		Enemy->Destroy();
@@ -2537,7 +2727,8 @@ bool URoomCombatSubsystem::BeginInitialDetectionPreparation(
 	}
 
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
-	if (!Runtime || !Runtime->RoomVolume.IsValid() || Runtime->bSavedCurrentPhasePending)
+	if (!Runtime || !Runtime->RoomVolume.IsValid() || Runtime->bSavedCurrentPhasePending
+		|| Runtime->bPhaseCleanupInProgress)
 	{
 		return false;
 	}
@@ -3666,7 +3857,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	const FRoomCombatPhaseDefinition* CurrentPhase = Runtime && Definition
 		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
 		: nullptr;
-	if (!Runtime || !Definition || !CurrentPhase || Runtime->bPhaseDelayPending
+	if (!Runtime || !Definition || !CurrentPhase || Runtime->bPhaseDelayPending || Runtime->bPhaseCleanupInProgress
 		|| Runtime->State == ERoomCombatState::Cleared
 		|| Runtime->State == ERoomCombatState::WaitingForTrigger)
 	{
@@ -3678,6 +3869,9 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	const FGuid ExecutionId = Runtime->CheckpointHoldExecutionId;
 	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
 	const FRoomCombatPhaseDefinition* NextPhase = Definition->FindPhase(NextPhaseIndex);
+	// 옵션은 다음 외부 이벤트 앞에서만 유효하다. 잘못된 조합은 기존 봉쇄 정책을 유지한다.
+	const bool bReleaseCombat = CurrentPhase->bReleaseCombatOnCompletion && NextPhase
+		&& NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger;
 	// 차수가 완료되면 이전 합류 기준 플레이어를 다음 차수로 넘기지 않는다.
 	Runtime->PreparingAnchorPlayer.Reset();
 	Runtime->PreparationId.Invalidate();
@@ -3693,7 +3887,11 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		&& NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic;
 	if (!bContinueAutomatically)
 	{
-		// 자동 연속 전투만 AI와 소환 그룹을 이어받는다. 외부 대기는 기존 차단/점유만 유지한다.
+		// 일반 외부 대기는 점유·봉쇄를 유지한다. 명시한 휴식 경계만 현재 Room의 전투를 끝낸다.
+		if (bReleaseCombat)
+		{
+			Runtime->bExitBlockActive = false;
+		}
 		const bool bKeepRoomReserved = Runtime->bExitBlockActive && NextPhase != nullptr;
 		if (!bKeepRoomReserved)
 		{

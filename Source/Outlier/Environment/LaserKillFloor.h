@@ -25,6 +25,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Hazard|Laser Floor")
@@ -68,5 +69,12 @@ private:
 	void ApplyHazardState();
 	void ApplyInstantKillDamage(AActor* TargetActor, const FHitResult& HitResult);
 	void DamageCurrentOverlaps();
+	void RetryPendingContacts();
+	void ClearContacts();
+	bool bEndingPlay = false;
+	FTimerHandle ContactRetryTimer;
+	// 적용 중 재진입과 성공한 접촉은 분리한다. 면역 거절은 재검사 대상으로만 남는다.
+	TSet<TWeakObjectPtr<AActor>> ApplyingActors;
+	TSet<TWeakObjectPtr<AActor>> PendingActors;
 	TSet<TWeakObjectPtr<AActor>> DamagedActorsInVolume;
 };
