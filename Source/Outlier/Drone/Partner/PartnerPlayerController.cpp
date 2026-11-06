@@ -347,6 +347,9 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 #endif
 	}
 
+	// PossessedBy에서는 아직 실패 복귀가 가능하다. 성공 확정 뒤에만 기존 스턴을 해제한다.
+	EnemyTarget->ClearStunForCommittedPossession();
+
 	// 실제 빙의와 쿨타임 세션이 확정된 시점의 값만 복사한다.
 	if (const UOutlierAbilitySystemComponent* PartnerASC = PartnerCharacter->GetOutlierAbilitySystemComponent())
 	{

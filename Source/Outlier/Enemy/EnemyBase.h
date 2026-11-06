@@ -254,6 +254,7 @@ private:
 	friend class FEnemyHackEffectLifetimeTest;
 	friend class FEnemyHackEffectGameplayTest;
 	friend class FEnemyHackEffectHUDTest;
+	friend class FOutlierGasEnemyPossessionStunResetTest;
 
 	UPROPERTY(ReplicatedUsing = OnRep_HackEffectState)
 	FEnemyHackEffectState HackEffectState;
@@ -504,6 +505,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void SetEnemyPossessed(bool bNewIsPossessed);
+
+	// Controller의 실제 빙의와 쿨타임 세션이 모두 확정된 뒤에만 호출한다.
+	void ClearStunForCommittedPossession();
 
 	void CancelPossessionProcess();
 

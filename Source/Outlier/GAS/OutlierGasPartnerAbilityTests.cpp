@@ -13,6 +13,7 @@
 #include "Enemy/EnemyBase.h"
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayEffect.h"
 #include "GameplayEffectComponents/TargetTagsGameplayEffectComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Misc/App.h"
@@ -185,6 +186,118 @@ bool IsNearlyEqualDuration(float Actual, float Expected, float Tolerance = 0.05f
 {
 	return FMath::IsNearlyEqual(Actual, Expected, Tolerance);
 }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasEnemyPossessionStunResetTest,
+	"Outlier.GAS.Enemy.PossessionStunReset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasEnemyPossessionStunResetTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// 단일 스턴과 서로 다른 원인의 중첩 스턴을 같은 성공/실패 경로로 검증한다.
+	for (const int32 StunCount : {1, 2})
+	{
+		FPartnerAbilityTestWorld Fixture;
+		if (!Fixture.Initialize(*this))
+		{
+			return false;
+		}
+
+		AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>();
+		if (!TestNotNull(TEXT("Native Enemy spawns for possession stun reset"), Enemy))
+		{
+			return false;
+		}
+		// 에셋 StateTree를 실행하지 않고 실제 ASC 콜백과 Controller의 성공 확정 경로를 사용한다.
+		Enemy->RefreshAbilitySystemActorInfo();
+		Enemy->BindGasVitalityObservers();
+		Enemy->CombatState = EEnemyCombatState::Combat;
+		Enemy->bInCombat = true;
+		UOutlierAbilitySystemComponent* EnemyASC = Enemy->GetOutlierAbilitySystemComponent();
+		const FGameplayTag StunTag = OutlierGameplayTags::State::Stunned();
+		const float InitialHealth = Enemy->GetCurrentHealth();
+		const FActiveGameplayEffectHandle ImmuneEffect = EnemyASC->ApplyDamageImmuneStateToSelf();
+		TestTrue(TEXT("Unrelated immunity effect is active before possession"), ImmuneEffect.IsValid());
+		// 분류용 AssetTag만 같은 효과는 스턴 원인이 아니므로 제거 대상에서 제외해야 한다.
+		UGameplayEffect* AssetTaggedEffect = NewObject<UGameplayEffect>();
+		AssetTaggedEffect->DurationPolicy = EGameplayEffectDurationType::Infinite;
+		FGameplayEffectSpec AssetTaggedSpec(AssetTaggedEffect, EnemyASC->MakeEffectContext(), 1.0f);
+		AssetTaggedSpec.AddDynamicAssetTag(StunTag);
+		const FActiveGameplayEffectHandle AssetTaggedHandle = EnemyASC->ApplyGameplayEffectSpecToSelf(AssetTaggedSpec);
+		TestTrue(TEXT("Asset-tag-only effect is active before possession"), AssetTaggedHandle.IsValid());
+		for (int32 Index = 0; Index < StunCount; ++Index)
+		{
+			UObject* Source = Index == 0 ? static_cast<UObject*>(Enemy) : Fixture.Partner;
+			TestTrue(TEXT("Each stun source applies an active effect"),
+				EnemyASC->ApplyStunStateToSelf(0.4f + Index * 0.2f, Source).IsValid());
+		}
+		TestEqual(TEXT("All stun sources contribute their tag"), EnemyASC->GetGameplayTagCount(StunTag), StunCount);
+		TestTrue(TEXT("Stun callback enters the combat stun state"), Enemy->GetCombatState() == EEnemyCombatState::Stun);
+
+		const auto PreparePendingPossession = [&]()
+		{
+			if (!TestTrue(TEXT("Enemy begins possession while stunned"), Enemy->BeginPossessionProcess(Fixture.Partner)))
+			{
+				return false;
+			}
+			Fixture.Controller->PendingEnemyPossessionTarget = Enemy;
+			Fixture.Controller->PendingEnemyPossessionSource = Fixture.Partner;
+			return true;
+		};
+
+		if (!PreparePendingPossession())
+		{
+			return false;
+		}
+		Fixture.Controller->CancelPendingEnemyPossessionTransition();
+		TestEqual(TEXT("Cancelled possession preserves every stun"), EnemyASC->GetGameplayTagCount(StunTag), StunCount);
+		TestTrue(TEXT("Cancelled possession preserves combat stun state"), Enemy->GetCombatState() == EEnemyCombatState::Stun);
+
+		if (!PreparePendingPossession())
+		{
+			return false;
+		}
+		Fixture.Controller->CommitPendingEnemyPossession(nullptr);
+		TestEqual(TEXT("Failed target validation preserves every stun"), EnemyASC->GetGameplayTagCount(StunTag), StunCount);
+		TestTrue(TEXT("Failed possession leaves the Partner controlled"), Fixture.Controller->GetPawn() == Fixture.Partner);
+
+		if (!PreparePendingPossession())
+		{
+			return false;
+		}
+		Fixture.Controller->CommitPendingEnemyPossession(Enemy);
+		TestTrue(TEXT("Successful commit transfers control to the Enemy"), Fixture.Controller->GetPawn() == Enemy);
+		TestTrue(TEXT("Successful commit keeps the Enemy possessed"), Enemy->IsEnemyPossessed());
+		// PlayerState가 없는 테스트 Controller도 실제 소유권 전이는 성공한 상태다.
+		// 스턴 해제가 PlayerState 초기화에 의존하는 회귀를 잡는다.
+		TestNull(TEXT("Possession fixture intentionally has no Enemy PlayerState"), Enemy->GetPlayerState());
+		TestEqual(TEXT("Successful commit immediately removes all old stun tags"), EnemyASC->GetGameplayTagCount(StunTag), 0);
+		TestTrue(TEXT("Stun cleanup does not restore the previous AI combat state"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+		TestFalse(TEXT("Stun cleanup clears the previous AI combat presentation flag"), Enemy->bInCombat);
+		TestNotNull(TEXT("Stun cleanup preserves unrelated active effects"), EnemyASC->GetActiveGameplayEffect(ImmuneEffect));
+		TestNotNull(TEXT("Stun cleanup preserves effects that only carry the asset tag"), EnemyASC->GetActiveGameplayEffect(AssetTaggedHandle));
+		TestEqual(TEXT("Stun cleanup preserves health"), Enemy->GetCurrentHealth(), InitialHealth);
+
+		TestTrue(TEXT("A newly applied stun remains possible after possession"),
+			EnemyASC->ApplyStunStateToSelf(0.1f, Fixture.Partner).IsValid());
+		TestTrue(TEXT("New stun enters the combat stun state"), Enemy->GetCombatState() == EEnemyCombatState::Stun);
+		Fixture.Controller->CommitPendingEnemyPossession(Enemy);
+		TestEqual(TEXT("Duplicate success notification does not clear the new stun"), EnemyASC->GetGameplayTagCount(StunTag), 1);
+		Fixture.Tick(0.2f);
+		TestFalse(TEXT("New stun expires normally"), EnemyASC->HasMatchingGameplayTag(StunTag));
+		TestTrue(TEXT("New stun expiration restores the possessed combat state"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+
+		// 제거된 기존 스턴의 원래 만료 시각과 중복 복구 호출도 최종 상태를 덮어쓰지 않는다.
+		Fixture.Tick(0.6f);
+		Enemy->RestoreStateAfterStun();
+		TestTrue(TEXT("Old expiration times and repeated recovery keep possession"),
+			Enemy->IsEnemyPossessed() && Fixture.Controller->GetPawn() == Enemy
+			&& Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+		TestNotNull(TEXT("Unrelated immunity survives old stun expiration times"), EnemyASC->GetActiveGameplayEffect(ImmuneEffect));
+	}
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

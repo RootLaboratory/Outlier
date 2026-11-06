@@ -2348,6 +2348,39 @@ void AEnemyBase::EnterStun()
 			TEXT("Enemy.Event.Status.StunStarted")));
 }
 
+void AEnemyBase::ClearStunForCommittedPossession()
+{
+	// IsPlayerControlled는 PlayerState 존재 여부도 검사한다.
+	// 성공 확정 시점의 소유권은 실제 Controller를 기준으로 확인한다.
+	const AController* PossessingController = GetController();
+	if (!HasAuthority() || !bIsPossessed || !PossessingController
+		|| !PossessingController->IsPlayerController() || IsDead()
+		|| !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	// 성공 시점의 스턴만 수집한다. 제거 콜백에서 새로 적용된 스턴까지 지우지 않는다.
+	FGameplayEffectQuery StunQuery;
+	StunQuery.CustomMatchDelegate.BindLambda([](const FActiveGameplayEffect& Effect)
+	{
+		// OwningTags 쿼리는 AssetTags도 포함하므로 실제 스턴을 부여하는 효과만 고른다.
+		FGameplayTagContainer GrantedTags;
+		Effect.Spec.GetAllGrantedTags(GrantedTags);
+		return GrantedTags.HasTag(OutlierGameplayTags::State::Stunned());
+	});
+	const TArray<FActiveGameplayEffectHandle> StunEffects =
+		OutlierAbilitySystemComponent->GetActiveEffects(StunQuery);
+	for (const FActiveGameplayEffectHandle& Handle : StunEffects)
+	{
+		OutlierAbilitySystemComponent->RemoveActiveEffectFromSelf(Handle);
+	}
+
+	// 마지막 태그 제거 콜백이 먼저 복구했으면 아무 일도 하지 않는다.
+	// 이미 태그가 없고 CombatState만 남은 경우도 같은 복구 경로로 정리한다.
+	RestoreStateAfterStun();
+}
+
 void AEnemyBase::RestoreStateAfterStun()
 {
 	if (!HasAuthority())
@@ -2355,19 +2388,23 @@ void AEnemyBase::RestoreStateAfterStun()
 		return;
 	}
 
-	if (CombatState != EEnemyCombatState::Stun)
+	if (CombatState != EEnemyCombatState::Stun || HasActiveStunTag())
 	{
 		return;
 	}
 
-	CombatState = PreStunCombatState;
+	// 빙의 중에는 스턴 전 AI 전투 상태를 되살리지 않는다.
+	CombatState = bIsPossessed ? EEnemyCombatState::NonCombat : PreStunCombatState;
 	bInCombat = CombatState == EEnemyCombatState::Combat;
 	RefreshCombatStatePresentation();
 	RefreshPerceptionConfigForCurrentState();
 
+	// StunEnded의 AI 복귀 전이 대신 빙의 상태를 다시 선택한다. 빙의 후 신규 스턴 만료도 동일하다.
 	SendEnemyStateTreeEvent(
 		FGameplayTag::RequestGameplayTag(
-			TEXT("Enemy.Event.Status.StunEnded")));
+			bIsPossessed
+				? TEXT("Enemy.Event.Possession.Started")
+				: TEXT("Enemy.Event.Status.StunEnded")));
 }
 
 bool AEnemyBase::ApplyDamageInternal(
