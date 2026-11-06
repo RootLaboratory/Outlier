@@ -90,6 +90,14 @@ public:
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
 	void SetPartnerCharacter(APartnerCharacter* NewPartner);
 
+	// 임시 F1 디버그와 Tester가 공유하는 서버 상태. Pawn 교체 후에도 유지하며 저장하지 않는다.
+	bool SetDebugPairInvulnerable(bool bEnabled);
+	bool IsDebugPairInvulnerable() const;
+#if WITH_EDITOR
+	bool SetEditorPairInvulnerable(bool bEnabled);
+	bool IsEditorPairInvulnerable() const;
+#endif
+
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
 	bool IsSuitDisabledByPartnerBoundary() const { return bSuitDisabledByPartnerBoundary; }
 
@@ -180,6 +188,9 @@ public:
 	FName GetPendingPresetSelection() const { return PendingPresetSelection; }
 
 protected:
+
+	bool bDebugPairInvulnerable = false;
+
 	UPROPERTY(ReplicatedUsing = OnRep_PlayerRole)
 	EOutlierPlayerRole PlayerRole = EOutlierPlayerRole::None;
 

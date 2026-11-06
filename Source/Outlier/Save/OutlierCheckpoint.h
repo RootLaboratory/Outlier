@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "GameFramework/Actor.h"
+#include "Interface/MeleeIgnoreInterface.h"
 #include "OutlierCheckpoint.generated.h"
 
 class UBoxComponent;
@@ -16,7 +17,7 @@ class UPrimitiveComponent;
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnOutlierCheckpointCommitted, AOutlierCheckpoint*);
 
 UCLASS()
-class OUTLIER_API AOutlierCheckpoint : public AActor
+class OUTLIER_API AOutlierCheckpoint : public AActor, public IMeleeIgnoreInterface
 {
 	GENERATED_BODY()
 	

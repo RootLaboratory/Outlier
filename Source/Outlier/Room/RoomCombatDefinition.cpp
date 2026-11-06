@@ -212,6 +212,14 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 		for (int32 PhaseIndex = 0; PhaseIndex < RoomDefinition.CombatPhases.Num(); ++PhaseIndex)
 		{
 			const FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases[PhaseIndex];
+			const FRoomCombatPhaseDefinition* NextPhase = RoomDefinition.FindPhase(PhaseIndex + 1);
+			if (Phase.bReleaseCombatOnCompletion && NextPhase
+				&& NextPhase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger)
+			{
+				AddValidationError(FString::Printf(
+					TEXT("RoomDefinitions[%d].CombatPhases[%d] may release combat only before ExternalTrigger."),
+					RoomIndex, PhaseIndex));
+			}
 			if (!FMath::IsFinite(Phase.DelayBeforeStartSeconds) || Phase.DelayBeforeStartSeconds < 0.0f)
 			{
 				AddValidationError(FString::Printf(

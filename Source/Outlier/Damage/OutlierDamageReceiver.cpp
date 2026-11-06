@@ -6,9 +6,15 @@
 #include "GameFramework/Actor.h"
 #include "Outlier.h"
 #include "Team/OutlierTeamIds.h"
+#include "NativeGameplayTags.h"
+#include "Engine/World.h"
+#include "OutlierPlayerState.h"
+#include "Shooter/ShooterCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
 
 namespace
 {
+	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_EnvironmentInstantKill, "Damage.Environment.InstantKill");
 	FGenericTeamId ResolveActorTeam(const AActor* Actor)
 	{
 		return IsValid(Actor)
@@ -47,7 +53,7 @@ namespace
 
 	bool IsEnemyFriendlyFire(const AActor* TargetActor, const FOutlierDamageRequest& Request)
 	{
-		if (Request.bReflectedDamage)
+		if (Request.bReflectedDamage || Request.bAllowFriendlyFire)
 		{
 			return false;
 		}
@@ -56,6 +62,30 @@ namespace
 		return ResolveActorTeam(TargetActor).GetId() == EnemyTeamId
 			&& ResolveDamageSourceTeam(Request).GetId() == EnemyTeamId;
 	}
+}
+
+FGameplayTag OutlierDamage::InstantKillTag()
+{
+	return TAG_EnvironmentInstantKill;
+}
+
+bool OutlierDamage::IsEditorInvulnerable(const AActor* TargetActor)
+{
+	if (!IsValid(TargetActor) || !TargetActor->HasAuthority() || !TargetActor->GetWorld()
+		|| !TargetActor->GetWorld()->IsGameWorld())
+	{
+		return false;
+	}
+	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(TargetActor))
+	{
+		const AOutlierPlayerState* State = Shooter->GetPlayerState<AOutlierPlayerState>();
+		return State && State->GetShooterCharacter() == Shooter && State->IsDebugPairInvulnerable();
+	}
+	if (const APartnerCharacter* Partner = Cast<APartnerCharacter>(TargetActor))
+	{
+		return Partner->IsDebugPairInvulnerable();
+	}
+	return false;
 }
 
 bool OutlierDamage::IsFromEnemy(const FOutlierDamageRequest& Request)

@@ -38,6 +38,8 @@ struct OUTLIER_API FOutlierDamageRequest
 	FHitResult HitResult;
 	FVector DamageOrigin = FVector::ZeroVector;
 	bool bReflectedDamage = false;
+	// 서버가 생성한 폭발 요청에서만 지정한다. 대상의 무적/피해 수신 검사는 그대로 거친다.
+	bool bAllowFriendlyFire = false;
 	AController* EventInstigator = nullptr;
 	AActor* DamageCauser = nullptr;
 	TSharedPtr<FOutlierStealthSession> StealthSession;
@@ -59,6 +61,10 @@ public:
 
 namespace OutlierDamage
 {
+	// 고정 피해량이 아니라 현재 생명력 전체를 소진하는 환경 피해다. 기존 면역 검사는 유지한다.
+	OUTLIER_API FGameplayTag InstantKillTag();
+	// Tester와 임시 F1 디버그가 공유하는 서버 페어 무적이다. Shipping에서도 사용한다.
+	OUTLIER_API bool IsEditorInvulnerable(const AActor* TargetActor);
 	OUTLIER_API bool IsFromEnemy(const FOutlierDamageRequest& Request);
 	OUTLIER_API float Apply(AActor* TargetActor, const FOutlierDamageRequest& Request);
 }

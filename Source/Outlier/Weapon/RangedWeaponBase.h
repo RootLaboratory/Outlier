@@ -21,6 +21,31 @@ class AShooterCharacter;
 class AEnemyBase;
 class UEnemyRoomSubsystem;
 struct FOutlierStealthSession;
+
+// 서버에서 확정한 한 탄의 결과다. 수신 시점의 총구로 월드 탄도를 다시 만들지 않는다.
+USTRUCT()
+struct FWeaponShotSnapshot
+{
+	GENERATED_BODY()
+	UPROPERTY() uint32 ShotId = 0;
+	UPROPERTY() uint32 EquipmentRevision = 0;
+	UPROPERTY() float ServerTime = 0.0f;
+	UPROPERTY() TObjectPtr<ACharacter> Shooter = nullptr;
+	UPROPERTY() FVector_NetQuantize100 Start = FVector::ZeroVector;
+	UPROPERTY() FVector_NetQuantizeNormal BaseDirection = FVector::ForwardVector;
+	UPROPERTY() FVector_NetQuantizeNormal Direction = FVector::ForwardVector;
+	UPROPERTY() FVector_NetQuantize100 End = FVector::ZeroVector;
+	UPROPERTY() FVector_NetQuantizeNormal ImpactNormal = FVector::UpVector;
+	UPROPERTY() TObjectPtr<AActor> HitActor = nullptr;
+	UPROPERTY() FName MuzzleSocket = NAME_None;
+	UPROPERTY() FVector2D NormalizedShotDirection = FVector2D::ZeroVector;
+	UPROPERTY() bool bHasImpact = false;
+	UPROPERTY() bool bShooterWallShot = false;
+	UPROPERTY() bool bOccluded = false;
+	UPROPERTY() bool bStartPenetrating = false;
+	UPROPERTY() uint8 Surface = 0;
+	UPROPERTY() FGameplayTag ImpactContext;
+};
 /**
  * 
  */
@@ -28,6 +53,9 @@ UCLASS(Abstract)
 class OUTLIER_API ARangedWeaponBase : public AWeaponBase
 {
 	GENERATED_BODY()
+	friend class FPartnerRebootInputTest;
+	friend class UShooterCombatComponent;
+	friend struct FWallShotProbeAccess;
 
 public:
 	ARangedWeaponBase();
@@ -35,6 +63,17 @@ public:
 	virtual void OnConstruction(const FTransform& Transform) override;
 
 protected:
+	virtual bool UsesShooterWallShot() const { return true; }
+	bool ResolveShooterOcclusion(const FVector& View, const FVector& Start,
+		const FCollisionQueryParams& Params, FHitResult& OutHit) const;
+	bool TraceShooterShot(const FVector& Start, const FVector& End,
+		const FCollisionQueryParams& Params, FHitResult& OutHit) const;
+	uint32 NextShotId = 0;
+	uint32 LastPresentedShotId = 0;
+	uint64 PresentedShotMask = 0;
+	uint32 LastOwnerFeedbackShotId = 0;
+	mutable bool bWarnedShotFallback = false;
+	UPROPERTY(Transient) FWeaponShotSnapshot LastResolvedShot;
 	void ApplyOwnerDamageModifiers(FOutlierDamageRequest& Request) const;
 
 	// 1탄창
@@ -348,6 +387,9 @@ public:
 	int32 GetMagazineSize() const { return MagazineSize; }
 	void RestoreCheckpointAmmo(int32 SavedAmmo);
 	void RefillMagazineForWeaponOvercharge();
+	void RefillMagazine();
+	float GetAttackRetryDelay() const;
+	const TCHAR* GetAttackBlockReason() const;
 	void ResetForEnemyPoolLease();
 
 	// 과충전 연출 : 태그가 서버 / 오너 / 시뮬레이티드 프록시 모두에 복제되므로
@@ -399,7 +441,8 @@ protected:
 		FVector2D ControlRecoilDelta,
 		float ControlKickInterpSpeed,
 		float CameraShakeScale,
-		float CameraShakeDuration);
+		float CameraShakeDuration,
+		uint32 ShotId, uint32 EquipmentRevision, ACharacter* FiredBy);
 
 	// 서버에서 확정한 약점 피격 결과를 무기 소유 클라이언트의 크로스헤어에 전달한다.
 	UFUNCTION(Client, Unreliable)
@@ -407,13 +450,11 @@ protected:
 	virtual void ClientNotifyAttackSign_Implementation(bool bCriticalHit);
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal,
-		AActor* Hit, FVector2D NormalizedShotDirection, FName FiredMuzzleSocketName,
-		bool bHasImpact, uint8 Surface, FGameplayTag ImpactContext);
+	void MulticastPlayFireFX(const FWeaponShotSnapshot& Shot);
 
-	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName);
+	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName, bool bPlayTrail = true);
 
-	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName);
+	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName, bool bPlayTrail = true);
 
 	void ResolveMuzzleTransforms(bool bFirstPerson, FName FiredMuzzleSocketName,
 		TArray<FTransform>& OutMuzzleTransforms) const;

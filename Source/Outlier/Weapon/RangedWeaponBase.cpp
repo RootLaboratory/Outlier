@@ -5,6 +5,7 @@
 #include "Interface/WeaponDamageModifierProvider.h"
 #include "Weapon/FirstPickupDiagnostics.h"
 #include "Weapon/WeaponAutoAimCalculation.h"
+#include "Weapon/WallShotProbe.h"
 
 #include "Damage/OutlierDamageReceiver.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -57,9 +58,28 @@
 #include "Explosion/ExplosiveProp.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "HAL/IConsoleManager.h"
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarWallShotDiagnostics(TEXT("outlier.Weapon.WallShotDiagnostics"), 0,
+		TEXT("Log authoritative and received Shooter shot snapshots."));
+
+	// Visibility의 캐릭터 캡슐 뒤에도 환경 벽이 있을 수 있다. 피해 부위는 PhysicsBody에 맡기고
+	// 이 보완 검사에서 만난 캐릭터만 건너뛴다. 환경 Actor를 통째로 무시하지 않는다.
+	bool TraceShotEnvironment(UWorld* World, const FVector& Start, const FVector& End,
+		FCollisionQueryParams Params, FHitResult& Hit, bool bSweep)
+	{
+		while (bSweep
+			? World->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, ECC_Visibility,
+				FCollisionShape::MakeSphere(0.1f), Params)
+			: World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+		{
+			if (!Cast<ACharacter>(Hit.GetActor())) return true;
+			Params.AddIgnoredActor(Hit.GetActor());
+		}
+		return false;
+	}
 	EOutlierAdaptationDamageCategory ResolveAdaptationDamageCategory(
 		const ACharacter* WeaponOwner,
 		EWeaponType WeaponType)
@@ -314,6 +334,11 @@ void ARangedWeaponBase::ConsumeAmmo()
 
 void ARangedWeaponBase::RefillMagazineForWeaponOvercharge()
 {
+	RefillMagazine();
+}
+
+void ARangedWeaponBase::RefillMagazine()
+{
 	if (!HasAuthority())
 	{
 		return;
@@ -417,115 +442,61 @@ bool ARangedWeaponBase::TryResolveWallOffsetMuzzleShot(
 	FVector& OutDirection) const
 {
 	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(OwnerCharacter);
-	const UProceduralAnimValues* ProceduralValues = GetFirstPersonProceduralValues();
-	UWorld* World = GetWorld();
-	if (!Shooter || !ProceduralValues || !World || !FirstPersonWeaponMesh)
+	if (!Shooter || !UsesShooterWallShot()) return false;
+	FTransform Shot;
+	if (!Shooter->TryGetWallShotTransform(Shot)) return false;
+	OutStart = Shot.GetLocation();
+	OutDirection = Shot.GetUnitAxis(EAxis::X);
+	return Shooter->GetWeaponWallAvoidanceState().GetShotBlendAlpha() > 0.0f;
+}
+
+// 피해 대상의 Visibility 캡슐을 히트 부위로 대체하지 않는다. 환경 차폐만 보완한다.
+bool ARangedWeaponBase::TraceShooterShot(const FVector& Start, const FVector& End,
+	const FCollisionQueryParams& Params, FHitResult& OutHit) const
+{
+	bool bHit = GetWorld()->LineTraceSingleByChannel(OutHit, Start, End, ECC_PhysicsBody, Params);
+	FHitResult Environment;
+	if (TraceShotEnvironment(GetWorld(), Start, End, Params, Environment, false)
+		&& (!bHit || Environment.Time < OutHit.Time))
 	{
-		return false;
+		OutHit = Environment;
+		bHit = true;
 	}
+	return bHit;
+}
 
-	const FName ShotMuzzleSocketName = !FiredMuzzleSocketName.IsNone()
-		? FiredMuzzleSocketName
-		: MuzzleSocketName;
-	if (ShotMuzzleSocketName.IsNone() || !FirstPersonWeaponMesh->DoesSocketExist(ShotMuzzleSocketName))
+bool ARangedWeaponBase::ResolveShooterOcclusion(const FVector& View, const FVector& Start,
+	const FCollisionQueryParams& Params, FHitResult& OutHit) const
+{
+	FCollisionQueryParams InitialParams = Params;
+	InitialParams.bFindInitialOverlaps = true;
+	bool bBlocked = false;
+	for (ECollisionChannel Channel : {ECC_PhysicsBody, ECC_Visibility})
 	{
-		return false;
-	}
-
-	const FWeaponValues& WeaponValues = ProceduralValues->WeaponValues;
-	const FVector Forward = ViewRotation.Vector().GetSafeNormal();
-	if (Forward.IsNearlyZero())
-	{
-		return false;
-	}
-
-	const FRotationMatrix ViewMatrix(ViewRotation);
-	const FVector Right = ViewMatrix.GetUnitAxis(EAxis::Y);
-	const FVector Up = ViewMatrix.GetUnitAxis(EAxis::Z);
-	const float TraceDistance = FMath::Max(WeaponValues.WallTraceDistance, 0.0f);
-	const float TraceRadius = FMath::Max(WeaponValues.WallTraceRadius, KINDA_SMALL_NUMBER);
-	const float SafeDistance = FMath::Max(WeaponValues.WallSafeDistance, KINDA_SMALL_NUMBER);
-	const float VerticalProbeOffset = FMath::Max(WeaponValues.WallVerticalProbeOffset, 0.0f);
-	const float SideProbeOffset = FMath::Max(WeaponValues.WallSideProbeOffset, TraceRadius * 1.5f);
-	const float MuzzleBlockTraceDistance = FMath::Max(WeaponValues.WallMuzzleBlockTraceDistance, 0.0f);
-	const float MuzzleBlockSafeDistance = FMath::Max(WeaponValues.WallMuzzleBlockSafeDistance, KINDA_SMALL_NUMBER);
-	const float BarrelBlockLength = FMath::Max(WeaponValues.WallBarrelBlockLength, 0.0f);
-	const float BarrelBlockSafeDistance = FMath::Max(WeaponValues.WallBarrelBlockSafeDistance, KINDA_SMALL_NUMBER);
-	const float FloorNormalZ = FMath::Clamp(WeaponValues.WallFloorNormalZ, 0.0f, 1.0f);
-
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(WeaponWallOffsetShotTrace), false, OwnerCharacter);
-	AddWeaponTraceIgnoredActors(Params);
-
-	const auto ResolveProbeAlpha = [&](const FVector& ProbeStart, float Distance, float Radius, float ProbeSafeDistance)
-	{
-		if (Distance <= KINDA_SMALL_NUMBER)
-		{
-			return 0.0f;
-		}
-
 		FHitResult Hit;
-		const bool bHit = World->SweepSingleByChannel(
-			Hit,
-			ProbeStart,
-			ProbeStart + Forward * Distance,
-			FQuat::Identity,
-			ECC_Visibility,
-			FCollisionShape::MakeSphere(FMath::Max(Radius, KINDA_SMALL_NUMBER)),
-			Params);
-		if (!bHit || Hit.ImpactNormal.Z > FloorNormalZ)
+		// 작은 안전 반경으로 시작점 자체의 겹침까지 확인한다. 벽 반대편으로 시작점을 밀지 않는다.
+		const bool bHit = Channel == ECC_Visibility
+			? TraceShotEnvironment(GetWorld(), View, Start, InitialParams, Hit, true)
+			: GetWorld()->SweepSingleByChannel(Hit, View, Start, FQuat::Identity, Channel,
+				FCollisionShape::MakeSphere(0.1f), InitialParams);
+		if (bHit
+			&& (!bBlocked || Hit.Time < OutHit.Time))
 		{
-			return 0.0f;
+			if (Hit.bStartPenetrating)
+			{
+				// 초기 겹침의 ImpactPoint는 표면 좌표가 아닐 수 있다. MTD로 같은 경계의
+				// 실제 표면을 복원하고, 안전 여유는 그 표면의 바깥쪽에만 둔다.
+				const FVector Normal = Hit.Normal.GetSafeNormal(UE_SMALL_NUMBER,
+					(View - Start).GetSafeNormal(UE_SMALL_NUMBER, FVector::UpVector));
+				Hit.ImpactNormal = Normal;
+				Hit.ImpactPoint = View + Normal * FMath::Max(0.0f, Hit.PenetrationDepth - 0.1f);
+				Hit.Location = Hit.ImpactPoint + Normal * 0.1f;
+			}
+			OutHit = Hit;
+			bBlocked = true;
 		}
-
-		return FMath::Clamp((Distance - Hit.Distance) / FMath::Max(ProbeSafeDistance, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
-	};
-
-	const FVector BaseTraceStart =
-		ViewLocation +
-		Forward * FMath::Max(WeaponValues.WallProbeForwardOffset, 0.0f) +
-		Right * WeaponValues.WallProbeRightOffset +
-		Up * WeaponValues.WallProbeUpOffset;
-	const float CenterAlpha = ResolveProbeAlpha(BaseTraceStart, TraceDistance, TraceRadius, SafeDistance);
-	const float UpperAlpha = ResolveProbeAlpha(BaseTraceStart + Up * VerticalProbeOffset, TraceDistance, TraceRadius, SafeDistance);
-	const float LowerAlpha = ResolveProbeAlpha(BaseTraceStart - Up * VerticalProbeOffset, TraceDistance, TraceRadius, SafeDistance);
-	const float RightAlpha = ResolveProbeAlpha(BaseTraceStart + Right * SideProbeOffset, TraceDistance, TraceRadius, SafeDistance);
-	const float LeftAlpha = ResolveProbeAlpha(BaseTraceStart - Right * SideProbeOffset, TraceDistance, TraceRadius, SafeDistance);
-
-	const FVector MuzzleBlockTraceStart =
-		ViewLocation +
-		Forward * FMath::Max(WeaponValues.WallMuzzleBlockForwardOffset, 0.0f) +
-		Right * WeaponValues.WallMuzzleBlockRightOffset +
-		Up * WeaponValues.WallMuzzleBlockUpOffset;
-	const float MuzzleBlockAlpha = ResolveProbeAlpha(
-		MuzzleBlockTraceStart,
-		MuzzleBlockTraceDistance,
-		WeaponValues.WallMuzzleBlockTraceRadius,
-		MuzzleBlockSafeDistance);
-	const float BarrelBlockAlpha = ResolveProbeAlpha(
-		MuzzleBlockTraceStart - Forward * BarrelBlockLength,
-		BarrelBlockLength,
-		WeaponValues.WallBarrelBlockTraceRadius,
-		BarrelBlockSafeDistance);
-
-	const float WallSourceAlpha = FMath::Max3(
-		FMath::Max3(CenterAlpha, UpperAlpha, LowerAlpha),
-		FMath::Max(RightAlpha, LeftAlpha),
-		FMath::Max(MuzzleBlockAlpha, BarrelBlockAlpha));
-	if (WallSourceAlpha <= 0.05f)
-	{
-		return false;
 	}
-
-	const FTransform MuzzleTransform = FirstPersonWeaponMesh->GetSocketTransform(ShotMuzzleSocketName, RTS_World);
-	const FVector MuzzleForward = MuzzleTransform.GetRotation().GetForwardVector().GetSafeNormal();
-	if (MuzzleForward.IsNearlyZero())
-	{
-		return false;
-	}
-
-	OutStart = MuzzleTransform.GetLocation();
-	OutDirection = MuzzleForward;
-	return true;
+	return bBlocked;
 }
 
 bool ARangedWeaponBase::HasOpenBodyPath(AEnemyBase* Target, const FVector& Start,
@@ -639,14 +610,23 @@ void ARangedWeaponBase::ApplyOwnerDamageModifiers(FOutlierDamageRequest& Request
 bool ARangedWeaponBase::ResolveShotTransform(FName FiredMuzzleSocketName, FTransform& OutTransform) const
 {
 	if (!WeaponOwner || !WeaponOwner->GetController()) return false;
+	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner); Shooter && UsesShooterWallShot())
+	{
+		if (Shooter->TryGetWallShotTransform(OutTransform)) return true;
+		// 에셋 누락 시에도 허용된 발사는 유지한다. fallback 역시 아래 서버 차폐 검사를 거친다.
+		if (!bWarnedShotFallback)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[WallShot] Weapon=%s has no valid shot pose; using guarded viewpoint fallback"), *GetName());
+			bWarnedShotFallback = true;
+		}
+		OutTransform = Shooter->GetWallShotViewTransform();
+		return !OutTransform.ContainsNaN() && OutTransform.GetRotation().IsNormalized();
+	}
 	FVector ViewLocation;
 	FRotator ViewRotation;
 	WeaponOwner->GetController()->GetPlayerViewPoint(ViewLocation, ViewRotation);
-	FVector Start = ViewLocation;
-	FVector Direction = ViewRotation.Vector().GetSafeNormal();
-	TryResolveWallOffsetMuzzleShot(WeaponOwner, FiredMuzzleSocketName, ViewLocation, ViewRotation, Start, Direction);
-	OutTransform = FTransform(Direction.Rotation(), Start);
-	return true;
+	OutTransform = FTransform(ViewRotation, ViewLocation);
+	return !OutTransform.ContainsNaN();
 }
 
 void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound,
@@ -698,7 +678,16 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 	AddWeaponTraceIgnoredActors(Params);
 	Params.bReturnPhysicalMaterial = true;
 	const AShooterCharacter* AutoAimShooter = Cast<AShooterCharacter>(OwnerCharacter);
-	const bool bAutoAimActive = IsWeaponOvercharged() && AutoAimShooter && AutoAimShooter->IsAutoAimEnabled();
+	const bool bShooterWallShot = AutoAimShooter && UsesShooterWallShot();
+	if (bShooterWallShot)
+	{
+		// 자동조준의 시야도 서버가 해결한 Lean/조준을 사용한다. 클라이언트 카메라 좌표를 판정 근거로 받지 않는다.
+		const FTransform View = AutoAimShooter->GetWallShotViewTransform();
+		CameraLocation = View.GetLocation();
+		CameraRotation = View.Rotator();
+	}
+	const bool bWallAvoiding = bShooterWallShot && AutoAimShooter->GetWeaponWallAvoidanceState().GetShotBlendAlpha() > 0.0f;
+	const bool bAutoAimActive = !bWallAvoiding && IsWeaponOvercharged() && AutoAimShooter && AutoAimShooter->IsAutoAimEnabled();
 	const bool bDirectCoreAim = bAutoAimActive
 		&& IsDirectCoreAim(CameraLocation, CameraRotation.Vector(), Params);
 	// 1. 코어를 직접 조준하면 수동 조준 방향을 유지한다.
@@ -721,23 +710,28 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 
 	FHitResult Hit;
 
-	bool bHit = GetWorld()->LineTraceSingleByChannel(
-		Hit,
-		Start,
-		End,
-		ECC_PhysicsBody,
-		Params
-	);
+	const bool bOccluded = bShooterWallShot && ResolveShooterOcclusion(
+		AutoAimShooter->GetWallShotViewTransform().GetLocation(), Start, Params, Hit);
+	// 총구 앞 차폐가 확정되면 그 표면으로 종료한다. 발사 비용/반동 흐름은 정상 사격과 같다.
+	bool bHit = bOccluded;
+	if (bOccluded) Start = Hit.bStartPenetrating ? Hit.Location : AutoAimShooter->GetWallShotViewTransform().GetLocation();
+	if (!bOccluded)
+	{
+		bHit = bShooterWallShot ? TraceShooterShot(Start, End, Params, Hit)
+			: GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_PhysicsBody, Params);
+	}
+
 	FHitResult SpreadVisibilityHit;
 	const bool bSpreadPathBlocked = AutoAimTarget && bHit && Hit.GetActor() == AutoAimTarget
 		&& GetWorld()->LineTraceSingleByChannel(SpreadVisibilityHit, Start, Hit.ImpactPoint, ECC_Visibility, Params)
 		&& SpreadVisibilityHit.GetActor() != AutoAimTarget;
-	if (AutoAimTarget && (!bHit || Hit.GetActor() != AutoAimTarget || bSpreadPathBlocked))
+	if (!bOccluded && AutoAimTarget && (!bHit || Hit.GetActor() != AutoAimTarget || bSpreadPathBlocked))
 	{
 		// 2. 탄퍼짐 때문에 선택한 적을 빗나가면, 후보 선정 때 확인한 몸통 경로로 다시 보정한다.
 		ShotDirection = BaseDirection;
 		End = Start + ShotDirection * EffectiveRange;
-		bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_PhysicsBody, Params);
+		bHit = bShooterWallShot ? TraceShooterShot(Start, End, Params, Hit)
+			: GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_PhysicsBody, Params);
 		LastShotDirection = ShotDirection;
 	}
 	//DrawDebugLine(
@@ -767,13 +761,19 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			bShouldNotifyAttackSign = true;
 			// 몸통 충돌체 안쪽에 겹친 코어를 놓치지 않도록 같은 탄 경로를 한 번 더 검사한다.
 			// 이때 몸통 Mesh만 무시하며, 최초로 맞힌 적의 약점만 피해 판정에 반영한다.
-			if (HitEnemy->HasCoreWeakPoint())
+			if (!bOccluded && HitEnemy->HasCoreWeakPoint())
 			{
 				constexpr float CoreProbeExtraDistance = 1000.0f;
-				const FVector ProbeEnd = Start + (ShotDirection * (HitDistance + CoreProbeExtraDistance));
+				FVector ProbeEnd = Start + (ShotDirection * (HitDistance + CoreProbeExtraDistance));
 
 				FCollisionQueryParams CoreProbeParams = Params;
 				CoreProbeParams.AddIgnoredComponent(HitEnemy->GetMesh());
+				FHitResult CoreEnvironment;
+				if (bShooterWallShot && TraceShotEnvironment(GetWorld(), Start, ProbeEnd, CoreProbeParams, CoreEnvironment, false))
+				{
+					// 약점 보완도 환경 차폐를 넘어서 같은 적의 뒤쪽 부위를 고르지 않는다.
+					ProbeEnd = CoreEnvironment.ImpactPoint;
+				}
 
 				TArray<FHitResult> BoneHitResults;
 				GetWorld()->LineTraceMultiByChannel(BoneHitResults, Start, ProbeEnd, ECC_PhysicsBody, CoreProbeParams);
@@ -806,7 +806,11 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			bIsWeakPointHit = HitExplosive->IsMountedOnSelfDestructDrone();
 		}
 
-		if (HitActor)
+		// Visibility만 막는 환경은 표면 효과만 낸다. 피해 채널이 Ignore인 약점/폭발물에
+		// 환경 보완 검사로 새 피해 경로를 열지 않는다.
+		const bool bDamageChannelBlocked = !bShooterWallShot || (Hit.GetComponent()
+			&& Hit.GetComponent()->GetCollisionResponseToChannel(ECC_PhysicsBody) == ECR_Block);
+		if (HitActor && bDamageChannelBlocked)
 		{
 			FOutlierDamageRequest DamageRequest;
 			DamageRequest.DamageAmount = DamageToApply;
@@ -843,17 +847,42 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 				&& !Cast<AEnemyBase>(HitActor));
 		}
 		OnHitscanShotResolved(Start, TraceEndPoint, ImpactNormal, bHit, FiredMuzzleSocketName);
-		if (ShouldPlayDefaultFireFX())
+		FWeaponShotSnapshot Shot;
+		Shot.ShotId = ++NextShotId;
+		Shot.EquipmentRevision = bShooterWallShot ? AutoAimShooter->GetWallShotEquipmentRevision() : 0;
+		Shot.ServerTime = GetWorld()->GetTimeSeconds();
+		Shot.Shooter = OwnerCharacter;
+		Shot.Start = Start;
+		Shot.BaseDirection = BaseDirection;
+		Shot.Direction = ShotDirection;
+		Shot.End = TraceEndPoint;
+		Shot.ImpactNormal = ImpactNormal;
+		Shot.HitActor = HitActor;
+		Shot.MuzzleSocket = FiredMuzzleSocketName;
+		Shot.NormalizedShotDirection = GetNormalizedLastShotDirection();
+		Shot.bHasImpact = bHit;
+		Shot.bShooterWallShot = bShooterWallShot;
+		Shot.bOccluded = bOccluded;
+		Shot.bStartPenetrating = Hit.bStartPenetrating;
+		Shot.Surface = ImpactSurface;
+		Shot.ImpactContext = ImpactAudioContextTag;
+		LastResolvedShot = Shot;
+		if (bShooterWallShot && CVarWallShotDiagnostics.GetValueOnGameThread())
 		{
-			MulticastPlayFireFX(
-			TraceEndPoint,
-			ImpactNormal,
-			HitActor,
-			GetNormalizedLastShotDirection(),
-			FiredMuzzleSocketName, bHit,
-			ImpactSurface, ImpactAudioContextTag);
+			UE_LOG(LogTemp, Display, TEXT("[WallShot][Server] Weapon=%s Shot=%u Equip=%u Time=%.3f Alpha=%.6f Start=%s Base=%s Direction=%s End=%s Hit=%s/%s Occluded=%d InitialOverlap=%d"),
+				*GetName(), Shot.ShotId, Shot.EquipmentRevision, Shot.ServerTime,
+				AutoAimShooter->GetWeaponWallAvoidanceState().GetShotBlendAlpha(), *Start.ToString(),
+				*BaseDirection.ToString(), *ShotDirection.ToString(), *TraceEndPoint.ToString(),
+				*GetNameSafe(HitActor), *GetNameSafe(Hit.GetComponent()), bOccluded, Hit.bStartPenetrating);
 		}
-		
+#if WITH_DEV_AUTOMATION_TESTS
+		WallShotProbe::Observed().Broadcast({this, false, Start, BaseDirection,
+			ShotDirection, TraceEndPoint, FiredMuzzleSocketName, bHit,
+			GetPathNameSafe(Hit.GetActor()), GetPathNameSafe(Hit.GetComponent()), bool(Hit.bStartPenetrating),
+			Shot.ShotId, Shot.EquipmentRevision, Shot.ServerTime, bOccluded});
+#endif
+		if (ShouldPlayDefaultFireFX()) MulticastPlayFireFX(Shot);
+
 		// Weapon fire uses the shared tag-driven world-audio path. The server resolves
 		// the weighted variant once and delivers it to relevant clients, so enemy,
 		// partner, and possessed-enemy weapons all follow the same network behavior.
@@ -872,11 +901,17 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 				AudioRequest.EmitterActor = this;
 			}
 
-			TArray<FTransform> AudioMuzzleTransforms;
-			ResolveMuzzleTransforms(false, FiredMuzzleSocketName, AudioMuzzleTransforms);
-			AudioRequest.Location = AudioMuzzleTransforms.IsEmpty()
-				? GetActorLocation()
-				: AudioMuzzleTransforms[0].GetLocation();
+			if (bShooterWallShot)
+			{
+				AudioRequest.Location = Start;
+			}
+			else
+			{
+				TArray<FTransform> AudioMuzzleTransforms;
+				ResolveMuzzleTransforms(false, FiredMuzzleSocketName, AudioMuzzleTransforms);
+				AudioRequest.Location = AudioMuzzleTransforms.IsEmpty()
+					? GetActorLocation() : AudioMuzzleTransforms[0].GetLocation();
+			}
 			AudioRequest.bHasLocation = true;
 			const bool bAudioAccepted =
 				CachedAudioSubsystem->PlayRelevantAtLocationFromServer(AudioRequest);
@@ -1499,23 +1534,69 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 }
 
 
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(
-	FVector_NetQuantize TraceEnd,
-	FVector_NetQuantizeNormal ImpactNormal,
-	AActor* Hit,
-	FVector2D NormalizedShotDirection,
-	FName FiredMuzzleSocketName,
-	bool bHasImpact, uint8 Surface, FGameplayTag ImpactContext)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(const FWeaponShotSnapshot& Shot)
 {
-	if (GetNetMode() == NM_DedicatedServer)
+	if (GetNetMode() == NM_DedicatedServer) return;
+	if (Shot.Start.ContainsNaN() || Shot.End.ContainsNaN()
+		|| Shot.Direction.ContainsNaN() || Shot.BaseDirection.ContainsNaN()) return;
+	// 최근 64탄의 수신 여부를 보관한다. 순서가 뒤바뀐 별도 탄은 재생하고 같은 탄만 건너뛴다.
+	const int32 ShotDelta = static_cast<int32>(Shot.ShotId - LastPresentedShotId);
+	if (ShotDelta > 0)
 	{
-		return;
+		PresentedShotMask = ShotDelta >= 64 ? 1 : (PresentedShotMask << ShotDelta) | 1;
+		LastPresentedShotId = Shot.ShotId;
 	}
+	else
+	{
+		const int64 Age = -static_cast<int64>(ShotDelta);
+		if (Age >= 64 || (PresentedShotMask & (uint64(1) << Age))) return;
+		PresentedShotMask |= uint64(1) << Age;
+	}
+	if (Shot.bShooterWallShot && CVarWallShotDiagnostics.GetValueOnGameThread())
+		UE_LOG(LogTemp, Display, TEXT("[WallShot][Receive] Weapon=%s Shot=%u Equip=%u ServerTime=%.3f LocalTime=%.3f Start=%s Base=%s Direction=%s End=%s Occluded=%d"),
+			*GetName(), Shot.ShotId, Shot.EquipmentRevision, Shot.ServerTime, GetWorld()->GetTimeSeconds(),
+			*Shot.Start.ToString(), *Shot.BaseDirection.ToString(), *Shot.Direction.ToString(), *Shot.End.ToString(), Shot.bOccluded);
+	const FVector TraceEnd = Shot.End;
+	const FVector ImpactNormal = Shot.ImpactNormal;
+	AActor* Hit = Shot.HitActor;
+	const FVector2D NormalizedShotDirection = Shot.NormalizedShotDirection;
+	const FName FiredMuzzleSocketName = Shot.MuzzleSocket;
+	const bool bHasImpact = Shot.bHasImpact;
+	const uint8 Surface = Shot.Surface;
+	const FGameplayTag ImpactContext = Shot.ImpactContext;
+#if WITH_DEV_AUTOMATION_TESTS
+	// 실제 클라이언트 소비 지점만 관측한다. Dedicated의 RPC 호출을 VFX 재생으로 세지 않는다.
+	WallShotProbe::Observed().Broadcast({this, true, Shot.Start, Shot.BaseDirection, Shot.Direction,
+		Shot.End, Shot.MuzzleSocket, Shot.bHasImpact, GetPathNameSafe(Shot.HitActor), TEXT(""),
+		Shot.bStartPenetrating, Shot.ShotId, Shot.EquipmentRevision, Shot.ServerTime, Shot.bOccluded, true});
+#endif
+
 	// 총구/소유자 메시가 없더라도 서버가 확정한 피격 효과는 한 번 처리한다.
 	if (bHasImpact)
 	{
 		PlaySurfaceImpactVisual(TraceEnd, ImpactNormal, Hit, Surface, ImpactContext, WeaponDecal);
 	}
+	if (Shot.bShooterWallShot)
+	{
+		// 월드 선분은 과거 발사의 스냅샷이다. 무기 교체/메시 갱신과 무관하게 한 번만 재생한다.
+		if (CachedVisualSubsystem && WeaponTrail)
+			CachedVisualSubsystem->SpawnBeamTrail(WeaponTrail, Shot.Start, Shot.End);
+		AShooterCharacter* Shooter = Cast<AShooterCharacter>(Shot.Shooter);
+		const bool bCurrentEquipment = IsValid(Shooter) && WeaponOwner == Shooter && IsEquipped()
+			&& !Shooter->IsDead() && Shooter->GetCurrentWeapon() == this
+			&& Shooter->GetWallShotEquipmentRevision() == Shot.EquipmentRevision;
+		if (!bCurrentEquipment) return;
+		// 현재 장착에만 붙는 섬광/메시 반동은 세대를 확인한다. 월드 Trail은 소켓에서 다시 만들지 않는다.
+		if (UShooterAnimInstance* Anim = Cast<UShooterAnimInstance>(Shooter->GetMesh()->GetAnimInstance()))
+			Anim->AddThirdPersonRecoil(RecoilMultiplier * GetThirdPersonProceduralRecoilMultiplier()
+				* GetUpgradeRecoilMultiplier(), NormalizedShotDirection);
+		if (Shooter->IsLocallyControlled())
+			PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit, FiredMuzzleSocketName, false);
+		else
+			PlayThirdPersonFireFX(TraceEnd, ImpactNormal, Hit, FiredMuzzleSocketName, false);
+		return;
+	}
+
 	const bool bPartnerWeapon = Cast<APartnerCharacter>(WeaponOwner) != nullptr;
 	if (bPartnerWeapon)
 	{
@@ -1576,6 +1657,7 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(
 void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 {
 	Super::OnEquipped(NewOwner);
+	bWarnedShotFallback = false;
 	HideSightPresentation();
 	if (ShadowSight)
 	{
@@ -1735,8 +1817,17 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation(
 	FVector2D ControlRecoilDelta,
 	float ControlKickInterpSpeed,
 	float CameraShakeScale,
-	float CameraShakeDuration)
+	float CameraShakeDuration,
+	uint32 ShotId, uint32 EquipmentRevision, ACharacter* FiredBy)
 {
+	if (static_cast<int32>(ShotId - LastOwnerFeedbackShotId) <= 0) return;
+	LastOwnerFeedbackShotId = ShotId;
+	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(FiredBy); Shooter && UsesShooterWallShot())
+	{
+		// 이전 장착의 지연 피드백을 새 장착의 UI/반동으로 재생하지 않는다.
+		if (WeaponOwner != Shooter || !IsEquipped() || Shooter->IsDead() || Shooter->GetCurrentWeapon() != this
+			|| Shooter->GetWallShotEquipmentRevision() != EquipmentRevision) return;
+	}
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (OwnerCharacter && OwnerCharacter->IsLocallyControlled())
 	{
@@ -1767,7 +1858,7 @@ void ARangedWeaponBase::ClientNotifyAttackSign_Implementation(bool bCriticalHit)
 }
 
 void ARangedWeaponBase::PlayThirdPersonFireFX(
-	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName)
+	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName, bool bPlayTrail)
 {
 	TArray<FTransform> MuzzleTransforms;
 	ResolveMuzzleTransforms(false, FiredMuzzleSocketName, MuzzleTransforms);
@@ -1816,7 +1907,7 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(
 				UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][TP][Muzzle] Failed: WeaponMuzzle definition is null."));
 			}
 
-			if (WeaponTrail)
+			if (bPlayTrail && WeaponTrail)
 			{
 				VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, TraceEnd);
 			}
@@ -1829,7 +1920,7 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(
 }
 
 void ARangedWeaponBase::PlayFirstPersonFireFX(
-	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName)
+	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName, bool bPlayTrail)
 {
 	TArray<FTransform> MuzzleTransforms;
 	ResolveMuzzleTransforms(true, FiredMuzzleSocketName, MuzzleTransforms);
@@ -1879,7 +1970,7 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(
 				UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][FP][Muzzle] Failed: WeaponMuzzle definition is null."));
 			}
 
-			if (WeaponTrail)
+			if (bPlayTrail && WeaponTrail)
 			{
 				VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, TraceEnd);
 			}
@@ -2545,6 +2636,33 @@ bool ARangedWeaponBase::CanAttack() const
 		&& HasUsableAmmo();
 }
 
+float ARangedWeaponBase::GetAttackRetryDelay() const
+{
+	const UWorld* World = GetWorld();
+	if (!World) return 0.05f;
+	const FTimerManager& Timers = World->GetTimerManager();
+	// 남아 있는 쿨다운을 건너뛰지 않고, 그중 가장 늦은 발사 허용 시각에 다시 확인한다.
+	const float CooldownRemaining = FMath::Max(
+		Timers.GetTimerRemaining(AttackCooldownTimerHandle),
+		Timers.GetTimerRemaining(PostBurstCooldownTimerHandle));
+	const float PreservedRemaining = static_cast<float>(PreservedAttackReadyAt - World->GetTimeSeconds());
+	return FMath::Max(0.05f, FMath::Max(FMath::Max(CooldownRemaining, PreservedRemaining), GetReuseCooldownRemaining()));
+}
+
+const TCHAR* ARangedWeaponBase::GetAttackBlockReason() const
+{
+	if (!Super::CanAttack()) return TEXT("WeaponNotEquipped");
+	if (bIsReloading) return TEXT("Reloading");
+	if (!HasUsableAmmo()) return TEXT("EmptyMagazine");
+	if (IsOnReuseCooldown()) return TEXT("ReuseCooldown");
+	if (bOnPostBurstCooldown) return TEXT("PostBurstCooldown");
+	if (bAttackOnCooldown || (GetWorld() && GetWorld()->GetTimeSeconds() < PreservedAttackReadyAt))
+	{
+		return TEXT("AttackCooldown");
+	}
+	return TEXT("WeaponState");
+}
+
 bool ARangedWeaponBase::IsOnReuseCooldown() const
 {
 	const UOutlierAbilitySystemComponent* AbilitySystem = Cast<UOutlierAbilitySystemComponent>(
@@ -2772,7 +2890,8 @@ void ARangedWeaponBase::PerformAttack()
 		LastCalculatedControlRecoil,
 		bHasActiveRecoilProfile ? ActiveRecoilProfile.ControlKickInterpSpeed : 0.0f,
 		LastWeaponCameraShakeScale,
-		LastWeaponCameraShakeDuration);
+		LastWeaponCameraShakeDuration,
+		LastResolvedShot.ShotId, LastResolvedShot.EquipmentRevision, LastResolvedShot.Shooter);
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{

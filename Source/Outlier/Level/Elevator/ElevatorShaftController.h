@@ -18,6 +18,8 @@ class UOutlierArenaSubsystem;
 class AGameStateBase;
 class UCurveFloat;
 class UAudioComponent;
+class ACharacter;
+class UPrimitiveComponent;
 
 UENUM(BlueprintType)
 enum class EElevatorShaftState : uint8
@@ -32,9 +34,9 @@ enum class EElevatorShaftState : uint8
 	FinishingCurrentSection,
 	PreparingArrival,
 	Arriving,
-	Decelerating
+	Decelerating,
+	WaitingForCombatStart
 };
-
 // 위치 대신 실행 기준만 복제한다. 늦게 보이는 클라이언트도 같은 서버 시각에서 복원한다.
 USTRUCT()
 struct FElevatorShaftMotion
@@ -120,6 +122,11 @@ public:
 	void RegisterMotionAudioComponent(UAudioComponent* Component);
 
 	void NotifyClientFadeFinished(AFirstPersonPlayerController* Player, const FGuid& ExecutionId, bool bReveal);
+
+	// 콘솔 진단에서만 사용한다. 충돌/이동/카메라 설정은 바꾸지 않고 제한 시간 동안 관측한다.
+	void StartCollisionDiagnostics(float Duration);
+	static bool ProbeDiagnosticCameraPath(const ACharacter& Character, const FVector& CameraLocation,
+		bool bUseBodyChannel, FHitResult& OutHit);
 
 	UFUNCTION(BlueprintPure, Category = "Elevator")
 	EElevatorShaftState GetShaftState() const { return Motion.State; }
@@ -209,6 +216,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Elevator|Presentation")
 	bool bPlayIntro = false;
 
+	// 문 닫힘과 선택적 인트로 완료 후 첫 전투 요청까지 기다릴 시간. 0은 즉시 시작한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Elevator|Combat", meta = (ClampMin = "0", UIMin = "0", Units = "s"))
+	float CombatStartDelaySeconds = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Elevator|Presentation", meta = (ClampMin = "0"))
 	float FadeOutDuration = 0.5f;
 
@@ -245,6 +256,12 @@ protected:
 	void MotionPresentationStopped(FGuid ExecutionId);
 
 private:
+	void SampleCollisionDiagnostics();
+	void StopCollisionDiagnostics();
+	UFUNCTION()
+	void OnDiagnosticCapsuleHit(UPrimitiveComponent* HitComponent, AActor* OtherActor,
+		UPrimitiveComponent* OtherComponent, FVector NormalImpulse, const FHitResult& Hit);
+
 	// 게임플레이 상태는 서버가 확정하고, 반복 층은 각 클라이언트가 같은 기준으로 움직인다.
 	UPROPERTY(ReplicatedUsing = OnRep_Motion)
 	FElevatorShaftMotion Motion;
@@ -266,6 +283,7 @@ private:
 	FTimerHandle EntryCheckTimer;
 	FTimerHandle VisualReadyTimer;
 	FTimerHandle MotionPhaseTimer;
+	FTimerHandle CombatStartTimer;
 	FElevatorShaftSpeedProfile AccelerationProfile;
 	FElevatorShaftSpeedProfile DecelerationProfile;
 	bool bProfilesReady = false;
@@ -324,6 +342,7 @@ private:
 	void ResolveArrivalActors();
 	bool ValidateConfiguration(FString& Error) const;
 	void SealEntrance();
+	void BeginCombatStartDelay();
 	void StartCombat();
 	void SetState(EElevatorShaftState State);
 	void SetEntranceBlocked(bool bBlocked);
@@ -357,6 +376,16 @@ private:
 	void AbortTransition();
 	void ReleaseTransition();
 	void RetryExit();
+
+	struct FCollisionDiagnosticPawn
+	{
+		TWeakObjectPtr<ACharacter> Character;
+		FVector PreviousLocation = FVector::ZeroVector;
+		double LastHitTime = -1.0;
+	};
+	TArray<FCollisionDiagnosticPawn> CollisionDiagnosticPawns;
+	FTimerHandle CollisionDiagnosticTimer;
+	double CollisionDiagnosticEndTime = 0.0;
 
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FElevatorPresentationLifecycleTest;

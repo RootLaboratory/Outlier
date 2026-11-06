@@ -15,11 +15,16 @@
 #include "OutlierPlayerState.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterAnimInstance.h"
+#include "HAL/IConsoleManager.h"
 #include "Team/OutlierTeamIds.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/Volume.h"
+#include "Interface/MeleeIgnoreInterface.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
+#include "Animation/ActiveMontageInstanceScope.h"
+#include "Animation/AnimNotifyQueue.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
@@ -32,6 +37,88 @@
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogMeleeDiagnostics, Log, All);
+
+static TAutoConsoleVariable<int32> CVarMeleePoseDiagnostics(
+	TEXT("outlier.Weapon.MeleePoseDiagnostics"), 0,
+	TEXT("Log final third-person melee sockets, attachment and aim on each authoritative trace sample."),
+	ECVF_Cheat);
+
+#if !UE_BUILD_SHIPPING
+static FAutoConsoleCommandWithWorldAndArgs MeleeTraceDebugCommand(
+	TEXT("outlier.Weapon.MeleeTraceDebug"),
+	TEXT("Show authoritative melee sweeps on relevant clients: [1=on, 0=off] [lifetime seconds=3]. Run on owning client, or server for all equipped melee weapons."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (!World) return;
+		const bool bEnabled = Args.IsEmpty() || FCString::Atoi(*Args[0]) != 0;
+		const float Duration = Args.Num() > 1 ? FCString::Atof(*Args[1]) : 3.0f;
+		int32 Count = 0;
+		for (TActorIterator<AMeleeWeaponBase> It(World); It; ++It)
+		{
+			const APawn* OwnerPawn = Cast<APawn>(It->GetOwner());
+			if (OwnerPawn && (It->HasAuthority() || OwnerPawn->IsLocallyControlled()))
+			{
+				It->SetMeleeTraceDebug(bEnabled, Duration);
+				++Count;
+			}
+		}
+		UE_LOG(LogMeleeDiagnostics, Display, TEXT("[MeleeDebug] Requested=%d Weapons=%d. Red=sweep Yellow=TP sockets Cyan=server aim Green=applied damage"), bEnabled, Count);
+	}), ECVF_Cheat);
+#endif
+
+void AMeleeWeaponBase::SetMeleeTraceDebug(bool bEnabled, float Duration)
+{
+#if !UE_BUILD_SHIPPING
+	if (HasAuthority()) ServerSetMeleeTraceDebug_Implementation(bEnabled, Duration);
+	else ServerSetMeleeTraceDebug(bEnabled, Duration);
+#endif
+}
+
+void AMeleeWeaponBase::ServerSetMeleeTraceDebug_Implementation(bool bEnabled, float Duration)
+{
+#if !UE_BUILD_SHIPPING
+	if (!HasAuthority() || (bEnabled && (!bIsEquipped || !IsValid(WeaponOwner)))) return;
+	bServerTraceDebugRequested = bEnabled;
+	ServerTraceDebugDuration = FMath::IsFinite(Duration) ? FMath::Clamp(Duration, 0.1f, 10.0f) : 3.0f;
+	UE_LOG(LogMeleeDiagnostics, Display, TEXT("[MeleeDebug] Server Weapon=%s Enabled=%d Duration=%.1f"),
+		*GetNameSafe(this), bEnabled, ServerTraceDebugDuration);
+#endif
+}
+
+void AMeleeWeaponBase::MulticastDrawMeleeTrace_Implementation(
+	FVector_NetQuantize10 PreviousStart, FVector_NetQuantize10 PreviousEnd,
+	FVector_NetQuantize10 CurrentStart, FVector_NetQuantize10 CurrentEnd, float Radius, uint8 Samples,
+	FVector_NetQuantize10 Eye, FVector_NetQuantizeNormal Aim, float Duration)
+{
+#if ENABLE_DRAW_DEBUG && !UE_BUILD_SHIPPING
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_DedicatedServer) return;
+	DrawDebugLine(World, CurrentStart, CurrentEnd, FColor::Yellow, false, Duration, 0, 1.5f);
+	DrawDebugDirectionalArrow(World, Eye, FVector(Eye) + FVector(Aim) * 150.0f,
+		10.0f, FColor::Cyan, false, Duration, 0, 1.0f);
+	// 클라이언트 애니메이션에서 재계산하지 않고 서버가 검사한 각 Sweep 체적을 표시한다.
+	for (int32 Index = 0; Index < Samples; ++Index)
+	{
+		const float Alpha = static_cast<float>(Index) / FMath::Max(static_cast<int32>(Samples) - 1, 1);
+		const FVector Start = FMath::Lerp(FVector(PreviousStart), FVector(PreviousEnd), Alpha);
+		const FVector End = FMath::Lerp(FVector(CurrentStart), FVector(CurrentEnd), Alpha);
+		const FVector Delta = End - Start;
+		DrawDebugCapsule(World, (Start + End) * 0.5f, Delta.Size() * 0.5f + Radius, Radius,
+			FQuat::FindBetweenNormals(FVector::UpVector, Delta.GetSafeNormal(SMALL_NUMBER, FVector::UpVector)),
+			FColor::Red, false, Duration, 0, 0.6f);
+	}
+#endif
+}
+
+void AMeleeWeaponBase::MulticastDrawMeleeDamage_Implementation(FVector_NetQuantize10 Location, float Duration)
+{
+#if ENABLE_DRAW_DEBUG && !UE_BUILD_SHIPPING
+	if (GetWorld() && GetNetMode() != NM_DedicatedServer)
+	{
+		DrawDebugSphere(GetWorld(), Location, 5.0f, 12, FColor::Green, false, Duration, 0, 2.0f);
+	}
+#endif
+}
 
 AMeleeWeaponBase::AMeleeWeaponBase()
 {
@@ -55,12 +142,14 @@ void AMeleeWeaponBase::OnEquipped(ACharacter* NewOwner)
 
 void AMeleeWeaponBase::OnUnequipped()
 {
+	bServerTraceDebugRequested = false;
 	StopTargetSearch();
 	Super::OnUnequipped();
 }
 
 void AMeleeWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy)
 {
+	bServerTraceDebugRequested = false;
 	StopTargetSearch();
 	Super::OnDropped(DropTransform, DroppedBy);
 }
@@ -174,6 +263,8 @@ void AMeleeWeaponBase::StopAttack()
 		*GetNameSafe(this), AttackSequence, static_cast<int32>(AttackPhase), bMeleeTraceActive, HitActorsThisSwing.Num());
 	bWantsToAttack = false;
 	bUsesAnimationTiming = false;
+	AttackAnimInstance.Reset();
+	AttackMontageInstanceId = INDEX_NONE;
 	SwingStealthSession.Reset();
 	ResetMeleeTraceState();
 	if (AShooterCharacter* OwnerShooter = Cast<AShooterCharacter>(WeaponOwner))
@@ -267,6 +358,9 @@ void AMeleeWeaponBase::HandleRecoveryEndNotify()
 
 bool AMeleeWeaponBase::PlayAttackAnimation()
 {
+	// Montage_Play가 이전 몽타주를 중단하며 Notify를 전달할 수 있으므로 재생 전에 이전 수명을 닫는다.
+	AttackAnimInstance.Reset();
+	AttackMontageInstanceId = INDEX_NONE;
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 	if (!Shooter)
 	{
@@ -290,6 +384,14 @@ bool AMeleeWeaponBase::PlayAttackAnimation()
 		return false;
 	}
 
+	const FAnimMontageInstance* Instance = ThirdPersonAnimInstance->GetActiveInstanceForMontage(ThirdPersonMontage);
+	if (!Instance)
+	{
+		return false;
+	}
+	AttackAnimInstance = ThirdPersonAnimInstance;
+	AttackMontageInstanceId = Instance->GetInstanceID();
+
 	FOnMontageEnded MontageEndedDelegate;
 	MontageEndedDelegate.BindUObject(
 		this,
@@ -297,6 +399,20 @@ bool AMeleeWeaponBase::PlayAttackAnimation()
 		AttackSequence);
 	ThirdPersonAnimInstance->Montage_SetEndDelegate(MontageEndedDelegate, ThirdPersonMontage);
 	return true;
+}
+
+bool AMeleeWeaponBase::IsCurrentAttackNotify(
+	const USkeletalMeshComponent* MeshComp,
+	const FAnimNotifyEventReference& EventReference) const
+{
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const auto* MontageContext = EventReference.GetContextData<UE::Anim::FAnimNotifyMontageInstanceContext>();
+	// 공유 Notify 객체에는 공격별 상태를 저장하지 않는다. TP 메시와 시작 당시 몽타주 인스턴스로 수명을 확인한다.
+	return HasAuthority() && bIsEquipped && Shooter && Shooter->GetCurrentWeapon() == this
+		&& MeshComp == Shooter->GetMesh() && AttackPhase != EMeleeAttackPhase::Idle
+		&& AttackAnimInstance.IsValid() && MeshComp->GetAnimInstance() == AttackAnimInstance.Get()
+		&& MontageContext && AttackMontageInstanceId != INDEX_NONE
+		&& MontageContext->MontageInstanceID == AttackMontageInstanceId;
 }
 
 void AMeleeWeaponBase::HandleAttackMontageEnded(
@@ -512,6 +628,7 @@ bool AMeleeWeaponBase::BeginMeleeTrace()
 
 	ResetMeleeTraceState();
 	ActiveMeleeTraceSequence = AttackSequence;
+	ActiveMeleeTraceOwner = WeaponOwner;
 	PreviousMeleeTraceStart = TraceStart;
 	PreviousMeleeTraceEnd = TraceEnd;
 	bMeleeTraceActive = bHasTraceSockets;
@@ -530,6 +647,16 @@ void AMeleeWeaponBase::TickMeleeTrace()
 		|| ActiveMeleeTraceSequence != AttackSequence
 		|| AttackPhase != EMeleeAttackPhase::Recovery)
 	{
+		return;
+	}
+	// 좌표 이력은 Trace를 시작한 소유자의 손 궤적이다. 소유자가 바뀌면 새 손까지 이어서 Sweep하지 않는다.
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	if (!ActiveMeleeTraceOwner.IsValid() || ActiveMeleeTraceOwner.Get() != WeaponOwner
+		|| !bIsEquipped || (Shooter && Shooter->GetCurrentWeapon() != this))
+	{
+		UE_LOG(LogMeleeDiagnostics, Warning, TEXT("[MeleeDiag][TraceRejected] Weapon=%s Sequence=%d Reason=OwnerOrEquipmentChanged"),
+			*GetNameSafe(this), AttackSequence);
+		ResetMeleeTraceState();
 		return;
 	}
 
@@ -560,7 +687,7 @@ void AMeleeWeaponBase::EndMeleeTrace()
 
 bool AMeleeWeaponBase::GetMeleeTraceSocketLocations(FVector& OutStart, FVector& OutEnd) const
 {
-	const USkeletalMeshComponent* WeaponMesh = GetThirdPersonWeaponMesh();
+	USkeletalMeshComponent* WeaponMesh = GetThirdPersonWeaponMesh();
 	if (!WeaponMesh
 		|| !WeaponMesh->DoesSocketExist(MeleeTraceStartSocketName)
 		|| !WeaponMesh->DoesSocketExist(MeleeTraceEndSocketName))
@@ -568,8 +695,36 @@ bool AMeleeWeaponBase::GetMeleeTraceSocketLocations(FVector& OutStart, FVector& 
 		return false;
 	}
 
+	// Notify는 손 bone 확정 후, 자식 부착 변환 갱신 전에 호출될 수 있다.
+	// 현재 손 소켓으로 무기 변환만 갱신한다. pose 재평가는 Notify 재진입을 만들므로 하지 않는다.
+	WeaponMesh->UpdateComponentToWorld();
 	OutStart = WeaponMesh->GetSocketLocation(MeleeTraceStartSocketName);
 	OutEnd = WeaponMesh->GetSocketLocation(MeleeTraceEndSocketName);
+	if (HasAuthority() && CVarMeleePoseDiagnostics.GetValueOnGameThread() != 0)
+	{
+		const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+		const USceneComponent* Parent = WeaponMesh->GetAttachParent();
+		const FName AttachSocket = WeaponMesh->GetAttachSocketName();
+		// 부모의 최신 손 소켓과 무기 월드 변환을 함께 기록해 AO 문제와 부착 갱신 문제를 구분한다.
+		// 여기서 pose를 재평가하면 Notify가 재진입할 수 있으므로 읽기만 수행한다.
+		const FTransform ParentSocket = Parent
+			? Parent->GetSocketTransform(AttachSocket) : FTransform::Identity;
+		const FTransform ExpectedWeapon = WeaponMesh->GetRelativeTransform() * ParentSocket;
+		const UShooterAnimInstance* Anim = Shooter && Shooter->GetMesh()
+			? Cast<UShooterAnimInstance>(Shooter->GetMesh()->GetAnimInstance()) : nullptr;
+		FVector EyeLocation = FVector::ZeroVector;
+		FRotator EyeRotation = FRotator::ZeroRotator;
+		if (WeaponOwner) WeaponOwner->GetActorEyesViewPoint(EyeLocation, EyeRotation);
+		UE_LOG(LogMeleeDiagnostics, Log,
+			TEXT("[MeleeDiag][Pose] Weapon=%s Sequence=%d Frame=%llu Pitch=%.2f MeleeAO=%.3f Anim=%s Parent=%s AttachSocket=%s ParentSocket=%s Relative=%s World=%s ExpectedWorld=%s Start=%s End=%s Eye=%s Aim=%s"),
+			*GetNameSafe(this), AttackSequence, GFrameCounter,
+			Shooter ? Shooter->GetAimPitchForAnimation() : EyeRotation.Pitch,
+			Anim ? Anim->GetMeleeAimOffsetAlpha() : -1.0f, *GetNameSafe(Anim),
+			*GetNameSafe(Parent), *AttachSocket.ToString(), *ParentSocket.ToString(),
+			*WeaponMesh->GetRelativeTransform().ToString(), *WeaponMesh->GetComponentTransform().ToString(),
+			*ExpectedWeapon.ToString(), *OutStart.ToString(), *OutEnd.ToString(),
+			*EyeLocation.ToString(), *EyeRotation.ToString());
+	}
 	return true;
 }
 
@@ -608,13 +763,23 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 	AddWeaponTraceIgnoredActors(TraceParams);
 	TraceParams.bReturnPhysicalMaterial = true;
 	FVector ViewLocation = OwnerCharacter->GetActorLocation();
-	FRotator ViewRotation;
+	FRotator ViewRotation = FRotator::ZeroRotator;
 	if (AController* OwnerController = OwnerCharacter->GetController())
 	{
 		OwnerController->GetPlayerViewPoint(ViewLocation, ViewRotation);
 	}
 	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][SweepPath] Weapon=%s Sequence=%d PreviousStart=%s PreviousEnd=%s CurrentStart=%s CurrentEnd=%s Radius=%.2f Samples=%d"),
 		*GetNameSafe(this), AttackSequence, *PreviousStart.ToString(), *PreviousEnd.ToString(), *CurrentStart.ToString(), *CurrentEnd.ToString(), SafeTraceRadius, SampleCount);
+
+#if !UE_BUILD_SHIPPING
+	if (HasAuthority() && (bServerTraceDebugRequested || bDrawDebugMeleeTrace))
+	{
+		// 소켓 샘플을 클라이언트에 전달한다. 표시 RPC는 피해·Trace 상태를 바꾸지 않는다.
+		MulticastDrawMeleeTrace(PreviousStart, PreviousEnd, CurrentStart, CurrentEnd, SafeTraceRadius,
+			static_cast<uint8>(SampleCount), ViewLocation, ViewRotation.Vector(),
+			bServerTraceDebugRequested ? ServerTraceDebugDuration : DebugMeleeTraceDuration);
+	}
+#endif
 
 	for (int32 SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
 	{
@@ -633,19 +798,12 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 		UE_CLOG(!MeleeTraceHitBuffer.IsEmpty(), LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][SweepHits] Weapon=%s Sequence=%d Sample=%d/%d Start=%s End=%s Radius=%.2f Hits=%d"),
 			*GetNameSafe(this), AttackSequence, SampleIndex + 1, SampleCount, *SweepStart.ToString(), *SweepEnd.ToString(), SafeTraceRadius, MeleeTraceHitBuffer.Num());
 
-#if ENABLE_DRAW_DEBUG
-		if (bDrawDebugMeleeTrace)
-		{
-			DrawDebugLine(World, SweepStart, SweepEnd, FColor::Red, false, DebugMeleeTraceDuration, 0, 1.0f);
-			DrawDebugSphere(World, SweepEnd, SafeTraceRadius, 12, FColor::Red, false, DebugMeleeTraceDuration);
-		}
-#endif
-
 		for (const FHitResult& HitResult : MeleeTraceHitBuffer)
 		{
 			AActor* Candidate = HitResult.GetActor();
 			// 환경음/방 트리거 등 보이지 않는 Volume은 공격 판정과 표면 연출에서 제외한다.
-			if (Candidate && Candidate->IsA<AVolume>())
+			if (Candidate && (Candidate->IsA<AVolume>()
+				|| Candidate->GetClass()->ImplementsInterface(UMeleeIgnoreInterface::StaticClass())))
 			{
 				continue;
 			}
@@ -721,6 +879,7 @@ void AMeleeWeaponBase::ResetMeleeTraceState()
 {
 	bMeleeTraceActive = false;
 	ActiveMeleeTraceSequence = 0;
+	ActiveMeleeTraceOwner.Reset();
 	PreviousMeleeTraceStart = FVector::ZeroVector;
 	PreviousMeleeTraceEnd = FVector::ZeroVector;
 	HitActorsThisSwing.Reset();
@@ -948,6 +1107,14 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 	}
 
 	FMeleeHitContext Context;
+	// 접촉 후보가 아니라 실제 피해가 적용된 경우에만 초록 표식을 전송한다.
+#if !UE_BUILD_SHIPPING
+	if (bServerTraceDebugRequested || bDrawDebugMeleeTrace)
+	{
+		MulticastDrawMeleeDamage(HitResult.ImpactPoint,
+			bServerTraceDebugRequested ? ServerTraceDebugDuration : DebugMeleeTraceDuration);
+	}
+#endif
 	Context.TargetActor = Target;
 	Context.HitLocation = HitResult.ImpactPoint;
 	Context.HitNormal = HitResult.ImpactNormal;

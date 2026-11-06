@@ -312,7 +312,35 @@ bool FElevatorMultiPhaseCombatTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Capture starting context"), Combat->CreateTriggerContext(Controller, Encounter.RoomTag,
 			FGameplayTag(), Controller->CombatContext));
 		Controller->Motion.Generation = Controller->CombatContext.GameplayGeneration;
-		Controller->StartCombat();
+		Controller->Motion.State = EElevatorShaftState::Intro;
+		TestEqual(TEXT("Start delay defaults to immediate"), Controller->CombatStartDelaySeconds, 0.0f);
+		if (PhaseCount > 1)
+		{
+			Controller->CombatStartDelaySeconds = 0.2f;
+			Controller->FinishIntro(Controller->Motion.ExecutionId);
+			TestEqual(TEXT("Intro completion starts the configured wait"), Controller->GetShaftState(), EElevatorShaftState::WaitingForCombatStart);
+			Controller->OnReadinessChanged(Encounter.RoomTag);
+			Controller->FinishIntro(Controller->Motion.ExecutionId);
+			for (int32 Tick = 0; Tick < 10; ++Tick) Fixture.AdvanceTimers();
+			TestFalse(TEXT("Readiness and repeated intro completion cannot bypass the delay"), Controller->bCombatRequested);
+			TestFalse(TEXT("Walls remain stopped during start delay"), Controller->Motion.bStarted);
+			if (PhaseCount == 3)
+			{
+				Controller->ResetExecution(Controller->Motion.Generation);
+				for (int32 Tick = 0; Tick < 30; ++Tick) Fixture.AdvanceTimers();
+				TestEqual(TEXT("Reset cancels delayed start"), Controller->GetShaftState(), EElevatorShaftState::WaitingForPair);
+				TestFalse(TEXT("Cancelled timer cannot request combat"), Controller->bCombatRequested);
+				TestTrue(TEXT("Recapture context after reset"), Combat->CreateTriggerContext(Controller, Encounter.RoomTag,
+					FGameplayTag(), Controller->CombatContext));
+				Controller->Motion.State = EElevatorShaftState::Intro;
+				Controller->FinishIntro(Controller->Motion.ExecutionId);
+			}
+			for (int32 Tick = 0; Tick < 30; ++Tick) Fixture.AdvanceTimers();
+		}
+		else
+		{
+			Controller->FinishIntro(Controller->Motion.ExecutionId);
+		}
 		TestEqual(TEXT("Requests alone do not move walls"), Controller->GetShaftState(), EElevatorShaftState::AwaitingSpawn);
 		double StartTime = 0;
 		double Distance = 0;

@@ -41,6 +41,7 @@ class OUTLIER_API APartnerPlayerController : public AFirstPersonPlayerController
 	friend class FOutlierGasPartnerHackPossessionRechargeTest;
 	friend class FEnemyHackEffectGameplayTest;
 	friend class FEnemyHackEffectHUDTest;
+	friend class FOutlierGasEnemyPossessionStunResetTest;
 
 protected:
 	/** Pawn class used when respawning the player. */

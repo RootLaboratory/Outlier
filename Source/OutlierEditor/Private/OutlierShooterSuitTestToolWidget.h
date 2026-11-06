@@ -30,6 +30,7 @@ public:
 	virtual ~SOutlierShooterSuitTestToolWidget() override;
 
 private:
+	friend struct FShooterSuitTesterInvulnerabilityTestAccess;
 	struct FTarget
 	{
 		TWeakObjectPtr<AShooterCharacter> Shooter;
@@ -68,6 +69,9 @@ private:
 	void SelectTarget(FTargetPtr Target, ESelectInfo::Type SelectInfo);
 	void RefreshFeatureNodes();
 	bool CanEdit() const;
+	bool CanEditInvulnerability() const;
+	ECheckBoxState GetInvulnerabilityState() const;
+	void SetInvulnerabilityState(ECheckBoxState State);
 	ECheckBoxState GetFeatureState(int32 Index) const;
 	void SetFeatureState(int32 Index, ECheckBoxState State);
 	void SetSuitState(ECheckBoxState State);

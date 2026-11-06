@@ -23,6 +23,8 @@
 #include "Enemy/EnemyHackEffectTypes.h"
 #include "PostProcess/OutlierSpawnVisualTarget.h"
 #include "PostProcess/OutlierReadabilityTarget.h"
+#include "Enemy/OutlierSightBoneCache.h"
+#include "Enemy/OutlierBoneSight.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -69,6 +71,33 @@ struct FEnemySearchEpisode
 	bool bLocalGuard = false;
 };
 
+// 청각은 발생 당시 위치만 제공한다. 발신자 참조로 현재 위치를 추적하지 않는다.
+struct FEnemyHeardNoise
+{
+	TWeakObjectPtr<AActor> Source;
+	FVector Location = FVector::ZeroVector;
+	double OccurredAt = -1.0;
+};
+
+UENUM(BlueprintType)
+enum class EEnemyPerceptionGoalType : uint8
+{
+	None,
+	Combat,
+	InvestigateNoise,
+	Search,
+	CommittedAction
+};
+
+// 행동 의도와 추적 지식은 분리한다. 소리 조사에는 공격용 Target을 제공하지 않는다.
+struct FEnemyPerceptionGoal
+{
+	EEnemyPerceptionGoalType Type = EEnemyPerceptionGoalType::None;
+	TWeakObjectPtr<AActor> Target;
+	FVector Location = FVector::ZeroVector;
+	double InformationAt = -1.0;
+};
+
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
 {
@@ -107,8 +136,11 @@ UCLASS()
 class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget, public IWeaponDamageModifierProvider, public IOutlierReadabilityTarget
 {
 	GENERATED_BODY()
+	friend class FOutlierSightBoneTargetsTest;
 
 public:
+	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
+
 	/** 기존 직렬화 설정을 유지한다. 가독성 표현에는 공통 예약 비트(16)를 사용한다. */
 	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability")
 	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
@@ -238,6 +270,13 @@ public:
 	void SendEnemyStateTreeEvent(FGameplayTag Tag);
 
 protected:
+	// 빙의 여부는 기존 팀 판정이 결정한다. 이 목록은 유형별 월드 메시의 신체 설정만 담당한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")
+	TArray<FName> SightBones;
+
+	mutable FOutlierSightBoneCache SightBoneCache;
+	FOutlierBoneSight BoneSight;
+
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -254,6 +293,7 @@ private:
 	friend class FEnemyHackEffectLifetimeTest;
 	friend class FEnemyHackEffectGameplayTest;
 	friend class FEnemyHackEffectHUDTest;
+	friend class FOutlierGasEnemyPossessionStunResetTest;
 
 	UPROPERTY(ReplicatedUsing = OnRep_HackEffectState)
 	FEnemyHackEffectState HackEffectState;
@@ -505,6 +545,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void SetEnemyPossessed(bool bNewIsPossessed);
 
+	// Controller의 실제 빙의와 쿨타임 세션이 모두 확정된 뒤에만 호출한다.
+	void ClearStunForCommittedPossession();
+
 	void CancelPossessionProcess();
 
 	void ClearPossessedPlayerState();
@@ -664,6 +707,39 @@ public:
 	void RefreshTargetTracking();
 	void ClearTargetTracking();
 
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
+	float HeardNoiseLifetime = 3.0f;
+
+	// 유효한 자극이라도 조사 후보 용량/우선순위 때문에 저장되지 않을 수 있다.
+	bool RecordHeardNoise(AActor* Source, const FVector& Location, double OccurredAt, bool* bValidStimulus = nullptr);
+	bool TryGetHeardNoise(FEnemyHeardNoise& OutNoise) const;
+	void ClearHeardNoise();
+
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float NoiseGoalSwitchDistance = 200.0f;
+
+	const FEnemyPerceptionGoal& GetPerceptionGoal() const { return PerceptionGoal; }
+	void RefreshPerceptionGoal();
+
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
+	float NoiseDestinationUpdateInterval = 1.0f;
+	// 공유 대상과의 비교 거리와 분리한다. 조사 중 다른 소리를 택할 때 필요한 거리 이득이다.
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float NoiseCandidateSwitchDistance = 200.0f;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float NoiseDestinationChangeDistance = 100.0f;
+
+	// 목표 선택과 실제 행동 활성화는 별개다. 조사 Task가 진입한 회차만 공격을 보류한다.
+	bool BeginNoiseInvestigation(FVector& OutDestination);
+	bool TryUpdateNoiseInvestigationDestination(FVector& OutDestination);
+	bool IsNoiseInvestigationActive() const { return bNoiseInvestigationActive; }
+	bool IsNoiseSearchActive() const { return bNoiseInvestigationActive && bNoiseInvestigationSearching; }
+	uint64 GetNoiseInvestigationSerial() const { return NoiseInvestigationSerial; }
+	bool IsNoiseInvestigationCurrent(uint64 Serial) const;
+	bool BeginNoiseInvestigationSearch(uint64 Serial, const FVector& ReachableCenter);
+	void EndNoiseInvestigation(bool bConsumeNoise = true);
+	bool CompleteNoiseInvestigation();
+
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool HasSharedTargetContact() const { return bHasSharedTargetContact; }
 
@@ -681,6 +757,7 @@ public:
 	uint64 GetSharedTargetRevision() const { return SharedTargetRevision; }
 	const FEnemySearchEpisode& GetSearchEpisode() const { return SearchEpisode; }
 	bool BeginSearchEpisode();
+	bool CanContinueSearchEpisode() const;
 	void EndSearchEpisode();
 	void CompleteSearchAnchor();
 	bool SetSearchPoints(const TArray<FVector>& Points);
@@ -696,6 +773,8 @@ public:
 	// Enemy Resolve Alert Task가 제한 시간 충족 시 호출하는 서버 확정 API.
 	// 상태 변경 후 Combat.Entered 또는 Combat.AlertCleared 이벤트로 StateTree 전환을 요청한다.
 	bool CommitAlertToCombat();
+	// 청각 완료는 대상의 실제 위치 추적을 만들지 않고 마지막 소리 좌표의 조사로 전투에 진입한다.
+	bool CommitAlertToCombatFromHearing(AActor* Source, const FVector& HeardLocation, double OccurredAt);
 	bool CommitAlertToNonCombat();
 	bool GetReturnHomeDestination(FVector& OutDestination) const;
 	bool CompleteReturnHome();
@@ -814,6 +893,25 @@ protected:
 	uint64 NextSearchEpisodeSerial = 0;
 	bool bHasLastKnownPlayerLocation = false;
 	FEnemySearchEpisode SearchEpisode;
+	double LatestHeardNoiseAt = -1.0;
+	static constexpr int32 MaxHeardNoiseCandidates = 8;
+	TArray<FEnemyHeardNoise, TInlineAllocator<MaxHeardNoiseCandidates>> HeardNoiseCandidates;
+	FEnemyPerceptionGoal PerceptionGoal;
+	double LastPerceptionObservedAt = -1.0;
+	FTimerHandle PerceptionGoalTimer;
+	bool bNoiseInvestigationActive = false;
+	bool bNoiseInvestigationSearching = false;
+	uint64 NoiseInvestigationSerial = 0;
+	FVector NoiseInvestigationLocation = FVector::ZeroVector;
+	TWeakObjectPtr<AActor> NoiseInvestigationSource;
+	double NoiseInvestigationAt = -1.0;
+	double LastNoiseDestinationChangedAt = -1.0;
+	double ConsumedNoiseAt = -1.0;
+	bool IsNoiseDestinationChangeReady(const FVector& Location, double InformationAt) const;
+	bool IsHeardNoiseValid(const FEnemyHeardNoise& Noise) const;
+	bool SelectHeardNoise(FEnemyHeardNoise& OutNoise, bool bRequireNewObservation) const;
+	bool CanReplaceNoiseDestination(const FEnemyHeardNoise& Noise) const;
+	bool CommitToNonCombatAfterSearch();
 	TWeakObjectPtr<AActor> TrackedTarget;
 	TWeakObjectPtr<AEnemyAIController> TrackingController;
 	TWeakObjectPtr<UEnemyRoomSubsystem> TrackingRooms;

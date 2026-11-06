@@ -335,7 +335,8 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 		{
 			return EStateTreeRunStatus::Running;
 		}
-		if (!Weapon->CanAttack() || !Turret->CanAttackTrackedTarget(Data.TargetActor))
+		// 레이저는 차징을 마치면 사선과 무관하게 발사하고 실제 충돌로 명중을 판정한다.
+		if (!Weapon->CanAttack() || (!Laser && !Turret->CanAttackTrackedTarget(Data.TargetActor)))
 		{
 			if (!Data.bLoggedAttackBlocked && AAutoTurret::IsTurretDiagnosticsEnabled())
 			{
@@ -344,7 +345,8 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 			Data.bLoggedAttackBlocked = true;
 			return EStateTreeRunStatus::Running;
 		}
-		if (!Turret->StartAttackTarget(Data.TargetActor))
+		if (!(Laser ? Turret->StartAttackLocation(Data.LockedAimLocation)
+			: Turret->StartAttackTarget(Data.TargetActor)))
 		{
 			if (AAutoTurret::IsTurretDiagnosticsEnabled())
 			{

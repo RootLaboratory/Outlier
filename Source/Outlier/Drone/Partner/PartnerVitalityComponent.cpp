@@ -350,6 +350,7 @@ void UPartnerVitalityComponent::CompleteReboot()
 	}
 
 	AbilitySystem->RestoreHealthToMax();
+	Partner->FinishActionsAfterReboot();
 	OutlierAudioFeedback::World(Partner, TEXT("Audio.Context.Player.02.State.Reboot"), TEXT("Audio.Type.Player"));
 	Partner->RefreshEnemyDetectionForVitality();
 }

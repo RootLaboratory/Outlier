@@ -18,11 +18,17 @@ public:
 
 	// 로컬 입력/APartnerCharacter 공개 API가 사용하는 공격 진입점.
 	// 클라이언트에서는 서버 RPC만 요청하고 실제 무기 상태 변경은 서버에서 수행한다.
-	void TryStartAttack();
+	void TryStartAttack(bool bRequireFreshPress = true);
 	void TryStopAttack();
 	void StartAutoReload();
+	void ResetAttackInput();
+	void AllowAttackInput() { bAttackNeedsFreshPress = false; }
+	bool IsAttackInputHeld() const { return bAttackInputHeld; }
+	void SuspendForReboot();
+	void CompleteReboot();
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	// 빙의 해제, 리부트처럼 입력과 무관하게 공격을 끝내야 하는 서버 전용 정리 함수.
+	// 빙의 해제/슈트 전환은 입력도 폐기한다. 재부팅만 SuspendForReboot로 의도를 보존한다.
 	void ForceStopAttack();
 	void CancelForReboot();
 
@@ -30,18 +36,29 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Weapon", meta = (ClampMin = "0.0"))
 	float ReloadDurationSeconds = 1.0f;
 
-	// 소유 클라이언트의 공격 시작/종료 상태만 서버로 전달한다.
-	// 연사 처리는 서버의 Weapon 타이머가 담당하므로 발사마다 RPC를 보내지 않는다.
-	// 구현부는 TryStartAttack/TryStopAttack을 다시 호출해 서버에서도 동일한 검증을 거친다.
+	// 입력 세대와 요청 순번을 검증하고 최신 홀드만 보관한다. 실제 연사는 무기 타이머가 담당한다.
 	UFUNCTION(Server, Reliable)
-	void ServerStartAttack();
-
-	UFUNCTION(Server, Reliable)
-	void ServerStopAttack();
+	void ServerSetAttackHeld(bool bHeld, uint32 Request, uint32 Epoch);
 
 private:
+	friend class FPartnerRebootInputTest;
+	void SendAttackInput(bool bHeld);
+	void TryResumeAttack();
+	void ClearAttackRetry();
+	void StopCurrentAttack(bool bPreserveCadence);
+	void CancelReload();
+	void LogAttackBlock(FName Reason);
 	void FinishReload();
 
+	bool bAttackInputHeld = false;
+	bool bAttackNeedsFreshPress = false;
+	bool bAttackStartPending = false;
+	bool bRebootSuspended = false;
+	uint32 NextAttackInputRequest = 0;
+	uint32 ProcessedAttackInputRequest = 0;
+	uint32 ProcessedAttackInputEpoch = 0;
+	FName LastAttackBlockReason;
+	FTimerHandle AttackRetryTimerHandle;
 	FTimerHandle ReloadTimerHandle;
 	TWeakObjectPtr<ARangedWeaponBase> ReloadingWeapon;
 };

@@ -206,7 +206,7 @@ void AAutoTurret::ConfigureWaveRegistrationForTesting(
 void AAutoTurret::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	DOREPLIFETIME(AAutoTurret, TurretLifecycleState);
+	DOREPLIFETIME(AAutoTurret, ReplicatedLifecycle);
 	DOREPLIFETIME(AAutoTurret, bHackedToPlayerTeam);
 }
 
@@ -516,7 +516,7 @@ bool AAutoTurret::BeginRoomWaveDeployment(int32 GameplayGeneration)
 {
 	// 배치 Wave 터렛은 AnimNotify가 실제 전개 완료를 증명해야 한다.
 	// 시간 기반 자동 완료는 Wave 기준값을 연출보다 먼저 확정할 수 있으므로 사용하지 않는다.
-	if (GameplayGeneration < 0
+	if (!HasAuthority() || GameplayGeneration < 0
 		|| !IsWaitingForRoomWaveActivation()
 		|| bRoomWaveDeploymentRequested)
 	{
@@ -567,9 +567,9 @@ bool AAutoTurret::PrepareForRoomWaveActivation()
 		return false;
 	}
 
-	SetTurretLifecycleState(EAutoTurretLifecycleState::WaitingForWave);
 	bRoomWaveDeploymentRequested = false;
 	RoomWaveGameplayGeneration = INDEX_NONE;
+	SetTurretLifecycleState(EAutoTurretLifecycleState::WaitingForWave);
 	return true;
 }
 
@@ -710,7 +710,6 @@ void AAutoTurret::CompleteTurretDeployment()
 		return;
 	}
 	SetTurretLifecycleState(EAutoTurretLifecycleState::Active);
-	OnTurretDeploymentCompleted();
 }
 
 bool AAutoTurret::CompleteRoomWaveDeployment()
@@ -749,6 +748,11 @@ bool AAutoTurret::IsCombatActive() const
 void AAutoTurret::SetTurretLifecycleState(EAutoTurretLifecycleState NewState)
 {
 	TurretLifecycleState = NewState;
+	// 상태와 식별자를 따로 복제하면 이전 활성화의 Active와 새 식별자가 섞일 수 있다.
+	// BP 호환용 상태 값은 유지하되 복제 수신은 이 스냅샷 한 경로에서만 적용한다.
+	ReplicatedLifecycle.State = NewState;
+	ReplicatedLifecycle.GameplayGeneration = RoomWaveGameplayGeneration;
+	ReplicatedLifecycle.ActivationSerial = RoomWaveActivationSerial;
 	if (NewState == EAutoTurretLifecycleState::WaitingForWave)
 	{
 		ApplyWaitingForWaveState();
@@ -771,6 +775,11 @@ void AAutoTurret::ApplyTurretLifecycleState()
 	SetActorEnableCollision(bUsesBodyQueryCollision);
 	SetCanBeDamaged(IsCombatActive());
 	ApplyTurretCollisionState();
+	if (IsDeployed() && TurretLifecycleState != EAutoTurretLifecycleState::Active && DeployMontage)
+	{
+		// 사망은 Head의 별도 몽타주가 담당한다. 몸체는 사망 중에도 전개된 채로 남는다.
+		HoldDeploymentPose(FMath::Max(DeployMontage->GetPlayLength() - KINDA_SMALL_NUMBER, 0.0f));
+	}
 	if (TurretLifecycleState == EAutoTurretLifecycleState::DeadPresentation)
 	{
 		// 멀티캐스트가 누락되거나 먼저 도착해도 복제 상태에서 연출을 복구한다.
@@ -799,6 +808,16 @@ void AAutoTurret::ApplyTurretLifecycleState()
 	{
 		EnemyController->SetEnemyPerceptionEnabled(CanUseEnemyPerception());
 	}
+
+	// BP 이벤트는 충돌·해킹·인지 상태를 먼저 맞춘 뒤 활성화마다 한 번만 전달한다.
+	if (IsDeploying())
+	{
+		PlayDeploymentIfNeeded();
+	}
+	else if (TurretLifecycleState == EAutoTurretLifecycleState::Active)
+	{
+		ApplyDeploymentCompletedPresentation();
+	}
 }
 
 void AAutoTurret::ApplyWaitingForWaveState()
@@ -818,19 +837,14 @@ void AAutoTurret::ApplyWaitingForWaveState()
 	CurrentAimLocation = FVector::ZeroVector;
 	ResetTurretImpactRecovery();
 	ResetWeaponMuzzleSequence();
+	PresentedDeploymentGeneration = INDEX_NONE;
+	PresentedDeploymentSerial = 0;
+	bDeploymentCompletionPresented = false;
 	StopMontageOnMesh(GetMesh(), DeployMontage);
 	StopMontageOnMesh(TurretHeadMesh, FireMontage);
 	StopMontageOnMesh(TurretHeadMesh, DeathMontage);
-	if (UAnimInstance* BodyAnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
-	{
-		if (DeployMontage)
-		{
-			// 몽타주 중단만으로는 전개 포즈가 남을 수 있어 닫힌 시작 프레임을 고정한다.
-			BodyAnimInstance->Montage_Play(DeployMontage);
-			BodyAnimInstance->Montage_SetPosition(DeployMontage, 0.0f);
-			BodyAnimInstance->Montage_Pause(DeployMontage);
-		}
-	}
+	// 명시적인 Waiting 진입에서만 닫힌 시작 자세로 되돌린다.
+	HoldDeploymentPose(0.0f);
 
 	// 초기화 순서상 전투 참여 흔적이 먼저 생겼더라도 대기 진입 경로에서 모두 되돌린다.
 	if (HasActorBegunPlay())
@@ -863,6 +877,98 @@ void AAutoTurret::ApplyWaitingForWaveState()
 	}
 
 	ApplyTurretLifecycleState();
+}
+
+void AAutoTurret::PlayDeploymentIfNeeded()
+{
+	if (!IsDeploying() || RoomWaveGameplayGeneration < 0 || RoomWaveActivationSerial == 0
+		|| (PresentedDeploymentGeneration == RoomWaveGameplayGeneration
+			&& PresentedDeploymentSerial == RoomWaveActivationSerial))
+	{
+		return;
+	}
+
+	PresentedDeploymentGeneration = RoomWaveGameplayGeneration;
+	PresentedDeploymentSerial = RoomWaveActivationSerial;
+	bDeploymentCompletionPresented = false;
+	PlayMontageOnMesh(GetMesh(), DeployMontage);
+	if (UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
+	{
+		if (FAnimMontageInstance* Instance = AnimInstance->GetActiveInstanceForMontage(DeployMontage))
+		{
+			// 공유 에셋을 바꾸지 않고 이번 전개만 끝 자세를 유지한다.
+			Instance->bEnableAutoBlendOut = false;
+		}
+	}
+
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		if (UGameInstance* GameInstance = GetGameInstance())
+		{
+			if (UOutlierAudioSubsystem* Audio = GameInstance->GetSubsystem<UOutlierAudioSubsystem>())
+			{
+				FOutlierAudioPlayRequest Request;
+				Request.EventTag = OutlierAudioFeedback::Tag(TEXT("Audio.Type.Enemy"));
+				Request.ContextTags.AddTag(DeployAudioContext);
+				Request.EmitterActor = this;
+				Audio->PlayLocalAtLocation(Request);
+			}
+		}
+	}
+	OnTurretDeploymentStarted(RoomWaveGameplayGeneration, RoomWaveActivationSerial);
+}
+
+void AAutoTurret::ApplyDeploymentCompletedPresentation()
+{
+	if (!bDeploymentCompletionPresented
+		|| PresentedDeploymentGeneration != RoomWaveGameplayGeneration
+		|| PresentedDeploymentSerial != RoomWaveActivationSerial)
+	{
+		PresentedDeploymentGeneration = RoomWaveGameplayGeneration;
+		PresentedDeploymentSerial = RoomWaveActivationSerial;
+		bDeploymentCompletionPresented = true;
+		OnTurretDeploymentCompleted();
+	}
+
+	// 완료 BP가 기존 몽타주를 중단하더라도 Active의 최종 자세는 C++에서 확정한다.
+	if (IsDeployed() && DeployMontage)
+	{
+		HoldDeploymentPose(FMath::Max(DeployMontage->GetPlayLength() - KINDA_SMALL_NUMBER, 0.0f));
+	}
+}
+
+void AAutoTurret::HoldDeploymentPose(float Position)
+{
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	if (!AnimInstance || !DeployMontage)
+	{
+		return;
+	}
+
+	FAnimMontageInstance* Instance = AnimInstance->GetActiveInstanceForMontage(DeployMontage);
+	if (!Instance || Instance->GetWeight() < 1.0f - KINDA_SMALL_NUMBER
+		|| Instance->GetDesiredWeight() < 1.0f - KINDA_SMALL_NUMBER)
+	{
+		// 늦은 관련성 복귀나 blend-out 뒤에는 시작 프레임을 거치지 않고 최종 위치에서 복원한다.
+		// blend-in 중 pause하면 기본 자세가 섞인 채 남으므로 고정 자세는 즉시 가중치 1로 적용한다.
+		// 기존 인스턴스를 먼저 끝내야 같은 몽타주의 이전 재생이 Notify를 계속 발생시키지 않는다.
+		AnimInstance->Montage_Stop(0.0f, DeployMontage);
+		AnimInstance->Montage_PlayWithBlendIn(DeployMontage, FAlphaBlendArgs(0.0f), 1.0f,
+			EMontagePlayReturnType::MontageLength, Position, false);
+		Instance = AnimInstance->GetActiveInstanceForMontage(DeployMontage);
+		if (Instance)
+		{
+			// 0초 blend도 다음 애니메이션 갱신 전에는 가중치가 0일 수 있다.
+			// 재생 시간을 진행하지 않고 확정해 같은 프레임의 중복 적용도 재생을 교체하지 않게 한다.
+			Instance->UpdateWeight(0.0f);
+		}
+	}
+	if (Instance)
+	{
+		Instance->bEnableAutoBlendOut = false;
+		AnimInstance->Montage_SetPosition(DeployMontage, Position);
+		AnimInstance->Montage_Pause(DeployMontage);
+	}
 }
 
 void AAutoTurret::PlayDeathMontageIfNeeded()
@@ -1060,6 +1166,9 @@ bool AAutoTurret::IsNoDamageBone(FName BoneName) const
 
 void AAutoTurret::OnRep_TurretLifecycleState()
 {
+	TurretLifecycleState = ReplicatedLifecycle.State;
+	RoomWaveGameplayGeneration = ReplicatedLifecycle.GameplayGeneration;
+	RoomWaveActivationSerial = ReplicatedLifecycle.ActivationSerial;
 	if (IsWaitingForRoomWaveActivation())
 	{
 		ApplyWaitingForWaveState();
@@ -1069,11 +1178,6 @@ void AAutoTurret::OnRep_TurretLifecycleState()
 		ApplyTurretLifecycleState();
 	}
 	RefreshEnemyAudioState();
-
-	if (TurretLifecycleState == EAutoTurretLifecycleState::Active)
-	{
-		OnTurretDeploymentCompleted();
-	}
 }
 
 bool AAutoTurret::ShouldPlayCombatLoopAudio() const
@@ -1092,16 +1196,12 @@ void AAutoTurret::MulticastBeginTurretDeployment_Implementation(
 	int32 GameplayGeneration,
 	int32 ActivationSerial)
 {
-	if (GetNetMode() != NM_DedicatedServer)
+	// RPC가 속성 복제보다 먼저 도착하면 아직 재생하지 않는다. Deploying 복제 수신도
+	// 같은 함수를 호출하므로 정상 전개는 누락되지 않고, 이전 활성화 RPC는 자세를 되돌리지 못한다.
+	if (GameplayGeneration == RoomWaveGameplayGeneration && ActivationSerial == RoomWaveActivationSerial)
 	{
-		FOutlierAudioPlayRequest Request;
-		Request.EventTag = OutlierAudioFeedback::Tag(TEXT("Audio.Type.Enemy"));
-		Request.ContextTags.AddTag(DeployAudioContext);
-		Request.EmitterActor = this;
-		if (auto* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()) Audio->PlayLocalAtLocation(Request);
+		PlayDeploymentIfNeeded();
 	}
-	PlayMontageOnMesh(GetMesh(), DeployMontage);
-	OnTurretDeploymentStarted(GameplayGeneration, ActivationSerial);
 }
 
 void AAutoTurret::MulticastPlayFireMontage_Implementation()

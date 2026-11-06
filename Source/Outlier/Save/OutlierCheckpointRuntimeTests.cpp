@@ -367,6 +367,13 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("First disk commit succeeds"), Save->CommitDurableCheckpointSnapshot(First));
 		FOutlierCheckpointSnapshot Upgraded = First;
 		Upgraded.WorldProgress.OpenedDoorIds.Add(TEXT("Door.UpgradeCompleted"));
+		// Level1 업그레이드 추가 저장은 선행 전투 완료와 해제된 Phase1 대기를 함께 보존한다.
+		Upgraded.RoomTag = PhaseRoom;
+		Upgraded.NextPhaseIndex = 1;
+		FOutlierRoomPhaseProgress& ReleasedPhase = Upgraded.RoomPhaseProgress.FindChecked(PhaseRoom);
+		ReleasedPhase.NextPhaseIndex = 1;
+		ReleasedPhase.bExitBlockActive = false;
+		ReleasedPhase.bResumeCurrentPhase = false;
 		TestFalse(TEXT("Arrival duplicate still cannot save twice"), Save->CommitDurableCheckpointSnapshot(Upgraded));
 		TestTrue(TEXT("Upgrade can refresh the arrival checkpoint on disk"),
 			Save->CommitDurableCheckpointSnapshot(Upgraded, true));
@@ -377,6 +384,14 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Upgrade completion persists in the refreshed snapshot"),
 			Refreshed.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.UpgradeCompleted")));
 		TestEqual(TEXT("Upgrade refresh retains the respawn checkpoint Id"), Refreshed.CheckpointId, First.CheckpointId);
+		TestEqual(TEXT("Upgrade refresh retains the waiting combat phase"), Refreshed.NextPhaseIndex, 1);
+		const FOutlierRoomPhaseProgress* ReleasedRestore = Refreshed.RoomPhaseProgress.Find(PhaseRoom);
+		if (TestNotNull(TEXT("Upgrade refresh retains the released room boundary"), ReleasedRestore))
+		{
+			TestEqual(TEXT("Disk restore skips the completed Phase0"), ReleasedRestore->NextPhaseIndex, 1);
+			TestFalse(TEXT("Disk restore does not bring back Phase0 barriers"), ReleasedRestore->bExitBlockActive);
+			TestFalse(TEXT("Disk restore waits for the door event"), ReleasedRestore->bResumeCurrentPhase);
+		}
 		TestTrue(TEXT("Restore fixture retains its original baseline"), Save->CommitDurableCheckpointSnapshot(First, true));
 		const FString Latest = FPaths::Combine(Directory,
 			SaveId.ToString(EGuidFormats::Digits), TEXT("LatestAutoSave.sav"));

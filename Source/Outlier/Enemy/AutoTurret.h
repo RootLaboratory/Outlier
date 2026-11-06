@@ -31,6 +31,21 @@ enum class EAutoTurretLifecycleState : uint8
 	DeadPersistent UMETA(DisplayName = "Dead Persistent")
 };
 
+USTRUCT()
+struct FAutoTurretLifecycleSnapshot
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	EAutoTurretLifecycleState State = EAutoTurretLifecycleState::WaitingForWave;
+
+	UPROPERTY()
+	int32 GameplayGeneration = INDEX_NONE;
+
+	UPROPERTY()
+	int32 ActivationSerial = 0;
+};
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 {
@@ -295,8 +310,8 @@ protected:
 	EAutoTurretImpactReactionMode ImpactReactionMode =
 		EAutoTurretImpactReactionMode::ConcurrentOffsetRecovery;
 
-	// 수명 상태를 하나로 복제해 Waiting/Deploying/Active 조합이 서로 어긋나지 않게 한다.
-	UPROPERTY(ReplicatedUsing = OnRep_TurretLifecycleState, VisibleInstanceOnly, BlueprintReadOnly,
+	// 기존 BP의 읽기 경로는 유지하고, 네트워크에서는 상태와 활성화 식별자를 함께 전달한다.
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly,
 		Category = "Enemy|Turret|Room Wave")
 	EAutoTurretLifecycleState TurretLifecycleState = EAutoTurretLifecycleState::WaitingForWave;
 
@@ -333,6 +348,10 @@ protected:
 private:
 	friend struct FEnemyRecoverTurretImpactOffsetTask;
 	friend class URoomCombatSubsystem;
+	friend class FAutoTurretDeploymentPresentationTest;
+
+	UPROPERTY(ReplicatedUsing = OnRep_TurretLifecycleState)
+	FAutoTurretLifecycleSnapshot ReplicatedLifecycle;
 
 	void StartImpactRecovery();
 	void TickImpactRecovery();
@@ -349,6 +368,9 @@ private:
 	void SetTurretLifecycleState(EAutoTurretLifecycleState NewState);
 	void ApplyTurretLifecycleState();
 	void ApplyWaitingForWaveState();
+	void PlayDeploymentIfNeeded();
+	void ApplyDeploymentCompletedPresentation();
+	void HoldDeploymentPose(float Position);
 	void ApplyDeadPersistentPose();
 	void PlayDeathMontageIfNeeded();
 	UFUNCTION()
@@ -379,4 +401,7 @@ private:
 	bool bRoomWaveDeploymentRequested = false;
 	int32 RoomWaveGameplayGeneration = INDEX_NONE;
 	int32 RoomWaveActivationSerial = 0;
+	int32 PresentedDeploymentGeneration = INDEX_NONE;
+	int32 PresentedDeploymentSerial = 0;
+	bool bDeploymentCompletionPresented = false;
 };

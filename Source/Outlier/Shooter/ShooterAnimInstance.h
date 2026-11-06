@@ -19,6 +19,7 @@ class OUTLIER_API UShooterAnimInstance : public UAnimInstance
 {
 	GENERATED_BODY()
 	friend class FOutlierShooterPresentationAnimationTest;
+	friend class FOutlierMeleeAimOffsetTest;
 	
 public:
 	virtual void NativeInitializeAnimation() override;
@@ -32,6 +33,7 @@ public:
 	// 벽 ADS 해제의 단일 기준값. 1인칭이 이 값을 읽어 같은 프레임에 같은 값으로
 	// 조준을 해제한다 (양쪽이 따로 계산하면 해제 시점이 어긋남)
 	float GetWallAimBreakAlpha() const { return ThirdPersonWallAimBreakAlpha; }
+	float GetMeleeAimOffsetAlpha() const { return ThirdPersonMeleeAimOffsetAlpha; }
 
 protected:
 	UFUNCTION()
@@ -416,5 +418,9 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Wall Offset")
 	FRotator ThirdPersonWallWeaponHandRot = FRotator(-10.0f, 0.0f, 0.0f);
+
+	// 근접 AO는 총기 ADS/IK와 분리한다. 공격 몽타주에도 같은 조준 보정을 합성한다.
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|TP Procedural|Aim")
+	float ThirdPersonMeleeAimOffsetAlpha = 0.0f;
 
 };

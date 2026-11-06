@@ -446,33 +446,15 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
 	float WallAvoidSideSign = 0.0f;
 
-	float WallTargetAlpha = 0.0f;
-	float WallSmoothedTargetAlpha = 0.0f;
-	float WallUpTargetAlpha = 0.0f;
-	float WallUpSmoothedTargetAlpha = 0.0f;
-	float WallDownTargetAlpha = 0.0f;
-	float WallDownSmoothedTargetAlpha = 0.0f;
-	float WallSideTargetAlpha = 0.0f;
-	float WallSideSmoothedTargetAlpha = 0.0f;
-	float WallSideTargetSign = 0.0f;
-	float WallMuzzleBlockTargetAlpha = 0.0f;
-	float WallMuzzleBlockSmoothedTargetAlpha = 0.0f;
-	float WallVeryCloseTargetAlpha = 0.0f;
+	// AnimBP와 TP 표시가 읽는 출력만 보관한다. 보간 상태는 Character의 공통 상태가 소유한다.
 	float WallVeryCloseOwnTargetAlpha = 0.0f;
-	float WallVeryCloseSmoothedTargetAlpha = 0.0f;
 	float WallVeryCloseAlpha = 0.0f;
-	float WallTopEdgeTargetAlpha = 0.0f;
 	float WallTopEdgeAlpha = 0.0f;
-	float WallCeilingTargetAlpha = 0.0f;
 	float WallCeilingAlpha = 0.0f;
-	float WallHardStopTargetAlpha = 0.0f;
 	float WallHardStopOwnTargetAlpha = 0.0f;
-	float WallHardStopSmoothedTargetAlpha = 0.0f;
 	float WallHardStopAlpha = 0.0f;
 	float WallHardStopSafetyAlpha = 0.0f;
-	float WallMuzzleBlockDownPreferenceTargetAlpha = 0.0f;
 	float WallMuzzleBlockDownPreferenceAlpha = 0.0f;
-	float WallMuzzleBlockReleaseHoldTimer = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftRightWalk")
 	float StrafeWalkAlpha = 0.0f;

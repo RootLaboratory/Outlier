@@ -29,6 +29,6 @@ public class OutlierEditor : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { "LevelEditor", "RDG", "TagDrivenUI", "UMG",
 			"StateTreeModule", "StateTreeEditorModule", "GameplayStateTreeModule", "PropertyBindingUtils", "RenderCore", "RHI", "MaterialEditor",
-			"Niagara", "NiagaraCore", "NiagaraEditor" });
+			"Niagara", "NiagaraCore", "NiagaraEditor", "PropertyEditor" });
 	}
 }

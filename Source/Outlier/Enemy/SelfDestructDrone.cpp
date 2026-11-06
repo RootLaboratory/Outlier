@@ -11,8 +11,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/VECDroneMovementComponent.h"
 #include "Drone/Partner/HackableComponent.h"
-#include "Drone/Partner/PartnerCharacter.h"
-#include "Shooter/ShooterCharacter.h"
+#include "GameFramework/Character.h"
 #include "Explosion/ExplosionComponent.h"
 #include "Explosion/ExplosiveProp.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -57,6 +56,7 @@ void CollectMatchingExplosiveSockets(
 
 ASelfDestructDrone::ASelfDestructDrone()
 {
+	SightBones = { TEXT("RootBone"), TEXT("CoreBone"), TEXT("BodyBone") };
 	SetDefaultEnemyType(EEnemyType::Melee);
 	HitAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Hit"));
 	DeathAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Death"));
@@ -218,12 +218,9 @@ void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
 	{
 		return;
 	}
-	// 2. 채널이 Pawn이어도 일반 AI일 수 있다. 서버의 캐릭터 종류/빙의 상태로 플레이어를 구분한다.
-	const AEnemyBase* OtherEnemy = Cast<AEnemyBase>(Other);
-	const bool bPlayerContact = Cast<AShooterCharacter>(Other) || Cast<APartnerCharacter>(Other)
-		|| (OtherEnemy && OtherEnemy->IsEnemyPossessed());
+	// 2. 돌진 중에는 진영/빙의 여부와 무관하게 캐릭터 접촉으로 폭발한다. Pawn 채널만으로 판단하지 않는다.
 	// 벽 접촉은 물리 이동만 막는다. Commit과 시작 시각은 유지해 기존 StateTree 시간 만료로 폭발한다.
-	if (!bPlayerContact) return;
+	if (!Cast<ACharacter>(Other)) return;
 	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] CollisionDetonate Drone=%s Other=%s Component=%s Location=%s"),
 		*GetNameSafe(this), *GetNameSafe(Other), *GetNameSafe(OtherComp), *HitLocation.ToCompactString());
 	TriggerSelfDestruct();
@@ -624,12 +621,15 @@ void ASelfDestructDrone::HandleDeath()
 	if (ExplosionComponent)
 	{
 		ExplosionComponent->SetAudioContextOverride(bTriggeredSelfDestruct ? SelfDestructAudioContext : FGameplayTag());
+		// 충돌/시간 만료/피격 사망이 모두 모이는 지점에서 아군 피해를 허용한다.
+		// 피해량/차폐/반동은 공통 폭발 경로를 그대로 사용한다.
 		ExplosionComponent->DetonateAt(
 			GetActorLocation(),
 			GetController(),
 			IsEnemyPossessed()
 				? EOutlierAdaptationDamageCategory::NonGun
-				: EOutlierAdaptationDamageCategory::Ignore);
+				: EOutlierAdaptationDamageCategory::Ignore,
+			true);
 	}
 	DestroyMountedExplosives();
 
@@ -641,6 +641,11 @@ void ASelfDestructDrone::ResetPoolRuntimeState()
 	ChargeSpeedState.Reset();
 	// 본체는 재사용하지만 부착 폭발물은 Idle 진입 때 제거한다. 새 대여마다 폭발 가능한 부품을 다시 만든다.
 	Super::ResetPoolRuntimeState();
+	// 본체의 폭발 컴포넌트도 재사용한다. 새 대여에서만 재무장하고 사망/Idle 동안에는 중복 폭발 방지를 유지한다.
+	if (ExplosionComponent)
+	{
+		ExplosionComponent->ResetExplosion();
+	}
 	bDeathHandling = false;
 	bTriggeredSelfDestruct = false;
 	PublishChargeState(false);

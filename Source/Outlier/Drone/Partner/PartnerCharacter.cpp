@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerCharacter.h"
+
 #include "Curves/CurveFloat.h"
 #include "TimerManager.h"
 #include "Audio/OutlierAudioFeedback.h"
@@ -51,6 +52,21 @@
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Engine/LocalPlayer.h"
 #include "Templates/UnrealTemplate.h"
+
+UAISense_Sight::EVisibilityResult APartnerCharacter::CanBeSeenFrom(
+	const FCanBeSeenFromContext& Context, FVector& OutSeenLocation,
+	int32& OutNumberOfLoSChecksPerformed, int32& OutNumberOfAsyncLosCheckRequested,
+	float& OutSightStrength, int32* UserData,
+	const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
+{
+	return BoneSight.Query(*this, GetMesh(), ResolveSightBoneRegistration(), Context,
+		OutSeenLocation, OutNumberOfLoSChecksPerformed, OutNumberOfAsyncLosCheckRequested, OutSightStrength);
+}
+const FOutlierSightBoneCache& APartnerCharacter::ResolveSightBoneRegistration() const
+{
+	SightBoneCache.Resolve(GetMesh() ? GetMesh()->GetSkeletalMeshAsset() : nullptr, SightBones);
+	return SightBoneCache;
+}
 
 namespace
 {
@@ -126,6 +142,7 @@ void APartnerCharacter::BeginPlay()
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	BoneSight.Shutdown();
 	UnbindAccelerateInputSettings();
 	SetStandby(false);
 	if (HasAuthority())
@@ -182,16 +199,29 @@ void APartnerCharacter::PossessedBy(AController* NewController)
 }
 
 
+bool APartnerCharacter::IsDebugPairInvulnerable() const
+{
+	// 빙의 중에는 Partner의 Controller/PlayerState가 비어도 기존 페어 연결은 유지된다.
+	const AOutlierPlayerState* ShooterState = IsValid(CachedShooterCharacter)
+		? CachedShooterCharacter->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	const AOutlierPlayerState* PartnerState = GetPlayerState<AOutlierPlayerState>();
+	return ShooterState && ShooterState->GetPartnerCharacter() == this
+		&& (!PartnerState || PartnerState->GetPairId() == ShooterState->GetPairId())
+		&& ShooterState->IsDebugPairInvulnerable();
+}
+
 float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
-	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || !OutlierAbilitySystemComponent)
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || !OutlierAbilitySystemComponent
+		|| OutlierDamage::IsEditorInvulnerable(this))
 	{
 		return 0.0f;
 	}
 	const AOutlierPlayerState* PartnerState = GetPlayerState<AOutlierPlayerState>();
 	const TWeakObjectPtr<AShooterCharacter> ShooterAtHit = CachedShooterCharacter.Get();
 	const bool bTriggerPairGameOver = PartnerState && !PartnerState->IsPairSuitAcquired()
-		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())
+		&& (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())
+			|| Request.DamageTag == OutlierDamage::InstantKillTag())
 		&& ShooterAtHit.IsValid();
 	if (bTriggerPairGameOver && ShooterAtHit->IsDead())
 	{
@@ -200,7 +230,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	const float HealthBefore = OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
 	bool bApplied = false;
 	{
-		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 슈트 전 사격은 Reboot를 먼저 시작하지 않는다.
+		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 슈트 전 사격/즉사는 Reboot 대신 GameOver로 이어진다.
 		TGuardValue<bool> RebootGuard(PartnerVitalityComponent->bSuppressRebootForDamage, bTriggerPairGameOver);
 		bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
 			Request.DamageAmount,
@@ -631,6 +661,10 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 		return;
 	}
 
+	// Started 뒤 액션이 취소된 경우에도 공격 의도를 남기지 않는다.
+	EnhancedInputComponent->BindAction(PartnerInputConfig->AttackAction, ETriggerEvent::Canceled,
+		this, &APartnerCharacter::ResetAccelerateInput);
+
 	// AreaOfEffect
 	EnhancedInputComponent->BindAction(PartnerInputConfig->AreaOfEffectAction,	ETriggerEvent::Started,   this, &APartnerCharacter::AreaOfEffect);
 
@@ -659,7 +693,7 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	// Accelerate
 	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Started,	  this, &APartnerCharacter::ToggleAccelerate);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Completed, this, &APartnerCharacter::ReleaseAccelerate);
-	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Canceled,  this, &APartnerCharacter::ReleaseAccelerate);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Canceled,  this, &APartnerCharacter::ResetAccelerateInput);
 	BindAccelerateInputSettings();
 
 	// FreeMove
@@ -708,7 +742,11 @@ void APartnerCharacter::TryStartAttack()
 		*GetNameSafe(this),
 		HasAuthority() ? 1 : 0,
 		*GetNameSafe(GetCurrentWeapon()));
-	StartWeaponAttack();
+	NotifyStandbyActivity();
+	if (CombatComponent)
+	{
+		CombatComponent->TryStartAttack();
+	}
 }
 
 void APartnerCharacter::TryStopAttack()
@@ -729,7 +767,8 @@ void APartnerCharacter::StartWeaponAttack()
 	NotifyStandbyActivity();
 	if (CombatComponent)
 	{
-		CombatComponent->TryStartAttack();
+		// 명시적인 Ability/BP 요청은 물리 키의 fresh-press 검사와 분리한다.
+		CombatComponent->TryStartAttack(false);
 	}
 }
 
@@ -1100,13 +1139,13 @@ void APartnerCharacter::StopSyncMove()
 
 void APartnerCharacter::ToggleAccelerate()
 {
-	if (!CanAcceptInput() || bAccelerateNeedsFreshPress || bAccelerateInputHeld)
+	if (!CanTrackActionInputIntent() || bAccelerateNeedsFreshPress || bAccelerateInputHeld)
 	{
 		return;
 	}
 
 	bAccelerateInputHeld = true;
-	const bool bNewAccelerate = AccelerateInputMode == EOutlierSprintInputMode::Hold || !bIsAccelerate;
+	const bool bNewAccelerate = AccelerateInputMode == EOutlierSprintInputMode::Hold || !bAccelerateRequested;
 	ApplyAccelerateInput(bNewAccelerate);
 }
 
@@ -1123,6 +1162,7 @@ void APartnerCharacter::ResetAccelerateInput()
 	// Controller의 실제 IE_Pressed만 아래 차단을 해제하므로 기존 홀드가 전환을 넘지 않는다.
 	bAccelerateNeedsFreshPress = true;
 	bAccelerateInputHeld = false;
+	bAccelerateRequested = false;
 	if (HasAuthority())
 	{
 		if (++AccelerateInputEpoch == 0) ++AccelerateInputEpoch;
@@ -1139,10 +1179,15 @@ void APartnerCharacter::ResetAccelerateInput()
 	{
 		ApplyAccelerateState(false);
 	}
+	if (CombatComponent)
+	{
+		CombatComponent->ResetAttackInput();
+	}
 }
 
 void APartnerCharacter::ApplyAccelerateInput(bool bAccelerate)
 {
+	bAccelerateRequested = bAccelerate;
 	if (++NextAccelerateInputRequest == 0) ++NextAccelerateInputRequest;
 	if (HasAuthority())
 	{
@@ -1150,22 +1195,28 @@ void APartnerCharacter::ApplyAccelerateInput(bool bAccelerate)
 	}
 	else
 	{
-		ApplyAccelerateState(bAccelerate);
+		ApplyAccelerateState(bAccelerate && CanAcceptInput());
 		ServerSetAccelerate(bAccelerate, NextAccelerateInputRequest, AccelerateInputEpoch);
 	}
 }
 
 void APartnerCharacter::OnRep_AccelerateInputEpoch()
 {
-	// 서버가 조종/슈트/생존 경계를 변경했다. 이전 로컬 홀드와 승인 대기 ON은 승계하지 않는다.
+	// 조종/슈트/포커스 경계만 세대를 바꾼다. 재부팅은 세대를 유지해 최신 의도를 보존한다.
 	bAccelerateNeedsFreshPress = true;
 	bAccelerateInputHeld = false;
+	bAccelerateRequested = false;
 	ApplyAccelerateState(false);
+	if (CombatComponent)
+	{
+		CombatComponent->ResetAttackInput();
+	}
 }
 
-void APartnerCharacter::NotifyAccelerateKeyPressed(FKey Key)
+void APartnerCharacter::NotifyActionKeyPressed(FKey Key)
 {
 	if (AccelerateInputKeys.Contains(Key)) bAccelerateNeedsFreshPress = false;
+	if (AttackInputKeys.Contains(Key) && CombatComponent) CombatComponent->AllowAttackInput();
 }
 
 void APartnerCharacter::BindAccelerateInputSettings()
@@ -1207,6 +1258,7 @@ void APartnerCharacter::UnbindAccelerateInputSettings()
 	AccelerateSettings.Reset();
 	AccelerateInputSubsystem.Reset();
 	AccelerateInputKeys.Reset();
+	AttackInputKeys.Reset();
 }
 
 void APartnerCharacter::HandleAccelerateModeChanged(EOutlierPlayerRole SettingsRole, EOutlierSprintInputMode Mode)
@@ -1232,7 +1284,13 @@ void APartnerCharacter::HandleAccelerateMappingsRebuilt()
 	const UEnhancedInputLocalPlayerSubsystem* Subsystem = AccelerateInputSubsystem.Get();
 	if (!Config || !Subsystem) return;
 	AccelerateInputKeys = Subsystem->QueryKeysMappedToAction(Config->AccelerateAction);
-	if (AccelerateInputKeys.IsEmpty()) ResetAccelerateInput();
+	AttackInputKeys = Subsystem->QueryKeysMappedToAction(Config->AttackAction);
+	// UI는 Toggle의 Release만으로 꺼지지 않는다. 매핑 전환에서 의도까지 명시적으로 폐기한다.
+	if (AccelerateInputKeys.IsEmpty() || Subsystem->GetInputMode().HasTag(FirstPersonInputModeTags::UI()))
+	{
+		ResetAccelerateInput();
+	}
+	else if (AttackInputKeys.IsEmpty() && CombatComponent) CombatComponent->ResetAttackInput();
 }
 
 void APartnerCharacter::HandleAccelerateSettingsInitialized(const UEnhancedInputUserSettings* Settings)
@@ -1349,9 +1407,13 @@ void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
 	}
 }
 
-void APartnerCharacter::StopActionsForReboot()
+void APartnerCharacter::StopActionsForReboot(bool bPreserveActionInput)
 {
-	ResetAccelerateInput();
+	// 재부팅은 실행만 중단한다. 슈트 전환 등 소유/입력 경계는 의도까지 폐기한다.
+	if (!bPreserveActionInput)
+	{
+		ResetAccelerateInput();
+	}
 	if (!HasAuthority())
 	{
 		return;
@@ -1365,8 +1427,11 @@ void APartnerCharacter::StopActionsForReboot()
 	}
 	if (CombatComponent)
 	{
-		CombatComponent->CancelForReboot();
+		if (bPreserveActionInput) CombatComponent->SuspendForReboot();
+		else CombatComponent->CancelForReboot();
 	}
+	// 재부팅 중 슈트 전환으로 의도를 폐기해도, 실제 완료 시 탄창 복구는 남겨 둔다.
+	if (bPreserveActionInput) bRebootActionRecoveryPending = true;
 	if (UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent())
 	{
 		RuntimeHackComponent->CancelForReboot();
@@ -1409,6 +1474,39 @@ bool APartnerCharacter::CanAcceptInput() const
 	return !IsSuitTransitionBlocked() && CanResumeMovementAfterSuitTransition();
 }
 
+bool APartnerCharacter::CanTrackActionInputIntent() const
+{
+	// Rebooting만 허용한다. 다른 차단 경계를 넘어 과거 입력을 예약하지 않는다.
+	const APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(GetController());
+	if (PartnerController && PartnerController->IsLocalController()
+		&& PartnerController->IsFirstPersonInputMode(FirstPersonInputModeTags::UI()))
+	{
+		return false;
+	}
+	return !IsSuitTransitionBlocked()
+		&& (!OutlierAbilitySystemComponent
+			|| !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
+}
+
+void APartnerCharacter::FinishActionsAfterReboot()
+{
+	if (!HasAuthority() || !bRebootActionRecoveryPending
+		|| (OutlierAbilitySystemComponent
+			&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting())))
+	{
+		return;
+	}
+
+	// 효과의 정확한 제거 경로에서 한 번만 호출된다. 탄창 복구 뒤에 실행을 재평가한다.
+	bRebootActionRecoveryPending = false;
+	if (CombatComponent)
+	{
+		CombatComponent->CompleteReboot();
+	}
+	ApplyAccelerateState(bAccelerateRequested && CanAcceptInput() && CanTrackActionInputIntent());
+	ForceNetUpdate();
+}
+
 bool APartnerCharacter::CanResumeMovementAfterSuitTransition() const
 {
 	return !OutlierAbilitySystemComponent
@@ -1431,11 +1529,14 @@ void APartnerCharacter::OnSuitTransitionBlockChanged()
 void APartnerCharacter::PrepareForSuitTransition()
 {
 	Super::PrepareForSuitTransition();
-	ResetAccelerateInput();
 	// 기존 취소 함수는 능력/공격/Reload 타이머와 비행 입력만 정리하며 Reboot 상태를 부여하지 않는다.
 	if (HasAuthority())
 	{
-		StopActionsForReboot();
+		StopActionsForReboot(false);
+	}
+	else
+	{
+		ResetAccelerateInput();
 	}
 	if (MovementComponent)
 	{
@@ -1667,13 +1768,15 @@ void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate, 
 	if (Epoch != AccelerateInputEpoch || Request == 0
 		|| static_cast<int32>(Request - ProcessedAccelerateInputRequest) <= 0) return;
 	ProcessedAccelerateInputRequest = Request;
-	// 해제는 차단 상태에서도 수락한다. Release/포커스 초기화가 서버 가속 상태를 남기지 않게 한다.
-	if (bNewAccelerate && !CanAcceptInput())
+	// 재부팅 중에는 최신 의도만 기록하고, 실제 가속은 완료 후 재평가한다.
+	// 사망/슈트 전환은 ON을 보관하지 않으며 OFF는 항상 정리한다.
+	if (bNewAccelerate && !CanTrackActionInputIntent())
 	{
 		return;
 	}
 
-	ApplyAccelerateState(bNewAccelerate);
+	bAccelerateRequested = bNewAccelerate;
+	ApplyAccelerateState(bNewAccelerate && CanAcceptInput());
 	ForceNetUpdate();
 }
 
@@ -1939,6 +2042,7 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 
 APartnerCharacter::APartnerCharacter()
 {
+	SightBones = { TEXT("Body"), TEXT("R_Hand"), TEXT("L_Hand") };
 	PrimaryActorTick.bCanEverTick = true;
 
 	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(

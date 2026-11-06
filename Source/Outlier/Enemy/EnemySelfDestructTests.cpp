@@ -4,6 +4,7 @@
 #include "Enemy/EnemyEnvQuery.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/SelfDestructDrone.h"
+#include "Enemy/AutoTurret.h"
 #include "Curves/CurveFloat.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "AbilitySystemComponent.h"
@@ -369,15 +370,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyChargeCollisionTest,
 bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 {
 	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
-	enum class ECollisionCase { CloseWall, Pawn, Floor, Enemy, Shooter, Partner, PossessedEnemy, ReleasedEnemy, NormalDeath };
-	// 실제 이동 Sweep으로 환경/일반 AI와 플레이어 세 종류를 구분한다. Pawn 채널 자체는 자격이 아니다.
+	enum class ECollisionCase { CloseWall, Pawn, Floor, Enemy, Shooter, Partner, PossessedEnemy, ReleasedEnemy, Turret, NormalDeath };
+	// AI/빙의 돌진 모두 캐릭터 접촉에서 폭발한다. Pawn 채널만 가진 비캐릭터와 지형은 제외한다.
+	for (const bool bPossessedCharge : {false, true})
 	for (const ECollisionCase CollisionCase : {ECollisionCase::CloseWall, ECollisionCase::Pawn, ECollisionCase::Floor,
 		ECollisionCase::Enemy, ECollisionCase::Shooter, ECollisionCase::Partner, ECollisionCase::PossessedEnemy,
-		ECollisionCase::ReleasedEnemy, ECollisionCase::NormalDeath})
+		ECollisionCase::ReleasedEnemy, ECollisionCase::Turret, ECollisionCase::NormalDeath})
 	{
 		FChargeTestWorld Fixture;
 		if (!TestNotNull(TEXT("World"), Fixture.World)) return false;
-		AddInfo(FString::Printf(TEXT("[ChargeCollision] Case=%d"), static_cast<int32>(CollisionCase)));
+		AddInfo(FString::Printf(TEXT("[ChargeCollision] Case=%d PossessedCharge=%d"),
+			static_cast<int32>(CollisionCase), bPossessedCharge));
 		ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>();
 		const bool bFloor = CollisionCase == ECollisionCase::Floor;
 		const FVector TargetLocation = bFloor ? FVector(0, 0, -50)
@@ -385,8 +388,9 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 		FActorSpawnParameters Spawn;
 		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		AActor* BlockingTarget = nullptr;
-		const bool bPlayerContact = CollisionCase == ECollisionCase::Shooter || CollisionCase == ECollisionCase::Partner
-			|| CollisionCase == ECollisionCase::PossessedEnemy;
+		const bool bCharacterContact = CollisionCase == ECollisionCase::Shooter || CollisionCase == ECollisionCase::Partner
+			|| CollisionCase == ECollisionCase::Enemy || CollisionCase == ECollisionCase::PossessedEnemy
+			|| CollisionCase == ECollisionCase::ReleasedEnemy || CollisionCase == ECollisionCase::Turret;
 		if (CollisionCase == ECollisionCase::Shooter || CollisionCase == ECollisionCase::Partner)
 		{
 			UClass* PlayerClass = LoadClass<ACharacter>(nullptr, CollisionCase == ECollisionCase::Shooter
@@ -394,6 +398,11 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 				: TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
 			if (!TestNotNull(TEXT("Concrete player class loads"), PlayerClass)) return false;
 			BlockingTarget = Fixture.World->SpawnActor<ACharacter>(PlayerClass, FTransform(TargetLocation), Spawn);
+		}
+		else if (CollisionCase == ECollisionCase::Turret)
+		{
+			BlockingTarget = Fixture.World->SpawnActor<AAutoTurret>(
+				AAutoTurret::StaticClass(), FTransform(TargetLocation), Spawn);
 		}
 		else if (CollisionCase == ECollisionCase::Enemy || CollisionCase == ECollisionCase::PossessedEnemy
 			|| CollisionCase == ECollisionCase::ReleasedEnemy)
@@ -455,6 +464,22 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 			|| !TestTrue(TEXT("Damage receiver has initialized GAS actor info"),
 				Drone->GetAbilitySystemComponent() && Drone->GetAbilitySystemComponent()->GetAvatarActor() == Drone)
 			|| !TestTrue(TEXT("Drone starts with positive health"), Drone->GetCurrentHealth() > 0.0f)) return false;
+		if (bPossessedCharge) Drone->SetEnemyPossessed(true);
+
+		// 폭발 요청 여부만으로는 공통 진영 필터의 피해 차단을 찾을 수 없다.
+		// 이동 경로 밖에 살아 있는 Enemy를 두고 실제 GAS 체력 감소까지 관찰한다.
+		AEnemyBase* DamageWitness = Fixture.World->SpawnActor<AEnemyBase>(
+			AEnemyBase::StaticClass(), FTransform(FVector(150, 300, 150)), Spawn);
+		if (!TestNotNull(TEXT("Living Enemy damage witness spawns"), DamageWitness)) return false;
+		const_cast<FEnemyStat&>(DamageWitness->GetRuntimeStat()).Health = 1000.0f;
+		DamageWitness->GetAbilitySystemComponent()->bSuppressGameplayCues = true;
+		DamageWitness->DispatchBeginPlay();
+		DamageWitness->GetCharacterMovement()->SetComponentTickEnabled(false);
+		DamageWitness->SetActorTickEnabled(false);
+		const float WitnessHealthBeforeExplosion = DamageWitness->GetCurrentHealth();
+		if (!TestTrue(TEXT("Damage witness starts alive"), WitnessHealthBeforeExplosion > 0.0f)) return false;
+		Fixture.World->GetPhysicsScene()->ProcessDeferredCreatePhysicsState();
+		Fixture.World->GetPhysicsScene()->Flush();
 		UCapsuleComponent* Capsule = Drone->GetCapsuleComponent();
 		Capsule->SetCapsuleSize(30, 50);
 		Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
@@ -469,6 +494,8 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 			Drone->ReceiveOutlierDamage(Damage);
 			TestTrue(TEXT("Ordinary lethal damage kills an uncommitted drone"), Drone->IsDead());
 			TestTrue(TEXT("Ordinary death retains the actual explosion"), Explosion->HasDetonated());
+			TestTrue(TEXT("Ordinary death explosion damages an Enemy regardless of source faction"),
+				DamageWitness->GetCurrentHealth() < WitnessHealthBeforeExplosion);
 			continue;
 		}
 		FHitResult Hit;
@@ -476,7 +503,13 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 		Drone->NotifyHit(Capsule, BlockingTarget, Cast<UPrimitiveComponent>(BlockingTarget->GetRootComponent()), true,
 			FVector(180, 0, 150), -FVector::ForwardVector, FVector::ZeroVector, Hit);
 		TestFalse(TEXT("Ordinary chase contact does not detonate"), Drone->bDeathHandling);
-		if (!TestTrue(TEXT("AI charge commits"), Drone->BeginCommittedSelfDestruct(BlockingTarget, 2, 400))) return false;
+		const auto BeginCharge = [Drone, bPossessedCharge](AActor* Target)
+		{
+			return bPossessedCharge
+				? Drone->BeginCommittedSelfDestructDirection(Target->GetActorLocation() - Drone->GetActorLocation(), 2, 400, 500)
+				: Drone->BeginCommittedSelfDestruct(Target, 2, 400);
+		};
+		if (!TestTrue(TEXT("AI or possessed charge commits"), BeginCharge(BlockingTarget))) return false;
 		Drone->NotifyHit(Drone->GetMesh(), BlockingTarget, TargetRoot, true,
 			Drone->GetActorLocation(), -FVector::ForwardVector, FVector::ZeroVector, Hit);
 		TestFalse(TEXT("Mesh contact cannot replace the actual capsule collision"), Drone->bDeathHandling);
@@ -495,13 +528,13 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 		Drone->NotifyHit(Capsule, BlockingTarget, Cast<UPrimitiveComponent>(BlockingTarget->GetRootComponent()), true,
 			FVector(180, 0, 150), -FVector::ForwardVector, FVector::ZeroVector, Hit);
 		TestFalse(TEXT("Cancelled charge no longer detonates on contact"), Drone->bDeathHandling);
-		// 선택한 목표와 다른 플레이어도 실제 접촉하면 폭발 대상이다. 목표는 장애물 뒤의 별도 Actor로 둔다.
+		// 선택한 목표와 다른 캐릭터도 접촉하면 폭발 대상이다. 목표는 장애물 뒤의 별도 Actor로 둔다.
 		AActor* ChargeTarget = Fixture.AddBox(TargetLocation + (TargetLocation - Drone->GetActorLocation()) * 2, FVector(1));
 		if (!TestNotNull(TEXT("Separate committed target exists"), ChargeTarget)) return false;
 		ChargeTarget->SetActorEnableCollision(false);
 		if (!TestTrue(TEXT("A new charge can commit after cancellation"),
-			Drone->BeginCommittedSelfDestruct(ChargeTarget, 2, 400))) return false;
-		// AI가 계산한 속도로 캡슐 Sweep을 수행한다. 목표 앞 정지로 실제 접촉을 놓치는 회귀를 막는다.
+			BeginCharge(ChargeTarget))) return false;
+		// 계산한 속도로 캡슐 Sweep을 수행한다. 목표 앞 정지로 실제 접촉을 놓치는 회귀를 막는다.
 		Fixture.World->GetPhysicsScene()->ProcessDeferredCreatePhysicsState();
 		Fixture.World->GetPhysicsScene()->Flush();
 		bool bHitTarget = false;
@@ -514,27 +547,32 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 				Drone->GetCharacterMovement()->Velocity * 0.1f, FQuat::Identity, true, &Hit);
 			bHitTarget |= Hit.bBlockingHit && Hit.GetActor() == BlockingTarget;
 		}
-		TestTrue(TEXT("Actual AI movement hits the intended blocking target"), bHitTarget);
-		if (!bPlayerContact)
+		TestTrue(TEXT("Actual charge movement hits the intended blocking target"), bHitTarget);
+		if (!bCharacterContact)
 		{
-			TestFalse(TEXT("Environment and nonplayer contact cannot detonate"), Explosion->HasDetonated());
-			TestFalse(TEXT("Environment and nonplayer contact leaves the drone alive"), Drone->IsDead());
-			TestTrue(TEXT("Nonplayer blocking contact retains the committed charge"), Drone->IsSelfDestructCommitted());
+			TestFalse(TEXT("Environment and noncharacter contact cannot detonate"), Explosion->HasDetonated());
+			TestFalse(TEXT("Environment and noncharacter contact leaves the drone alive"), Drone->IsDead());
+			TestTrue(TEXT("Noncharacter blocking contact retains the committed charge"), Drone->IsSelfDestructCommitted());
 			TestTrue(TEXT("Actual sweep cannot pass through the blocking target"),
 				FVector::DotProduct(Drone->GetActorLocation() - TargetLocation,
 					(TargetLocation - FVector(0, 0, 150)).GetSafeNormal()) < 0.0f);
 			// 실제 시간 만료 전이는 통합 테스트에서 검사한다. 여기서는 공통 폭발 요청 경로의 보존을 확인한다.
 			Drone->TriggerSelfDestruct();
 		}
-		TestTrue(TEXT("Player contact or explicit detonation enters death/explosion"), Drone->bDeathHandling);
+		TestTrue(TEXT("Character contact or explicit detonation enters death/explosion"), Drone->bDeathHandling);
 		TestTrue(TEXT("Blocking movement consumes remaining health"), Drone->GetCurrentHealth() <= 0.0f);
 		TestTrue(TEXT("Blocking movement submits an actual explosion"), Explosion->HasDetonated());
 		TestFalse(TEXT("Detonation clears commitment"), Drone->IsSelfDestructCommitted());
+		TestTrue(TEXT("Every drone explosion damages an Enemy regardless of source faction"),
+			DamageWitness->GetCurrentHealth() < WitnessHealthBeforeExplosion);
+		const float WitnessHealthAfterExplosion = DamageWitness->GetCurrentHealth();
 		Drone->TriggerSelfDestruct();
 		Drone->NotifyHit(Capsule, BlockingTarget, Cast<UPrimitiveComponent>(BlockingTarget->GetRootComponent()), true,
 			Drone->GetActorLocation(), -FVector::ForwardVector, FVector::ZeroVector, Hit);
 		TestFalse(TEXT("Collision and timeout requests cannot enqueue a second explosion"),
 			Explosion->DetonateAt(Drone->GetActorLocation()));
+		TestEqual(TEXT("Duplicate detonation requests cannot apply a second damage packet"),
+			DamageWitness->GetCurrentHealth(), WitnessHealthAfterExplosion);
 	}
 	return true;
 }

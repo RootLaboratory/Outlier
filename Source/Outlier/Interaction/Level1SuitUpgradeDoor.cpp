@@ -18,7 +18,7 @@
 #include "TimerManager.h"
 
 // Level 1 진행의 서버 측 순서:
-// 두 플레이어 입장 -> 문 닫힘 -> 양쪽 업그레이드 UI 종료 -> 체크포인트 추가 저장
+// 두 플레이어 입장 -> 문 닫힘 -> 선행 전투 해제 및 양쪽 업그레이드 UI 종료 -> 체크포인트 추가 저장
 // -> 문 열림 완료와 차단막 활성화 -> 3초 뒤 첫 Wave 소환.
 ALevel1SuitUpgradeDoor::ALevel1SuitUpgradeDoor()
 {
@@ -269,6 +269,7 @@ void ALevel1SuitUpgradeDoor::OnRoomStartReadinessChanged(FGameplayTag ChangedRoo
 			TEXT("[Level1Door] Room readiness changed. Door=%s Room=%s OpenFinished=%d CombatStarted=%d Generation=%u"),
 			*GetNameSafe(this), *ChangedRoomTag.ToString(), bOpenFinished,
 			bCombatStartSucceeded, GameplayGeneration);
+		EvaluateReopen();
 		TryStartCombat();
 	}
 }
@@ -291,6 +292,8 @@ void ALevel1SuitUpgradeDoor::OnCombatEvent(
 		&& Event != ERoomCombatEvent::SequenceStarted)
 	{
 		// 다른 Room이 끝난 뒤 서버의 단일 활성 전투 슬롯이 비면 대기 중인 문을 다시 확인한다.
+		// Phase 완료 경계도 여기로 들어온다. 상태가 확정된 뒤 저장부터 재평가한다.
+		EvaluateReopen();
 		TryStartCombat();
 	}
 }
@@ -347,6 +350,16 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 	const bool bSavedPastEntrance = Save && Save->GetRestoreSnapshot(RestoreSnapshot)
 		&& !RestoreSnapshot.bInitialSnapshot && IsValid(EntranceCheckpoint)
 		&& RestoreSnapshot.CheckpointId != EntranceCheckpoint->GetCheckpointId();
+	const FOutlierRoomPhaseProgress* PhaseProgress = Save
+		? Save->GetCurrentRoomPhaseProgress().Find(RoomTag) : nullptr;
+	const int32 DoorPhaseIndex = CombatSubsystem.IsValid()
+		? CombatSubsystem->GetFirstExternalTriggerPhaseIndex(RoomTag) : INDEX_NONE;
+	// Phase0 경계 저장도 입구와 다른 ID를 쓴다. ID만으로 본 전투가 시작됐다고 보지 않는다.
+	// 구버전 저장에 차수 정보가 없을 때만 기존 입구 ID 판정을 사용한다.
+	const bool bSavedCombatStarted = PhaseProgress
+		? (PhaseProgress->bResumeCurrentPhase || PhaseProgress->bTriggeredSequenceActive
+			|| (DoorPhaseIndex != INDEX_NONE && PhaseProgress->NextPhaseIndex > DoorPhaseIndex))
+		: bSavedPastEntrance;
 
 	// Suit 보유만으로 입장 연출을 건너뛰지 않는다. 저장된 문 열림 또는 전투 완료만
 	// 연출이 이미 끝났다는 근거로 사용한다.
@@ -358,7 +371,7 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 		bReopenRequested = true;
 		bOpenFinished = true;
 		bUpgradeSaveCommitted = true;
-		bCombatStartSucceeded = bEncounterCleared || bSavedPastEntrance;
+		bCombatStartSucceeded = bEncounterCleared || bSavedCombatStarted;
 		UE_LOG(LogTemp, Display,
 			TEXT("[Level1Door] Progress restored. Door=%s Room=%s Generation=%u Open=%d EncounterCleared=%d"),
 			*GetNameSafe(this), *RoomTag.ToString(), GameplayGeneration,
@@ -606,6 +619,18 @@ void ALevel1SuitUpgradeDoor::EvaluateReopen()
 	{
 		return;
 	}
+	// 닫힘 확정이 선행 전투의 종료 경계다. UI가 아직 열려 있어도 적·소환 작업부터 정리한다.
+	// 이미 Phase1 대기라면 호출은 무효이며, 아래 저장 조건으로만 이어진다.
+	if (CombatSubsystem.IsValid() && IsValid(CombatRoomVolume))
+	{
+		CombatSubsystem->FinishInitialPhaseForUpgrade(CombatRoomVolume, static_cast<int32>(GameplayGeneration));
+	}
+	// 차수 완료 알림에서 이 함수가 재진입하거나 Gameplay가 리로드될 수 있다.
+	if (bReopenRequested || !bEntrySealed || !bCloseFinished || bAwaitingGameplayReady
+		|| !ArenaSubsystem.IsValid() || GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
+	{
+		return;
+	}
 	AOutlierPlayerState* Shooter = nullptr;
 	AOutlierPlayerState* Partner = nullptr;
 	if (!FindPair(Shooter, Partner)
@@ -616,6 +641,21 @@ void ALevel1SuitUpgradeDoor::EvaluateReopen()
 	}
 	if (!bUpgradeSaveCommitted)
 	{
+		// 같은 Room에서 선행 전투가 끝난 뒤에만 업그레이드 저장을 허용한다.
+		// SpawnPoint 로드는 문 개방 뒤에도 기다릴 수 있으므로 여기서는 전투 경계만 확인한다.
+		if (!IsValid(CombatRoomVolume) || !CombatSubsystem.IsValid())
+		{
+			return;
+		}
+		const FGameplayTag RoomTag = CombatRoomVolume->GetRoomTag();
+		const int32 DoorPhaseIndex = CombatSubsystem->GetFirstExternalTriggerPhaseIndex(RoomTag);
+		if (DoorPhaseIndex == INDEX_NONE
+			|| CombatSubsystem->GetCurrentCombatPhaseIndex(RoomTag) != DoorPhaseIndex
+			|| CombatSubsystem->GetRoomState(RoomTag) != ERoomCombatState::WaitingForTrigger
+			|| CombatSubsystem->IsRoomCombatReserved(RoomTag) || CombatSubsystem->IsExitBlocked(RoomTag))
+		{
+			return;
+		}
 		UOutlierSaveSubSystem* Save = GetGameInstance()
 			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
 		if (!Save || !IsValid(EntranceCheckpoint) || !IsValid(CombatRoomVolume))
@@ -658,6 +698,13 @@ bool ALevel1SuitUpgradeDoor::TryStartCombat()
 	}
 
 	const FGameplayTag RoomTag = CombatRoomVolume->GetRoomTag();
+	// 이 문은 첫 외부 차수만 시작한다. 후속 차수/전체 완료는 저장된 전투 진행이 소유한다.
+	const int32 DoorPhaseIndex = CombatSubsystem->GetFirstExternalTriggerPhaseIndex(RoomTag);
+	if (DoorPhaseIndex == INDEX_NONE
+		|| CombatSubsystem->GetCurrentCombatPhaseIndex(RoomTag) != DoorPhaseIndex)
+	{
+		return false;
+	}
 	// 문은 이미 열렸어도 WP의 Room/SpawnPoint 등록이 늦으면 그대로 대기한다.
 	// 등록 알림이나 다른 Room 전투 종료 알림에서 이 함수를 다시 호출한다.
 	if (!CombatSubsystem->HasReadyExternalTriggerRoster(CombatRoomVolume, RoomTag))
@@ -719,7 +766,7 @@ void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, b
 		{
 			return;
 		}
-		// 1단계: 닫힌 위치 도착. 지금까지 누적된 양쪽 UI 완료 여부를 확인한다.
+		// 1단계: 닫힘 확정 후 선행 전투를 정리하고, 양쪽 UI 완료/저장 경계를 확인한다.
 		bCloseFinished = true;
 		UE_LOG(LogTemp, Display,
 			TEXT("[Level1Door] Door closed. Door=%s Room=%s Generation=%u"),

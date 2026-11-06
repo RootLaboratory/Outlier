@@ -8,9 +8,11 @@
 #include "MeleeWeaponBase.generated.h"
 
 class UAnimMontage;
+class UAnimInstance;
 class UTrailEffectDefinition;
 
 struct FOutlierStealthSession;
+struct FAnimNotifyEventReference;
 
 UENUM(BlueprintType)
 enum class EMeleeAttackPhase : uint8
@@ -24,6 +26,8 @@ UCLASS(Abstract)
 class OUTLIER_API AMeleeWeaponBase : public AWeaponBase
 {
 	GENERATED_BODY()
+	friend class FOutlierMeleeSocketFreshnessTest;
+	friend class FOutlierMeleeDedicatedNotifyLifetimeTest;
 
 public:
 	AMeleeWeaponBase();
@@ -46,8 +50,11 @@ protected:
 	FTimerHandle RecoveryTimerHandle;
 	FTimerHandle TargetSearchTimerHandle;
 	bool bUsesAnimationTiming = false;
+	TWeakObjectPtr<UAnimInstance> AttackAnimInstance;
+	int32 AttackMontageInstanceId = INDEX_NONE;
 	bool bMeleeTraceActive = false;
 	int32 ActiveMeleeTraceSequence = 0;
+	TWeakObjectPtr<ACharacter> ActiveMeleeTraceOwner;
 	FVector PreviousMeleeTraceStart = FVector::ZeroVector;
 	FVector PreviousMeleeTraceEnd = FVector::ZeroVector;
 	TSet<AActor*> HitActorsThisSwing;
@@ -103,6 +110,21 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Debug", meta = (ClampMin = "0.0"))
 	float DebugMeleeTraceDuration = 0.1f;
 
+	// 클라이언트는 표시 여부만 요청한다. 판정 좌표는 항상 서버의 실제 Sweep에서 보낸다.
+	bool bServerTraceDebugRequested = false;
+	float ServerTraceDebugDuration = 3.0f;
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetMeleeTraceDebug(bool bEnabled, float Duration);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastDrawMeleeTrace(FVector_NetQuantize10 PreviousStart, FVector_NetQuantize10 PreviousEnd,
+		FVector_NetQuantize10 CurrentStart, FVector_NetQuantize10 CurrentEnd, float Radius, uint8 Samples,
+		FVector_NetQuantize10 Eye, FVector_NetQuantizeNormal Aim, float Duration);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastDrawMeleeDamage(FVector_NetQuantize10 Location, float Duration);
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
 	float AttackAngle = 45.0f;
 
@@ -149,6 +171,7 @@ public:
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;
 	void ReleaseAttack();
+	void SetMeleeTraceDebug(bool bEnabled, float Duration = 3.0f);
 	virtual void StopAttack() override;
 	virtual void PerformAttack() override;
 
@@ -157,6 +180,7 @@ public:
 	void FinishAttack(int32 ExpectedAttackSequence);
 	void HandleHitNotify();
 	void HandleRecoveryEndNotify();
+	bool IsCurrentAttackNotify(const USkeletalMeshComponent* MeshComp, const FAnimNotifyEventReference& EventReference) const;
 	bool BeginMeleeTrace();
 	void TickMeleeTrace();
 	void EndMeleeTrace();

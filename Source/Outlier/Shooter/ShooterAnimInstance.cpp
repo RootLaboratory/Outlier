@@ -278,6 +278,7 @@ void UShooterAnimInstance::ResetThirdPersonProceduralState()
 	ThirdPersonWallAvoidDownADSPoseAlpha = 0.0f;
 	ThirdPersonAimAlpha = 0.0f;
 	ThirdPersonAimOffsetAlpha = 0.0f;
+	ThirdPersonMeleeAimOffsetAlpha = 0.0f;
 	ThirdPersonHipAimOffsetAlpha = 0.0f;
 	ThirdPersonADSAimOffsetAlpha = 0.0f;
 	ThirdPersonUpperBodyAlpha = 0.0f;
@@ -869,6 +870,18 @@ void UShooterAnimInstance::UpdateThirdPersonProceduralState(float DeltaSeconds, 
 		ThirdPersonAimBlendOutSpeed
 	);
 	const bool bCanUseAimOffset = bCanUseWeaponProcedural && !bIsSprinting;
+	// 총기용 AO/ADS 조건은 유지하고, 근접 분기는 별도 알파로 기존 AO_Melee를 사용한다.
+	// Attack/Recovery에서도 조준을 유지하되 Sprint/교체/사망 시에는 기본 자세로 복귀한다.
+	const bool bCanUseMeleeAimOffset = bHasWeapon && CurrentWeaponType == EWeaponType::Melee
+		&& !bIsDead && !bIsSprinting
+		&& (!CachedShooterCharacter || CachedShooterCharacter->GetActionLock() != EShooterActionLock::Equip);
+	ThirdPersonMeleeAimOffsetAlpha = InterpAnimAlpha(
+		ThirdPersonMeleeAimOffsetAlpha,
+		bCanUseMeleeAimOffset ? 1.0f : 0.0f,
+		DeltaSeconds,
+		ThirdPersonAimBlendInSpeed,
+		ThirdPersonAimBlendOutSpeed
+	);
 	ThirdPersonAimOffsetAlpha = InterpAnimAlpha(
 		ThirdPersonAimOffsetAlpha,
 		bCanUseAimOffset ? 1.0f : 0.0f,

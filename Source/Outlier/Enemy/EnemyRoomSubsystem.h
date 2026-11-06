@@ -103,7 +103,8 @@ public:
 	bool TryGetRoomTargetObservation(AEnemyBase* Receiver, AActor* TargetActor,
 		FEnemyRoomTargetObservationSnapshot& OutSnapshot);
 	// 현재 대상 유지 여부는 Pawn이 먼저 판단한다. 이 함수는 대체 후보만 기존 우선순위로 고른다.
-	bool TrySelectRoomTarget(AEnemyBase* Receiver, FEnemyRoomTargetObservationSnapshot& OutSnapshot);
+	bool TrySelectRoomTarget(AEnemyBase* Receiver, FEnemyRoomTargetObservationSnapshot& OutSnapshot,
+		bool bRequireLiveObservation = false);
 
 	// Observer가 시야를 잃거나 전투 행동에서 이탈하면 직접 관측자 집합에서 제거한다.
 	void RemoveRoomTargetObserver(AEnemyBase* Observer);

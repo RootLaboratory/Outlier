@@ -76,6 +76,10 @@ struct OUTLIER_API FRoomCombatPhaseDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "s"))
 	float DelayBeforeStartSeconds = 3.0f;
 
+	// 다음 ExternalTrigger를 기다리는 동안 저장·업그레이드가 가능하도록 현재 전투만 해제한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (DisplayName = "Release Combat On Completion"))
+	bool bReleaseCombatOnCompletion = false;
+
 	// ExternalTrigger 시작 전에 확보할 첫 Wave의 SpawnPoint 수. 0은 기존 Pending 방식이며 Level 1 전용 문은 양수를 요구한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (ClampMin = "0", UIMin = "0"))
 	int32 ExpectedStartSpawnPointCount = 0;

@@ -238,8 +238,11 @@ void StopFlyTask(FEnemyFlyToLocationTaskInstanceData& Data)
 	Data.bWaitingForPath = false;
 	Data.bRepathEpisode = false;
 	if (!Data.bOwnsMovement || !IsValid(Data.Enemy) || !Data.Enemy->HasAuthority()) return;
-	// 빙의/재점유 이후 새 Controller의 이동은 이전 AI Task가 정리하지 않는다.
-	if (IsValid(Data.CachedController) && Data.Enemy->GetController() == Data.CachedController)
+	// 빙의/재점유 또는 조사 회차 종료 뒤의 새 이동은 이전 Task가 정리하지 않는다.
+	// 회차를 얻기 전 진입 실패(CapturedNoiseSerial == 0)는 자신의 초기화만 정리한다.
+	const bool bReplacedNoiseMove = Data.bInvestigateNoise && Data.CapturedNoiseSerial != 0
+		&& Data.Enemy->GetNoiseInvestigationSerial() != Data.CapturedNoiseSerial;
+	if (!bReplacedNoiseMove && IsValid(Data.CachedController) && Data.Enemy->GetController() == Data.CachedController)
 	{
 		Data.Enemy->ConsumeMovementInputVector();
 		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
@@ -257,6 +260,72 @@ void PauseFlyMovement(AEnemyBase& Enemy)
 	if (UCharacterMovementComponent* Movement = Enemy.GetCharacterMovement())
 	{
 		Movement->StopMovementImmediately();
+	}
+}
+
+bool IsNoiseFlightConfigurationValid(const FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	return !Data.bInvestigateNoise || (Data.bUsePathfinding && !Data.bReturnHome
+		&& !Data.bUsePlannedPath && !Data.bUseInitialPath && !Data.bConstrainRetreatPath);
+}
+
+bool PrepareNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!IsNoiseFlightConfigurationValid(Data)) return false;
+	if (!Data.bInvestigateNoise) return true;
+	if (!IsValid(Data.Enemy)) return false;
+	Data.Destination = Data.Enemy->GetPerceptionGoal().Location;
+	// 조사 이동은 목적지가 계속 바뀌어도 무한히 지속되지 않게 제한한다.
+	if (!FMath::IsFinite(Data.MoveTimeout) || Data.MoveTimeout <= 0.0f) Data.MoveTimeout = 30.0f;
+	if (!FMath::IsFinite(Data.NoProgressTimeout) || Data.NoProgressTimeout <= 0.0f) Data.NoProgressTimeout = 3.0f;
+	return true;
+}
+
+bool BeginNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!Data.bInvestigateNoise) return true;
+	if (!Data.Enemy->BeginNoiseInvestigation(Data.Destination)) return false;
+	Data.CapturedNoiseSerial = Data.Enemy->GetNoiseInvestigationSerial();
+	return true;
+}
+
+bool UpdateNoiseFlightDestination(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!Data.bInvestigateNoise) return true;
+	if (!Data.Enemy->IsNoiseInvestigationCurrent(Data.CapturedNoiseSerial))
+	{
+		Data.MoveResult = EEnemyFlightMoveResult::Interrupted;
+		StopFlyTask(Data);
+		return false;
+	}
+	// 소리 기록은 매번 받아도 실제 이동 경로는 Pawn의 갱신 간격/거리 제한을 따른다.
+	Data.Enemy->TryUpdateNoiseInvestigationDestination(Data.Destination);
+	return true;
+}
+
+EStateTreeRunStatus FinishNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data, EStateTreeRunStatus Status)
+{
+	if (!Data.bInvestigateNoise || Status == EStateTreeRunStatus::Running || !IsValid(Data.Enemy)
+		|| !Data.Enemy->IsNoiseInvestigationCurrent(Data.CapturedNoiseSerial)) return Status;
+	const bool bReachedOrExhausted = Data.MoveResult == EEnemyFlightMoveResult::Arrived
+		|| Data.MoveResult == EEnemyFlightMoveResult::Blocked || Data.MoveResult == EEnemyFlightMoveResult::TimedOut;
+	if (!bReachedOrExhausted) return Status;
+	// 도달하지 않은 소리 좌표를 수색 중심으로 채택하지 않는다.
+	// 우회/재탐색을 소진한 경우에도 실제 이동이 끝난 안전한 위치에서 수색한다.
+	StopFlyTask(Data);
+	Data.bNoiseSearchReady = Data.Enemy->BeginNoiseInvestigationSearch(
+		Data.CapturedNoiseSerial, Data.Enemy->GetActorLocation());
+	return Status;
+}
+
+void EndNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (Data.bInvestigateNoise && !Data.bNoiseSearchReady && IsValid(Data.Enemy)
+		&& Data.CapturedNoiseSerial != 0
+		&& Data.Enemy->GetNoiseInvestigationSerial() == Data.CapturedNoiseSerial)
+	{
+		// 이전 회차의 Exit가 새 조사나 수색 인계를 정리하지 않도록 소유권을 확인한다.
+		Data.Enemy->EndNoiseInvestigation();
 	}
 }
 
@@ -862,6 +931,9 @@ namespace EnemyFlightTesting
 {
 EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data)
 {
+	Data.bNoiseSearchReady = false;
+	Data.CapturedNoiseSerial = 0;
+	if (!PrepareNoiseFlight(Data)) return EStateTreeRunStatus::Failed;
 	if (Data.bReturnHome && (!IsValid(Data.Enemy) || !Data.Enemy->GetReturnHomeDestination(Data.Destination)))
 		return EStateTreeRunStatus::Failed;
 	if (!IsRetreatFlightConfigurationValid(Data)) return EStateTreeRunStatus::Failed;
@@ -871,13 +943,20 @@ EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data)
 	Data.CapturedMovementState = Data.Enemy->GetCombatState();
 	Data.CapturedMovementGeneration = Data.Enemy->GetPoolGameplayGeneration();
 	Data.CapturedMovementLease = Data.Enemy->GetPoolLeaseSerial();
+	if (!BeginNoiseFlight(Data)) return EStateTreeRunStatus::Failed;
 	return Data.bUsePlannedPath ? StartPlannedFlight(Data)
-		: Data.bUseInitialPath ? StartInitialFlight(Data) : RequestFlightPath(Data);
+		: Data.bUseInitialPath ? StartInitialFlight(Data) : FinishNoiseFlight(Data, RequestFlightPath(Data));
 }
 
 EStateTreeRunStatus TickPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
 {
-	return TickFlightPath(Data, DeltaTime);
+	if (Data.bInvestigateNoise && (!HasCurrentFlightRoom(Data) || !UpdateNoiseFlightDestination(Data)))
+	{
+		Data.MoveResult = EEnemyFlightMoveResult::Interrupted;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	return FinishNoiseFlight(Data, TickFlightPath(Data, DeltaTime));
 }
 
 bool CheckDirectBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
@@ -888,6 +967,7 @@ bool CheckDirectBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaT
 void Stop(FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	StopFlyTask(Data);
+	EndNoiseFlight(Data);
 }
 }
 
@@ -1229,6 +1309,8 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	InstanceData.MoveElapsed = 0.0f;
 	InstanceData.NoProgressElapsed = 0.0f;
 	InstanceData.bOwnsMovement = false;
+	InstanceData.bNoiseSearchReady = false;
+	InstanceData.CapturedNoiseSerial = 0;
 	InstanceData.SpeedProfileState.Reset();
 	InstanceData.PathWaypoints.Reset();
 	InstanceData.WaypointSpeedLimits.Reset();
@@ -1249,6 +1331,7 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		LogFlight(TEXT("Rejected: missing enemy/authority/AIController"), InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
+	if (!PrepareNoiseFlight(InstanceData)) return EStateTreeRunStatus::Failed;
 	if (InstanceData.bReturnHome && !Enemy->GetReturnHomeDestination(InstanceData.Destination))
 	{
 		return EStateTreeRunStatus::Failed;
@@ -1313,9 +1396,14 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		InstanceData.CachedRoom = InstanceData.CachedRoomSubsystem
 			? InstanceData.CachedRoomSubsystem->GetRegisteredRoomVolume(InstanceData.PathRoomTag) : nullptr;
 		InstanceData.MoveResult = EEnemyFlightMoveResult::Moving;
+		if (!BeginNoiseFlight(InstanceData))
+		{
+			StopFlyTask(InstanceData);
+			return EStateTreeRunStatus::Failed;
+		}
 		if (InstanceData.bUsePlannedPath) return StartPlannedFlight(InstanceData);
 		if (InstanceData.bUseInitialPath) return StartInitialFlight(InstanceData);
-		return RequestFlightPath(InstanceData);
+		return FinishNoiseFlight(InstanceData, RequestFlightPath(InstanceData));
 	}
 
 	// 직접 비행도 같은 경계 계약을 사용한다. A* 옵션을 꺼서 미등록 구간을 통과할 수 없다.
@@ -1363,6 +1451,7 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
+	if (!UpdateNoiseFlightDestination(InstanceData)) return EStateTreeRunStatus::Failed;
 
 	// Keep the task resumable if hacking is cancelled before the state transition.
 	if (Enemy->IsPossessionInProgress())
@@ -1379,7 +1468,7 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 
 	if (InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath)
 	{
-		return TickFlightPath(InstanceData, DeltaTime);
+		return FinishNoiseFlight(InstanceData, TickFlightPath(InstanceData, DeltaTime));
 	}
 
 	ApplyFlyTaskSpeedMultiplier(*Enemy, InstanceData.SpeedMultiplier);
@@ -1444,6 +1533,7 @@ void FEnemyFlyToLocationTask::ExitState(
 	}
 	StopFlyTask(InstanceData);
 	LogFlight(TEXT("Exit"), InstanceData, &Transition);
+	EndNoiseFlight(InstanceData);
 	InstanceData.CachedController = nullptr;
 }
 
@@ -1730,6 +1820,17 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	{
 		return EStateTreeRunStatus::Running;
 	}
+	// 조사는 자체 완료 조건을 유지한다. 조사 중에도 청각 인지 시간을 누적해 Combat을 확정할 수 있다.
+	// 이 분기에서는 미발견 타이머나 Alert 회전으로 조사 이동·수색을 끊지 않는다.
+	if (Enemy->GetPerceptionGoal().Type == EEnemyPerceptionGoalType::InvestigateNoise || Enemy->IsNoiseSearchActive())
+	{
+		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
+		{
+			EnemyAIController->ResolveInitialAwarenessAlert();
+		}
+		InstanceData.VisibleElapsedTime = InstanceData.LostElapsedTime = 0.0f;
+		return EStateTreeRunStatus::Running;
+	}
 	// 증원은 직접 감지하지 못해도 같은 방의 타깃 공유를 받으면 즉시 Battle로 합류한다.
 	// 청각으로 Alert에 들어온 경우도 이 조건을 통과할 수 있다. 소리만 듣고 합류하는 조건은 아니다.
 	if (Enemy->IsPoolManaged() && Enemy->HasSharedTargetContact())
@@ -1771,6 +1872,12 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	);
 
 	const float SafeDeltaTime = FMath::Max(DeltaTime, 0.0f);
+	// 최초 시각·청각 발견은 Controller의 대상별 누적/감소 수치로 확정한다.
+	// 기존 에셋에 저장된 LostCommitDuration=5는 이 경로에 적용하지 않는다.
+	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
+	{
+		if (EnemyAIController->ResolveInitialAwarenessAlert()) return EStateTreeRunStatus::Running;
+	}
 
 	if (bPlayerVisible)
 	{

@@ -115,6 +115,33 @@ bool FRoomCombatDefinitionValidationTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("A new phase defaults to a three-second transition delay"),
 		FRoomCombatPhaseDefinition().DelayBeforeStartSeconds, 3.0f);
+	TestFalse(TEXT("A new phase retains combat ownership at its completion boundary"),
+		FRoomCombatPhaseDefinition().bReleaseCombatOnCompletion);
+	{
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		FRoomCombatRoomDefinition& Room = Definition->RoomDefinitions[0];
+		Room.CombatPhases[0].bReleaseCombatOnCompletion = true;
+		FRoomCombatPhaseDefinition External;
+		External.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		External.Waves.Add(MakeSpawnWave());
+		Room.CombatPhases.Add(External);
+		FDataValidationContext ValidContext;
+		TestEqual(TEXT("An explicit release before an external event is valid"),
+			ValidateDefinition(Definition, ValidContext), EDataValidationResult::Valid);
+
+		Room.CombatPhases[1].StartPolicy = ERoomCombatPhaseStartPolicy::HackTrigger;
+		FDataValidationContext HackContext;
+		TestEqual(TEXT("A release before a hack event is not supported"),
+			ValidateDefinition(Definition, HackContext), EDataValidationResult::Invalid);
+
+		// Automatic 자체가 유효한 차수 순서에서 해제 옵션 조합만 잘못된 경우를 검증한다.
+		Room.CombatPhases[0].StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		Room.CombatPhases[0].Waves[0] = MakeSpawnWave();
+		Room.CombatPhases[1].StartPolicy = ERoomCombatPhaseStartPolicy::Automatic;
+		FDataValidationContext AutomaticContext;
+		TestEqual(TEXT("An automatic successor cannot be combined with an explicit release"),
+			ValidateDefinition(Definition, AutomaticContext), EDataValidationResult::Invalid);
+	}
 	for (float Delay : {0.0f, 1.5f, 3.0f})
 	{
 		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();

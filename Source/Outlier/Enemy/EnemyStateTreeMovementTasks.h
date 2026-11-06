@@ -153,6 +153,13 @@ struct FEnemyFlyToLocationTaskInstanceData
 	bool bOwnsMovement = false;
 	FVector LastPathPosition = FVector::ZeroVector;
 	float TravelledPathLength = 0.0f;
+
+	// 채택한 소리 좌표를 추적한다. 기존 순찰/전투 이동은 이 옵션을 사용하지 않는다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bInvestigateNoise = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNoiseSearchReady = false;
+	uint64 CapturedNoiseSerial = 0;
 };
 
 // 지상 NavMesh에 투영하지 않는다. 설정에 따라 직접 이동하거나 검증된 비행 경로를 추종한다.
@@ -329,6 +336,7 @@ struct FEnemyAlertHoldTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 180.0f;
 
+	// 시각 발견은 EnemyStat의 Awareness 시간을 사용한다. 이 값들은 다른 경계 사유의 기존 대기용이다.
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float VisibleCommitDuration = 1.0f;
 
@@ -340,7 +348,7 @@ struct FEnemyAlertHoldTaskInstanceData
 	bool bOwnsTaskDrivenPitch = false;
 };
 
-// Alert 상태 안에서 LKP를 바라보며 감지 유지/상실 시간을 판정한다.
+// Alert 상태 안에서 LKP를 바라보며 최초 시각 발견 수치 또는 다른 경계 사유의 대기를 판정한다.
 // 확정 시 EnemyBase가 보낸 이벤트가 StateTree를 Battle 또는 NonBattle로 전환한다.
 USTRUCT(meta = (DisplayName = "Enemy Resolve Alert", Category = "Enemy|State"))
 struct OUTLIER_API FEnemyAlertHoldTask : public FStateTreeTaskCommonBase

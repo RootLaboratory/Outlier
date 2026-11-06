@@ -13,6 +13,8 @@
 #include "Interface/JumperAffectableInterface.h"
 #include "Settings/OutlierInputUserSettings.h"
 #include "PostProcess/OutlierReadabilityTarget.h"
+#include "Enemy/OutlierSightBoneCache.h"
+#include "Enemy/OutlierBoneSight.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -87,7 +89,7 @@ struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
 struct FOnAttributeChangeData;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IWeaponDamageModifierProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface, public IOutlierReadabilityTarget
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IWeaponDamageModifierProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface, public IOutlierReadabilityTarget, public IAISightTargetInterface
 {
 	GENERATED_BODY()
 
@@ -101,7 +103,15 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerEMPComponent;
 	friend class FPartnerStandbyTest;
 	friend class FOutlierSlideSuitRecoveryTest;
+	friend class FOutlierSightBoneTargetsTest;
 public:
+	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
+	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(
+		const FCanBeSeenFromContext& Context, FVector& OutSeenLocation,
+		int32& OutNumberOfLoSChecksPerformed, int32& OutNumberOfAsyncLosCheckRequested,
+		float& OutSightStrength, int32* UserData = nullptr,
+		const FOnPendingVisibilityQueryProcessedDelegate* Delegate = nullptr) override;
+
 	/** 기존 직렬화 설정을 유지한다. 가독성 표현에는 공통 예약 비트(16)를 사용한다. */
 	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability")
 	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
@@ -109,7 +119,15 @@ public:
 	virtual void InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil) override;
 
 	friend class FPartnerSprintInputModeTest;
+	friend class FPartnerRebootInputTest;
 protected:
+	// FP 메시나 표정 Sprite가 아닌 실제 월드 메시의 본 이름을 등록한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")
+	TArray<FName> SightBones;
+
+	mutable FOutlierSightBoneCache SightBoneCache;
+	FOutlierBoneSight BoneSight;
+
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
@@ -487,9 +505,13 @@ protected:
 	TWeakObjectPtr<ULocalPlayerSettingsSubsystem> AccelerateSettings;
 	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> AccelerateInputSubsystem;
 	TArray<FKey> AccelerateInputKeys;
+	TArray<FKey> AttackInputKeys;
 	EOutlierSprintInputMode AccelerateInputMode = EOutlierSprintInputMode::Toggle;
 	bool bAccelerateInputHeld = false;
+	// 실행 중인 가속과 분리해 재부팅 중에도 Hold/Toggle의 최신 의도를 보존한다.
+	bool bAccelerateRequested = false;
 	bool bAccelerateNeedsFreshPress = false;
+	bool bRebootActionRecoveryPending = false;
 	// 서버 수명주기와 요청 순번을 함께 검사해 지연된 ON이 초기화 이후 되살아나지 않게 한다.
 	UPROPERTY(ReplicatedUsing = OnRep_AccelerateInputEpoch)
 	uint32 AccelerateInputEpoch = 1;
@@ -578,7 +600,7 @@ protected:
 public:
 	// 입력 초기화와 일반 Release를 구분한다. 컨텍스트 복귀는 실제 새 키 Press 이후에만 허용한다.
 	void ResetAccelerateInput();
-	void NotifyAccelerateKeyPressed(FKey Key);
+	void NotifyActionKeyPressed(FKey Key);
 	/** 서버에서 판정하고 복제하는 대기 상태. AnimBP의 Active / Standby 전이에 사용한다. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Partner|Standby")
 	bool bIsStandby = false;
@@ -634,6 +656,8 @@ public:
 	void OnRep_IsAccelerate();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+
+	bool IsDebugPairInvulnerable() const;
 	void ConfigureSuitDisableBoundaryRadius(float Radius);
 	void NotifyOffensiveActionExecuted();
 	
@@ -652,7 +676,10 @@ public:
 	void NullifyDamagedEvenet() const;
 
 	void SetEnemyPossessionProtection(bool bEnabled);
-	void StopActionsForReboot();
+	void StopActionsForReboot(bool bPreserveActionInput = true);
+	void FinishActionsAfterReboot();
+	bool CanTrackActionInputIntent() const;
+	uint32 GetActionInputEpoch() const { return AccelerateInputEpoch; }
 	void RefreshEnemyDetectionForVitality();
 
 	// 입력뿐 아니라 Ability/BP에서도 사용할 수 있는 Partner 공격 API.

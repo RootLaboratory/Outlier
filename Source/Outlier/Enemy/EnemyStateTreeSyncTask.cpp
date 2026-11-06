@@ -68,6 +68,12 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 	InstanceData.AIController = Cast<AAIController>(InstanceData.Enemy->GetController());
 	InstanceData.TargetActor = InstanceData.Enemy->GetTrackedTarget();
 	InstanceData.bHasTrackableTarget = IsValid(InstanceData.TargetActor);
+	const FEnemyPerceptionGoal& Goal = InstanceData.Enemy->GetPerceptionGoal();
+	InstanceData.PerceptionGoalType = Goal.Type;
+	InstanceData.PerceptionGoalLocation = Goal.Location;
+	InstanceData.PerceptionGoalTarget = Goal.Target.Get();
+	InstanceData.bNoiseInvestigationActive = InstanceData.Enemy->IsNoiseInvestigationActive();
+	InstanceData.bNoiseSearchActive = InstanceData.Enemy->IsNoiseSearchActive();
 	// 다른 플레이어가 보여도 현재 전투 대상이 공유로만 추적된다면 직접 시야로 표시하지 않는다.
 	const AEnemyAIController* PerceptionController = Cast<AEnemyAIController>(InstanceData.AIController);
 	InstanceData.bPlayerCurrentlyVisible = InstanceData.Enemy->IsPlayerCurrentlyVisible()
