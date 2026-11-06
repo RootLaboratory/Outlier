@@ -114,7 +114,7 @@ void FWallShotProbeAccess::SetAttackGate(ARangedWeaponBase* Weapon, int32 Ammo, 
 
 namespace
 {
-constexpr float Step = 1.0f / 60.0f;
+constexpr float WallShotTickInterval = 1.0f / 60.0f;
 
 struct FWallShotWorld
 {
@@ -201,8 +201,8 @@ struct FWallShotWorld
 			++GFrameCounter;
 			Controller->SetControlRotation(FRotator::ZeroRotator);
 			if (bDedicated) Controller->ServerUpdateCamera_Implementation(Shooter->GetPawnViewLocation(), 0);
-			else Controller->UpdateCameraManager(Step);
-			World->Tick(LEVELTICK_All, Step);
+			else Controller->UpdateCameraManager(WallShotTickInterval);
+			World->Tick(LEVELTICK_All, WallShotTickInterval);
 		}
 	}
 
@@ -650,7 +650,7 @@ bool FOutlierWallShotSlice4ContinuousTest::RunTest(const FString& Parameters)
 				{
 					TestEqual(TEXT("W02 distant wall preserves clear held-trigger shot count"), Times.Num(), ClearTimes.Num());
 					for (int32 Index = 0; Index < FMath::Min(Times.Num(), ClearTimes.Num()); ++Index)
-						TestTrue(TEXT("W02 distant wall preserves clear held-trigger cadence"), FMath::IsNearlyEqual(Times[Index], ClearTimes[Index], Step + 0.001f));
+						TestTrue(TEXT("W02 distant wall preserves clear held-trigger cadence"), FMath::IsNearlyEqual(Times[Index], ClearTimes[Index], WallShotTickInterval + 0.001f));
 				}
 				AddInfo(FString::Printf(TEXT("HeldTrigger %s dedicated=%d distant=%d shots=%d productionReuse=%.6f"), Name, bServer, bDistantWall, CountAtRelease, ProductionReuse));
 			}
@@ -696,7 +696,7 @@ bool FOutlierWallShotSlice4MultiMuzzleTest::RunTest(const FString& Parameters)
 	if (!TestNotNull(TEXT("Controlled turret owner controller"), TurretController)) return false;
 	TurretController->Possess(Turret);
 	TurretController->SetViewTarget(Turret);
-	TurretController->UpdateCameraManager(Step);
+	TurretController->UpdateCameraManager(WallShotTickInterval);
 	ARangedWeaponBase* Weapon = Turret->GetCurrentWeapon();
 	if (!TestNotNull(TEXT("Production turret equipped weapon"), Weapon)) return false;
 	FWallShotProbeAccess::ConfigureControlledShot(Weapon);
