@@ -64,6 +64,36 @@ void AOutlierPlayerState::SetPartnerCharacter(APartnerCharacter* NewPartner)
 	RefreshCharacterLinks();
 }
 
+bool AOutlierPlayerState::SetDebugPairInvulnerable(bool bEnabled)
+{
+	if (!HasAuthority() || !GetWorld() || !GetWorld()->IsGameWorld()
+		|| !IsShooterPlayer() || PairId == INDEX_NONE)
+	{
+		return false;
+	}
+	bDebugPairInvulnerable = bEnabled;
+	return true;
+}
+
+bool AOutlierPlayerState::IsDebugPairInvulnerable() const
+{
+	return HasAuthority() && GetWorld() && GetWorld()->IsGameWorld()
+		&& IsShooterPlayer() && PairId != INDEX_NONE && bDebugPairInvulnerable;
+}
+
+#if WITH_EDITOR
+bool AOutlierPlayerState::SetEditorPairInvulnerable(bool bEnabled)
+{
+	return GetWorld() && GetWorld()->WorldType == EWorldType::PIE
+		&& SetDebugPairInvulnerable(bEnabled);
+}
+
+bool AOutlierPlayerState::IsEditorPairInvulnerable() const
+{
+	return GetWorld() && GetWorld()->WorldType == EWorldType::PIE && IsDebugPairInvulnerable();
+}
+#endif
+
 void AOutlierPlayerState::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 {
 	if (!HasAuthority() || bSuitDisabledByPartnerBoundary == bDisabled)
@@ -105,6 +135,7 @@ void AOutlierPlayerState::SetPlayerRole(EOutlierPlayerRole NewRole)
 	}
 
 	PlayerRole = NewRole;
+	bDebugPairInvulnerable = false;
 	ResetStatAllocatorUIState();
 	HandlePlayerRoleChanged();
 }
@@ -117,6 +148,7 @@ void AOutlierPlayerState::SetPairId(int32 NewPairId)
 	}
 
 	PairId = NewPairId;
+	bDebugPairInvulnerable = false;
 	// 전환 등 Pair 수명에 묶인 작업이 이전 Pair의 완료 응답을 기다리지 않도록 알린다.
 	OnPlayerCharactersChanged.Broadcast(this);
 	ResetStatAllocatorUIState();

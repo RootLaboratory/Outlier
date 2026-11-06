@@ -3234,7 +3234,8 @@ bool AShooterCharacter::ApplyDamageInternal(
 
 float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
-	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f)
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f
+		|| OutlierDamage::IsEditorInvulnerable(this))
 	{
 		return 0.0f;
 	}

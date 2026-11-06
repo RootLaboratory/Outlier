@@ -639,6 +639,8 @@ public:
 	void OnRep_IsAccelerate();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+
+	bool IsDebugPairInvulnerable() const;
 	void ConfigureSuitDisableBoundaryRadius(float Radius);
 	void NotifyOffensiveActionExecuted();
 	

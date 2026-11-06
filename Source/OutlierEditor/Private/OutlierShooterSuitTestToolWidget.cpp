@@ -130,6 +130,15 @@ void SOutlierShooterSuitTestToolWidget::Construct(const FArguments& InArgs)
 			.OnClicked(this, &SOutlierShooterSuitTestToolWidget::AddUpgradeNodes)
 		]
 	];
+	Rows->AddSlot().AutoHeight().Padding(6.0f)
+	[
+		SNew(SCheckBox)
+		.IsEnabled(this, &SOutlierShooterSuitTestToolWidget::CanEditInvulnerability)
+		.IsChecked(this, &SOutlierShooterSuitTestToolWidget::GetInvulnerabilityState)
+		.OnCheckStateChanged(this, &SOutlierShooterSuitTestToolWidget::SetInvulnerabilityState)
+		.ToolTipText(LOCTEXT("PairInvulnerableTip", "선택한 페어의 모든 피해를 막습니다. 재부팅·프리셋 재시작·창 재오픈 후에도 유지하며, 직접 끄거나 PIE를 끝내면 해제됩니다. 별도 프로세스 서버는 지원하지 않습니다."))
+		[SNew(STextBlock).Text(LOCTEXT("PairInvulnerable", "Shooter·Partner 무적"))]
+	];
 	for (int32 Index = 0; Index < Features.Num(); ++Index)
 	{
 		Rows->AddSlot().AutoHeight().Padding(6.0f)
@@ -198,7 +207,7 @@ void SOutlierShooterSuitTestToolWidget::HandlePIEChanged(bool bSimulating)
 
 void SOutlierShooterSuitTestToolWidget::RefreshTargets()
 {
-	const TWeakObjectPtr<AShooterCharacter> Previous = SelectedTarget.IsValid() ? SelectedTarget->Shooter : nullptr;
+	const TWeakObjectPtr<AOutlierPlayerState> Previous = SelectedTarget.IsValid() ? SelectedTarget->PlayerState : nullptr;
 	Targets.Reset();
 	SelectedTarget.Reset();
 	if (GEngine)
@@ -232,7 +241,7 @@ void SOutlierShooterSuitTestToolWidget::RefreshTargets()
 				}
 				Target->Label = FText::FromString(FString::Printf(TEXT("%s / %s / %s"), *World->GetName(), *PS->GetPlayerName(), *Shooter->GetName()));
 				Targets.Add(Target);
-				if (Target->Shooter == Previous)
+				if (Target->PlayerState == Previous)
 				{
 					SelectedTarget = Target;
 				}
@@ -257,6 +266,31 @@ void SOutlierShooterSuitTestToolWidget::SelectTarget(FTargetPtr Target, ESelectI
 {
 	SelectedTarget = Target;
 	RefreshFeatureNodes();
+}
+
+bool SOutlierShooterSuitTestToolWidget::CanEditInvulnerability() const
+{
+	const AOutlierPlayerState* State = SelectedTarget.IsValid() ? SelectedTarget->PlayerState.Get() : nullptr;
+	return State && State->HasAuthority() && State->IsShooterPlayer() && State->GetPairId() != INDEX_NONE
+		&& State->GetWorld() && State->GetWorld()->WorldType == EWorldType::PIE;
+}
+
+ECheckBoxState SOutlierShooterSuitTestToolWidget::GetInvulnerabilityState() const
+{
+	return CanEditInvulnerability() && SelectedTarget->PlayerState->IsEditorPairInvulnerable()
+		? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void SOutlierShooterSuitTestToolWidget::SetInvulnerabilityState(ECheckBoxState State)
+{
+	if (!CanEditInvulnerability() || State == ECheckBoxState::Undetermined) return;
+	const bool bEnabled = State == ECheckBoxState::Checked;
+	if (SelectedTarget->PlayerState->SetEditorPairInvulnerable(bEnabled))
+	{
+		// 테스트 전 상태 복원과 독립적이다. 사용자가 토글을 끄기 전까지 유지한다.
+		Status = bEnabled ? LOCTEXT("PairInvulnerableOn", "선택한 페어 무적 ON: Shooter·Partner의 모든 피해를 차단합니다.")
+			: LOCTEXT("PairInvulnerableOff", "선택한 페어 무적 OFF: 기존 피해·면역 규칙을 적용합니다.");
+	}
 }
 
 bool SOutlierShooterSuitTestToolWidget::CanEdit() const
@@ -582,6 +616,7 @@ FReply SOutlierShooterSuitTestToolWidget::DamageShooter()
 	AShooterCharacter* Shooter = SelectedTarget->Shooter.Get();
 	const UAbilitySystemComponent* ASC = Shooter->GetAbilitySystemComponent();
 	const bool bDamageImmune = ASC && ASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune());
+	const bool bTesterImmune = OutlierDamage::IsEditorInvulnerable(Shooter);
 	const float HealthBefore = Shooter->GetCurHealth();
 	const float ShieldBefore = Shooter->GetCurShield();
 	const float PartnerShieldBefore = Shooter->GetCurPartnerShield();
@@ -595,15 +630,16 @@ FReply SOutlierShooterSuitTestToolWidget::DamageShooter()
 	const bool bVitalsUnchanged = HealthBefore == Shooter->GetCurHealth()
 		&& ShieldBefore == Shooter->GetCurShield() && PartnerShieldBefore == Shooter->GetCurPartnerShield();
 	// 피해 0만으로 무적이라고 판단하지 않는다. 적용 직전 태그와 적용 후 생명력도 함께 확인한다.
-	const bool bBlockedByImmunity = bDamageImmune && bDamageable && Applied == 0.0f && bVitalsUnchanged;
-	const FText Result = bBlockedByImmunity ? LOCTEXT("DamageImmuneBlocked", "무적으로 피해 차단")
+	const bool bBlockedByImmunity = (bDamageImmune || bTesterImmune) && bDamageable && Applied == 0.0f && bVitalsUnchanged;
+	const FText Result = bBlockedByImmunity && bTesterImmune ? LOCTEXT("TesterDamageBlocked", "Tester 무적으로 피해 차단")
+		: bBlockedByImmunity ? LOCTEXT("DamageImmuneBlocked", "무적으로 피해 차단")
 		: Applied > 0.0f ? LOCTEXT("DamageAccepted", "피해 적용")
 		: LOCTEXT("DamageRejected", "피해 미적용 (무적 차단 확인 불가)");
 	UE_LOG(LogShooterSuitTester, Log,
-		TEXT("[SuitTester][Damage] Result=%s Shooter=%s World=%s Time=%.3f DamageImmune=%d Damageable=%d Requested=%.2f Applied=%.2f HP=%.2f->%.2f Shield=%.2f->%.2f PartnerShield=%.2f->%.2f"),
+		TEXT("[SuitTester][Damage] Result=%s Shooter=%s World=%s Time=%.3f DamageImmune=%d TesterImmune=%d Damageable=%d Requested=%.2f Applied=%.2f HP=%.2f->%.2f Shield=%.2f->%.2f PartnerShield=%.2f->%.2f"),
 		bBlockedByImmunity ? TEXT("BlockedByImmunity") : Applied > 0.0f ? TEXT("Applied") : TEXT("Rejected"),
 		*Shooter->GetName(), *GetNameSafe(Shooter->GetWorld()), Shooter->GetWorld()->GetTimeSeconds(),
-		bDamageImmune, bDamageable, Request.DamageAmount, Applied, HealthBefore, Shooter->GetCurHealth(),
+		bDamageImmune, bTesterImmune, bDamageable, Request.DamageAmount, Applied, HealthBefore, Shooter->GetCurHealth(),
 		ShieldBefore, Shooter->GetCurShield(), PartnerShieldBefore, Shooter->GetCurPartnerShield());
 	Status = FText::Format(LOCTEXT("DamageAppliedWithResult", "{0}: 요청 피해 {1}, 처리 피해 {2} / HP {3}, 실드 {4} / {5}"),
 		FText::FromString(Shooter->GetName()), FText::AsNumber(TestDamageAmount), FText::AsNumber(Applied),

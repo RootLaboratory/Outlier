@@ -34,6 +34,11 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 	{
 		return;
 	}
+	// IncomingDamage를 직접 적용하는 GE도 실드/체력 소비 전에 같은 보호를 확인한다.
+	if (OutlierDamage::IsEditorInvulnerable(AbilitySystem->GetAvatarActor()))
+	{
+		return;
+	}
 
 	float RemainingDamage = Damage;
 	const bool bInstantKill = Data.EffectSpec.GetDynamicAssetTags().HasTagExact(OutlierDamage::InstantKillTag());

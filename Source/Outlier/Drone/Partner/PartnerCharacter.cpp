@@ -182,9 +182,21 @@ void APartnerCharacter::PossessedBy(AController* NewController)
 }
 
 
+bool APartnerCharacter::IsDebugPairInvulnerable() const
+{
+	// 빙의 중에는 Partner의 Controller/PlayerState가 비어도 기존 페어 연결은 유지된다.
+	const AOutlierPlayerState* ShooterState = IsValid(CachedShooterCharacter)
+		? CachedShooterCharacter->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	const AOutlierPlayerState* PartnerState = GetPlayerState<AOutlierPlayerState>();
+	return ShooterState && ShooterState->GetPartnerCharacter() == this
+		&& (!PartnerState || PartnerState->GetPairId() == ShooterState->GetPairId())
+		&& ShooterState->IsDebugPairInvulnerable();
+}
+
 float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
-	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || !OutlierAbilitySystemComponent)
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || !OutlierAbilitySystemComponent
+		|| OutlierDamage::IsEditorInvulnerable(this))
 	{
 		return 0.0f;
 	}
