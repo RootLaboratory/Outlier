@@ -84,6 +84,8 @@ private:
 	FReply OpenUpgradeUI();
 	FReply AddUpgradeNodes();
 	FReply StartLevel1Combat();
+	FReply GrantPistol();
+	FReply FinishCurrentRoomCombat();
 	void StopAbilities() const;
 	void ApplyNodes(const TArray<FName>& Nodes) const;
 

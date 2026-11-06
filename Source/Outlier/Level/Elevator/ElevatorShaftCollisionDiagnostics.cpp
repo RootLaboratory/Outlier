@@ -1,4 +1,6 @@
 #include "Level/Elevator/ElevatorShaftController.h"
+#include "Level/Elevator/ElevatorShaftSection.h"
+#include "Interaction/InteractableDoor.h"
 
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
@@ -22,6 +24,10 @@ DEFINE_LOG_CATEGORY_STATIC(LogElevatorCollision, Log, All);
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarElevatorPlacementDiagnostics(
+		TEXT("outlier.Elevator.PlacementDiagnostics"), 1,
+		TEXT("Log elevator collision placement at transport and state boundaries. 0 disables these snapshots."));
+
 	void AddMovementIgnores(FCollisionQueryParams& Params, const UCapsuleComponent& Capsule)
 	{
 		// 실제 이동이 무시하는 부착물/컴포넌트를 진단에서 다시 벽으로 판정하지 않는다.
@@ -61,11 +67,88 @@ namespace
 	}
 }
 
+void AElevatorShaftController::LogCollisionPlacement(const TCHAR* Event) const
+{
+	if (UE_BUILD_SHIPPING || CVarElevatorPlacementDiagnostics.GetValueOnGameThread() == 0 || !GetWorld()) return;
+	// 붙여넣은 로그는 긴 줄의 뒷부분이 생략될 수 있다. 기준 좌표와 충돌 값은 짧은 줄로 분리한다.
+	UE_LOG(LogElevatorCollision, Log, TEXT("[ElevatorPlacementReference] Event=%s Execution=%s Authority=%d Controller=%s Offset=%s"),
+		Event, *Motion.ExecutionId.ToString(), HasAuthority(), *GetActorTransform().ToString(), *ControllerSectionOffset.ToString());
+	UE_LOG(LogElevatorCollision, Log, TEXT("[ElevatorPlacementSections] Event=%s Execution=%s Authority=%d Entrance=%s Arrival=%s"),
+		Event, *Motion.ExecutionId.ToString(), HasAuthority(), *Motion.EntranceTransform.ToString(), *Motion.ArrivalTransform.ToString());
+	UE_LOG(LogElevatorCollision, Log,
+		TEXT("[ElevatorPlacement] Event=%s World=%s Time=%.3f ServerTime=%.3f Controller=%s Authority=%d NetMode=%d Execution=%s Generation=%u State=%s AtArrival=%d Arrival=%d Landed=%d ControllerTransform=%s DepartureController=%s ControllerSectionOffset=%s EntranceReference=%s ArrivalReference=%s"),
+		Event, *GetNameSafe(GetWorld()), GetWorld()->GetTimeSeconds(), ServerTime(), *GetPathName(),
+		HasAuthority(), static_cast<int32>(GetNetMode()), *Motion.ExecutionId.ToString(), Motion.Generation,
+		*UEnum::GetValueAsString(Motion.State), bControllerAtArrival, Motion.bArrival, Motion.bLanded,
+		*GetActorTransform().ToString(), *DepartureControllerTransform.ToString(), *ControllerSectionOffset.ToString(),
+		*Motion.EntranceTransform.ToString(), *Motion.ArrivalTransform.ToString());
+	// Controller 본체의 고정 충돌과 Section 내부의 연출/문 충돌을 같은 시점에 기록한다.
+	// 부모/상대/월드/물리 배치를 함께 남겨 위치 이동, 회전, 충돌 비활성화를 구분한다.
+	const AActor* Subjects[] = { this, EntranceSection.Get(), ArrivalSection.Get() };
+	for (const AActor* Subject : Subjects)
+	{
+		if (!IsValid(Subject)) continue;
+		UE_LOG(LogElevatorCollision, Log,
+			TEXT("[ElevatorPlacementActor] Event=%s Execution=%s Authority=%d Actor=%s Parent=%s Transform=%s ActorCollision=%d Hidden=%d"),
+			Event, *Motion.ExecutionId.ToString(), HasAuthority(), *Subject->GetPathName(),
+			*GetNameSafe(Subject->GetAttachParentActor()), *Subject->GetActorTransform().ToString(),
+			Subject->GetActorEnableCollision(), Subject->IsHidden());
+		TInlineComponentArray<UPrimitiveComponent*> Components;
+		Subject->GetComponents(Components, true);
+		for (UPrimitiveComponent* Component : Components)
+		{
+			const UStaticMeshComponent* Mesh = Cast<UStaticMeshComponent>(Component);
+			const FBodyInstance* Body = Component->GetBodyInstance();
+			const UBodySetup* Setup = Component->GetBodySetup();
+			UE_LOG(LogElevatorCollision, Log,
+				TEXT("[ElevatorPlacementCollision] Event=%s Execution=%s Authority=%d Owner=%s Component=%s Enabled=%d Profile=%s Object=%d Pawn=%d PhysicsBody=%d Camera=%d OwnerCollision=%d Registered=%d PhysicsState=%d BodyValid=%d"),
+				Event, *Motion.ExecutionId.ToString(), HasAuthority(), *GetNameSafe(Component->GetOwner()), *Component->GetName(),
+				static_cast<int32>(Component->GetCollisionEnabled()), *Component->GetCollisionProfileName().ToString(),
+				static_cast<int32>(Component->GetCollisionObjectType()), static_cast<int32>(Component->GetCollisionResponseToChannel(ECC_Pawn)),
+				static_cast<int32>(Component->GetCollisionResponseToChannel(ECC_PhysicsBody)), static_cast<int32>(Component->GetCollisionResponseToChannel(ECC_Camera)),
+				Component->GetOwner() && Component->GetOwner()->GetActorEnableCollision(), Component->IsRegistered(),
+				Component->IsPhysicsStateCreated(), Body && Body->IsValidBodyInstance());
+			UE_LOG(LogElevatorCollision, Log,
+				TEXT("[ElevatorPlacementPhysics] Event=%s Execution=%s Authority=%d Owner=%s Component=%s World=%s Body=%s Complexity=%d SimpleShapes=%d TriangleMeshes=%d"),
+				Event, *Motion.ExecutionId.ToString(), HasAuthority(), *GetNameSafe(Component->GetOwner()), *Component->GetName(),
+				*Component->GetComponentTransform().ToString(), Body && Body->IsValidBodyInstance() ? *Body->GetUnrealWorldTransform().ToString() : TEXT("None"),
+				Setup ? static_cast<int32>(Setup->GetCollisionTraceFlag()) : -1,
+				Setup ? Setup->AggGeom.GetElementCount() : 0, Setup ? Setup->TriMeshGeometries.Num() : 0);
+			UE_LOG(LogElevatorCollision, Log,
+				TEXT("[ElevatorPlacementComponent] Event=%s Execution=%s Authority=%d Component=%s OwnerCollision=%d AttachParent=%s WorldTransform=%s RelativeTransform=%s AbsoluteLocation=%d AbsoluteRotation=%d Mobility=%d Mesh=%s Registered=%d Collision=%s Profile=%s ObjectType=%s Pawn=%s PhysicsBody=%s Camera=%s PhysicsState=%d BodyValid=%d BodyTransform=%s Complexity=%s SimpleShapes=%d TriangleMeshes=%d BoundsOrigin=%s BoundsExtent=%s"),
+				Event, *Motion.ExecutionId.ToString(), HasAuthority(), *Component->GetPathName(),
+				Component->GetOwner() && Component->GetOwner()->GetActorEnableCollision(), *GetNameSafe(Component->GetAttachParent()),
+				*Component->GetComponentTransform().ToString(), *Component->GetRelativeTransform().ToString(),
+				Component->IsUsingAbsoluteLocation(), Component->IsUsingAbsoluteRotation(), static_cast<int32>(Component->Mobility),
+				*GetNameSafe(Mesh ? Mesh->GetStaticMesh() : nullptr), Component->IsRegistered(),
+				*UEnum::GetValueAsString(Component->GetCollisionEnabled()), *Component->GetCollisionProfileName().ToString(),
+				*UEnum::GetValueAsString(Component->GetCollisionObjectType()),
+				*UEnum::GetValueAsString(Component->GetCollisionResponseToChannel(ECC_Pawn)),
+				*UEnum::GetValueAsString(Component->GetCollisionResponseToChannel(ECC_PhysicsBody)),
+				*UEnum::GetValueAsString(Component->GetCollisionResponseToChannel(ECC_Camera)),
+				Component->IsPhysicsStateCreated(), Body && Body->IsValidBodyInstance(),
+				Body && Body->IsValidBodyInstance() ? *Body->GetUnrealWorldTransform().ToString() : TEXT("None"),
+				Setup ? *UEnum::GetValueAsString(Setup->GetCollisionTraceFlag()) : TEXT("None"),
+				Setup ? Setup->AggGeom.GetElementCount() : 0, Setup ? Setup->TriMeshGeometries.Num() : 0,
+				*Component->Bounds.Origin.ToCompactString(), *Component->Bounds.BoxExtent.ToCompactString());
+		}
+	}
+	for (const AInteractableDoor* Door : { EntranceDoor.Get(), ArrivalDoor.Get() })
+	{
+		if (!IsValid(Door)) continue;
+		UE_LOG(LogElevatorCollision, Log,
+			TEXT("[ElevatorPlacementDoor] Event=%s Execution=%s Authority=%d Door=%s PresentationOnly=%d Open=%d Moving=%d Transform=%s"),
+			Event, *Motion.ExecutionId.ToString(), HasAuthority(), *Door->GetPathName(), Door->IsPresentationOnly(),
+			Door->IsDoorOpen(), Door->IsDoorMoving(), *Door->GetActorTransform().ToString());
+	}
+}
+
 void AElevatorShaftController::StartCollisionDiagnostics(float Duration)
 {
 	StopCollisionDiagnostics();
 	if (!FMath::IsFinite(Duration) || Duration <= 0.0f) return;
 	Duration = FMath::Clamp(Duration, 0.1f, 30.0f);
+	LogCollisionPlacement(TEXT("ManualObservationStarted"));
 	UE_LOG(LogElevatorCollision, Log,
 		TEXT("[ElevatorCollision][Begin] World=%s Controller=%s Authority=%d NetMode=%d State=%s Duration=%.1f Location=%s"),
 		*GetNameSafe(GetWorld()), *GetName(), HasAuthority(), static_cast<int32>(GetNetMode()),

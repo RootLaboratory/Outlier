@@ -268,6 +268,10 @@ public:
 	int32 GetFirstExternalTriggerPhaseIndex(FGameplayTag RoomTag) const;
 	// 업그레이드 문이 닫힌 뒤, 해제 옵션이 있는 선행 InitialDetection 차수만 보상 없이 정리한다.
 	bool FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume, int32 GameplayGeneration);
+#if WITH_EDITOR
+	// PIE 테스터 전용: 다음 차수를 시작하지 않고 방 전체를 정리/완료한다.
+	bool FinishRoomCombatForEditor(FGameplayTag RoomTag);
+#endif
 	bool IsElevatorEncounter(FGameplayTag RoomTag) const;
 	bool AcquireEncounterCheckpointHold(const FRoomCombatTriggerContext& Context, FGuid ExecutionId);
 	void ReleaseEncounterCheckpointHold(FGameplayTag RoomTag, FGuid ExecutionId);
@@ -450,7 +454,8 @@ private:
 		FRoomCombatRuntime& Runtime,
 		FRoomCombatPendingSpawn& SpawnRequest,
 		const TArray<ARoomCombatSpawnPoint*>& EligibleSpawnPoints);
-	void CompleteCurrentPhase(FGameplayTag RoomTag, bool bCancelRemainingWaves);
+	bool FinishCombatWithCleanup(ARoomVolume* RoomVolume, int32 GameplayGeneration, bool bFinishRoom);
+	void CompleteCurrentPhase(FGameplayTag RoomTag, bool bCancelRemainingWaves, bool bFinishRoom = false);
 	void BeginPhaseDelay(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void CompletePhaseDelay(FGameplayTag RoomTag, FGuid RegistrationId, int32 Generation, int32 PhaseIndex);
 	void StartAutomaticPhase(FGameplayTag RoomTag);

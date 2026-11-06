@@ -943,10 +943,7 @@ void AEnemyBase::ApplyAdaptationState(EEnemyAdaptationState NewState)
 	AdaptationState = NewState;
 	if (GetNetMode() != NM_DedicatedServer)
 	{
-		if (AdaptationShieldComponent)
-		{
-			AdaptationShieldComponent->ApplyAdaptationState(AdaptationState);
-		}
+		RefreshAdaptationShieldPresentation();
 		OnAdaptationStateChanged(PreviousState, AdaptationState);
 	}
 	UE_LOG(
@@ -1004,10 +1001,7 @@ FEnemyAdaptationBreakApplicationResult AEnemyBase::ApplyAdaptationBreakEffects(
 
 void AEnemyBase::OnRep_AdaptationState(EEnemyAdaptationState PreviousState)
 {
-	if (AdaptationShieldComponent)
-	{
-		AdaptationShieldComponent->ApplyAdaptationState(AdaptationState);
-	}
+	RefreshAdaptationShieldPresentation();
 	OnAdaptationStateChanged(PreviousState, AdaptationState);
 	UE_LOG(
 		LogOutlier,
@@ -1048,6 +1042,7 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 
 	const bool bIdle = PoolState == EEnemyPoolState::Idle;
 	const bool bCombatActive = PoolState == EEnemyPoolState::CombatActive;
+	RefreshAdaptationShieldPresentation();
 	if (bIdle || PoolState == EEnemyPoolState::DeathPresentation)
 	{
 		if (auto* Stencils = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>()) Stencils->ClearActorEffects(this);
@@ -4185,7 +4180,7 @@ void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 		{
 			InitializeCombatMovementPreferences();
 			bInCombat = true;
-			RefreshEnemyAudioState();
+			RefreshCombatStatePresentation();
 			RefreshPerceptionConfigForCurrentState();
 		}
 		return;
@@ -5117,7 +5112,26 @@ bool AEnemyBase::ShouldPlayCombatLoopAudio() const
 	return bInCombat;
 }
 
-void AEnemyBase::OnRep_InCombat()
+void AEnemyBase::RefreshAdaptationShieldPresentation()
+{
+	if (GetNetMode() != NM_DedicatedServer && AdaptationShieldComponent)
+	{
+		// 중앙 내성 단계는 유지하고, 전투 여부만 표시 조건으로 사용한다.
+		// 두 복제 속성 중 어느 쪽이 먼저 도착해도 현재 상태를 다시 투영한다.
+		const bool bShowShield = IsInCombat() && !IsDead()
+			&& (!IsPoolManaged() || PoolState == EEnemyPoolState::CombatActive);
+		AdaptationShieldComponent->ApplyAdaptationState(
+			bShowShield ? AdaptationState : EEnemyAdaptationState::Normal);
+	}
+}
+
+void AEnemyBase::RefreshCombatStatePresentation()
 {
 	RefreshEnemyAudioState();
+	RefreshAdaptationShieldPresentation();
+}
+
+void AEnemyBase::OnRep_InCombat()
+{
+	RefreshCombatStatePresentation();
 }

@@ -1699,9 +1699,20 @@ void AFirstPersonPlayerController::ClientPrepareElevatorArrival_Implementation(
 	if (!IsLocalController() || !ExecutionId.IsValid() || LocalElevatorExecutionId != ExecutionId
 		|| !IsValid(Shaft) || LocalElevatorShaft.Get() != Shaft || bLocalElevatorRevealing
 		|| !bLocalElevatorFadeReadySent || bLocalElevatorArrivalReadySent
-		|| LocalElevatorFadePawn.Get() != GetPawn()) return;
+		|| LocalElevatorFadePawn.Get() != GetPawn())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[ElevatorArrivalRequestRejected] Player=%s Authority=%d Execution=%s LocalExecution=%s Local=%d ValidExecution=%d Shaft=%s ShaftMatch=%d Revealing=%d FadeReady=%d ArrivalReadySent=%d PawnMatch=%d"),
+			*GetName(), HasAuthority(), *ExecutionId.ToString(), *LocalElevatorExecutionId.ToString(),
+			IsLocalController(), ExecutionId.IsValid(), *GetNameSafe(Shaft), LocalElevatorShaft.Get() == Shaft,
+			bLocalElevatorRevealing, bLocalElevatorFadeReadySent, bLocalElevatorArrivalReadySent,
+			LocalElevatorFadePawn.Get() == GetPawn());
+		return;
+	}
 
 	// 요청 RPC보다 도착층/이동 상태 복제가 늦을 수 있다. 실제 로컬 준비를 확인할 때까지 암전을 유지한다.
+	LastElevatorArrivalWaitDiagnostic.Reset();
+	UE_LOG(LogTemp, Log, TEXT("[ElevatorArrivalRequest] Player=%s Authority=%d Shaft=%s Execution=%s Pawn=%s"),
+		*GetName(), HasAuthority(), *GetNameSafe(Shaft), *ExecutionId.ToString(), *GetNameSafe(GetPawn()));
 	GetWorldTimerManager().SetTimer(ElevatorArrivalPollTimer,
 		FTimerDelegate::CreateUObject(this, &AFirstPersonPlayerController::PollElevatorArrivalReady, ExecutionId),
 		0.02f, true);
@@ -1715,15 +1726,31 @@ void AFirstPersonPlayerController::PollElevatorArrivalReady(FGuid ExecutionId)
 		|| LocalElevatorFadePawn.Get() != GetPawn() || bLocalElevatorRevealing
 		|| bLocalElevatorArrivalReadySent)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[ElevatorArrivalPollStopped] Player=%s Execution=%s ExecutionMatch=%d ShaftValid=%d PawnMatch=%d Revealing=%d ArrivalReadySent=%d"),
+			*GetName(), *ExecutionId.ToString(), LocalElevatorExecutionId == ExecutionId, IsValid(Shaft),
+			LocalElevatorFadePawn.Get() == GetPawn(), bLocalElevatorRevealing, bLocalElevatorArrivalReadySent);
 		GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
 		return;
 	}
 	// 층 준비와 Pawn의 Teleport 복제는 별도로 도착한다. 둘 다 확인한 뒤에만 화면 복구를 예약한다.
-	if (!Shaft->AreArrivalVisualsReady(ExecutionId) || !Shaft->IsArrivalPawnReady(GetPawn())) return;
+	if (!Shaft->AreArrivalVisualsReady(ExecutionId) || !Shaft->IsArrivalPawnReady(GetPawn()))
+	{
+		const FString Diagnostic = Shaft->DescribeArrivalReadiness(ExecutionId, GetPawn());
+		if (LastElevatorArrivalWaitDiagnostic != Diagnostic)
+		{
+			LastElevatorArrivalWaitDiagnostic = Diagnostic;
+			UE_LOG(LogTemp, Warning, TEXT("[ElevatorArrivalWait] Player=%s Authority=%d Shaft=%s Execution=%s %s PawnLocation=%s"),
+				*GetName(), HasAuthority(), *GetNameSafe(Shaft), *ExecutionId.ToString(), *Diagnostic,
+				GetPawn() ? *GetPawn()->GetActorLocation().ToString() : TEXT("None"));
+		}
+		return;
+	}
 
 	GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
 	// Listen의 즉시 ACK가 다음 단계에 재진입할 수 있으므로 전송 전에 완료를 기록한다.
 	bLocalElevatorArrivalReadySent = true;
+	UE_LOG(LogTemp, Log, TEXT("[ElevatorArrivalReadySent] Player=%s Authority=%d Shaft=%s Execution=%s"),
+		*GetName(), HasAuthority(), *GetNameSafe(Shaft), *ExecutionId.ToString());
 	if (HasAuthority()) ServerNotifyElevatorArrivalReady_Implementation(Shaft, ExecutionId);
 	else ServerNotifyElevatorArrivalReady(Shaft, ExecutionId);
 }

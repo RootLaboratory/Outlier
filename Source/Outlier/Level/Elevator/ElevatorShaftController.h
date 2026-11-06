@@ -115,6 +115,7 @@ public:
 
 	bool AreArrivalVisualsReady(const FGuid& ExecutionId);
 	bool IsArrivalPawnReady(const APawn* Pawn) const;
+	FString DescribeArrivalReadiness(const FGuid& ExecutionId, const APawn* Pawn) const;
 	void NotifyClientArrivalReady(AFirstPersonPlayerController* Player, const FGuid& ExecutionId);
 
 	// BP에서 생성한 운행음을 등록하면 완료/취소 시 이 실행의 소리만 정리한다.
@@ -256,6 +257,7 @@ protected:
 	void MotionPresentationStopped(FGuid ExecutionId);
 
 private:
+	void LogCollisionPlacement(const TCHAR* Event) const;
 	void SampleCollisionDiagnostics();
 	void StopCollisionDiagnostics();
 	UFUNCTION()
@@ -374,6 +376,7 @@ private:
 	void FinishExit();
 	void RollbackPair();
 	void AbortTransition();
+	void AbortTransitionWithReason(const TCHAR* Reason);
 	void ReleaseTransition();
 	void RetryExit();
 
@@ -392,6 +395,8 @@ private:
 	friend class FElevatorArrivalMotionTest;
 	friend class FElevatorCompletionBoundaryTest;
 	friend class FElevatorControllerTransportTest;
+	friend class FElevatorOuterWallArrivalRubbingTest;
+	friend class FElevatorCollisionStateAndPlacementTest;
 	friend class FElevatorMultiPhaseCombatTest;
 	friend class FElevatorMultiPhaseCancellationTest;
 #endif

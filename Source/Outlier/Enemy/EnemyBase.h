@@ -137,6 +137,7 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 {
 	GENERATED_BODY()
 	friend class FOutlierSightBoneTargetsTest;
+	friend class FEnemyAdaptationCombatPresentationTest;
 
 public:
 	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
@@ -1004,7 +1005,8 @@ protected:
 	// 행동 중단 여부는 기존 상태 로직이 결정하고, 파생 클래스는 작은 피격 연출만 정리한다.
 	virtual void InterruptDamagePresentation(float BlendOutTime) {}
 	// 서버 로컬 상태 변경과 GAS 통지를 표현에 반영한다. 게임플레이 상태는 변경하지 않는다.
-	virtual void RefreshCombatStatePresentation() { RefreshEnemyAudioState(); }
+	virtual void RefreshCombatStatePresentation();
+	void RefreshAdaptationShieldPresentation();
 	virtual void OnPoolStateApplied(EEnemyPoolState PreviousState) {}
 	virtual bool ShouldResetPoolMontages() const { return true; }
 

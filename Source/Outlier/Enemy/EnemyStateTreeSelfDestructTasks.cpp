@@ -13,6 +13,18 @@ namespace
 {
 	DEFINE_LOG_CATEGORY_STATIC(LogEnemyCharge, Log, All);
 
+	void LogChargeTask(const TCHAR* Event, const ASelfDestructDrone* Drone, float Elapsed, float Duration)
+	{
+		static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.ChargeDiagnostics"));
+		if (UE_BUILD_SHIPPING || !Debug || Debug->GetInt() == 0) return;
+		// 이동 로그와 같은 Actor/대여 ID로 전이 실패·중단·정상 시간 만료를 구분한다.
+		UE_LOG(LogEnemyCharge, Log, TEXT("[ChargeTask] Event=%s Drone=%s Authority=%d Generation=%d Lease=%d Possessed=%d Active=%d Dead=%d Elapsed=%.3f Duration=%.3f Location=%s"),
+			Event, *GetNameSafe(Drone), Drone && Drone->HasAuthority(), Drone ? Drone->GetPoolGameplayGeneration() : -1,
+			Drone ? Drone->GetPoolLeaseSerial() : -1, Drone && Drone->IsEnemyPossessed(),
+			Drone && Drone->IsSelfDestructCommitted(), Drone && Drone->IsDead(), Elapsed, Duration,
+			Drone ? *Drone->GetActorLocation().ToCompactString() : TEXT("None"));
+	}
+
 	void LogChargeEligibility(const TCHAR* Phase, const AEnemyBase* Drone, const AActor* Target,
 		EEnemyChargeEligibility Reason)
 	{
@@ -334,6 +346,7 @@ EStateTreeRunStatus FEnemyUpdatePossessedSelfDestructTask::Tick(
 		|| !Drone->IsEnemyPossessed()
 		|| !Drone->IsSelfDestructCommitted())
 	{
+		LogChargeTask(TEXT("PossessedTickRejected"), Drone, InstanceData.ElapsedTime, InstanceData.ChargeDuration);
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -343,6 +356,7 @@ EStateTreeRunStatus FEnemyUpdatePossessedSelfDestructTask::Tick(
 		* FMath::Max(InstanceData.ChargeSpeedMultiplier, 0.0f);
 	if (!Drone->UpdateCommittedSelfDestructMovement(DeltaTime, ChargeSpeed))
 	{
+		LogChargeTask(TEXT("PossessedMovementFailed"), Drone, InstanceData.ElapsedTime, InstanceData.ChargeDuration);
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -352,6 +366,7 @@ EStateTreeRunStatus FEnemyUpdatePossessedSelfDestructTask::Tick(
 	}
 
 	// 성공 전환 뒤 Detonate Task가 실행될 때까지 Commit을 유지한다.
+	LogChargeTask(TEXT("PossessedDurationCompleted"), Drone, InstanceData.ElapsedTime, InstanceData.ChargeDuration);
 	InstanceData.bCompleted = true;
 	return EStateTreeRunStatus::Succeeded;
 }
@@ -365,6 +380,8 @@ void FEnemyUpdatePossessedSelfDestructTask::ExitState(
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	ASelfDestructDrone* Drone = ResolveSelfDestructDrone(Context, InstanceData.Drone);
 	InstanceData.Drone = Drone;
+	LogChargeTask(InstanceData.bCompleted ? TEXT("PossessedExitCompleted") : TEXT("PossessedExitInterrupted"),
+		Drone, InstanceData.ElapsedTime, InstanceData.ChargeDuration);
 	if (!InstanceData.bCompleted && IsValid(Drone) && Drone->HasAuthority())
 	{
 		Drone->CancelCommittedSelfDestruct();
@@ -425,6 +442,7 @@ EStateTreeRunStatus FEnemyChargeLastDirectionTask::Tick(
 	InstanceData.Drone = Drone;
 	if (!Drone || !Drone->HasAuthority() || !Drone->IsSelfDestructCommitted())
 	{
+		LogChargeTask(TEXT("AITickRejected"), Drone, InstanceData.ElapsedTime, InstanceData.TelegraphDuration);
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -434,6 +452,7 @@ EStateTreeRunStatus FEnemyChargeLastDirectionTask::Tick(
 		* FMath::Max(InstanceData.ChargeSpeedMultiplier, 0.0f);
 	if (!Drone->UpdateCommittedSelfDestructMovement(DeltaTime, ChargeSpeed))
 	{
+		LogChargeTask(TEXT("AIMovementFailed"), Drone, InstanceData.ElapsedTime, InstanceData.TelegraphDuration);
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -443,6 +462,7 @@ EStateTreeRunStatus FEnemyChargeLastDirectionTask::Tick(
 	}
 
 	// 정상 완료 시 다음 Detonate Task까지 Commit을 유지한다.
+	LogChargeTask(TEXT("AIDurationCompleted"), Drone, InstanceData.ElapsedTime, InstanceData.TelegraphDuration);
 	InstanceData.bCompleted = true;
 	return EStateTreeRunStatus::Succeeded;
 }
@@ -454,6 +474,8 @@ void FEnemyChargeLastDirectionTask::ExitState(
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	ASelfDestructDrone* Drone = ResolveSelfDestructDrone(Context, InstanceData.Drone);
 	InstanceData.Drone = Drone;
+	LogChargeTask(InstanceData.bCompleted ? TEXT("AIExitCompleted") : TEXT("AIExitInterrupted"),
+		Drone, InstanceData.ElapsedTime, InstanceData.TelegraphDuration);
 	if (!InstanceData.bCompleted
 		&& IsValid(Drone)
 		&& Drone->HasAuthority())
@@ -476,6 +498,7 @@ EStateTreeRunStatus FEnemyBombDetonateTask::EnterState(
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	ASelfDestructDrone* Drone = ResolveSelfDestructDrone(Context, InstanceData.Drone);
 	InstanceData.Drone = Drone;
+	LogChargeTask(TEXT("DetonateEnter"), Drone, Drone ? Drone->GetCommittedChargeElapsedTime() : 0.0f, 0.0f);
 	if (AEnemyBase::IsPossessedAttackDiagnosticsEnabled())
 	{
 		UE_LOG(

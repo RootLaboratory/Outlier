@@ -200,12 +200,13 @@ bool FElevatorControllerTransportTest::RunTest(const FString& Parameters)
 	Collision->SetCollisionProfileName(TEXT("BlockAll"));
 	Collision->RegisterComponent();
 	const FTransform OriginalCollision = Collision->GetComponentTransform();
-	const FTransform CollisionOffset = Collision->GetRelativeTransform();
 	Controller->SetControllerAtArrival(true);
 	TestTrue(TEXT("Controller aligns its entrance reference with arrival"),
 		(EntranceOffset * Controller->GetActorTransform()).Equals(Arrival, 0.001));
-	TestTrue(TEXT("Collision travels with the complete controller"),
-		Collision->GetComponentTransform().Equals(CollisionOffset * Controller->GetActorTransform(), 0.001));
+	FTransform ExpectedCollision = OriginalCollision;
+	ExpectedCollision.AddToTranslation(Controller->GetActorLocation() - Departure.GetLocation());
+	TestTrue(TEXT("Fixed collision translates while preserving its world rotation"),
+		Collision->GetComponentTransform().Equals(ExpectedCollision, 0.001));
 	TestFalse(TEXT("Collision no longer stays at departure"),
 		Collision->GetComponentTransform().Equals(OriginalCollision, 0.001));
 	TestEqual(TEXT("Transport preserves wall collision"), Collision->GetCollisionEnabled(), ECollisionEnabled::QueryAndPhysics);
