@@ -241,6 +241,8 @@ void AElevatorShaftController::BeginPlay()
 
 void AElevatorShaftController::EndPlay(const EEndPlayReason::Type Reason)
 {
+	StopCollisionDiagnostics();
+	GetWorldTimerManager().ClearTimer(CombatStartTimer);
 	GetWorldTimerManager().ClearAllTimersForObject(this);
 	SetControllerAtArrival(false);
 	RollbackPair();
@@ -332,6 +334,7 @@ bool AElevatorShaftController::ValidateConfiguration(FString& Error) const
 		|| !Section->GetActorUpVector().Equals(FVector::UpVector)
 		|| !FMath::IsFinite(FadeOutDuration) || FadeOutDuration < 0
 		|| !FMath::IsFinite(FadeInDuration) || FadeInDuration < 0
+		|| !FMath::IsFinite(CombatStartDelaySeconds) || CombatStartDelaySeconds < 0
 		|| !FMath::IsFinite(TransitionTimeout) || TransitionTimeout <= 0
 		|| !FMath::IsNearlyEqual(Section->GetSectionHeight(), Loop->GetSectionHeight()))
 	{
@@ -640,7 +643,7 @@ void AElevatorShaftController::SealEntrance()
 	}
 	else
 	{
-		StartCombat();
+		BeginCombatStartDelay();
 	}
 }
 
@@ -649,13 +652,48 @@ void AElevatorShaftController::FinishIntro(FGuid ExecutionId)
 	if (HasAuthority() && ExecutionId == Motion.ExecutionId && Motion.State == EElevatorShaftState::Intro
 		&& (!Arena.IsValid() || Arena->GetGameplayGeneration() == Motion.Generation))
 	{
-		StartCombat();
+		BeginCombatStartDelay();
 	}
+}
+
+void AElevatorShaftController::BeginCombatStartDelay()
+{
+	if (!HasAuthority() || (Motion.State != EElevatorShaftState::ClosingEntrance
+		&& Motion.State != EElevatorShaftState::Intro))
+	{
+		return;
+	}
+	if (!FMath::IsFinite(CombatStartDelaySeconds) || CombatStartDelaySeconds < 0)
+	{
+		ResetExecution(Motion.Generation);
+		UE_LOG(LogElevatorShaft, Error, TEXT("%s: CombatStartDelaySeconds must be finite and non-negative."), *GetName());
+		return;
+	}
+	const FGuid ExecutionId = Motion.ExecutionId;
+	const uint32 Generation = Motion.Generation;
+	SetState(EElevatorShaftState::WaitingForCombatStart);
+	// BP 상태 알림 중 Reset됐다면 이전 운행의 타이머를 만들지 않는다.
+	if (Motion.ExecutionId != ExecutionId || Motion.State != EElevatorShaftState::WaitingForCombatStart) return;
+	if (CombatStartDelaySeconds == 0.0f)
+	{
+		StartCombat();
+		return;
+	}
+	GetWorldTimerManager().SetTimer(CombatStartTimer,
+		FTimerDelegate::CreateWeakLambda(this, [this, ExecutionId, Generation]()
+		{
+			if (Motion.ExecutionId == ExecutionId && Motion.Generation == Generation
+				&& Motion.State == EElevatorShaftState::WaitingForCombatStart
+				&& (!Arena.IsValid() || Arena->GetGameplayGeneration() == Generation))
+			{
+				StartCombat();
+			}
+		}), CombatStartDelaySeconds, false);
 }
 
 void AElevatorShaftController::StartCombat()
 {
-	if (!Combat.IsValid() || bStartingCombat || bCombatRequested)
+	if (!HasAuthority() || !Combat.IsValid() || bStartingCombat || bCombatRequested)
 	{
 		return;
 	}
@@ -1019,6 +1057,7 @@ void AElevatorShaftController::ResetExecution(uint32 Generation)
 		return;
 	}
 	if (Combat.IsValid()) Combat->ReleaseEncounterCheckpointHold(CombatRoomTag, Motion.ExecutionId);
+	GetWorldTimerManager().ClearTimer(CombatStartTimer);
 	GetWorldTimerManager().ClearTimer(RetryTimer);
 	GetWorldTimerManager().ClearTimer(FadeTimeoutTimer);
 	GetWorldTimerManager().ClearTimer(FadeMinimumTimer);
