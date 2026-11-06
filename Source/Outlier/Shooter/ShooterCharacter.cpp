@@ -289,6 +289,8 @@ AShooterCharacter::AShooterCharacter(const FObjectInitializer& ObjectInitializer
 	: AFirstPersonCharacter(ObjectInitializer.SetDefaultSubobjectClass<UShooterCharacterMovementComponent>(
 		ACharacter::CharacterMovementComponentName))
 {
+	SightBones = { TEXT("head"), TEXT("spine_03"), TEXT("pelvis"), TEXT("clavicle_l"), TEXT("clavicle_r"), TEXT("calf_l"), TEXT("calf_r") };
+
 	PrimaryActorTick.bCanEverTick = true;
 	OwnedQueryTags.AddTag(OutlierGameplayTags::Actor::Role::Shooter());
 
@@ -533,6 +535,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	BoneSight.Shutdown();
 	ResetWeaponWallAvoidance();
 	if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 		PPS->SetPartnerShieldPostProcess(this, false);
@@ -1509,11 +1512,10 @@ void AShooterCharacter::RefreshFirstPersonShadowPolicy()
 		ThirdPersonMesh->SetOwnerNoSee(bLocalView);
 		ThirdPersonMesh->SetCastShadow(!bLocalView);
 		ThirdPersonMesh->SetCastHiddenShadow(false);
-		if (bLocalView)
+		if (bLocalView || BoneSight.IsPoseRefreshRequested() || bMeleeTracePoseRefreshRequested)
 		{
-			// 1인칭이 이 인스턴스와 애님 상태(벽 ADS 해제, 근접 단계 union)를
-			// 공유하고 그림자 메시도 이 포즈를 따라가므로, 로컬에서 몸이
-			// 하나도 렌더되지 않아도 계속 애니메이션을 갱신해야 한다
+			// 로컬 표시와 서버의 시야·근접 판정은 각각 최신 본을 요구한다.
+			// 하나라도 활성 상태면 렌더 여부와 관계없이 같은 TP 포즈를 갱신한다.
 			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 		}
 		else if (GetNetMode() == NM_DedicatedServer)
@@ -2568,6 +2570,12 @@ void AShooterCharacter::UpdateWeaponWallAvoidance(float DeltaSeconds)
 	PublishWeaponWallAvoidance();
 }
 
+const FOutlierSightBoneCache& AShooterCharacter::ResolveSightBoneRegistration() const
+{
+	SightBoneCache.Resolve(GetMesh() ? GetMesh()->GetSkeletalMeshAsset() : nullptr, SightBones);
+	return SightBoneCache;
+}
+
 UAISense_Sight::EVisibilityResult AShooterCharacter::CanBeSeenFrom(
 	const FCanBeSeenFromContext& Context,
 	FVector& OutSeenLocation,
@@ -2577,50 +2585,9 @@ UAISense_Sight::EVisibilityResult AShooterCharacter::CanBeSeenFrom(
 	int32* UserData,
 	const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
 {
-	OutNumberOfAsyncLosCheckRequested = 0;
-	OutSightStrength = 0.0f;
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return UAISense_Sight::EVisibilityResult::NotVisible;
-	}
-
-	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterLeanAISight), true, Context.IgnoreActor);
-	if (Context.IgnoreActor)
-	{
-		QueryParams.AddIgnoredActor(Context.IgnoreActor);
-	}
-
-	const auto IsVisibleAt = [&](const FVector& TargetLocation)
-	{
-		FHitResult Hit;
-		++OutNumberOfLoSChecksPerformed;
-		const bool bBlocked = World->LineTraceSingleByChannel(
-			Hit,
-			Context.ObserverLocation,
-			TargetLocation,
-			ECC_Visibility,
-			QueryParams);
-		if (!bBlocked || Hit.GetActor() == this)
-		{
-			OutSeenLocation = TargetLocation;
-			OutSightStrength = 1.0f;
-			return true;
-		}
-		return false;
-	};
-
-	if (FMath::Abs(CurrentLeanAlpha) >= LeanExposureCollisionMinAlpha && IsVisibleAt(GetPawnViewLocation()))
-	{
-		return UAISense_Sight::EVisibilityResult::Visible;
-	}
-	if (IsVisibleAt(GetActorLocation()))
-	{
-		return UAISense_Sight::EVisibilityResult::Visible;
-	}
-
-	return UAISense_Sight::EVisibilityResult::NotVisible;
+	return BoneSight.Query(*this, GetMesh(), ResolveSightBoneRegistration(), Context,
+		OutSeenLocation, OutNumberOfLoSChecksPerformed, OutNumberOfAsyncLosCheckRequested,
+		OutSightStrength, [this] { RefreshFirstPersonShadowPolicy(); });
 }
 
 FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
@@ -2792,6 +2759,11 @@ bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPr
 		Configuration.FirstPersonMesh, Configuration.FirstPersonAnimClass.Get());
 	const bool bThirdPersonChanged = ApplyMeshAndAnimation(Mesh3P,
 		Configuration.ThirdPersonMesh, Configuration.ThirdPersonAnimClass.Get());
+	if (bThirdPersonChanged)
+	{
+		// Suit 변경 직후 이전 메시의 본 인덱스를 폐기한다. 새 목록 검증은 실제 조회 시 한 번 수행한다.
+		SightBoneCache.Invalidate();
+	}
 	const bool bShadowChanged = ShadowMesh->GetSkeletalMeshAsset() != Configuration.ThirdPersonMesh;
 	if (bShadowChanged)
 	{
@@ -3142,12 +3114,9 @@ void AShooterCharacter::SetMeleeTracePoseRefreshEnabled(bool bEnabled)
 		return;
 	}
 
-	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
-	{
-		ThirdPersonMesh->VisibilityBasedAnimTickOption = bEnabled
-			? EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones
-			: EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
-	}
+	// 시야 갱신과 근접 판정은 독립된 요구다. 한쪽 종료가 다른 쪽 포즈 갱신을 끄지 않는다.
+	bMeleeTracePoseRefreshRequested = bEnabled;
+	RefreshFirstPersonShadowPolicy();
 }
 
 void AShooterCharacter::HandleMeleeRecoveryEndNotify()

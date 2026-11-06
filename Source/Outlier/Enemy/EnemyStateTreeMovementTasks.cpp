@@ -1820,10 +1820,14 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	{
 		return EStateTreeRunStatus::Running;
 	}
-	// 조사는 자체 완료 조건을 유지한다.
+	// 조사는 자체 완료 조건을 유지한다. 조사 중에도 청각 인지 시간을 누적해 Combat을 확정할 수 있다.
 	// 이 분기에서는 미발견 타이머나 Alert 회전으로 조사 이동·수색을 끊지 않는다.
 	if (Enemy->GetPerceptionGoal().Type == EEnemyPerceptionGoalType::InvestigateNoise || Enemy->IsNoiseSearchActive())
 	{
+		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
+		{
+			EnemyAIController->ResolveInitialAwarenessAlert();
+		}
 		InstanceData.VisibleElapsedTime = InstanceData.LostElapsedTime = 0.0f;
 		return EStateTreeRunStatus::Running;
 	}
@@ -1868,6 +1872,12 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	);
 
 	const float SafeDeltaTime = FMath::Max(DeltaTime, 0.0f);
+	// 최초 시각·청각 발견은 Controller의 대상별 누적/감소 수치로 확정한다.
+	// 기존 에셋에 저장된 LostCommitDuration=5는 이 경로에 적용하지 않는다.
+	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
+	{
+		if (EnemyAIController->ResolveInitialAwarenessAlert()) return EStateTreeRunStatus::Running;
+	}
 
 	if (bPlayerVisible)
 	{

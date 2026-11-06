@@ -13,6 +13,8 @@
 #include "Interface/JumperAffectableInterface.h"
 #include "Settings/OutlierInputUserSettings.h"
 #include "PostProcess/OutlierReadabilityTarget.h"
+#include "Enemy/OutlierSightBoneCache.h"
+#include "Enemy/OutlierBoneSight.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -87,7 +89,7 @@ struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
 struct FOnAttributeChangeData;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IWeaponDamageModifierProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface, public IOutlierReadabilityTarget
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IWeaponDamageModifierProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface, public IOutlierReadabilityTarget, public IAISightTargetInterface
 {
 	GENERATED_BODY()
 
@@ -101,7 +103,15 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerEMPComponent;
 	friend class FPartnerStandbyTest;
 	friend class FOutlierSlideSuitRecoveryTest;
+	friend class FOutlierSightBoneTargetsTest;
 public:
+	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
+	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(
+		const FCanBeSeenFromContext& Context, FVector& OutSeenLocation,
+		int32& OutNumberOfLoSChecksPerformed, int32& OutNumberOfAsyncLosCheckRequested,
+		float& OutSightStrength, int32* UserData = nullptr,
+		const FOnPendingVisibilityQueryProcessedDelegate* Delegate = nullptr) override;
+
 	/** 기존 직렬화 설정을 유지한다. 가독성 표현에는 공통 예약 비트(16)를 사용한다. */
 	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability")
 	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
@@ -111,6 +121,13 @@ public:
 	friend class FPartnerSprintInputModeTest;
 	friend class FPartnerRebootInputTest;
 protected:
+	// FP 메시나 표정 Sprite가 아닌 실제 월드 메시의 본 이름을 등록한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")
+	TArray<FName> SightBones;
+
+	mutable FOutlierSightBoneCache SightBoneCache;
+	FOutlierBoneSight BoneSight;
+
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;

@@ -1,4 +1,5 @@
 #include "Enemy/EnemyBase.h"
+
 #include "Event/OutlierEventSubsystem.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Enemy/AutoTurret.h"
@@ -30,6 +31,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkinnedMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -58,6 +60,12 @@
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
 #endif
+
+const FOutlierSightBoneCache& AEnemyBase::ResolveSightBoneRegistration() const
+{
+	SightBoneCache.Resolve(GetMesh() ? GetMesh()->GetSkeletalMeshAsset() : nullptr, SightBones);
+	return SightBoneCache;
+}
 
 namespace
 {
@@ -1185,6 +1193,7 @@ void AEnemyBase::ReturnToOwningPool()
 
 void AEnemyBase::ResetPoolRuntimeState()
 {
+	BoneSight.Shutdown();
 	ClearHeardNoise();
 	ResetTargetAttackContinuity();
 	ClearTargetTracking();
@@ -1236,6 +1245,7 @@ void AEnemyBase::PrepareForPoolIdle()
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	BoneSight.Shutdown();
 	ClearHeardNoise();
 	ResetTargetAttackContinuity();
 	ClearTargetTracking();
@@ -2613,6 +2623,31 @@ bool AEnemyBase::CommitAlertToCombat()
 	}
 	EnterCombatFromRoom(LastKnownPlayerLocation, bPropagateToRoom, true);
 	return CombatState == EEnemyCombatState::Combat;
+}
+
+bool AEnemyBase::CommitAlertToCombatFromHearing(AActor* Source, const FVector& HeardLocation, double OccurredAt)
+{
+	if (!HasAuthority() || CombatState != EEnemyCombatState::Alert || !IsValid(Source)
+		|| Source->IsActorBeingDestroyed() || HeardLocation.ContainsNaN()
+		|| !FMath::IsFinite(OccurredAt) || OccurredAt < 0.0 || OccurredAt > GetWorld()->GetTimeSeconds()) return false;
+	UpdateLastKnownPlayerLocation(HeardLocation);
+	if (!CommitAlertToCombat()) return false;
+
+	// 완료한 출처의 마지막 소리로 조사 회차를 넘긴다. 이전 부분 시야의 추적 유예나
+	// 다른 출처의 조사 좌표가 청각 완료를 실제 대상 위치 추적으로 바꾸지 않게 분리한다.
+	ClearTargetTracking();
+	EndSearchEpisode();
+	bNoiseInvestigationActive = true;
+	bNoiseInvestigationSearching = false;
+	++NoiseInvestigationSerial;
+	NoiseInvestigationSource = Source;
+	NoiseInvestigationLocation = HeardLocation;
+	NoiseInvestigationAt = OccurredAt;
+	LastNoiseDestinationChangedAt = GetWorld()->GetTimeSeconds();
+	UpdateLastKnownPlayerLocation(HeardLocation);
+	PauseTargetAttack();
+	RefreshPerceptionGoal();
+	return true;
 }
 
 bool AEnemyBase::CommitAlertToNonCombat()

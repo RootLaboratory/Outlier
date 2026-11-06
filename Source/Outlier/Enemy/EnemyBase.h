@@ -23,6 +23,8 @@
 #include "Enemy/EnemyHackEffectTypes.h"
 #include "PostProcess/OutlierSpawnVisualTarget.h"
 #include "PostProcess/OutlierReadabilityTarget.h"
+#include "Enemy/OutlierSightBoneCache.h"
+#include "Enemy/OutlierBoneSight.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -134,8 +136,11 @@ UCLASS()
 class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget, public IWeaponDamageModifierProvider, public IOutlierReadabilityTarget
 {
 	GENERATED_BODY()
+	friend class FOutlierSightBoneTargetsTest;
 
 public:
+	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
+
 	/** 기존 직렬화 설정을 유지한다. 가독성 표현에는 공통 예약 비트(16)를 사용한다. */
 	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability")
 	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
@@ -265,6 +270,13 @@ public:
 	void SendEnemyStateTreeEvent(FGameplayTag Tag);
 
 protected:
+	// 빙의 여부는 기존 팀 판정이 결정한다. 이 목록은 유형별 월드 메시의 신체 설정만 담당한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")
+	TArray<FName> SightBones;
+
+	mutable FOutlierSightBoneCache SightBoneCache;
+	FOutlierBoneSight BoneSight;
+
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -761,6 +773,8 @@ public:
 	// Enemy Resolve Alert Task가 제한 시간 충족 시 호출하는 서버 확정 API.
 	// 상태 변경 후 Combat.Entered 또는 Combat.AlertCleared 이벤트로 StateTree 전환을 요청한다.
 	bool CommitAlertToCombat();
+	// 청각 완료는 대상의 실제 위치 추적을 만들지 않고 마지막 소리 좌표의 조사로 전투에 진입한다.
+	bool CommitAlertToCombatFromHearing(AActor* Source, const FVector& HeardLocation, double OccurredAt);
 	bool CommitAlertToNonCombat();
 	bool GetReturnHomeDestination(FVector& OutDestination) const;
 	bool CompleteReturnHome();

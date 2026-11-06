@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerCharacter.h"
+
 #include "Curves/CurveFloat.h"
 #include "TimerManager.h"
 #include "Audio/OutlierAudioFeedback.h"
@@ -51,6 +52,21 @@
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Engine/LocalPlayer.h"
 #include "Templates/UnrealTemplate.h"
+
+UAISense_Sight::EVisibilityResult APartnerCharacter::CanBeSeenFrom(
+	const FCanBeSeenFromContext& Context, FVector& OutSeenLocation,
+	int32& OutNumberOfLoSChecksPerformed, int32& OutNumberOfAsyncLosCheckRequested,
+	float& OutSightStrength, int32* UserData,
+	const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
+{
+	return BoneSight.Query(*this, GetMesh(), ResolveSightBoneRegistration(), Context,
+		OutSeenLocation, OutNumberOfLoSChecksPerformed, OutNumberOfAsyncLosCheckRequested, OutSightStrength);
+}
+const FOutlierSightBoneCache& APartnerCharacter::ResolveSightBoneRegistration() const
+{
+	SightBoneCache.Resolve(GetMesh() ? GetMesh()->GetSkeletalMeshAsset() : nullptr, SightBones);
+	return SightBoneCache;
+}
 
 namespace
 {
@@ -126,6 +142,7 @@ void APartnerCharacter::BeginPlay()
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	BoneSight.Shutdown();
 	UnbindAccelerateInputSettings();
 	SetStandby(false);
 	if (HasAuthority())
@@ -2025,6 +2042,7 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 
 APartnerCharacter::APartnerCharacter()
 {
+	SightBones = { TEXT("Body"), TEXT("R_Hand"), TEXT("L_Hand") };
 	PrimaryActorTick.bCanEverTick = true;
 
 	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(

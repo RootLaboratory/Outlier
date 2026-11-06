@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AIController.h"
 #include "Perception/AIPerceptionTypes.h"
+#include "Enemy/EnemySightAwareness.h"
 #include "EnemyAIController.generated.h"
 
 class AEnemyBase;
@@ -41,6 +42,8 @@ public:
 	AActor* GetCachedVisibleTarget() const { return LastVisibleTarget.Get(); }
 	bool IsTargetDirectlyVisible(const AActor* Target) const;
 	bool IsValidTrackingTarget(const AActor* Target) const { return IsValidDetectionTarget(Target); }
+	// 최초 시각·청각 발견을 확정한다. 진행 중인 조사나 공유 경계는 수치 0만으로 취소하지 않는다.
+	bool ResolveInitialAwarenessAlert();
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void SetCachedVisibleTargetForTesting(AActor* TargetActor) { LastVisibleTarget = TargetActor; }
@@ -52,6 +55,8 @@ public:
 	friend class FRoomGroupPursuitDetectionTest;
 	friend class FEnemyChaseIntegrationTest;
 	friend class FEnemySearchWorldLifecycleTest;
+	friend class FEnemySightAlertIntegrationTest;
+	friend class FEnemyHearingAwarenessIntegrationTest;
 #endif
 
 protected:
@@ -81,6 +86,22 @@ protected:
 	void ConfigureHearingFromEnemy(AEnemyBase* Enemy);
 	bool IsValidDetectionTarget(const AActor* TargetActor) const;
 	bool IsStealthedDetectionTarget(const AActor* TargetActor) const;
+	void ObserveInitialSight(AEnemyBase& Enemy, AActor& Target, bool bVisible);
+	void ObserveInitialHearing(AEnemyBase& Enemy, AActor& Target, const FVector& Location, double OccurredAt);
+	void ResetInitialAwareness();
+
+	struct FAwarenessTarget
+	{
+		FEnemySightAwareness Progress;
+		FVector LastSeenLocation = FVector::ZeroVector;
+		FVector LastHeardLocation = FVector::ZeroVector;
+		double LastSeenAt = -1.0;
+		double LastHeardAt = -1.0;
+		bool bVisible = false;
+	};
+	void AdvanceInitialAwareness(AEnemyBase& Enemy, FAwarenessTarget& State);
+	TMap<TWeakObjectPtr<AActor>, FAwarenessTarget> AwarenessTargets;
+	bool bInitialAwarenessAlert = false;
 
 	// 직접 Sight가 유지되는 동안에만 방 공유 좌표를 저빈도로 갱신한다.
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|AI", meta = (ClampMin = "0.05"))

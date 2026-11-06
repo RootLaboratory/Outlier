@@ -1,4 +1,5 @@
 #include "Enemy/VECDrone.h"
+#include "Engine/World.h"
 #include "Audio/OutlierAudioFeedback.h"
 
 #include "Animation/AnimInstance.h"
@@ -49,8 +50,18 @@ namespace
 	}
 }
 
+UAISense_Sight::EVisibilityResult AVECDrone::CanBeSeenFrom(
+	const FCanBeSeenFromContext& Context, FVector& OutSeenLocation,
+	int32& OutNumberOfLoSChecksPerformed, int32& OutNumberOfAsyncLosCheckRequested,
+	float& OutSightStrength, int32* UserData,
+	const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
+{
+	return BoneSight.Query(*this, GetMesh(), ResolveSightBoneRegistration(), Context,
+		OutSeenLocation, OutNumberOfLoSChecksPerformed, OutNumberOfAsyncLosCheckRequested, OutSightStrength);
+}
 AVECDrone::AVECDrone()
 {
+	SightBones = { TEXT("BodyBone"), TEXT("R_GunBone"), TEXT("L_GunBone") };
 	SetDefaultEnemyType(EEnemyType::Gun);
 	HitAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Hit"));
 	DeathAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Death"));

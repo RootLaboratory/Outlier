@@ -56,6 +56,7 @@ void CollectMatchingExplosiveSockets(
 
 ASelfDestructDrone::ASelfDestructDrone()
 {
+	SightBones = { TEXT("RootBone"), TEXT("CoreBone"), TEXT("BodyBone") };
 	SetDefaultEnemyType(EEnemyType::Melee);
 	HitAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Hit"));
 	DeathAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Death"));

@@ -8,6 +8,8 @@
 #include "GameplayTagContainer.h"
 #include "AbilitySystemInterface.h"
 #include "Perception/AISightTargetInterface.h"
+#include "Enemy/OutlierSightBoneCache.h"
+#include "Enemy/OutlierBoneSight.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "UI/UILayerTypes.h"
@@ -266,8 +268,21 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FOutlierTransitionRecoveryTest;
 	friend class FOutlierMeleeAttackLifecycleTest;
 	friend class FOutlierWallShotPoseAssetsTest;
+	friend class FOutlierSightBoneTargetsTest;
+	friend class FOutlierBoneSightDedicatedPoseTest;
+
+public:
+	// 조회 시 현재 TP 메시로 재검증한다. 반환 캐시의 인덱스는 다음 재검증 전까지만 유효하다.
+	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
 
 protected:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")
+	TArray<FName> SightBones;
+
+	mutable FOutlierSightBoneCache SightBoneCache;
+	FOutlierBoneSight BoneSight;
+	bool bMeleeTracePoseRefreshRequested = false;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UOutlierAudioSubsystem> MovementAudioSubsystem;
 
