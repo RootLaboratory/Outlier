@@ -14,6 +14,8 @@
 #include "Interface/JumperAffectableInterface.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "Settings/OutlierInputUserSettings.h"
+#include "Shooter/Anim/WeaponWallAvoidance.h"
+#include "Shooter/Anim/WeaponWallShotPose.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
@@ -263,6 +265,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FOutlierSlideSuitRecoveryTest;
 	friend class FOutlierTransitionRecoveryTest;
 	friend class FOutlierMeleeAttackLifecycleTest;
+	friend class FOutlierWallShotPoseAssetsTest;
 
 protected:
 	UPROPERTY(Transient)
@@ -545,6 +548,7 @@ protected:
 
 	FVector  BaseFirstPersonMeshLocation = FVector::ZeroVector;
 	FVector  BaseFirstPersonCameraRootLocation = FVector::ZeroVector;
+	FVector  BaseFirstPersonViewLocation = FVector::ZeroVector;
 	FVector  BaseFirstPersonViewModelRootLocation = FVector::ZeroVector;
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonViewModelRootRotation = FRotator::ZeroRotator;
@@ -768,6 +772,14 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual FVector GetPawnViewLocation() const override;
+
+	const FWeaponWallAvoidanceState& GetWeaponWallAvoidanceState() const { return WeaponWallAvoidanceState; }
+	uint32 GetWallShotEquipmentRevision() const { return WallShotEquipmentRevision; }
+	double GetLastWallCorrectionTime() const { return LastWallCorrectionTime; }
+	uint32 GetLastWallCorrectionSequence() const { return LastWallCorrectionSequence; }
+	// 발사용 시점은 서버가 해결한 Lean을 사용한다. 표시용 Roll/장식 오프셋은 포함하지 않는다.
+	FTransform GetWallShotViewTransform() const;
+	bool TryGetWallShotTransform(FTransform& OutTransform) const;
 	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(
 		const FCanBeSeenFromContext& Context,
 		FVector& OutSeenLocation,
@@ -1147,6 +1159,39 @@ public:
 	float ResolveLeanAlphaForCollision(float DesiredLeanAlpha) const;
 	FVector GetLeanViewOffsetWorld(float LeanAlpha) const;
 	FVector GetBaseLeanViewLocation() const;
+	void UpdateWeaponWallAvoidance(float DeltaSeconds);
+	// true: 실제 장착 수명 종료. false: 서버 복제에 맞춘 캐시 재구성만 수행한다.
+	void ResetWeaponWallAvoidance(bool bInvalidateEquipment = true);
+	// 초기 GameState 시각 복제가 지연되면 수신한 서버 시각을 로컬 진행 시계의 하한으로 사용한다.
+	double WallPredictionClockOffset = -DBL_MAX;
+	double GetWallAvoidanceServerTime() const;
+	void PublishWeaponWallAvoidance();
+	void ApplyWeaponWallAvoidanceCorrection(const FWeaponValues& Values);
+	UFUNCTION()
+	void OnRep_WallAvoidanceSnapshot();
+	UFUNCTION()
+	void OnRep_WallShotEquipmentRevision();
+	UPROPERTY(ReplicatedUsing = OnRep_WallShotEquipmentRevision)
+	uint32 WallShotEquipmentRevision = 0;
+	UPROPERTY(ReplicatedUsing = OnRep_WallAvoidanceSnapshot)
+	FWeaponWallAvoidanceSnapshot WallAvoidanceSnapshot;
+	UPROPERTY(Transient)
+	FWeaponWallAvoidanceSnapshot PendingWallAvoidanceSnapshot;
+	TArray<FWeaponWallPredictionFrame> WallPredictionFrames;
+	double LastWallCorrectionTime = -1.0;
+	double NextWallSnapshotTime = 0.0;
+	uint32 LastWallCorrectionSequence = 0;
+#if WITH_DEV_AUTOMATION_TESTS
+	uint32 LastRejectedWallCorrectionSequence = 0;
+#endif
+	bool bHasPendingWallCorrection = false;
+	bool bWallEquipmentInvalidated = false;
+	FWeaponWallAvoidanceState WeaponWallAvoidanceState;
+	FWeaponWallShotPose WeaponWallShotPose;
+	TWeakObjectPtr<AWeaponBase> WallAvoidanceWeapon;
+	uint32 CachedWallWeaponRevision = 0;
+	TWeakObjectPtr<AWeaponBase> InvalidatedWallWeapon;
+	uint32 InvalidatedWallWeaponRevision = 0;
 	void ApplyLeanPresentation();
 	void UpdateLeanExposureCollision();
 	void UpdateCameraFOV(float DeltaSeconds);

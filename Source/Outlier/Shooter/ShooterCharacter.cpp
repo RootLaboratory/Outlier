@@ -47,6 +47,7 @@
 #include "ShooterInventoryComponent.h"
 #include "ShooterCombatComponent.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Shooter/Anim/ProceduralAnimValues.h"
 #include "ShooterFirstPersonAnimInstance.h"
 #include "ShooterAnimInstance.h"
 #include "ShooterMovementComponent.h"
@@ -61,6 +62,7 @@
 #include "GAS/Attributes/OutlierWeaponAttributeSet.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "GameFramework/GameStateBase.h"
 #include "OutlierPlayerState.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
@@ -389,6 +391,10 @@ void AShooterCharacter::BeginPlay()
 	{
 		BaseFirstPersonCameraRootLocation = CameraRoot->GetRelativeLocation();
 		BaseFirstPersonCameraRootRotation = CameraRoot->GetRelativeRotation();
+		// CameraRoot와 실제 카메라의 원점은 BP에서 다를 수 있다. 표시가 시작되기 전
+		// 장착 기준을 캐시해 서버 시점에도 같은 authored 위치를 쓰고, 이후 Lean은 한 번만 더한다.
+		const FVector CameraOffset = FirstPersonCamera ? FirstPersonCamera->GetRelativeLocation() : FVector::ZeroVector;
+		BaseFirstPersonViewLocation = CameraRoot->GetRelativeTransform().TransformPosition(CameraOffset);
 	}
 	if (LeanExposureCollision)
 	{
@@ -408,6 +414,8 @@ void AShooterCharacter::BeginPlay()
 
 	if (FirstPersonMesh)
 	{
+		// 공통 벽 상태를 갱신한 뒤 AnimInstance가 같은 프레임 결과를 읽도록 순서를 고정한다.
+		FirstPersonMesh->AddTickPrerequisiteActor(this);
 		BaseFirstPersonMeshLocation = FirstPersonMesh->GetRelativeLocation();
 		BaseFirstPersonMeshRotation = FirstPersonMesh->GetRelativeRotation();
 	}
@@ -487,6 +495,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 	UpdateSlideCameraEffect(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
+	UpdateWeaponWallAvoidance(DeltaSeconds);
 
 	if (IsLocallyControlled())
 	{
@@ -524,6 +533,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ResetWeaponWallAvoidance();
 	if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 		PPS->SetPartnerShieldPostProcess(this, false);
 	UnbindSprintSettings();
@@ -2291,6 +2301,8 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
 	DOREPLIFETIME(AShooterCharacter, CurrentLeanAlpha);
+	DOREPLIFETIME(AShooterCharacter, WallShotEquipmentRevision);
+	DOREPLIFETIME_CONDITION(AShooterCharacter, WallAvoidanceSnapshot, COND_OwnerOnly);
 	DOREPLIFETIME(AShooterCharacter, PresentationState);
 }
 
@@ -2301,7 +2313,7 @@ FVector AShooterCharacter::GetBaseLeanViewLocation() const
 		return Super::GetPawnViewLocation();
 	}
 
-	return GetActorTransform().TransformPosition(BaseFirstPersonCameraRootLocation);
+	return GetActorTransform().TransformPosition(BaseFirstPersonViewLocation);
 }
 
 FVector AShooterCharacter::GetLeanViewOffsetWorld(float LeanAlpha) const
@@ -2327,6 +2339,229 @@ FVector AShooterCharacter::GetLeanViewOffsetWorld(float LeanAlpha) const
 FVector AShooterCharacter::GetPawnViewLocation() const
 {
 	return GetBaseLeanViewLocation() + GetLeanViewOffsetWorld(CurrentLeanAlpha);
+}
+
+FTransform AShooterCharacter::GetWallShotViewTransform() const
+{
+	const FRotator Aim = GetBaseAimRotation();
+	return FTransform(FRotator(Aim.Pitch, Aim.Yaw, 0.0f), GetPawnViewLocation());
+}
+
+bool AShooterCharacter::TryGetWallShotTransform(FTransform& OutTransform) const
+{
+	const AWeaponBase* Weapon = GetCurrentWeapon();
+	if ((!HasAuthority() && !IsLocallyControlled()) || IsDead() || !IsValid(Weapon)
+		|| !Weapon->IsA<ARangedWeaponBase>() || WallAvoidanceWeapon.Get() != Weapon)
+	{
+		return false;
+	}
+	const FTransform View = GetWallShotViewTransform();
+	if (View.ContainsNaN()) return false;
+	if (WeaponWallAvoidanceState.GetShotBlendAlpha() == 0.0f)
+	{
+		OutTransform = View;
+		return true;
+	}
+	const UProceduralAnimValues* Values = Weapon->GetFirstPersonProceduralValues();
+	FTransform Muzzle;
+	return Values && WeaponWallShotPose.Evaluate(WeaponWallAvoidanceState, Values->WeaponValues,
+		WeaponWallAvoidanceState.AimAlpha, View, Muzzle)
+		&& WeaponWallAvoidanceState.ResolveShotTransform(View, Muzzle, OutTransform);
+}
+
+void AShooterCharacter::ResetWeaponWallAvoidance(bool bInvalidateEquipment)
+{
+	// 서버 세대가 먼저 복제됐더라도 무효화할 대상은 이전 캐시가 실제로 사용한 쌍이다.
+	// 같은 Actor 재장착 중에는 새 세대가 확인되기 전까지 이 쌍의 지연 보정을 다시 받지 않는다.
+	if (bInvalidateEquipment && WallAvoidanceWeapon.IsValid())
+	{
+		InvalidatedWallWeapon = WallAvoidanceWeapon;
+		InvalidatedWallWeaponRevision = CachedWallWeaponRevision;
+	}
+	// 여러 장착/외형 콜백은 다음 캐시 생성 전까지 하나의 장착 세대로 묶는다.
+	if (bInvalidateEquipment && HasAuthority() && !bWallEquipmentInvalidated) ++WallShotEquipmentRevision;
+	bWallEquipmentInvalidated = true;
+	WeaponWallAvoidanceState.Reset();
+	WeaponWallShotPose.Reset();
+	WallAvoidanceWeapon.Reset();
+	WallPredictionFrames.Reset();
+	bHasPendingWallCorrection = false;
+	PendingWallAvoidanceSnapshot = FWeaponWallAvoidanceSnapshot();
+	NextWallSnapshotTime = 0.0;
+}
+
+double AShooterCharacter::GetWallAvoidanceServerTime() const
+{
+	const UWorld* World = GetWorld();
+	if (World)
+	{
+		const double LocalTime = World->GetTimeSeconds();
+		const double SynchronizedTime = World->GetGameState()
+			? World->GetGameState()->GetServerWorldTimeSeconds() : LocalTime;
+		return HasAuthority() ? SynchronizedTime : FMath::Max(SynchronizedTime, LocalTime + WallPredictionClockOffset);
+	}
+	return 0.0;
+}
+
+void AShooterCharacter::OnRep_WallShotEquipmentRevision()
+{
+	// 서버 세대 확인은 새 로컬 해제 이벤트가 아니다. 현재 쌍을 무효화하지 않고 캐시만 다시 만든다.
+	// 무기 참조와 세대의 RepNotify 순서는 고정되어 있지 않으므로 다음 갱신에서 둘을 확인한다.
+	ResetWeaponWallAvoidance(false);
+	OnRep_WallAvoidanceSnapshot();
+}
+
+void AShooterCharacter::OnRep_WallAvoidanceSnapshot()
+{
+	if (HasAuthority() || !IsLocallyControlled()) return;
+	if (WallAvoidanceSnapshot.Sequence <= LastWallCorrectionSequence) return;
+	const double Now = GetWallAvoidanceServerTime();
+	if (GetWorld() && FMath::IsFinite(WallAvoidanceSnapshot.ServerTime)
+		&& WallAvoidanceSnapshot.ServerTime > Now + 0.05)
+	{
+		// GameState의 최초 시각 동기화보다 상태가 먼저 도착할 수 있다. 수신 시각은 서버의
+		// 현재 시각 하한이므로, 과거 입력 이력도 같은 차이만큼 옮겨 서로 다른 시계를 섞지 않는다.
+		const double Shift = WallAvoidanceSnapshot.ServerTime - Now;
+		WallPredictionClockOffset = WallAvoidanceSnapshot.ServerTime - GetWorld()->GetTimeSeconds();
+		for (FWeaponWallPredictionFrame& Frame : WallPredictionFrames) Frame.ServerTime += Shift;
+	}
+	PendingWallAvoidanceSnapshot = WallAvoidanceSnapshot;
+	bHasPendingWallCorrection = true;
+}
+
+void AShooterCharacter::PublishWeaponWallAvoidance()
+{
+	if (!HasAuthority() || !GetWorld()) return;
+	const double Now = GetWallAvoidanceServerTime();
+	if (Now < NextWallSnapshotTime) return;
+	NextWallSnapshotTime = Now + 0.1;
+	const FWeaponWallAvoidanceState& Previous = WallAvoidanceSnapshot.State;
+	const bool bEquipmentChanged = WallAvoidanceSnapshot.Weapon != GetCurrentWeapon()
+		|| WallAvoidanceSnapshot.EquipmentRevision != WallShotEquipmentRevision;
+	const bool bChanged = !FMath::IsNearlyEqual(Previous.AimAlpha, WeaponWallAvoidanceState.AimAlpha, 0.0001f)
+		|| !FMath::IsNearlyEqual(Previous.GetShotBlendAlpha(), WeaponWallAvoidanceState.GetShotBlendAlpha(), 0.0001f)
+		|| !Previous.ViewModelWallOffsetLoc.Equals(WeaponWallAvoidanceState.ViewModelWallOffsetLoc, 0.0001)
+		|| !Previous.ViewModelWallOffsetRot.Equals(WeaponWallAvoidanceState.ViewModelWallOffsetRot, 0.0001);
+	// 안정된 일반 사격/ADS는 멈추고, 회피 중에는 잃어버린 상태도 다음 제한 주기에 복구한다.
+	if (!bEquipmentChanged && !bChanged && WeaponWallAvoidanceState.GetShotBlendAlpha() == 0.0f) return;
+	WallAvoidanceSnapshot.Weapon = GetCurrentWeapon();
+	WallAvoidanceSnapshot.EquipmentRevision = WallShotEquipmentRevision;
+	++WallAvoidanceSnapshot.Sequence;
+	WallAvoidanceSnapshot.ServerTime = Now;
+	WallAvoidanceSnapshot.State = WeaponWallAvoidanceState;
+}
+
+void AShooterCharacter::ApplyWeaponWallAvoidanceCorrection(const FWeaponValues& Values)
+{
+	if (!bHasPendingWallCorrection || HasAuthority() || !IsLocallyControlled()) return;
+	const FWeaponWallAvoidanceSnapshot& Snapshot = PendingWallAvoidanceSnapshot;
+	// 같은 Actor를 재장착해도 과거 세대의 보정은 받지 않는다. 미해결 참조는 다음 갱신까지 기다린다.
+	if (!Snapshot.MatchesEquipment(GetCurrentWeapon(), WallShotEquipmentRevision,
+		InvalidatedWallWeapon.Get(), InvalidatedWallWeaponRevision))
+	{
+#if WITH_DEV_AUTOMATION_TESTS
+		if (Snapshot.Sequence != LastRejectedWallCorrectionSequence)
+		{
+			LastRejectedWallCorrectionSequence = Snapshot.Sequence;
+			UE_LOG(LogTemp, Display, TEXT("[WallShotCorrectionReject] Reason=EquipmentPair Shooter=%s Sequence=%u Revision=%u SnapshotRevision=%u Current=%s SnapshotWeapon=%s Invalidated=%s InvalidatedRevision=%u"),
+				*GetName(), Snapshot.Sequence, WallShotEquipmentRevision, Snapshot.EquipmentRevision,
+				*GetNameSafe(GetCurrentWeapon()), *GetNameSafe(Snapshot.Weapon.Get()),
+				*GetNameSafe(InvalidatedWallWeapon.Get()), InvalidatedWallWeaponRevision);
+		}
+#endif
+		return;
+	}
+	if (Snapshot.Sequence <= LastWallCorrectionSequence)
+	{
+		bHasPendingWallCorrection = false;
+		return;
+	}
+	FWeaponWallAvoidanceState Corrected;
+	const double Now = GetWallAvoidanceServerTime();
+	if (Snapshot.Reconcile(GetWorld(), this, GetCurrentWeapon(), Values, Now, LastWallCorrectionTime,
+		WallPredictionFrames, Corrected))
+	{
+		const float PredictionAlpha = WeaponWallAvoidanceState.GetShotBlendAlpha();
+		WeaponWallAvoidanceState = Corrected;
+		LastWallCorrectionTime = Snapshot.ServerTime;
+		LastWallCorrectionSequence = Snapshot.Sequence;
+		bHasPendingWallCorrection = false;
+		UE_LOG(LogTemp, Verbose, TEXT("[WallShotCorrection] Shooter=%s Revision=%u Sequence=%u Age=%.3f AlphaError=%.6f ReplayUsesCurrentCollision=1"),
+			*GetName(), WallShotEquipmentRevision, Snapshot.Sequence, Now - Snapshot.ServerTime,
+			PredictionAlpha - Corrected.GetShotBlendAlpha());
+	}
+	else
+	{
+#if WITH_DEV_AUTOMATION_TESTS
+		if (Snapshot.Sequence != LastRejectedWallCorrectionSequence)
+		{
+			LastRejectedWallCorrectionSequence = Snapshot.Sequence;
+			UE_LOG(LogTemp, Display, TEXT("[WallShotCorrectionReject] Reason=ReplayWindow Shooter=%s Sequence=%u Revision=%u Now=%.6f ServerTime=%.6f LastAppliedTime=%.6f Frames=%d"),
+				*GetName(), Snapshot.Sequence, WallShotEquipmentRevision, Now, Snapshot.ServerTime,
+				LastWallCorrectionTime, WallPredictionFrames.Num());
+		}
+#endif
+		if (Now - Snapshot.ServerTime > 0.75) bHasPendingWallCorrection = false;
+	}
+}
+
+void AShooterCharacter::UpdateWeaponWallAvoidance(float DeltaSeconds)
+{
+	AWeaponBase* Weapon = GetCurrentWeapon();
+	const bool bWeaponChanged = WallAvoidanceWeapon.Get() != Weapon;
+	if (bWeaponChanged)
+	{
+		ResetWeaponWallAvoidance();
+		WallAvoidanceWeapon = Weapon;
+		CachedWallWeaponRevision = WallShotEquipmentRevision;
+	}
+	if ((!HasAuthority() && !IsLocallyControlled()) || IsDead() || !IsValid(Weapon)
+		|| !Weapon->IsA<ARangedWeaponBase>())
+	{
+		WeaponWallAvoidanceState.Reset();
+		PublishWeaponWallAvoidance();
+		return;
+	}
+	if (bWeaponChanged)
+	{
+		if (!WeaponWallShotPose.Initialize(*this, *Weapon))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[WallShotPose] Shooter=%s Weapon=%s: %s"),
+				*GetName(), *GetNameSafe(Weapon), *WeaponWallShotPose.GetDiagnostic());
+		}
+		bWallEquipmentInvalidated = false;
+		// 참조/세대가 서로 다른 순서로 복제되어도 캐시가 준비된 뒤 최신 상태를 다시 확인한다.
+		if (!HasAuthority()) OnRep_WallAvoidanceSnapshot();
+	}
+	const UProceduralAnimValues* Values = Weapon->GetFirstPersonProceduralValues();
+	if (!Values && bWeaponChanged)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[WallShotPose] Shooter=%s Weapon=%s: missing wall configuration"),
+			*GetName(), *GetNameSafe(Weapon));
+	}
+	const FVector DetectionOrigin = GetBaseLeanViewLocation();
+	const FRotator AimRotation = GetBaseAimRotation();
+	// 기존 Actor 갱신에서 한 번 예측한 뒤 보정을 소비한다. 사격/AnimBP 조회는 시간을 진행시키지 않는다.
+	WeaponWallAvoidanceState.Update(GetWorld(), this, Weapon, DetectionOrigin,
+		AimRotation, DeltaSeconds, Values ? &Values->WeaponValues : nullptr);
+	if (Values)
+	{
+		WeaponWallAvoidanceState.UpdateAim(IsAiming(), DeltaSeconds, Values->WeaponValues);
+		if (!HasAuthority() && IsLocallyControlled())
+		{
+			constexpr int32 MaxPredictionFrames = 128;
+			if (WallPredictionFrames.Max() < MaxPredictionFrames + 1) WallPredictionFrames.Reserve(MaxPredictionFrames + 1);
+			const double Now = GetWallAvoidanceServerTime();
+			if (!WallPredictionFrames.IsEmpty() && Now < WallPredictionFrames.Last().ServerTime) WallPredictionFrames.Reset();
+			WallPredictionFrames.Add({Now, DeltaSeconds, DetectionOrigin, AimRotation, IsAiming()});
+			int32 Expired = 0;
+			while (Expired < WallPredictionFrames.Num()
+				&& (WallPredictionFrames.Num() - Expired > MaxPredictionFrames || Now - WallPredictionFrames[Expired].ServerTime > 1.0)) ++Expired;
+			if (Expired > 0) WallPredictionFrames.RemoveAt(0, Expired, EAllowShrinking::No);
+			ApplyWeaponWallAvoidanceCorrection(Values->WeaponValues);
+		}
+	}
+	PublishWeaponWallAvoidance();
 }
 
 UAISense_Sight::EVisibilityResult AShooterCharacter::CanBeSeenFrom(
@@ -2563,6 +2798,9 @@ bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPr
 	RefreshFirstPersonShadowPolicy();
 	if (bPresentationChanged || bFirstPersonChanged || bThirdPersonChanged)
 	{
+		// 같은 무기라도 새 팔 Mesh/ABP의 기준 자세와 소켓으로 다시 계산해야 한다.
+		// 클라이언트의 늦은 외형 복제는 이미 받은 서버 장착 세대를 무효화하지 않는다.
+		ResetWeaponWallAvoidance(HasAuthority());
 		OnPresentationChanged.Broadcast();
 		// 같은 Mesh/ABP로 상태만 바뀌어도 캐시는 리셋한다. Linked graph의 독립 인스턴스도 포함한다.
 		const auto RefreshAnimation = [](UAnimInstance* Instance)
@@ -2694,6 +2932,7 @@ void AShooterCharacter::RefreshReplicatedPresentation()
 
 void AShooterCharacter::HandlePresentationWeaponChanged(EWeaponType NewWeaponType)
 {
+	ResetWeaponWallAvoidance();
 	(void)NewWeaponType;
 	// 교체로 중단된 몽타주의 NotifyEnd가 누락되어도 이전 무기의 애니메이션 반복음은 남기지 않는다.
 	if (MovementAudioSubsystem) MovementAudioSubsystem->StopAnimationAudioLoops(this);
@@ -2703,6 +2942,8 @@ void AShooterCharacter::HandlePresentationWeaponChanged(EWeaponType NewWeaponTyp
 
 void AShooterCharacter::RefreshPresentationWeaponAttachment()
 {
+	// 참조 보완을 위한 재부착은 현재 장착 세대를 무효화하지 않는다.
+	// 실제 외형/무기 변경은 각 변경 경계에서 이미 벽 상태와 기준 자세를 초기화한다.
 	// CurrentWeapon이 외형보다 늦게 도착해도 재부착한다. Owner가 미도착하면 무기의 RepNotify가 보완한다.
 	if (AWeaponBase* EquippedWeapon = GetCurrentWeapon())
 	{
@@ -3494,6 +3735,7 @@ float AShooterCharacter::GetLookSensitivityScale() const
 
 void AShooterCharacter::Die()
 {
+	ResetWeaponWallAvoidance();
 	if (HealthComponent)
 	{
 		HealthComponent->Die();
@@ -3611,6 +3853,7 @@ void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
 
 void AShooterCharacter::HandleDeath()
 {
+	ResetWeaponWallAvoidance();
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	CancelSuitTransition();
