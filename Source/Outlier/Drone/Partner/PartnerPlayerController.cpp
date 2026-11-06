@@ -41,7 +41,7 @@ bool APartnerPlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// Enhanced Input의 재구성/Flush 콜백과 달리 실제 새 Press만 재입력을 허용한다.
 	if (Params.Event == IE_Pressed)
 	{
-		if (APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn())) Partner->NotifyAccelerateKeyPressed(Params.Key);
+		if (APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn())) Partner->NotifyActionKeyPressed(Params.Key);
 	}
 	return Super::InputKey(Params);
 }

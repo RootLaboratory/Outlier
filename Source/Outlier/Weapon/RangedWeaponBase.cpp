@@ -334,6 +334,11 @@ void ARangedWeaponBase::ConsumeAmmo()
 
 void ARangedWeaponBase::RefillMagazineForWeaponOvercharge()
 {
+	RefillMagazine();
+}
+
+void ARangedWeaponBase::RefillMagazine()
+{
 	if (!HasAuthority())
 	{
 		return;
@@ -2629,6 +2634,33 @@ bool ARangedWeaponBase::CanAttack() const
 		&& !bOnPostBurstCooldown
 		&& !bIsReloading
 		&& HasUsableAmmo();
+}
+
+float ARangedWeaponBase::GetAttackRetryDelay() const
+{
+	const UWorld* World = GetWorld();
+	if (!World) return 0.05f;
+	const FTimerManager& Timers = World->GetTimerManager();
+	// 남아 있는 쿨다운을 건너뛰지 않고, 그중 가장 늦은 발사 허용 시각에 다시 확인한다.
+	const float CooldownRemaining = FMath::Max(
+		Timers.GetTimerRemaining(AttackCooldownTimerHandle),
+		Timers.GetTimerRemaining(PostBurstCooldownTimerHandle));
+	const float PreservedRemaining = static_cast<float>(PreservedAttackReadyAt - World->GetTimeSeconds());
+	return FMath::Max(0.05f, FMath::Max(FMath::Max(CooldownRemaining, PreservedRemaining), GetReuseCooldownRemaining()));
+}
+
+const TCHAR* ARangedWeaponBase::GetAttackBlockReason() const
+{
+	if (!Super::CanAttack()) return TEXT("WeaponNotEquipped");
+	if (bIsReloading) return TEXT("Reloading");
+	if (!HasUsableAmmo()) return TEXT("EmptyMagazine");
+	if (IsOnReuseCooldown()) return TEXT("ReuseCooldown");
+	if (bOnPostBurstCooldown) return TEXT("PostBurstCooldown");
+	if (bAttackOnCooldown || (GetWorld() && GetWorld()->GetTimeSeconds() < PreservedAttackReadyAt))
+	{
+		return TEXT("AttackCooldown");
+	}
+	return TEXT("WeaponState");
 }
 
 bool ARangedWeaponBase::IsOnReuseCooldown() const

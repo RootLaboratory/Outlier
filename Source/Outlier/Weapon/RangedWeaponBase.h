@@ -53,6 +53,8 @@ UCLASS(Abstract)
 class OUTLIER_API ARangedWeaponBase : public AWeaponBase
 {
 	GENERATED_BODY()
+	friend class FPartnerRebootInputTest;
+	friend class UShooterCombatComponent;
 	friend struct FWallShotProbeAccess;
 
 public:
@@ -385,6 +387,9 @@ public:
 	int32 GetMagazineSize() const { return MagazineSize; }
 	void RestoreCheckpointAmmo(int32 SavedAmmo);
 	void RefillMagazineForWeaponOvercharge();
+	void RefillMagazine();
+	float GetAttackRetryDelay() const;
+	const TCHAR* GetAttackBlockReason() const;
 	void ResetForEnemyPoolLease();
 
 	// 과충전 연출 : 태그가 서버 / 오너 / 시뮬레이티드 프록시 모두에 복제되므로

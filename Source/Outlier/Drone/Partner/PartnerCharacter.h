@@ -109,6 +109,7 @@ public:
 	virtual void InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil) override;
 
 	friend class FPartnerSprintInputModeTest;
+	friend class FPartnerRebootInputTest;
 protected:
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -487,9 +488,13 @@ protected:
 	TWeakObjectPtr<ULocalPlayerSettingsSubsystem> AccelerateSettings;
 	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> AccelerateInputSubsystem;
 	TArray<FKey> AccelerateInputKeys;
+	TArray<FKey> AttackInputKeys;
 	EOutlierSprintInputMode AccelerateInputMode = EOutlierSprintInputMode::Toggle;
 	bool bAccelerateInputHeld = false;
+	// 실행 중인 가속과 분리해 재부팅 중에도 Hold/Toggle의 최신 의도를 보존한다.
+	bool bAccelerateRequested = false;
 	bool bAccelerateNeedsFreshPress = false;
+	bool bRebootActionRecoveryPending = false;
 	// 서버 수명주기와 요청 순번을 함께 검사해 지연된 ON이 초기화 이후 되살아나지 않게 한다.
 	UPROPERTY(ReplicatedUsing = OnRep_AccelerateInputEpoch)
 	uint32 AccelerateInputEpoch = 1;
@@ -578,7 +583,7 @@ protected:
 public:
 	// 입력 초기화와 일반 Release를 구분한다. 컨텍스트 복귀는 실제 새 키 Press 이후에만 허용한다.
 	void ResetAccelerateInput();
-	void NotifyAccelerateKeyPressed(FKey Key);
+	void NotifyActionKeyPressed(FKey Key);
 	/** 서버에서 판정하고 복제하는 대기 상태. AnimBP의 Active / Standby 전이에 사용한다. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Partner|Standby")
 	bool bIsStandby = false;
@@ -652,7 +657,10 @@ public:
 	void NullifyDamagedEvenet() const;
 
 	void SetEnemyPossessionProtection(bool bEnabled);
-	void StopActionsForReboot();
+	void StopActionsForReboot(bool bPreserveActionInput = true);
+	void FinishActionsAfterReboot();
+	bool CanTrackActionInputIntent() const;
+	uint32 GetActionInputEpoch() const { return AccelerateInputEpoch; }
 	void RefreshEnemyDetectionForVitality();
 
 	// 입력뿐 아니라 Ability/BP에서도 사용할 수 있는 Partner 공격 API.
