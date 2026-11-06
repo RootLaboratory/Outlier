@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Interface/MeleeIgnoreInterface.h"
 #include "Tutorial/Trigger/Tuto_EventTriggerInterface.h"
 #include "Tuto_EventTriggerVolume.generated.h"
 
@@ -11,7 +12,7 @@ class UOutlierWorldGuideTargetComponent;
 
 /** 위치 하나에 EventID 하나. 로컬 진입은 소유 컨트롤러를 통해 알린다. */
 UCLASS()
-class OUTLIER_API ATuto_EventTriggerVolume : public AActor, public ITuto_EventTriggerInterface
+class OUTLIER_API ATuto_EventTriggerVolume : public AActor, public ITuto_EventTriggerInterface, public IMeleeIgnoreInterface
 {
 	GENERATED_BODY()
 
