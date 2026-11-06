@@ -242,7 +242,7 @@ void FGameOverWorldPauseState::Reset(UWorld* World)
 
 AOutlierGameMode::AOutlierGameMode()
 {
-
+	InitialIntroCompletedEventTag = FGameplayTag::RequestGameplayTag(TEXT("Event.006_Broken_Wall"), false);
 }
 
 bool AOutlierGameMode::BeginSettingsPause(AFirstPersonPlayerController* Controller,

@@ -255,6 +255,10 @@ protected:
 		ToolTip = "Start two PIE players as Shooter and Partner in the current map. Requires unique PlayerStart Tags Shooter and Partner; skips Lobby and Arena streaming. Duplicate the gameplay GameMode BP before enabling."))
 	bool bDirectPairTest = false;
 
+	// 새 매치의 최초 인트로 시퀀스가 끝나고 게임 플로우가 재개될 때 양측 PC에 한 번 보낸다.
+	UPROPERTY(EditDefaultsOnly, Category = "Cinematic|Event", meta = (Categories = "Event"))
+	FGameplayTag InitialIntroCompletedEventTag;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
 	TSubclassOf<AShooterCharacter> ShooterClass;
 

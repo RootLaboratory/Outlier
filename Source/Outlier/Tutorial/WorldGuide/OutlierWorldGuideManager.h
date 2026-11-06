@@ -50,6 +50,7 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "World Guide")
 	bool CompleteWidget(FGameplayTag WidgetID, FGameplayTag NextWidgetID = FGameplayTag());
 
+	/** Overlap 안내 완료 시 기존 활성/대기 후보는 취소하고 완료된 안내의 후속 Chain만 진행한다. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "World Guide")
 	bool NotifyWidgetOverlap(FGameplayTag WidgetID, FGameplayTag NextWidgetID = FGameplayTag());
 

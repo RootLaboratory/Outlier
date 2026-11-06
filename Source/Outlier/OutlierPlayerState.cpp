@@ -406,12 +406,26 @@ void AOutlierPlayerState::SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId)
 
 void AOutlierPlayerState::SetPendingLobbyRole(EOutlierPlayerRole NewPendingLobbyRole)
 {
-	if (!HasAuthority() || PendingLobbyRole == NewPendingLobbyRole)
+	if (!HasAuthority()) return;
+	const bool bChanged = PendingLobbyRole != NewPendingLobbyRole || PendingLobbyPreviewRole != NewPendingLobbyRole;
+	if (!bChanged)
 	{
 		return;
 	}
 
 	PendingLobbyRole = NewPendingLobbyRole;
+	PendingLobbyPreviewRole = NewPendingLobbyRole;
+	ForceNetUpdate();
+	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::SetPendingLobbyPreviewRole(EOutlierPlayerRole NewRole)
+{
+	if (!HasAuthority() || PendingLobbyRole != EOutlierPlayerRole::None || PendingLobbyPreviewRole == NewRole
+		|| (NewRole != EOutlierPlayerRole::None && NewRole != EOutlierPlayerRole::Shooter
+			&& NewRole != EOutlierPlayerRole::Partner)) return;
+	PendingLobbyPreviewRole = NewRole;
+	ForceNetUpdate();
 	HandlePendingLobbyStateChanged();
 }
 
@@ -436,10 +450,12 @@ void AOutlierPlayerState::ClearPendingLobbyState()
 	const bool bChanged =
 		PendingLobbyMatchId != INDEX_NONE ||
 		PendingLobbyRole != EOutlierPlayerRole::None ||
+		PendingLobbyPreviewRole != EOutlierPlayerRole::None ||
 		PendingLobbySlotIndex != INDEX_NONE;
 
 	PendingLobbyMatchId = INDEX_NONE;
 	PendingLobbyRole = EOutlierPlayerRole::None;
+	PendingLobbyPreviewRole = EOutlierPlayerRole::None;
 	PendingLobbySlotIndex = INDEX_NONE;
 
 	if (bChanged)
@@ -487,6 +503,11 @@ void AOutlierPlayerState::OnRep_PendingLobbyMatchId()
 }
 
 void AOutlierPlayerState::OnRep_PendingLobbyRole()
+{
+	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::OnRep_PendingLobbyPreviewRole()
 {
 	HandlePendingLobbyStateChanged();
 }
@@ -938,6 +959,7 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AOutlierPlayerState, bStatAllocatorExitPending);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyMatchId);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyRole);
+	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyPreviewRole);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbySlotIndex);
 	DOREPLIFETIME(AOutlierPlayerState, CheckpointData);
 	DOREPLIFETIME(AOutlierPlayerState, ShooterCharacter);

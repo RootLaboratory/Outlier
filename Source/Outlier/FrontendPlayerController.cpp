@@ -419,6 +419,20 @@ void AFrontendPlayerController::RequestSelectLobbyRole(EOutlierPlayerRole Desire
 	ServerRequestSelectLobbyRole(DesiredRole);
 }
 
+void AFrontendPlayerController::RequestPreviewLobbyRole(EOutlierPlayerRole DesiredRole)
+{
+	ServerRequestPreviewLobbyRole(DesiredRole);
+}
+
+void AFrontendPlayerController::ServerRequestPreviewLobbyRole_Implementation(EOutlierPlayerRole DesiredRole)
+{
+	if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>() : nullptr)
+	{
+		Matchmaking->PreviewRoleInPendingMatch(this, DesiredRole);
+	}
+}
+
 void AFrontendPlayerController::RequestStartPendingMatch()
 {
 	ServerRequestStartPendingMatch();

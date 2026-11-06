@@ -123,6 +123,8 @@ private:
 	void StopLobbyRefreshTimer();
 
 	ELobbyGuestWidgetState LocalGuestPreviewState = ELobbyGuestWidgetState::Default;
+	int32 LocalPreviewMatchId = INDEX_NONE;
+	bool bLocalPreviewEdited = false;
 	bool bLocalClearConfirmationPreview = false;
 
 	// 디자이너에서 지정한 역할 이미지 원본. 포커스가 풀리면 이 브러시로 되돌린다.

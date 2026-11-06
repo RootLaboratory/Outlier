@@ -37,6 +37,7 @@ public:
 	void JoinParty(AController* Controller, const FString& PartyCode);
 	void LeaveParty(AController* Controller);
 	bool SelectRoleInPendingMatch(AController* Controller, EOutlierPlayerRole DesiredRole);
+	bool PreviewRoleInPendingMatch(AController* Controller, EOutlierPlayerRole DesiredRole);
 	bool TryStartPendingMatch(AController* Controller);
 	bool TryContinuePendingMatch(AController* Controller,
 		const FGuid& SaveId, const FGuid& ResumeKey);

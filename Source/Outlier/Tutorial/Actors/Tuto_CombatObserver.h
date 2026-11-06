@@ -30,7 +30,7 @@ struct OUTLIER_API FTuto_ReinforcementEvent
 /**
  * 서버에서 전투 방 하나를 관찰한다. 클라이언트는 WorldGuide target anchor만 유지한다. combat/adaptation 서브시스템은 사실만 브로드캐스트하고,
  * 그중 무엇이 튜토리얼 순간인지는 이 액터가 결정한다. 방의 gameplay sublevel에 배치한다. 체크포인트 리로드가
- * 복원된 방 상태로 다시 생성하고, game-flow 기록이 이미 발동한 slot의 반복을 막는다. 방이 클리어되거나,
+ * 복원된 방 상태로 다시 생성하고, game-flow 기록이 이미 발동한 slot의 반복을 막는다. 클리어 이벤트 전달이 끝났거나,
  * BeginPlay 시 복원된 방이 이미 클리어 상태이거나 설정된 slot 이벤트가 모두 이미 나갔으면 스스로 파괴한다.
  * 증원은 RoomCombat의 OnReinforcementStarted(남은 적 비율로 후속 Wave가 시작된 순간)로 판정한다.
  */
@@ -110,6 +110,8 @@ private:
 	bool AreAllSlotsFired() const;
 	bool IsReinforcementWave(int32 WaveIndex) const;
 	void TryReinforcementAtWave(int32 WaveIndex);
+	void TryDispatchRoomCleared();
+	FTimerHandle ClearedRetryTimer;
 
 	TWeakObjectPtr<URoomCombatSubsystem> ObservedCombat;
 	TWeakObjectPtr<UEnemyAdaptationSubsystem> ObservedAdaptation;

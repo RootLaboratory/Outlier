@@ -248,6 +248,30 @@ bool AOutlierWorldGuideManager::FinishMatching(FGameplayTag Tag, bool bByEvent, 
 			RefreshPresentation();
 			ForceNetUpdate();
 		}
+		const bool bCompletedOverlap = bCompleted && Finished.ContainsByPredicate(
+			[](const FOutlierWorldGuideContext& Context)
+			{
+				return Context.EndCondition == EOutlierEventEndCondition::Overlap;
+			});
+		if (bCompletedOverlap)
+		{
+			// An arrival invalidates the old candidates. Clear them before creating any
+			// successor so the completed guide's chain is the only remaining route.
+			TArray<FOutlierWorldGuideContext> Cancelled = MoveTemp(PendingContexts);
+			PendingContexts.Reset();
+			if (ActiveContext.RequestID != 0)
+			{
+				Cancelled.Insert(ActiveContext, 0);
+				ActiveContext = FOutlierWorldGuideContext();
+				RefreshPresentation();
+				ForceNetUpdate();
+			}
+			// Cancellation listeners must not refill the obsolete queue.
+			TGuardValue<bool> ClearingGuard(bClearingQueue, true);
+			for (const FOutlierWorldGuideContext& Context : Cancelled) FinishContext(Context, false);
+			OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(
+				TEXT("OVERLAP COMPLETE: cancelled %d previous guide candidate(s)."), Cancelled.Num()));
+		}
 		for (const FOutlierWorldGuideContext& Context : Finished) FinishContext(Context, bCompleted, NextWidgetID);
 	}
 	AdvanceQueue();

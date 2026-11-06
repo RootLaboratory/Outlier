@@ -240,6 +240,24 @@ void UOutlierMatchmakingSubsystem::LeaveParty(AController* Controller)
 	Cancel(Controller);
 }
 
+bool UOutlierMatchmakingSubsystem::PreviewRoleInPendingMatch(AController* Controller, EOutlierPlayerRole DesiredRole)
+{
+	if (!IsValid(Controller) || !Controller->HasAuthority()
+		|| (DesiredRole != EOutlierPlayerRole::None && DesiredRole != EOutlierPlayerRole::Shooter
+			&& DesiredRole != EOutlierPlayerRole::Partner)) return false;
+	AOutlierPlayerState* PS = Controller->GetPlayerState<AOutlierPlayerState>();
+	if (!PS || PS->GetPendingLobbyRole() != EOutlierPlayerRole::None) return false;
+	for (const FOutlierPendingRolePickMatch& Match : PendingRolePickMatches)
+	{
+		if (Match.Contains(Controller) && Match.PendingMatchId == PS->GetPendingLobbyMatchId())
+		{
+			PS->SetPendingLobbyPreviewRole(DesiredRole);
+			return true;
+		}
+	}
+	return false;
+}
+
 bool UOutlierMatchmakingSubsystem::SelectRoleInPendingMatch(AController* Controller, EOutlierPlayerRole DesiredRole)
 {
 	if (!Controller ||
