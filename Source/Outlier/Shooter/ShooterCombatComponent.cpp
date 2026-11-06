@@ -57,6 +57,7 @@ void UShooterCombatComponent::BeginPlay()
 
 void UShooterCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(OverchargeFireRecoveryTimerHandle);
 	UnbindReloadMontageEndedDelegates();
 	UnbindWeaponReuseCooldownObserver();
 	Super::EndPlay(EndPlayReason);
@@ -552,6 +553,7 @@ void UShooterCombatComponent::TryStartAttack()
 
 void UShooterCombatComponent::TryStopAttack()
 {
+	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(OverchargeFireRecoveryTimerHandle);
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter)
 	{
@@ -606,6 +608,44 @@ void UShooterCombatComponent::CancelMeleeAttack()
 	{
 		MeleeWeapon->StopAttack();
 	}
+}
+
+void UShooterCombatComponent::ResumeHeldFireAfterWeaponOvercharge()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+	World->GetTimerManager().ClearTimer(OverchargeFireRecoveryTimerHandle);
+
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	ARangedWeaponBase* Weapon = Shooter ? Cast<ARangedWeaponBase>(Shooter->CurrentWeapon) : nullptr;
+	if (!Shooter || !Shooter->HasAuthority() || !bFireInputHeld
+		|| Shooter->GetWeaponMode() != EWeaponMode::Primary || !CanFireInCurrentState()
+		|| !Weapon || !Weapon->bIsAutomatic || Weapon->HasFixedBurst()
+		|| Weapon->IsAttacking() || Weapon->IsReloading() || !Weapon->HasUsableAmmo())
+	{
+		return;
+	}
+
+	// 마지막 탄의 자동 재장전은 연사를 중단한다. 과부하가 재장전을 취소/충전한 뒤에는
+	// Started 입력이 다시 오지 않으므로 서버에 남은 Hold 의도로 한 번만 재개를 예약한다.
+	// StopAttack이 지운 발사 간격도 보장하고, 진행 중인 연사 타이머는 건드리지 않는다.
+	const float Delay = FMath::Max(Weapon->GetAttackRetryDelay(), Weapon->GetAutomaticFireInterval()) + KINDA_SMALL_NUMBER;
+	const TWeakObjectPtr<ARangedWeaponBase> ExpectedWeapon(Weapon);
+	World->GetTimerManager().SetTimer(OverchargeFireRecoveryTimerHandle,
+		FTimerDelegate::CreateWeakLambda(this, [this, ExpectedWeapon]()
+		{
+			AShooterCharacter* CurrentShooter = GetShooterCharacter();
+			ARangedWeaponBase* CurrentWeapon = ExpectedWeapon.Get();
+			// 예약 이후의 입력 해제/교체/사망/액션 잠금을 다시 검사한다. 막혔으면 재예약하지 않는다.
+			if (!CurrentShooter || !CurrentShooter->HasAuthority() || !bFireInputHeld
+				|| !CurrentWeapon || CurrentShooter->CurrentWeapon != CurrentWeapon
+				|| CurrentShooter->GetWeaponMode() != EWeaponMode::Primary || !CanFireInCurrentState()
+				|| CurrentWeapon->IsAttacking() || !CurrentWeapon->CanAttack())
+			{
+				return;
+			}
+			TryStartAttack();
+		}), Delay, false);
 }
 
 void UShooterCombatComponent::HandleWeaponAttackStopped()
@@ -1315,6 +1355,7 @@ void UShooterCombatComponent::HandleWeaponReuseCooldownTagChanged(
 
 void UShooterCombatComponent::ClearInputIntent()
 {
+	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(OverchargeFireRecoveryTimerHandle);
 	bFireInputHeld = false;
 	ClearPendingSprintExitFire();
 	bWantsToAim = false;

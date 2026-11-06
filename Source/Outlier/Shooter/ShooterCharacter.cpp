@@ -1189,6 +1189,10 @@ void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag,
 	RefreshWeaponOverchargeEmissive(bOverchargeActive);
 
 	BP_OnWeaponOverchargeStateChanged(bOverchargeActive);
+	if (!bOverchargeActive && CombatComponent)
+	{
+		CombatComponent->ResumeHeldFireAfterWeaponOvercharge();
+	}
 }
 
 void AShooterCharacter::RefreshWeaponOverchargeEmissive(bool bActive)
@@ -4892,10 +4896,16 @@ bool AShooterCharacter::BeginWeaponOvercharge()
 	}
 
 	// 과충전은 재장전을 즉시 취소한 뒤 현재 주무기 탄창을 가득 채운 상태로 시작한다.
-	CancelReloadInternal();
+	// 액션 잠금 해제 중 전투 상태를 다시 읽으므로 무기 쪽 Reload부터 내려야 한다.
+	// 반대 순서면 아직 켜진 무기 플래그가 Combat의 Reload를 다시 살려 발사를 막는다.
 	RangedWeapon->CancelReload();
+	CancelReloadInternal();
 	RangedWeapon->CancelLocalRecoilPresentation();
 	RangedWeapon->RefillMagazineForWeaponOvercharge();
+	if (CombatComponent)
+	{
+		CombatComponent->ResumeHeldFireAfterWeaponOvercharge();
+	}
 	const float MissingShield = FMath::Max(GetMaxShield() - GetCurShield(), 0.0f);
 	if (MissingShield > 0.0f)
 	{

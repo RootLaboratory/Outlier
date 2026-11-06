@@ -44,6 +44,7 @@ protected:
 	float SprintExitFireRetryInterval = 0.02f;
 
 	FTimerHandle PendingSprintExitFireTimerHandle;
+	FTimerHandle OverchargeFireRecoveryTimerHandle;
 	FDelegateHandle WeaponReuseCooldownTagChangedHandle;
 	TWeakObjectPtr<UAnimInstance> BoundFirstPersonReloadInstance;
 	TWeakObjectPtr<UAnimInstance> BoundThirdPersonReloadInstance;
@@ -92,6 +93,7 @@ public:
 	void CancelMeleeAttack();
 	void HandleWeaponAttackStopped();
 	void HandleAutoReloadRequested();
+	void ResumeHeldFireAfterWeaponOvercharge();
 
 	void RefreshCombatState();
 	void RefreshWeaponMode();
