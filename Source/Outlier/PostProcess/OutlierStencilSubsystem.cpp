@@ -99,6 +99,8 @@ void UOutlierStencilSubsystem::ClearSourceEffects(UObject* Source, EOutlierStenc
 void UOutlierStencilSubsystem::ClearActorEffects(AActor* Target)
 {
 	Requests.RemoveAll([=](const auto& Item) { return Item.Target.Get() == Target; });
+	// 사망/풀 반납 경로다. 해킹된 터렛은 사망 후 풀 리셋 전까지 팀 플래그가 남으므로 여기서 함께 해제한다.
+	RegisteredTeammates.Remove(TWeakObjectPtr<AActor>(Target));
 	Reconcile();
 }
 
@@ -143,16 +145,30 @@ void UOutlierStencilSubsystem::Reconcile()
 			else Flags |= Request.Effect == EOutlierStencilEffect::Melee ? OutlierStencil::Melee : OutlierStencil::Guide;
 		}
 	}
-	for (const auto& Target : TeammateTargets)
+	for (auto It = RegisteredTeammates.CreateIterator(); It; ++It)
 	{
-		if (!Target.IsValid()) continue;
-		Meshes.Reset();
-		Target->GetComponents<UMeshComponent>(Meshes);
-		for (UMeshComponent* Mesh : Meshes)
+		if (!It->IsValid() || (*It)->IsActorBeingDestroyed()) It.RemoveCurrent();
+	}
+	for (const TSet<TWeakObjectPtr<AActor>>* Teammates : { &PairTeammates, &RegisteredTeammates })
+	{
+		for (const auto& Target : *Teammates)
 		{
-			if (!IsEligibleMesh(Mesh)) continue;
-			TrackMesh(Mesh);
-			DesiredFlags.FindOrAdd(Mesh) |= OutlierStencil::Teammate;
+			if (!Target.IsValid()) continue;
+			// 해킹으로 빙의한 드론처럼 내가 조종 중인 Pawn에는 팀원 외곽선을 그리지 않는다.
+			// IsLocallyControlled는 서버의 AIController도 로컬로 판정하므로(해킹된 터렛) 로컬 PC만 본다.
+			if (const APawn* Pawn = Cast<APawn>(Target.Get()))
+			{
+				const APlayerController* Controller = Cast<APlayerController>(Pawn->GetController());
+				if (Controller && Controller->IsLocalController()) continue;
+			}
+			Meshes.Reset();
+			Target->GetComponents<UMeshComponent>(Meshes);
+			for (UMeshComponent* Mesh : Meshes)
+			{
+				if (!IsEligibleMesh(Mesh)) continue;
+				TrackMesh(Mesh);
+				DesiredFlags.FindOrAdd(Mesh) |= OutlierStencil::Teammate;
+			}
 		}
 	}
 	for (auto It = MeshStates.CreateIterator(); It; ++It)
@@ -174,11 +190,16 @@ void UOutlierStencilSubsystem::Reconcile()
 	}
 }
 
-void UOutlierStencilSubsystem::RefreshTeammateTargets()
+bool UOutlierStencilSubsystem::RefreshPairTeammates()
 {
-	TeammateTargets.Reset();
+	TSet<TWeakObjectPtr<AActor>> Found;
 	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_DedicatedServer) return;
+	if (!World || World->GetNetMode() == NM_DedicatedServer)
+	{
+		const bool bHadAny = PairTeammates.Num() > 0;
+		PairTeammates.Reset();
+		return bHadAny;
+	}
 	for (auto It = World->GetPlayerControllerIterator(); It; ++It)
 	{
 		APlayerController* Viewer = It->Get();
@@ -190,15 +211,55 @@ void UOutlierStencilSubsystem::RefreshTeammateTargets()
 		if (IsValid(Other) && Other != Viewer->GetPawn() && Other->GetWorld() == World
 			&& !Other->IsActorBeingDestroyed())
 		{
-			TeammateTargets.Add(Other);
+			Found.Add(Other);
 		}
 	}
+	const bool bChanged = Found.Num() != PairTeammates.Num() || !Found.Includes(PairTeammates);
+	if (bChanged) PairTeammates = MoveTemp(Found);
+	return bChanged;
+}
+
+void UOutlierStencilSubsystem::MarkTeammatesDirty()
+{
+	bTeammatesDirty = true;
+}
+
+void UOutlierStencilSubsystem::SetActorTeammate(AActor* Target, bool bTeammate)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_DedicatedServer || !Target) return;
+	const TWeakObjectPtr<AActor> Key(Target);
+	bool bChanged = false;
+	if (!bTeammate)
+	{
+		bChanged = RegisteredTeammates.Remove(Key) > 0;
+	}
+	else if (IsValid(Target) && Target->GetWorld() == World && !Target->IsActorBeingDestroyed())
+	{
+		bool bAlreadyRegistered = false;
+		RegisteredTeammates.Add(Key, &bAlreadyRegistered);
+		bChanged = !bAlreadyRegistered;
+	}
+	if (bChanged) Reconcile();
 }
 
 void UOutlierStencilSubsystem::Tick(float DeltaTime)
 {
-	RefreshTeammateTargets();
-	if (Requests.Num() || MeshStates.Num() || TeammateTargets.Num()) Reconcile();
+	FallbackElapsed += DeltaTime;
+	const bool bFallback = FallbackElapsed >= FallbackReconcileInterval;
+	// 빙의 변경은 쌍 집합이 같아도 "내 Pawn 제외" 결과를 바꾸므로 dirty면 항상 다시 맞춘다.
+	const bool bDirty = bTeammatesDirty;
+	bool bChanged = false;
+	if (bDirty || bFallback)
+	{
+		bTeammatesDirty = false;
+		bChanged = RefreshPairTeammates();
+	}
+	if (bDirty || bChanged || bFallback)
+	{
+		FallbackElapsed = 0.f;
+		if (Requests.Num() || MeshStates.Num() || PairTeammates.Num() || RegisteredTeammates.Num()) Reconcile();
+	}
 }
 
 TStatId UOutlierStencilSubsystem::GetStatId() const
@@ -216,7 +277,8 @@ void UOutlierStencilSubsystem::Deinitialize()
 		}
 	}
 	Requests.Reset();
-	TeammateTargets.Reset();
+	PairTeammates.Reset();
+	RegisteredTeammates.Reset();
 	MeshStates.Reset();
 	Super::Deinitialize();
 }

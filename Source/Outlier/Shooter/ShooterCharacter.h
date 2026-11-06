@@ -49,6 +49,7 @@ class USphereComponent;
 class USkeletalMesh;
 class UAnimInstance;
 class UNiagaraSystem;
+class UNiagaraComponent;
 class UShooterReflectionBarrier;
 class UShooterTeleportLayer;
 struct FOnAttributeChangeData;
@@ -411,6 +412,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Jump")
 	TObjectPtr<UNiagaraSystem> DoubleJumpVFX;
 
+	/** 자동 파괴되는 월드 이펙트를 소유하지 않고 시퀀서 숨김 대상으로만 추적한다. */
+	TArray<TWeakObjectPtr<UNiagaraComponent>> DoubleJumpVFXComponents;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USkeletalMeshComponent* ShadowMesh;
 
@@ -604,6 +608,7 @@ protected:
 	FDelegateHandle QuantumLeapTagChangedHandle;
 	FDelegateHandle WeaponOverchargeTagChangedHandle;
 	FDelegateHandle QuantumLeapChargesChangedHandle;
+	FDelegateHandle ConnectionDistanceChangedHandle;
 	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
 	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
@@ -704,6 +709,7 @@ protected:
 	// 휠 아이콘 해금( = Grant )을 4개 전부 다시 계산한다. 선택 중인 능력이 잠기면 기본 제공 능력으로 되돌린다.
 	void RefreshShooterSuitGrantUI();
 	void HandleQuantumLeapChargesChanged(bool bRecovered);
+	void HandleConnectionDistanceChanged(float Distance);
 	void RefreshQuantumLeapChargeUI(bool bPlayRecoveryFeedback = false);
 	bool IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag) const;
 	void BindPartnerSuitStateObserver();
@@ -735,6 +741,7 @@ protected:
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
 	void PlayWeaponEquipAudio();
+	virtual void CollectDetachedCinematicVisuals(TArray<USceneComponent*>& OutComponents) const override;
 	// Construction
 	/** Constructor */
 	AShooterCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());

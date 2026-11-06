@@ -11,6 +11,7 @@
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
@@ -879,7 +880,14 @@ void UOutlierUpgradeComponent::ProjectAbilityConfig(UOutlierAbilitySystemCompone
 				continue;
 			}
 
-			if (FOutlierShooterSuitAbilityDataRow* Row = ResolveSuitRow(Config, Effect->TargetTag))
+			// Quantum Leap range upgrades extend the shared connection distance.
+			// Keep the existing effect DT/CSV target so other Quantum Leap fields stay ability-specific.
+			if (Effect->TargetTag == OutlierGameplayTags::Ability::Shooter::QuantumLeap()
+				&& Effect->ConfigField == GET_MEMBER_NAME_CHECKED(FOutlierShooterSuitAbilityDataRow, MaxPartnerDistance))
+			{
+				ApplyConfigDelta(Config.MaxPartnerDistance, Effect->Op, Effect->Magnitude);
+			}
+			else if (FOutlierShooterSuitAbilityDataRow* Row = ResolveSuitRow(Config, Effect->TargetTag))
 			{
 				ApplySuitConfigField(*Row, Effect->ConfigField, Effect->Op, Effect->Magnitude);
 			}

@@ -39,6 +39,7 @@
 #include "UnrealClient.h"
 #include "InputActionValue.h"
 #include "NiagaraFunctionLibrary.h"
+#include "NiagaraComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "TagDrivenUIGameplayTags.h"
@@ -779,7 +780,7 @@ void AShooterCharacter::InitializeGasSuitAbilities()
 		checkf(bConfigured, TEXT("Shooter suit abilities must configure on authority."));
 		if (CachedPartnerCharacter)
 		{
-			CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
+			HandleConnectionDistanceChanged(OutlierAbilitySystemComponent->GetShooterSuitConfig().MaxPartnerDistance);
 		}
 	}
 }
@@ -812,6 +813,8 @@ void AShooterCharacter::BindGasVitalityObservers()
 	WeaponOverchargeTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).AddUObject(
 			this, &AShooterCharacter::HandleWeaponOverchargeTagChanged);
+	ConnectionDistanceChangedHandle = OutlierAbilitySystemComponent->OnShooterConnectionDistanceChanged.AddUObject(
+		this, &AShooterCharacter::HandleConnectionDistanceChanged);
 	QuantumLeapChargesChangedHandle = OutlierAbilitySystemComponent->OnQuantumLeapChargesChanged.AddUObject(
 		this, &AShooterCharacter::HandleQuantumLeapChargesChanged);
 	BulletReflectionCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
@@ -850,6 +853,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
 	OutlierAbilitySystemComponent->OnQuantumLeapChargesChanged.Remove(QuantumLeapChargesChangedHandle);
+	OutlierAbilitySystemComponent->OnShooterConnectionDistanceChanged.Remove(ConnectionDistanceChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).Remove(BulletReflectionCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
@@ -867,6 +871,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	QuantumLeapTagChangedHandle.Reset();
 	WeaponOverchargeTagChangedHandle.Reset();
 	QuantumLeapChargesChangedHandle.Reset();
+	ConnectionDistanceChangedHandle.Reset();
 	BulletReflectionCooldownTagChangedHandle.Reset();
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
@@ -1953,7 +1958,8 @@ void AShooterCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 
 void AShooterCharacter::LookInput(const FInputActionValue& Value)
 {
-	if (bIsSuitMenuOpen) return;
+	// 사망 후에도 Pawn을 Possess한 채 두므로 시선 회전을 직접 막는다. 새 Pawn은 영향을 받지 않는다.
+	if (bIsSuitMenuOpen || IsDead()) return;
 
 	FVector2D LookAxisVector = Value.Get<FVector2D>();
 	LookAxisVector *= GetLookSensitivityScale();
@@ -4628,7 +4634,23 @@ void AShooterCharacter::MulticastNotifyThirdPersonDoubleJump_Implementation(FVec
 		return;
 	}
 
-	UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, DoubleJumpVFX, WorldLocation);
+	DoubleJumpVFXComponents.RemoveAll([](const TWeakObjectPtr<UNiagaraComponent>& Component)
+	{
+		return !Component.IsValid();
+	});
+	if (UNiagaraComponent* Component = UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, DoubleJumpVFX, WorldLocation))
+	{
+		DoubleJumpVFXComponents.Add(Component);
+	}
+}
+
+void AShooterCharacter::CollectDetachedCinematicVisuals(TArray<USceneComponent*>& OutComponents) const
+{
+	Super::CollectDetachedCinematicVisuals(OutComponents);
+	for (const TWeakObjectPtr<UNiagaraComponent>& Component : DoubleJumpVFXComponents)
+	{
+		if (Component.IsValid()) OutComponents.AddUnique(Component.Get());
+	}
 }
 
 void AShooterCharacter::ServerSetLeanTarget_Implementation(float NewLeanAlpha)
@@ -4696,9 +4718,17 @@ void AShooterCharacter::SetPartnerCharacter(APartnerCharacter* NewPartner)
 	BindPartnerSuitStateObserver();
 	if (HasAuthority() && CachedPartnerCharacter && bShooterSuitDataInitialized)
 	{
-		CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
+		HandleConnectionDistanceChanged(OutlierAbilitySystemComponent->GetShooterSuitConfig().MaxPartnerDistance);
 	}
 	RefreshShooterSuitAvailabilityUI();
+}
+
+void AShooterCharacter::HandleConnectionDistanceChanged(float Distance)
+{
+	if (HasAuthority() && CachedPartnerCharacter)
+	{
+		CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(Distance);
+	}
 }
 
 void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)

@@ -2,13 +2,23 @@
 #include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/CanvasPanelSlot.h"
+#include "Components/Image.h"
 #include "Engine/Engine.h"
+#include "Engine/Texture2D.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
 #include "OutlierPlayerState.h"
 #include "FrontendPlayerController.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+
+void ULobbyWidget::NativeOnInitialized()
+{
+	Super::NativeOnInitialized();
+
+	// 코드가 브러시를 바꾸기 전, 디자이너 원본을 한 번만 저장한다.
+	CacheDefaultRoleImageBrushes();
+}
 
 void ULobbyWidget::NativeConstruct()
 {
@@ -26,6 +36,15 @@ void ULobbyWidget::NativeConstruct()
 		(int32)GetVisibility());*/
 
 	BindLobbyPlayerStateDelegates();
+	// 레이어 재표시로 Construct가 다시 불리면 현재 포커스를 다시 적용한다.
+	bLocalPreviewEdited = false;
+	bLocalClearConfirmationPreview = false;
+	if (const AOutlierPlayerState* LocalPS = GetLocalOutlierPlayerState())
+	{
+		LocalPreviewMatchId = LocalPS->GetPendingLobbyMatchId();
+		LocalGuestPreviewState = ConvertRoleToGuestState(LocalPS->GetPendingLobbyPreviewRole());
+	}
+	bRoleFocusApplied = false;
 	if (Guest1Widget)
 	{
 		Guest1Widget->SetGuestIndex(0);
@@ -100,12 +119,6 @@ bool ULobbyWidget::HandleUILayerRight_Implementation()
 
 void ULobbyWidget::HandlePendingLobbyStateChanged(AOutlierPlayerState* ChangedPS)
 {
-	if (const AOutlierPlayerState* LocalPS = GetLocalOutlierPlayerState())
-	{
-		LocalGuestPreviewState = ConvertRoleToGuestState(LocalPS->GetPendingLobbyRole());
-		bLocalClearConfirmationPreview = false;
-	}
-
 	BindLobbyPlayerStateDelegates();
 	RefreshRoleSelection();
 }
@@ -245,6 +258,25 @@ void ULobbyWidget::RefreshGuestWidgets()
 
 	const AOutlierPlayerState* LocalPS = GetLocalOutlierPlayerState();
 	const int32 LocalSlotIndex = LocalPS ? LocalPS->GetPendingLobbySlotIndex() : INDEX_NONE;
+	if (LocalPS)
+	{
+		// Polling also initializes widgets whose PlayerState replicated before delegate binding.
+		if (LocalPreviewMatchId != LocalPS->GetPendingLobbyMatchId())
+		{
+			LocalPreviewMatchId = LocalPS->GetPendingLobbyMatchId();
+			bLocalPreviewEdited = false;
+			bLocalClearConfirmationPreview = false;
+		}
+		// Another guest's update or an older preview echo must not rewind local input.
+		if (!bLocalPreviewEdited)
+		{
+			LocalGuestPreviewState = ConvertRoleToGuestState(LocalPS->GetPendingLobbyPreviewRole());
+		}
+		if (LocalPS->GetPendingLobbyRole() == EOutlierPlayerRole::None)
+		{
+			bLocalClearConfirmationPreview = false;
+		}
+	}
 	const int32 PendingLobbyMatchId = LocalPS
 		? LocalPS->GetPendingLobbyMatchId()
 		: INDEX_NONE;
@@ -263,7 +295,8 @@ void ULobbyWidget::RefreshGuestWidgets()
 			}
 
 			GuestStates[OutlierPS->GetPendingLobbySlotIndex()] =
-				ConvertRoleToGuestState(OutlierPS->GetPendingLobbyRole());
+				ConvertRoleToGuestState(OutlierPS->GetPendingLobbyRole() != EOutlierPlayerRole::None
+					? OutlierPS->GetPendingLobbyRole() : OutlierPS->GetPendingLobbyPreviewRole());
 			bGuestConfirmed[OutlierPS->GetPendingLobbySlotIndex()] =
 				OutlierPS->GetPendingLobbyRole() != EOutlierPlayerRole::None;
 		}
@@ -271,7 +304,8 @@ void ULobbyWidget::RefreshGuestWidgets()
 
 	if (FMath::IsWithin(LocalSlotIndex, 0, 2) && LocalPS)
 	{
-		GuestStates[LocalSlotIndex] = LocalGuestPreviewState;
+		GuestStates[LocalSlotIndex] = LocalPS->GetPendingLobbyRole() != EOutlierPlayerRole::None
+			? ConvertRoleToGuestState(LocalPS->GetPendingLobbyRole()) : LocalGuestPreviewState;
 		if (bLocalClearConfirmationPreview)
 		{
 			GuestStates[LocalSlotIndex] = ELobbyGuestWidgetState::Default;
@@ -287,6 +321,81 @@ void ULobbyWidget::RefreshGuestWidgets()
 			GuestIndex == LocalSlotIndex,
 			bGuestConfirmed[GuestIndex]);
 	}
+
+	// Guest 위젯과 같은 GuestStates(로컬 미리보기 + 상대의 복제된 역할)로 역할 이미지를 맞춘다.
+	RefreshRoleFocusImages(GuestStates);
+}
+
+void ULobbyWidget::CacheDefaultRoleImageBrushes()
+{
+	if (bRoleImageBrushesCached)
+	{
+		return;
+	}
+
+	if (ShooterLobbyImage)
+	{
+		DefaultShooterLobbyBrush = ShooterLobbyImage->GetBrush();
+		UE_CLOG(!DefaultShooterLobbyBrush.GetResourceObject(), LogTemp, Warning,
+			TEXT("[LobbyWidget] ShooterLobbyImage has no designer image. Unfocused state will draw a blank brush."));
+	}
+	if (PartnerLobbyImage)
+	{
+		DefaultPartnerLobbyBrush = PartnerLobbyImage->GetBrush();
+		UE_CLOG(!DefaultPartnerLobbyBrush.GetResourceObject(), LogTemp, Warning,
+			TEXT("[LobbyWidget] PartnerLobbyImage has no designer image. Unfocused state will draw a blank brush."));
+	}
+	bRoleImageBrushesCached = true;
+}
+
+void ULobbyWidget::RefreshRoleFocusImages(const ELobbyGuestWidgetState (&GuestStates)[2])
+{
+	const bool bShooterFocused = GuestStates[0] == ELobbyGuestWidgetState::Shooter
+		|| GuestStates[1] == ELobbyGuestWidgetState::Shooter;
+	const bool bPartnerFocused = GuestStates[0] == ELobbyGuestWidgetState::Partner
+		|| GuestStates[1] == ELobbyGuestWidgetState::Partner;
+
+	if (bRoleFocusApplied
+		&& bAppliedShooterFocused == bShooterFocused
+		&& bAppliedPartnerFocused == bPartnerFocused)
+	{
+		return;
+	}
+
+	bRoleFocusApplied = true;
+	bAppliedShooterFocused = bShooterFocused;
+	bAppliedPartnerFocused = bPartnerFocused;
+	ApplyRoleFocusImages(bShooterFocused, bPartnerFocused);
+	OnRoleFocusChanged(bShooterFocused, bPartnerFocused);
+}
+
+void ULobbyWidget::ApplyRoleFocusImages_Implementation(bool bShooterFocused, bool bPartnerFocused)
+{
+	SetRoleImageFocused(ShooterLobbyImage, DefaultShooterLobbyBrush, ShooterFocusedImage, bShooterFocused);
+	SetRoleImageFocused(PartnerLobbyImage, DefaultPartnerLobbyBrush, PartnerFocusedImage, bPartnerFocused);
+}
+
+void ULobbyWidget::SetRoleImageFocused(
+	UImage* RoleImage,
+	const FSlateBrush& DefaultBrush,
+	UTexture2D* FocusedTexture,
+	bool bFocused)
+{
+	if (!RoleImage)
+	{
+		return;
+	}
+
+	if (!bFocused || !FocusedTexture)
+	{
+		RoleImage->SetBrush(DefaultBrush);
+		return;
+	}
+
+	// 크기·Tint·DrawAs 등 디자이너 설정은 유지하고 리소스만 바꾼다.
+	FSlateBrush FocusedBrush = DefaultBrush;
+	FocusedBrush.SetResourceObject(FocusedTexture);
+	RoleImage->SetBrush(FocusedBrush);
 }
 
 void ULobbyWidget::SetLocalGuestPreviewState(ELobbyGuestWidgetState NewState)
@@ -297,13 +406,19 @@ void ULobbyWidget::SetLocalGuestPreviewState(ELobbyGuestWidgetState NewState)
 	}
 
 	LocalGuestPreviewState = NewState;
+	bLocalPreviewEdited = true;
+	if (AFrontendPlayerController* FrontendPC = Cast<AFrontendPlayerController>(GetOwningPlayer()))
+	{
+		FrontendPC->RequestPreviewLobbyRole(ConvertGuestStateToRole(NewState));
+	}
 	RefreshGuestWidgets();
 }
 
 void ULobbyWidget::MoveLocalGuestPreview(int32 Direction)
 {
 	const AOutlierPlayerState* LocalPS = GetLocalOutlierPlayerState();
-	if (LocalPS && LocalPS->GetPendingLobbyRole() != EOutlierPlayerRole::None)
+	if (!LocalPS || LocalPS->GetPendingLobbyMatchId() == INDEX_NONE
+		|| LocalPS->GetPendingLobbyRole() != EOutlierPlayerRole::None)
 	{
 		return;
 	}
@@ -354,6 +469,7 @@ bool ULobbyWidget::TryClearLocalGuestConfirmation()
 	}
 
 	LocalGuestPreviewState = ELobbyGuestWidgetState::Default;
+	bLocalPreviewEdited = true;
 	bLocalClearConfirmationPreview = true;
 	RequestRole(EOutlierPlayerRole::None);
 	RefreshGuestWidgets();

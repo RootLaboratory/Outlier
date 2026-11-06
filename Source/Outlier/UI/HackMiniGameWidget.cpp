@@ -8,11 +8,15 @@
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 #include "Input/Reply.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "UI/ClickCircleMiniGameWidget.h"
 #include "UI/HackingMiniGameBase.h"
 #include "UI/SpinningCircleMiniGameWidget.h"
+#include "Widgets/Images/SImage.h"
 
 void UHackMiniGameWidget::InitializeHackMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent,
 	UPartnerHackComponent* InHackComponent, float InClickSuccessRangeMultiplier, float InSpinningGapMultiplier)
@@ -71,8 +75,8 @@ bool UHackMiniGameWidget::StartHacking()
 		? SpinningGapMultiplier : ClickSuccessRangeMultiplier;
 	ActiveMiniGameWidget->InitializeMiniGame(TargetActor, HackableComponent, SuccessRangeMultiplier);
 	ActiveMiniGameWidget->OnMiniGameFinished.AddDynamic(this, &UHackMiniGameWidget::HandleActiveMiniGameFinished);
+	ApplyMiniGameCursor();
 	ActiveMiniGameWidget->StartMiniGame();
-	SetFakeCursorVisible(bUseFakeCursor);
 	RefreshTimeProgressBar();
 
 	return true;
@@ -89,6 +93,7 @@ void UHackMiniGameWidget::CancelHacking()
 	FHackResultContext ResultContext;
 	ResultContext.TargetActor = TargetActor;
 	ResultContext.Result = EHackResult::Cancelled;
+	RestoreCursor();
 	OnHackMiniGameFinished.Broadcast(ResultContext);
 }
 
@@ -107,12 +112,15 @@ void UHackMiniGameWidget::NativeConstruct()
 	{
 		MiniGameRoot->SetVisibility(ESlateVisibility::Visible);
 	}
-	SetFakeCursorVisible(false);
+	if (FakeCursorImage)
+	{
+		FakeCursorImage->SetVisibility(ESlateVisibility::Collapsed);
+	}
 
 	if (TimeProgressBar)
 	{
 		TimeProgressBar->SetVisibility(ESlateVisibility::Collapsed);
-		TimeProgressBar->SetPercent(0.0f);
+		UpdateTimeProgress(1.0f);
 	}
 }
 
@@ -125,10 +133,6 @@ void UHackMiniGameWidget::NativeDestruct()
 void UHackMiniGameWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
-	if (bUseFakeCursor)
-	{
-		UpdateFakeCursorPosition(MyGeometry);
-	}
 
 	if (!bIsTimeLimited
 		|| !ActiveMiniGameWidget
@@ -235,18 +239,51 @@ void UHackMiniGameWidget::RefreshTimeProgressBar()
 		return;
 	}
 
-	const float RemainingRatio = MiniGameTimeLimit > KINDA_SMALL_NUMBER
-		? 1.0f - FMath::Clamp(ElapsedTime / MiniGameTimeLimit, 0.0f, 1.0f)
-		: 0.0f;
-	TimeProgressBar->SetPercent(RemainingRatio);
+	const float Progress = MiniGameTimeLimit > KINDA_SMALL_NUMBER
+		? FMath::Clamp(ElapsedTime / MiniGameTimeLimit, 0.0f, 1.0f)
+		: 1.0f;
+	UpdateTimeProgress(Progress);
+}
 
-	UE_LOG(LogTemp, Error, TEXT("Called and left, %f"), RemainingRatio);
+void UHackMiniGameWidget::EnsureProgressMaterial()
+{
+	if (ProgressMaterial || !TimeProgressBar)
+	{
+		return;
+	}
 
+	FProgressBarStyle ProgressStyle = TimeProgressBar->GetWidgetStyle();
+	UMaterialInterface* Material = Cast<UMaterialInterface>(ProgressStyle.FillImage.GetResourceObject());
+	if (!Material)
+	{
+		return;
+	}
+
+	ProgressMaterial = UMaterialInstanceDynamic::Create(Material, this);
+	if (ProgressMaterial)
+	{
+		ProgressStyle.FillImage.SetResourceObject(ProgressMaterial);
+		TimeProgressBar->SetWidgetStyle(ProgressStyle);
+	}
+}
+
+void UHackMiniGameWidget::UpdateTimeProgress(float Progress)
+{
+	if (TimeProgressBar)
+	{
+		TimeProgressBar->SetPercent(1.0f - Progress);
+	}
+
+	EnsureProgressMaterial();
+	if (ProgressMaterial)
+	{
+		ProgressMaterial->SetScalarParameterValue(ProgressParameterName, Progress);
+	}
 }
 
 void UHackMiniGameWidget::ClearActiveMiniGame()
 {
-	SetFakeCursorVisible(false);
+	RestoreCursor();
 
 	if (ActiveMiniGameWidget)
 	{
@@ -260,49 +297,58 @@ void UHackMiniGameWidget::ClearActiveMiniGame()
 	if (TimeProgressBar)
 	{
 		TimeProgressBar->SetVisibility(ESlateVisibility::Collapsed);
-		TimeProgressBar->SetPercent(0.0f);
+		UpdateTimeProgress(1.0f);
 	}
 }
 
-void UHackMiniGameWidget::UpdateFakeCursorPosition(const FGeometry& MyGeometry)
+void UHackMiniGameWidget::ApplyMiniGameCursor()
 {
-	if (!FakeCursorImage)
+	RestoreCursor();
+	if (!FakeCursorImage || !FakeCursorImage->GetBrush().GetResourceObject())
 	{
 		return;
 	}
 
 	APlayerController* PlayerController = GetOwningPlayer();
-	if (!PlayerController)
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	UGameViewportClient* Viewport = LocalPlayer ? LocalPlayer->ViewportClient : nullptr;
+	if (!Viewport)
 	{
 		return;
 	}
 
-	float MouseX = 0.0f;
-	float MouseY = 0.0f;
-	if (!PlayerController->GetMousePosition(MouseX, MouseY))
+	MiniGameCursorBrush = FakeCursorImage->GetBrush();
+	if (const UCanvasPanelSlot* CursorSlot = Cast<UCanvasPanelSlot>(FakeCursorImage->Slot))
 	{
-		return;
+		const FVector2D CursorSize = CursorSlot->GetSize();
+		if (CursorSize.X > 0.0f && CursorSize.Y > 0.0f && !CursorSlot->GetAutoSize())
+		{
+			MiniGameCursorBrush.SetImageSize(CursorSize);
+		}
 	}
 
-	UCanvasPanelSlot* CursorSlot = Cast<UCanvasPanelSlot>(FakeCursorImage->Slot);
-	if (!CursorSlot)
-	{
-		return;
-	}
-
-	const FVector2D LocalMousePosition = MyGeometry.AbsoluteToLocal(FVector2D(MouseX, MouseY));
-	CursorSlot->SetPosition(LocalMousePosition - FakeCursorHotspot);
+	PreviousCursorWidget = Viewport->GetSoftwareCursorWidget(EMouseCursor::Default);
+	MiniGameCursorWidget = SNew(SImage)
+		.Image(&MiniGameCursorBrush)
+		.ColorAndOpacity(FakeCursorImage->GetColorAndOpacity())
+		.Visibility(EVisibility::HitTestInvisible);
+	CursorViewport = Viewport;
+	Viewport->SetSoftwareCursorWidget(EMouseCursor::Default, MiniGameCursorWidget);
 }
 
-void UHackMiniGameWidget::SetFakeCursorVisible(bool bVisible)
+void UHackMiniGameWidget::RestoreCursor()
 {
-	if (FakeCursorImage)
+	if (UGameViewportClient* Viewport = CursorViewport.Get())
 	{
-		FakeCursorImage->SetVisibility(
-			bVisible
-				? ESlateVisibility::SelfHitTestInvisible
-				: ESlateVisibility::Collapsed);
+		// Do not overwrite a cursor installed by another UI after this minigame.
+		if (Viewport->GetSoftwareCursorWidget(EMouseCursor::Default) == MiniGameCursorWidget)
+		{
+			Viewport->SetSoftwareCursorWidget(EMouseCursor::Default, PreviousCursorWidget);
+		}
 	}
+	CursorViewport.Reset();
+	MiniGameCursorWidget.Reset();
+	PreviousCursorWidget.Reset();
 }
 
 void UHackMiniGameWidget::HandleActiveMiniGameFinished(EHackResult Result)
@@ -310,6 +356,7 @@ void UHackMiniGameWidget::HandleActiveMiniGameFinished(EHackResult Result)
 	FHackResultContext ResultContext;
 	ResultContext.TargetActor = TargetActor;
 	ResultContext.Result = Result;
+	RestoreCursor();
 	OnHackMiniGameFinished.Broadcast(ResultContext);
 
 	ClearActiveMiniGame();

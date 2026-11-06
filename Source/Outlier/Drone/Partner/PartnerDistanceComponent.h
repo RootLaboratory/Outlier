@@ -28,6 +28,7 @@ public:
 	float DisconnectionAudioCooldown = 3.0f;
 
 	void UpdateBoundaryState();
+	void RefreshDistance();
 	void RefreshActivationFromPlayerState();
 
 	virtual void TickComponent(

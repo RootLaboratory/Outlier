@@ -4,14 +4,18 @@
 #include "Blueprint/UserWidget.h"
 #include "Drone/Partner/HackType.h"
 #include "GameplayTagContainer.h"
+#include "Styling/SlateBrush.h"
 #include "HackMiniGameWidget.generated.h"
 
 class UHackableComponent;
 class UHackingMiniGameBase;
 class UCanvasPanel;
 class UImage;
+class UMaterialInstanceDynamic;
 class UPartnerHackComponent;
 class UProgressBar;
+class UGameViewportClient;
+class SWidget;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHackMiniGameWidgetFinished, const FHackResultContext&, ResultContext);
 
@@ -46,15 +50,16 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UCanvasPanel> MiniGameRoot;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	/** Brush and tint used by the software cursor during the minigame. Kept hidden in the widget tree. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UImage> FakeCursorImage;
-
-	/** Temporary compatibility switch. Use the platform cursor while false. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hack|MiniGame|Cursor")
-	bool bUseFakeCursor = false;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UProgressBar> TimeProgressBar;
+
+	/** Elapsed time / time limit (0-1), matching the EMP progress material. */
+	UPROPERTY(EditDefaultsOnly, Category = "Hack|MiniGame|Progress")
+	FName ProgressParameterName = TEXT("Progress");
 
 	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
 	float ElapsedTime = 0.0f;
@@ -72,9 +77,11 @@ private:
 	TSubclassOf<UHackingMiniGameBase> ResolveMiniGameWidgetClass() const;
 	bool ResolveIsTimeLimited() const;
 	void RefreshTimeProgressBar();
+	void EnsureProgressMaterial();
+	void UpdateTimeProgress(float Progress);
 	void ClearActiveMiniGame();
-	void UpdateFakeCursorPosition(const FGeometry& MyGeometry);
-	void SetFakeCursorVisible(bool bVisible);
+	void ApplyMiniGameCursor();
+	void RestoreCursor();
 
 	UFUNCTION()
 	void HandleActiveMiniGameFinished(EHackResult Result);
@@ -91,9 +98,17 @@ private:
 	UPROPERTY()
 	TObjectPtr<UHackingMiniGameBase> ActiveMiniGameWidget;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> ProgressMaterial;
+
 	float MiniGameTimeLimit = 0.0f;
 	float ClickSuccessRangeMultiplier = 1.0f;
 	float SpinningGapMultiplier = 1.0f;
 
-	FVector2D FakeCursorHotspot = FVector2D::ZeroVector;
+	UPROPERTY(Transient)
+	FSlateBrush MiniGameCursorBrush;
+
+	TWeakObjectPtr<UGameViewportClient> CursorViewport;
+	TSharedPtr<SWidget> PreviousCursorWidget;
+	TSharedPtr<SWidget> MiniGameCursorWidget;
 };

@@ -70,7 +70,7 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Preset|Stage")
 	TObjectPtr<UButton> Level03Button;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Preset|Stage")
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Preset|Stage")
 	TObjectPtr<UButton> Level04Button;
 
 	UPROPERTY(BlueprintReadOnly, Transient, Category = "Preset|Stage")
@@ -78,10 +78,12 @@ protected:
 
 private:
 	void SetChosenStage(EOutlierStage Stage, bool bFocusButton);
+	void HandleStageButtonUnhovered(EOutlierStage Stage);
 	void ApplyStageSelection();
 	UButton* GetStageButton(EOutlierStage Stage) const;
 	TArray<FButtonStyle> OriginalStageButtonStyles;
 	int32 ChosenStageIndex = 0;
+	bool bShowStageSelection = false;
 
 	UFUNCTION()
 	void HandleStageButtonClicked(EOutlierStage Stage);

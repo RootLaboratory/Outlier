@@ -98,9 +98,16 @@ void UMainUIBase::NativeOnInitialized()
 
 void UMainUIBase::SetConnectionLost(bool bLost)
 {
+	bConnectionLost = bLost;
+	RefreshConnectionVisibility();
+}
+
+void UMainUIBase::RefreshConnectionVisibility()
+{
 	if (ConnectionWidget)
 	{
-		ConnectionWidget->SetVisibility(bLost ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+		ConnectionWidget->SetVisibility(bModulesActive && bConnectionLost
+			? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
 	}
 }
 
@@ -111,6 +118,7 @@ void UMainUIBase::ModulesControl(bool Flag)
 
 	if (!DefaultLayer)
 	{
+		RefreshConnectionVisibility();
 		return;
 	}
 
@@ -140,6 +148,8 @@ void UMainUIBase::ModulesControl(bool Flag)
 			}
 		}
 	}
+	// 전체 레이어 가시성을 바꾼 뒤 연결 경고의 개별 표시 조건을 다시 적용한다.
+	RefreshConnectionVisibility();
 }
 
 void UMainUIBase::ShowExceptionLayer(UWidget* Layer)

@@ -82,6 +82,10 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void RequestSelectLobbyRole(EOutlierPlayerRole DesiredRole);
 
+	void RequestPreviewLobbyRole(EOutlierPlayerRole DesiredRole);
+	UFUNCTION(Server, Reliable)
+	void ServerRequestPreviewLobbyRole(EOutlierPlayerRole DesiredRole);
+
 	UFUNCTION(BlueprintCallable)
 	void RequestStartPendingMatch();
 	UFUNCTION(BlueprintCallable, Category = "Save")

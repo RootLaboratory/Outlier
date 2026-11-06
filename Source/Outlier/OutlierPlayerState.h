@@ -156,6 +156,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Lobby")
 	EOutlierPlayerRole GetPendingLobbyRole() const { return PendingLobbyRole; }
 
+	void SetPendingLobbyPreviewRole(EOutlierPlayerRole NewRole);
+	UFUNCTION(BlueprintPure, Category = "Lobby")
+	EOutlierPlayerRole GetPendingLobbyPreviewRole() const { return PendingLobbyPreviewRole; }
+
 	UFUNCTION(BlueprintCallable, Category = "Lobby")
 	void SetPendingLobbySlotIndex(int32 NewPendingLobbySlotIndex);
 
@@ -211,6 +215,10 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_PendingLobbyRole)
 	EOutlierPlayerRole PendingLobbyRole = EOutlierPlayerRole::None;
+
+	// Guest position is shared before confirmation; PendingLobbyRole remains the reserved role.
+	UPROPERTY(ReplicatedUsing = OnRep_PendingLobbyPreviewRole)
+	EOutlierPlayerRole PendingLobbyPreviewRole = EOutlierPlayerRole::None;
 
 	UPROPERTY(ReplicatedUsing = OnRep_PendingLobbySlotIndex)
 	int32 PendingLobbySlotIndex = INDEX_NONE;
@@ -294,6 +302,9 @@ protected:
 
 	UFUNCTION()
 	void OnRep_PendingLobbyRole();
+
+	UFUNCTION()
+	void OnRep_PendingLobbyPreviewRole();
 
 	UFUNCTION()
 	void OnRep_PendingLobbySlotIndex();

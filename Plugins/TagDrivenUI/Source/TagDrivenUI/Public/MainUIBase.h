@@ -67,6 +67,7 @@ public:
 
 protected:
 	virtual void NativeOnInitialized() override;
+	void RefreshConnectionVisibility();
 
 	// MainUI 가시성은 바꾸지 않고 예외 위젯의 브랜치를 DefaultLayer까지 연다.
 	void ShowExceptionLayer(UWidget* Layer);
@@ -83,6 +84,7 @@ protected:
 
 	// DefaultLayer 직속 Layer의 전역 가시성 상태. 개별 모듈의 활성 상태와는 별개다.
 	bool bModulesActive = false;
+	bool bConnectionLost = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Ability Sections")
 	TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;

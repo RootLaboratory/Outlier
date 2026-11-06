@@ -54,6 +54,11 @@ bool UUpperWidget::PresentInfo(const FOutlierInfoWidgetRequest& Request)
 	return false;
 }
 
+bool UUpperWidget::ShouldFadeCurrentInfo() const
+{
+	return InputTutoWidget && InputTutoWidget->IsVisible();
+}
+
 void UUpperWidget::StartInfoPresentation()
 {
 	if (GoalWidget && GoalWidget->IsVisible()) GoalWidget->PlayGoalPopup();

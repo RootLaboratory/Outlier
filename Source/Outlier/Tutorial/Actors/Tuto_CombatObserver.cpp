@@ -11,6 +11,7 @@
 #include "OutlierPlayerState.h"
 #include "Room/RoomVolume.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "TimerManager.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideTargetComponent.h"
 
 namespace
@@ -230,6 +231,7 @@ void ATuto_CombatObserver::HandleReinforcementStarted(FGameplayTag EventRoomTag,
 
 void ATuto_CombatObserver::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GetWorldTimerManager().ClearTimer(ClearedRetryTimer);
 	StopObserving();
 	Super::EndPlay(EndPlayReason);
 }
@@ -274,10 +276,25 @@ void ATuto_CombatObserver::HandleCombatEvent(FGameplayTag EventRoomTag, ERoomCom
 		return;
 	}
 	if (Event != ERoomCombatEvent::RoomCleared) return;
-	if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleRoomCleared(Source);
-	// 클리어된 방에서는 증원과 저항이 더 이상 발생하지 않으므로 observer를 종료한다.
-	Trace(this, TEXT("Room cleared; observer stops and is destroyed."));
+	// 전투 관찰은 끝내되, 수신자 연결이 일시적으로 끊겼으면 클리어 전달만 재시도한다.
 	StopObserving();
+	TryDispatchRoomCleared();
+}
+
+void ATuto_CombatObserver::TryDispatchRoomCleared()
+{
+	if (GetEventTag(ClearedSlot).IsValid() && !IsSlotFired(ClearedSlot))
+	{
+		if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleRoomCleared(Source);
+		if (!IsSlotFired(ClearedSlot))
+		{
+			GetWorldTimerManager().SetTimer(ClearedRetryTimer, this,
+				&ThisClass::TryDispatchRoomCleared, 1.0f, false);
+			return;
+		}
+	}
+	GetWorldTimerManager().ClearTimer(ClearedRetryTimer);
+	Trace(this, TEXT("Room cleared; clear event delivered or unconfigured; observer is destroyed."));
 	Destroy();
 }
 
@@ -373,9 +390,9 @@ AOutlierPlayerState* ATuto_CombatObserver::FindPlayerInRoom() const
 		AOutlierPlayerState* State = Cast<AOutlierPlayerState>(PlayerState);
 		// 조종 중인 폰을 사용하므로, 적에 빙의한 파트너는 그 적의 위치로 판정한다.
 		const APawn* Pawn = IsValid(State) ? State->GetPawn() : nullptr;
-		if (!IsValid(Pawn) || State->GetPairId() == INDEX_NONE) continue;
+		if (!IsValid(State) || State->GetPairId() == INDEX_NONE) continue;
 		if (!AnyPaired) AnyPaired = State;
-		if (Room && Room->ContainsWorldLocation(Pawn->GetActorLocation())) return State;
+		if (IsValid(Pawn) && Room && Room->ContainsWorldLocation(Pawn->GetActorLocation())) return State;
 	}
 	// 마지막 적을 방 밖에서 잡거나 클리어 순간 다른 방에 있으면 방 안에 아무도 없다.
 	// 이 PS는 수신 Pair를 정할 뿐이고 Arena 워커에는 한 Pair만 있으므로, Pair가 정해진 아무 플레이어로 대체한다.

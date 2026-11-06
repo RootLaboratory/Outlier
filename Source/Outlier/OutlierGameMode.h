@@ -19,6 +19,7 @@ class AFirstPersonPlayerController;
 class AFirstPersonCharacter;
 class AShooterCharacter;
 class APartnerCharacter;
+class ARangedWeaponBase;
 class AOutlierCheckpoint;
 class AOutlierPlayerState;
 class AOutlierArenaPausePlayerState;
@@ -82,6 +83,15 @@ public:
 
 	/** Constructor */
 	AOutlierGameMode();
+	// 프리셋 선택 시에만 사용할 고정 지급 무기 BP. 이어하기는 저장 장비를 복원한다.
+	UPROPERTY(EditDefaultsOnly, Category = "Loadout|Restore")
+	TSubclassOf<AWeaponBase> RestoreRifleClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Loadout|Restore")
+	TSubclassOf<AWeaponBase> RestorePistolClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Loadout|Restore")
+	TSubclassOf<ARangedWeaponBase> RestorePartnerWeaponClass;
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 	// 서버와 클라이언트가 같은 맵의 GameMode 설정으로 PIE 테스트 여부를 판단한다.
 	static bool IsDirectPairTestWorld(const UWorld* World);
@@ -159,6 +169,7 @@ public:
 
 
 private:
+	bool BuildFixedRestoreLoadout(FOutlierLoadoutSnapshot& Snapshot) const;
 	friend class FOutlierGameOverPendingFailureTest;
 	friend class FOutlierSettingsPauseTest;
 	friend class FOutlierDirectPairTest;
@@ -243,6 +254,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Testing", meta = (DisplayName = "Direct Pair Test (PIE Only)",
 		ToolTip = "Start two PIE players as Shooter and Partner in the current map. Requires unique PlayerStart Tags Shooter and Partner; skips Lobby and Arena streaming. Duplicate the gameplay GameMode BP before enabling."))
 	bool bDirectPairTest = false;
+
+	// 새 매치의 최초 인트로 시퀀스가 끝나고 게임 플로우가 재개될 때 양측 PC에 한 번 보낸다.
+	UPROPERTY(EditDefaultsOnly, Category = "Cinematic|Event", meta = (Categories = "Event"))
+	FGameplayTag InitialIntroCompletedEventTag;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
 	TSubclassOf<AShooterCharacter> ShooterClass;

@@ -165,7 +165,20 @@ bool UInteractableComponent::CanInteract(const FGameplayTagContainer& Interactor
 
 bool UInteractableComponent::CanShowInteractionWidgets(const FGameplayTagContainer& InteractorTags) const
 {
+	// Hack lock prompts remain visible regardless of the player's interaction permissions.
+	if (IsLockedYet())
+	{
+		return !InteractableTags.HasTagExact(InteractableComponentTags::Used())
+			&& !InteractableTags.HasTagExact(InteractableComponentTags::Disabled());
+	}
 	return MeetsInteractionRequirements(InteractorTags)
+		&& (!InteractableTags.HasTagExact(InteractableComponentTags::Locked()) || IsLockedYet());
+}
+
+bool UInteractableComponent::CanShowInteractionOutlineWidget() const
+{
+	return !InteractableTags.HasTagExact(InteractableComponentTags::Used())
+		&& !InteractableTags.HasTagExact(InteractableComponentTags::Disabled())
 		&& (!InteractableTags.HasTagExact(InteractableComponentTags::Locked()) || IsLockedYet());
 }
 
@@ -334,6 +347,18 @@ void UInteractableComponent::ResetHoldInteraction(AFirstPersonCharacter* Interac
 		InteractionDescActor->SetProgress(0.0f);
 		InteractionDescActor->DeactivateDesc();
 	}
+}
+
+bool UInteractableComponent::ResetHoldReadyIfIdle()
+{
+	AActor* Owner = GetOwner();
+	if (!IsValid(Owner) || !Owner->HasAuthority() || !HoldSessions.IsEmpty())
+	{
+		return false;
+	}
+	ClearHoldReady();
+	Owner->ForceNetUpdate();
+	return true;
 }
 
 bool UInteractableComponent::CanCommitHoldInteraction(const AFirstPersonCharacter* Interactor) const
@@ -673,7 +698,7 @@ void UInteractableComponent::InteractionOutlineWidgetActivate(AFirstPersonCharac
 	}
 	const bool bCanInteract = CanInteract(Interactor->GetOwnedGameplayTagsForQuery());
 	const bool bLocked = !bCanInteract && IsLockedYet();
-	if (!CanShowInteractionWidgets(Interactor->GetOwnedGameplayTagsForQuery()))
+	if (!CanShowInteractionOutlineWidget())
 	{
 		InteractionOutlineWidgetDeactivate();
 		DeactivateInteractionDesc();

@@ -906,7 +906,12 @@ bool UOutlierAbilitySystemComponent::UpdateShooterSuitConfig(const FOutlierShoot
 #endif
 	}
 
+	const bool bDistanceChanged = ShooterSuitConfig.MaxPartnerDistance != Config.MaxPartnerDistance;
 	ShooterSuitConfig = Config;
+	if (bDistanceChanged)
+	{
+		OnShooterConnectionDistanceChanged.Broadcast(Config.MaxPartnerDistance);
+	}
 	RefreshShooterQuantumLeapCharges();
 	return true;
 }

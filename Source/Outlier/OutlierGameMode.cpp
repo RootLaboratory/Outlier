@@ -4,6 +4,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Weapon/WeaponBase.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierCheckpoint.h"
 #include "Save/OutlierCheckpointSnapshot.h"
@@ -241,7 +242,7 @@ void FGameOverWorldPauseState::Reset(UWorld* World)
 
 AOutlierGameMode::AOutlierGameMode()
 {
-
+	InitialIntroCompletedEventTag = FGameplayTag::RequestGameplayTag(TEXT("Event.006_Broken_Wall"), false);
 }
 
 bool AOutlierGameMode::BeginSettingsPause(AFirstPersonPlayerController* Controller,
@@ -958,7 +959,7 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 	if (!HasAuthority() || !RoomTag.IsValid() || !Saves || !Saves->HasValidStableIds()
 		|| !Arena || bArenaReloadInProgress || ActiveMatchPairId == INDEX_NONE
 		|| GameplayGeneration != static_cast<int32>(Arena->GetGameplayGeneration())
-		|| !IsValid(Shooter) || !IsValid(Partner)
+		|| !IsValid(Shooter) || !IsValid(Partner) || Shooter->IsDead()
 		|| !ShooterController || ShooterController->GetPawn() != Shooter
 		|| !PartnerController || PartnerController->GetPawn() != Partner
 		|| (bEncounterCleared && !Saves->HasWorldProgress(
@@ -1037,8 +1038,12 @@ bool AOutlierGameMode::IsPairGameplayReady() const
 		FindPairPlayerState(ActiveMatchPairId, EOutlierPlayerRole::Shooter));
 	const AController* PartnerController = GetControllerFromPlayerState(
 		FindPairPlayerState(ActiveMatchPairId, EOutlierPlayerRole::Partner));
+	// 사망 Pawn은 리스폰 전까지 Possess 상태로 남으므로 살아 있는지도 확인한다.
+	const AShooterCharacter* ShooterPawn = ShooterController
+		? Cast<AShooterCharacter>(ShooterController->GetPawn()) : nullptr;
 	return ShooterController && PartnerController && ShooterController != PartnerController
-		&& IsValid(ShooterController->GetPawn()) && IsValid(PartnerController->GetPawn());
+		&& IsValid(ShooterController->GetPawn()) && IsValid(PartnerController->GetPawn())
+		&& !(ShooterPawn && ShooterPawn->IsDead());
 }
 
 void AOutlierGameMode::BroadcastPairGameplayReadyIfReady()
@@ -1170,7 +1175,9 @@ void AOutlierGameMode::HandlePlayerDeath(AShooterCharacter* Character)
 		PS->SetSuitDisabledByPartnerBoundary(false);
 	}
 
-	Character->DetachFromControllerPendingDestroy();
+	// 사망 Pawn을 Controller에서 분리하지 않는다. 분리하면 시점이 Controller로 넘어가 3인칭 메시가
+	// 드러나고 사망 PP가 그 위에 재생된다. 입력·이동·전투·AI 타겟은 IsDead()로 막히고,
+	// 정리는 HandleDeadTagChanged가 처리한다. 리스폰 시 기존 Pawn 파괴/새 Possess로 교체된다.
 
 	// 프로세스 종류로 미리 자르지 않는다. ArenaWorker는 이제 실제 두 플레이어가 플레이하는
 	// 프로세스라, IsArenaWorkerProcess()로 끊으면 dedi에서만 PreSetLoadWidget이 안 뜨고
@@ -3434,6 +3441,14 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	{
 		return false;
 	}
+	// 고정 지급은 프리셋 선택에만 적용한다. 이어하기는 저장 장비/슈트 상태를 그대로 복원한다.
+	const bool bApplyPresetLoadout = !bRestoreCheckpointSnapshot && PresetNodeCount != INDEX_NONE;
+	// 잘못된 프리셋 BP 설정은 기존 Pawn/월드/저장 상태를 변경하기 전에 거부한다.
+	FOutlierLoadoutSnapshot FixedLoadout = ShooterPlayerState->GetLoadoutSnapshot();
+	if (bApplyPresetLoadout && !BuildFixedRestoreLoadout(FixedLoadout))
+	{
+		return false;
+	}
 
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
@@ -3470,6 +3485,16 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	if (BeforeRespawn && !BeforeRespawn())
 	{
 		return false;
+	}
+	if (bApplyPresetLoadout)
+	{
+		// 프리셋은 기존 근접무기를 보존하고 고정 장비와 슈트를 지급한다.
+		ShooterPlayerState->SetLoadoutSnapshot(FixedLoadout);
+		ShooterPlayerState->SetAcquiredSuit(true);
+		if (PartnerPlayerState)
+		{
+			PartnerPlayerState->SetAcquiredSuit(true);
+		}
 	}
 	if (GameOverWorldPause.IsActive() && !GameOverWorldPause.IsTransitioning()
 		&& !BeginGameOverTransition())
@@ -3597,6 +3622,27 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		NewShooter,
 		NewPartner,
 		bRestoreCheckpointSnapshot);
+	// 프리셋 고정 지급 실패를 성공한 로드로 진행시키지 않는다.
+	const UShooterInventoryComponent* RestoredInventory = NewShooter->GetInventoryComponent();
+	const AWeaponBase* RestoredRifle = RestoredInventory
+		? RestoredInventory->GetWeaponInSlot(EWeaponSlot::Primary) : nullptr;
+	const AWeaponBase* RestoredPistol = RestoredInventory
+		? RestoredInventory->GetWeaponInSlot(EWeaponSlot::Secondary) : nullptr;
+	const AWeaponBase* RestoredPartnerWeapon = NewPartner->GetCurrentWeapon();
+	if (bApplyPresetLoadout && (NewShooter->GetAppliedPresentation() != EShooterPresentation::Suit
+		|| !RestoredRifle || RestoredRifle->GetClass() != RestoreRifleClass.Get()
+		|| !RestoredPistol || RestoredPistol->GetClass() != RestorePistolClass.Get()
+		|| NewShooter->GetCurrentWeapon() != RestoredRifle
+		|| !RestoredPartnerWeapon || RestoredPartnerWeapon->GetClass() != RestorePartnerWeaponClass.Get()))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[FixedLoadout] Required suit/weapon restoration failed; aborting Generation=%u"), ReloadGeneration);
+		NewShooter->CleanupOwnedWeapons();
+		NewShooter->Destroy();
+		NewPartner->Destroy();
+		ArenaSubsystem->FailGameplayReload(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
+		HandleArenaGameplayReloadFailed(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
+		return true;
+	}
 	if (bRestoreCheckpointSnapshot)
 	{
 		if (UOutlierAbilitySystemComponent* ShooterASC = NewShooter->GetOutlierAbilitySystemComponent())
@@ -4962,6 +5008,36 @@ AOutlierPlayerState* AOutlierGameMode::FindPairPlayerState(int32 PairId, EOutlie
 AController* AOutlierGameMode::GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const
 {
 	return PlayerState ? Cast<AController>(PlayerState->GetOwner()) : nullptr;
+}
+
+bool AOutlierGameMode::BuildFixedRestoreLoadout(FOutlierLoadoutSnapshot& Snapshot) const
+{
+	const AWeaponBase* Rifle = RestoreRifleClass ? RestoreRifleClass->GetDefaultObject<AWeaponBase>() : nullptr;
+	const AWeaponBase* Pistol = RestorePistolClass ? RestorePistolClass->GetDefaultObject<AWeaponBase>() : nullptr;
+	if (!Rifle || !Pistol || !RestorePartnerWeaponClass
+		|| RestoreRifleClass->HasAnyClassFlags(CLASS_Abstract)
+		|| RestorePistolClass->HasAnyClassFlags(CLASS_Abstract)
+		|| RestorePartnerWeaponClass->HasAnyClassFlags(CLASS_Abstract)
+		|| Rifle->GetWeaponType() != EWeaponType::Rifle
+		|| Pistol->GetWeaponType() != EWeaponType::Pistol)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[FixedLoadout] Set concrete Rifle, Pistol and Partner weapon BP classes in GameMode Class Defaults > Loadout > Restore. Mode=%s Rifle=%s Pistol=%s Partner=%s"),
+			*GetPathNameSafe(GetClass()),
+			*GetNameSafe(RestoreRifleClass.Get()), *GetNameSafe(RestorePistolClass.Get()),
+			*GetNameSafe(RestorePartnerWeaponClass.Get()));
+		return false;
+	}
+
+	Snapshot.SlotSnapshots.SetNum(static_cast<int32>(EWeaponSlot::Max));
+	FOutlierWeaponSnapshot& Primary = Snapshot.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)];
+	Primary.WeaponClass = RestoreRifleClass;
+	Primary.CurrentAmmo = INDEX_NONE;
+	FOutlierWeaponSnapshot& Secondary = Snapshot.SlotSnapshots[static_cast<int32>(EWeaponSlot::Secondary)];
+	Secondary.WeaponClass = RestorePistolClass;
+	Secondary.CurrentAmmo = INDEX_NONE;
+	Snapshot.PartnerWeaponClass = RestorePartnerWeaponClass;
+	Snapshot.CurrentSlot = EWeaponSlot::Primary;
+	return true;
 }
 
 void AOutlierGameMode::RestorePairLoadout(

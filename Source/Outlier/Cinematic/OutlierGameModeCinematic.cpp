@@ -2,6 +2,7 @@
 
 #include "Cinematic/OutlierCinematicTypes.h"
 #include "Engine/World.h"
+#include "Event/OutlierEventSubsystem.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/WorldSettings.h"
@@ -119,6 +120,14 @@ void AOutlierGameMode::ReleaseInitialIntroInput()
 	if (!InitialIntroId.IsValid() || bPendingInitialIntro) return;
 	if (InitialIntroShooter.IsValid()) InitialIntroShooter->ClientReleaseArenaIntro(InitialIntroId);
 	if (InitialIntroPartner.IsValid()) InitialIntroPartner->ClientReleaseArenaIntro(InitialIntroId);
+	// Listen/ArenaWorker 두 경로 모두 인트로 완료 후 실제 게임 재개 시점에 여기를 한 번 지난다.
+	// EventCallOnce가 양측 PC 전달과 게임 플로우당 1회 보장을 처리한다.
+	if (InitialIntroCompletedEventTag.IsValid()
+		&& !UOutlierEventSubsystem::EventCallOnce(this, InitialIntroCompletedEventTag))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Cinematic] Intro completed event '%s' was not delivered."),
+			*InitialIntroCompletedEventTag.ToString());
+	}
 	InitialIntroId.Invalidate();
 	InitialIntroPreparedPlayers.Reset();
 	InitialIntroReadyPlayers.Reset();

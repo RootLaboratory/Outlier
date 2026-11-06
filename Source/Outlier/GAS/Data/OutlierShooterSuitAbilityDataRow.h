@@ -28,6 +28,7 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 	float CastTimeSeconds = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Centimeters"))
+	// Only Common supplies the base connection distance. Quantum Leap range upgrades modify this shared value.
 	float MaxPartnerDistance = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Centimeters"))

@@ -7,6 +7,7 @@
 #include "HAL/IConsoleManager.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/GameStateBase.h"
 #include "Outlier.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierSaveSubSystem.h"
@@ -160,19 +161,26 @@ bool ITuto_EventTriggerInterface::DispatchEventTag(UWorld* World, FGameplayTag E
 	if (Region == ETuto_EventRegion::WorldGuide) return DispatchWorldGuide();
 
 	TArray<AFirstPersonPlayerController*, TInlineAllocator<2>> Recipients;
-	const auto AddRecipient = [&Recipients, SourcePlayerState, World](APawn* Pawn, EOutlierPlayerRole Role)
+	const AGameStateBase* GameState = World->GetGameState();
+	if (!GameState || SourcePlayerState->GetPairId() == INDEX_NONE) return false;
+	const auto AddRecipient = [&Recipients, SourcePlayerState, World, GameState](EOutlierPlayerRole Role)
 	{
-		AOutlierPlayerState* State = IsValid(Pawn) ? Pawn->GetPlayerState<AOutlierPlayerState>() : nullptr;
-		AFirstPersonPlayerController* Controller = IsValid(Pawn) ? Cast<AFirstPersonPlayerController>(Pawn->GetController()) : nullptr;
-		// Pair 식별자는 연결된 수신자 검증에만 쓰며, one-shot 실행의 키로 쓰지 않는다.
-		if (!IsValid(State) || State->GetWorld() != World || State->GetPlayerRole() != Role
-			|| State->GetPairId() != SourcePlayerState->GetPairId() || !IsValid(Controller)
-			|| Controller->GetPawn() != Pawn || State->GetOwner() != Controller) return false;
-		Recipients.AddUnique(Controller);
-		return true;
+		// 수신자는 현재 빙의한 Pawn이 아니라 같은 Pair/역할의 PlayerState 소유자로 찾는다.
+		// Partner가 적을 조종하거나 리스폰 중이어도 이벤트 전달은 유지된다.
+		for (APlayerState* PlayerState : GameState->PlayerArray)
+		{
+			AOutlierPlayerState* State = Cast<AOutlierPlayerState>(PlayerState);
+			if (!IsValid(State) || State->GetWorld() != World || State->GetPlayerRole() != Role
+				|| State->GetPairId() != SourcePlayerState->GetPairId()) continue;
+			AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(State->GetOwner());
+			if (!IsValid(Controller) || Controller->GetWorld() != World
+				|| Controller->GetPlayerState<AOutlierPlayerState>() != State) continue;
+			Recipients.AddUnique(Controller);
+			return true;
+		}
+		return false;
 	};
-	if (!AddRecipient(SourcePlayerState->GetShooterCharacter(), EOutlierPlayerRole::Shooter)
-		|| !AddRecipient(SourcePlayerState->GetPartnerCharacter(), EOutlierPlayerRole::Partner))
+	if (!AddRecipient(EOutlierPlayerRole::Shooter) || !AddRecipient(EOutlierPlayerRole::Partner))
 	{
 		UE_LOG(LogOutlier, Warning, TEXT("[EventTrigger] %s could not resolve both recipients for '%s'."), *Source, *EventTag.ToString());
 		return false;

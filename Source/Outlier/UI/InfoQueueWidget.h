@@ -62,10 +62,29 @@ protected:
 	virtual void StartInfoPresentation() {}
 	virtual void ResetInfoContent() {}
 	virtual void InfoFinished(const FOutlierInfoWidgetRequest& Request, bool bCompleted) {}
+	/** 현재 항목에 Fade in/out을 적용할지 결정한다. PresentInfo 이후에 호출된다. */
+	virtual bool ShouldFadeCurrentInfo() const { return false; }
 	bool TryGetInfoRequest(FGameplayTag EventTag, FOutlierInfoWidgetRequest& OutRequest) const;
 	TArray<FOutlierInfoWidgetRequest> GetInfoRequests() const;
 
+	/** 표시 시작 시 투명도를 0에서 원래 값까지 올리는 시간. 0이면 즉시 표시한다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Info|Fade", meta = (ClampMin = "0.0", Units = "s"))
+	float FadeInDuration = 0.25f;
+
+	/** 완료 시 투명도를 0까지 내린 뒤 다음 항목으로 넘어가는 시간. 0이면 즉시 종료한다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Info|Fade", meta = (ClampMin = "0.0", Units = "s"))
+	float FadeOutDuration = 0.25f;
+
 private:
+	enum class EInfoFadePhase : uint8 { None, In, Out };
+
+	/** 완료 요청 진입점. 페이드가 가능하면 Fade out 후 FinishCurrentInfo를 호출한다. */
+	void RequestFinishCurrentInfo(bool bCompleted);
+	void BeginFadeIn();
+	/** Fade 진행을 처리한다. 현재 항목이 끝났으면 true를 반환한다. */
+	bool TickFade(float DeltaTime);
+	bool IsFadingOut() const { return FadePhase == EInfoFadePhase::Out; }
+
 	bool CompleteInfoExact(FGameplayTag RequestTag, FGameplayTag OriginEventTag);
 	bool CancelInfoExact(FGameplayTag RequestTag, FGameplayTag OriginEventTag);
 	void AdvanceQueue();
@@ -84,6 +103,10 @@ private:
 	int32 PresentationWarmupFramesRemaining = 0;
 	uint64 LastPresentationWarmupFrame = 0;
 	float PresentationRenderOpacity = 1.0f;
+	EInfoFadePhase FadePhase = EInfoFadePhase::None;
+	float FadeElapsed = 0.0f;
+	float FadeOutStartOpacity = 1.0f;
+	bool bFadeOutCompleted = false;
 	bool bHasCurrentInfo = false;
 	bool bAdvancingQueue = false;
 	bool bFinishingCurrent = false;

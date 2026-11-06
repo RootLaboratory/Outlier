@@ -15,6 +15,7 @@
 #include "InputActionValue.h"
 #include "Enemy/VECDroneMovementComponent.h"
 #include "Outlier.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "TimerManager.h"
 
 namespace
@@ -188,6 +189,19 @@ void AVECDrone::RefreshCombatStatePresentation()
 {
 	Super::RefreshCombatStatePresentation();
 	RefreshStateSpotLight();
+	RefreshTeammateOutline();
+}
+
+void AVECDrone::RefreshTeammateOutline()
+{
+	UWorld* World = GetWorld();
+	UOutlierStencilSubsystem* Stencils = World ? World->GetSubsystem<UOutlierStencilSubsystem>() : nullptr;
+	if (!Stencils) return;
+	// 해킹(빙의)으로 아군이 된 동안만 팀원 외곽선을 받는다. 빙의한 본인 화면에서는 서브시스템이 제외한다.
+	const bool bTeammate = IsEnemyPossessed() && !IsActorBeingDestroyed() && !bDeathCleanupPerformed
+		&& !IsDead() && !HasHackEffectEndedWithDeath()
+		&& (!IsPoolManaged() || GetEnemyPoolState() == EEnemyPoolState::CombatActive);
+	Stencils->SetActorTeammate(this, bTeammate);
 }
 
 void AVECDrone::RefreshStateSpotLight()
@@ -497,6 +511,8 @@ void AVECDrone::PostNetReceive()
 		ResetPoolPresentationState();
 	}
 	RefreshStateSpotLight();
+	// bIsPossessed는 OnRep이 없으므로 클라이언트는 여기서 팀원 외곽선을 맞춘다.
+	RefreshTeammateOutline();
 }
 
 void AVECDrone::ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale)

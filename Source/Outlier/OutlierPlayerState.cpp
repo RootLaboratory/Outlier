@@ -10,9 +10,23 @@
 #include "GameFramework/GameStateBase.h"
 #include "Net/UnrealNetwork.h"
 #include "Network/OutlierArenaSubsystem.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
+
+namespace
+{
+	// 팀원 외곽선 대상은 쌍 연결이나 역할이 바뀔 때만 다시 찾는다.
+	void MarkStencilTeammatesDirty(const AActor* Context)
+	{
+		UWorld* World = Context ? Context->GetWorld() : nullptr;
+		if (UOutlierStencilSubsystem* Stencils = World ? World->GetSubsystem<UOutlierStencilSubsystem>() : nullptr)
+		{
+			Stencils->MarkTeammatesDirty();
+		}
+	}
+}
 
 void AOutlierPlayerState::OnRep_CheckpointData()
 {
@@ -392,12 +406,26 @@ void AOutlierPlayerState::SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId)
 
 void AOutlierPlayerState::SetPendingLobbyRole(EOutlierPlayerRole NewPendingLobbyRole)
 {
-	if (!HasAuthority() || PendingLobbyRole == NewPendingLobbyRole)
+	if (!HasAuthority()) return;
+	const bool bChanged = PendingLobbyRole != NewPendingLobbyRole || PendingLobbyPreviewRole != NewPendingLobbyRole;
+	if (!bChanged)
 	{
 		return;
 	}
 
 	PendingLobbyRole = NewPendingLobbyRole;
+	PendingLobbyPreviewRole = NewPendingLobbyRole;
+	ForceNetUpdate();
+	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::SetPendingLobbyPreviewRole(EOutlierPlayerRole NewRole)
+{
+	if (!HasAuthority() || PendingLobbyRole != EOutlierPlayerRole::None || PendingLobbyPreviewRole == NewRole
+		|| (NewRole != EOutlierPlayerRole::None && NewRole != EOutlierPlayerRole::Shooter
+			&& NewRole != EOutlierPlayerRole::Partner)) return;
+	PendingLobbyPreviewRole = NewRole;
+	ForceNetUpdate();
 	HandlePendingLobbyStateChanged();
 }
 
@@ -422,10 +450,12 @@ void AOutlierPlayerState::ClearPendingLobbyState()
 	const bool bChanged =
 		PendingLobbyMatchId != INDEX_NONE ||
 		PendingLobbyRole != EOutlierPlayerRole::None ||
+		PendingLobbyPreviewRole != EOutlierPlayerRole::None ||
 		PendingLobbySlotIndex != INDEX_NONE;
 
 	PendingLobbyMatchId = INDEX_NONE;
 	PendingLobbyRole = EOutlierPlayerRole::None;
+	PendingLobbyPreviewRole = EOutlierPlayerRole::None;
 	PendingLobbySlotIndex = INDEX_NONE;
 
 	if (bChanged)
@@ -453,6 +483,7 @@ void AOutlierPlayerState::RefreshCharacterLinks()
 	}
 
 	OnPlayerCharactersChanged.Broadcast(this);
+	MarkStencilTeammatesDirty(this);
 
 	// 캐릭터 포인터가 슈트 플래그보다 늦게 도착하면 OnRep_AcquiredSuit 때는 넘길 곳이 없다.
 	// 링크가 붙는 이 시점에 현재 상태를 한 번 더 투영한다.
@@ -472,6 +503,11 @@ void AOutlierPlayerState::OnRep_PendingLobbyMatchId()
 }
 
 void AOutlierPlayerState::OnRep_PendingLobbyRole()
+{
+	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::OnRep_PendingLobbyPreviewRole()
 {
 	HandlePendingLobbyStateChanged();
 }
@@ -520,6 +556,7 @@ void AOutlierPlayerState::ServerReportStatAllocatorUIState_Implementation(
 
 void AOutlierPlayerState::HandlePlayerRoleChanged()
 {
+	MarkStencilTeammatesDirty(this);
 	OnPlayerRoleChanged.Broadcast(this);
 }
 
@@ -922,6 +959,7 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AOutlierPlayerState, bStatAllocatorExitPending);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyMatchId);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyRole);
+	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyPreviewRole);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbySlotIndex);
 	DOREPLIFETIME(AOutlierPlayerState, CheckpointData);
 	DOREPLIFETIME(AOutlierPlayerState, ShooterCharacter);

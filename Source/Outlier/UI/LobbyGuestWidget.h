@@ -8,6 +8,8 @@ class UImage;
 class UTextBlock;
 class UTexture2D;
 class UButton;
+class UInputActionKeyDisplayWidget;
+class UMaterialInstanceDynamic;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnLobbyGuestMoveRequested, int32 /* Direction */);
 
@@ -28,6 +30,7 @@ public:
 	virtual void NativePreConstruct() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 	FOnLobbyGuestMoveRequested OnMoveRequested;
 
@@ -67,11 +70,15 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UImage> ResultImage;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lobby|Guest")
-	TObjectPtr<UTexture2D> DefaultTexture;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UInputActionKeyDisplayWidget> DefaultKey;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lobby|Guest")
 	TObjectPtr<UTexture2D> ConfirmedTexture;
+
+	// 양쪽 버튼이 공유하는 누적 재생 시간. 하나라도 Hover 중이면 값을 유지한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lobby|Guest|Material")
+	FName ButtonAnimationTimeParameterName = TEXT("LobbyButtonTime");
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Lobby|Guest")
 	void OnGuestStateChanged(ELobbyGuestWidgetState State, bool bIsLocalGuest, bool bIsConfirmed);
@@ -83,6 +90,10 @@ private:
 	UFUNCTION()
 	void HandleRightButtonClicked();
 
+	UMaterialInstanceDynamic* InitializeButtonMaterial(UButton* Button);
+	void UpdateButtonAnimations(float DeltaTime);
+	void SetArrowButtonVisible(UButton* Button, bool bVisible) const;
+
 	void RefreshText();
 	void RefreshResultImage();
 	void RefreshPresentation();
@@ -91,4 +102,11 @@ private:
 	ELobbyGuestWidgetState GuestState = ELobbyGuestWidgetState::Default;
 	bool bIsOwningLocalGuest = false;
 	bool bConfirmed = false;
+	float ButtonAnimationTime = 0.0f;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> LeftButtonMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> RightButtonMaterial;
 };

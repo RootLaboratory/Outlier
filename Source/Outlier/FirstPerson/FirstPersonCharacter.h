@@ -215,6 +215,8 @@ public:
 	virtual void CollectStealthMeshes(
 		TArray<UMeshComponent*>& OutFirstPersonMeshes,
 		TArray<UMeshComponent*>& OutThirdPersonMeshes) const override;
+	/** 부착 트리 밖에 생성한 시각 효과. 시퀀서 숨김/복원은 로컬 서브시스템이 담당한다. */
+	virtual void CollectDetachedCinematicVisuals(TArray<USceneComponent*>& OutComponents) const {}
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
@@ -223,7 +225,7 @@ public:
 	FOnWeaponChanged OnWeaponChanged;
 
 private:
-	float InteractionTraceInterval = 0.5f;
+	float InteractionTraceInterval = 0.1f;
 
 private:
 	void CancelLocalHoldInteract(bool bNotifyServer);
