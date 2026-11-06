@@ -49,7 +49,7 @@ AElevatorShaftController::AElevatorShaftController()
 	ArrivalBlocker->SetupAttachment(RootComponent);
 	ArrivalBlocker->SetBoxExtent(FVector(30, 150, 150));
 	ArrivalBlocker->SetCollisionProfileName(TEXT("BlockAll"));
-	ArrivalBlocker->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ArrivalBlocker->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	ArrivalBlocker->SetGenerateOverlapEvents(false);
 	ArrivalBlocker->SetCanEverAffectNavigation(false);
 }
@@ -176,6 +176,9 @@ void AElevatorShaftController::ResolveArrivalActors()
 void AElevatorShaftController::BeginPlay()
 {
 	Super::BeginPlay();
+	// 기존 BP에 저장된 초기 OFF도 보완한다. 출구는 도착 완료가 확정될 때만 연다.
+	ArrivalBlocker->SetCollisionEnabled(Motion.State == EElevatorShaftState::Completed
+		? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
 	UpdateBlockerVisibility();
 	// Section은 각 머신의 Child Actor를 사용하고, 실제 문 참조는 서버 복제로도 보완한다.
 	ResolveEntranceActors();
@@ -1013,7 +1016,9 @@ void AElevatorShaftController::OnRep_Motion()
 	// 위치 복제 대신 같은 상태와 도착층 기준으로 서버/클라이언트의 전체 구조물을 맞춘다.
 	SetControllerAtArrival(Motion.bArrival);
 	SetEntranceBlocked(Motion.State != EElevatorShaftState::WaitingForPair && Motion.State != EElevatorShaftState::ClosingEntrance);
-	ArrivalBlocker->SetCollisionEnabled(IsTransitionActive() ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+	// 대기/상승과 실패 후 재시도에도 출구를 막는다. 도착 연출 구간에만 한정하지 않는다.
+	ArrivalBlocker->SetCollisionEnabled(Motion.State == EElevatorShaftState::Completed
+		? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
 	// 상태 적용 직후 두 고정 장벽을 함께 기록해, 별도 RoomCombatBarrier와 구분한다.
 	for (const UBoxComponent* Blocker : { EntranceBlocker.Get(), ArrivalBlocker.Get() })
 	{
@@ -1042,7 +1047,9 @@ void AElevatorShaftController::OnRep_Motion()
 			|| Motion.State == EElevatorShaftState::TransitionOut || Motion.State == EElevatorShaftState::Arriving
 			|| Motion.State == EElevatorShaftState::Decelerating));
 	if (Motion.bLanded || Motion.State == EElevatorShaftState::WaitingForPair) StopMotionAudio();
+	LogCollisionPlacement(TEXT("MotionAppliedBeforeBPEvent"));
 	ShaftStateChanged(Motion.State);
+	LogCollisionPlacement(TEXT("MotionAppliedAfterBPEvent"));
 }
 
 void AElevatorShaftController::OnReload(uint32 Generation)
@@ -1237,14 +1244,14 @@ void AElevatorShaftController::FinishFadeWhenReady()
 		|| (Arena.IsValid() && Arena->GetGameplayGeneration() != Motion.Generation))
 	{
 		// 암전 중 전멸해도 Pawn은 남아 있을 수 있다. 기존 GameOver/리로드가 진행을 인계받는다.
-		AbortTransition();
+		AbortTransitionWithReason(TEXT("FadeFinishedPairOrGenerationInvalid"));
 		return;
 	}
 	if (!BlockedShooter.IsValid() || !BlockedPartner.IsValid()
 		|| !ShooterController.IsValid() || !PartnerController.IsValid()
 		|| ShooterController->GetPawn() != BlockedShooter.Get() || PartnerController->GetPawn() != BlockedPartner.Get())
 	{
-		AbortTransition();
+		AbortTransitionWithReason(TEXT("FadeFinishedParticipantChanged"));
 		return;
 	}
 	GetWorldTimerManager().ClearTimer(FadeTimeoutTimer);
@@ -1261,7 +1268,7 @@ void AElevatorShaftController::FinishFadeWhenReady()
 
 void AElevatorShaftController::OnParticipantInvalidated(AFirstPersonCharacter* Pawn)
 {
-	AbortTransition();
+	AbortTransitionWithReason(TEXT("ParticipantInvalidated"));
 }
 
 bool AElevatorShaftController::ValidateExit(AFirstPersonCharacter* Pawn, const FTransform& Target) const
@@ -1311,7 +1318,7 @@ void AElevatorShaftController::TryTeleportPair()
 	AFirstPersonCharacter* Partner = PartnerController.IsValid() ? Cast<AFirstPersonCharacter>(PartnerController->GetPawn()) : nullptr;
 	if (!Shooter || !Partner || !ShooterExitTarget || !PartnerExitTarget)
 	{
-		AbortTransition();
+		AbortTransitionWithReason(TEXT("MissingPawnOrExitTarget"));
 		return;
 	}
 	const FTransform ShooterTarget = ShooterExitTarget->GetActorTransform();
@@ -1334,7 +1341,7 @@ void AElevatorShaftController::TryTeleportPair()
 	if (!bShooterExitValid || !bPartnerExitValid || TargetDistanceSquared < FMath::Square(Separation))
 	{
 		UE_LOG(LogElevatorShaft, Warning, TEXT("%s: exit targets unavailable or blocked; transition will retry."), *GetName());
-		AbortTransition();
+		AbortTransitionWithReason(TEXT("ExitTargetBlockedOrTooClose"));
 		return;
 	}
 	PreviousShooterTransform = Shooter->GetActorTransform();
@@ -1357,7 +1364,7 @@ void AElevatorShaftController::TryTeleportPair()
 		{
 			EntryRoom->RefreshOverlappingRoomAssignments();
 		}
-		AbortTransition();
+		AbortTransitionWithReason(TEXT("TeleportFailedOrOutsideExitRoom"));
 		return;
 	}
 	AFirstPersonCharacter* Pawns[] = {Shooter, Partner};
@@ -1383,11 +1390,30 @@ void AElevatorShaftController::TryTeleportPair()
 void AElevatorShaftController::SetControllerAtArrival(bool bArrival)
 {
 	if (bControllerAtArrival == bArrival) return;
+	LogCollisionPlacement(bArrival ? TEXT("BeforeTransportToArrival") : TEXT("BeforeTransportToDeparture"));
 	bControllerAtArrival = bArrival;
 	// Section과 Controller의 원점이 달라도 제작 당시 상대 배치를 보존한다.
 	const FTransform Target = bArrival
 		? ControllerSectionOffset * Motion.ArrivalTransform : DepartureControllerTransform;
+	// 차단막과 고정 외벽/바닥은 제작 당시 월드 방향과 서로의 배치를 유지한 채 이동만 한다.
+	// 차단막만 Controller 회전을 상속하면 외벽의 구멍과 어긋나므로 함께 보정한다.
+	// 직접 소유한 충돌체만 보정하여 Section 안의 연출 벽과 문은 기존 정렬을 유지한다.
+	const FVector Translation = Target.GetLocation() - GetActorLocation();
+	TInlineComponentArray<UPrimitiveComponent*> OwnedPrimitives;
+	GetComponents(OwnedPrimitives, false);
+	TArray<TPair<UPrimitiveComponent*, FTransform>> FixedCollisionTransforms;
+	for (UPrimitiveComponent* Component : OwnedPrimitives)
+	{
+		FTransform Placement = Component->GetComponentTransform();
+		Placement.AddToTranslation(Translation);
+		FixedCollisionTransforms.Emplace(Component, Placement);
+	}
 	SetActorTransform(Target, false, nullptr, ETeleportType::TeleportPhysics);
+	for (const TPair<UPrimitiveComponent*, FTransform>& FixedCollision : FixedCollisionTransforms)
+	{
+		FixedCollision.Key->SetWorldTransform(FixedCollision.Value, false, nullptr, ETeleportType::TeleportPhysics);
+	}
+	LogCollisionPlacement(bArrival ? TEXT("AfterTransportToArrival") : TEXT("AfterTransportToDeparture"));
 	UE_LOG(LogElevatorShaft, Log, TEXT("[ElevatorTransport] World=%s Authority=%d Arrival=%d Location=%s Rotation=%s"),
 		*GetNameSafe(GetWorld()), HasAuthority(), bArrival, *GetActorLocation().ToString(), *GetActorRotation().ToString());
 }
@@ -1428,6 +1454,17 @@ bool AElevatorShaftController::IsArrivalPawnReady(const APawn* Pawn) const
 		&& ExitRoom->ContainsWorldLocation(Pawn->GetActorLocation());
 }
 
+FString AElevatorShaftController::DescribeArrivalReadiness(const FGuid& ExecutionId, const APawn* Pawn) const
+{
+	// 판정을 바꾸지 않고 준비 조건을 나열한다. 좌표는 대기 조건 비교에서 제외해 이동 중 로그 반복을 막는다.
+	return FString::Printf(TEXT("State=%s ExecutionMatch=%d Initialized=%d ProfilesReady=%d Arrival=%d ArrivalSection=%s ArrivalDoor=%s PresentationOnly=%d EntranceSection=%s EntranceDoor=%s Clock=%d LoopSections=%d/%d Pawn=%s SameWorld=%d ExitRoom=%s PawnInExitRoom=%d"),
+		*UEnum::GetValueAsString(Motion.State), Motion.ExecutionId == ExecutionId, bInitialized, bProfilesReady,
+		Motion.bArrival, *GetNameSafe(ArrivalSection), *GetNameSafe(ArrivalDoor),
+		ArrivalDoor && ArrivalDoor->IsPresentationOnly(), *GetNameSafe(EntranceSection), *GetNameSafe(EntranceDoor),
+		Clock.IsValid(), LoopSections.Num(), LoopSectionCount, *GetNameSafe(Pawn),
+		IsValid(Pawn) && Pawn->GetWorld() == GetWorld(), *GetNameSafe(ExitRoom), IsArrivalPawnReady(Pawn));
+}
+
 bool AElevatorShaftController::AreArrivalVisualsReady(const FGuid& ExecutionId)
 {
 	if (!Clock.IsValid()) Clock = GetWorld()->GetGameState();
@@ -1445,10 +1482,24 @@ void AElevatorShaftController::NotifyClientArrivalReady(AFirstPersonPlayerContro
 {
 	if (!HasAuthority() || !IsValid(Player) || Motion.State != EElevatorShaftState::PreparingArrival
 		|| Motion.ExecutionId != ExecutionId || !InputBlockId.IsValid()
-		|| (Arena.IsValid() && Arena->GetGameplayGeneration() != Motion.Generation)) return;
+		|| (Arena.IsValid() && Arena->GetGameplayGeneration() != Motion.Generation))
+	{
+		UE_LOG(LogElevatorShaft, Warning, TEXT("[ElevatorArrivalAckRejected] Shaft=%s Player=%s Execution=%s CurrentExecution=%s Authority=%d State=%s InputBlockValid=%d GenerationMatch=%d"),
+			*GetName(), *GetNameSafe(Player), *ExecutionId.ToString(), *Motion.ExecutionId.ToString(), HasAuthority(),
+			*UEnum::GetValueAsString(Motion.State), InputBlockId.IsValid(),
+			!Arena.IsValid() || Arena->GetGameplayGeneration() == Motion.Generation);
+		return;
+	}
 	if (Player == ShooterController.Get()) bShooterArrivalReady = true;
 	else if (Player == PartnerController.Get()) bPartnerArrivalReady = true;
-	else return;
+	else
+	{
+		UE_LOG(LogElevatorShaft, Warning, TEXT("[ElevatorArrivalAckRejected] Shaft=%s Player=%s Execution=%s Reason=UnknownParticipant Shooter=%s Partner=%s"),
+			*GetName(), *GetNameSafe(Player), *ExecutionId.ToString(), *GetNameSafe(ShooterController.Get()), *GetNameSafe(PartnerController.Get()));
+		return;
+	}
+	UE_LOG(LogElevatorShaft, Log, TEXT("[ElevatorArrivalAck] Shaft=%s Player=%s Execution=%s ShooterReady=%d PartnerReady=%d"),
+		*GetName(), *GetNameSafe(Player), *ExecutionId.ToString(), bShooterArrivalReady, bPartnerArrivalReady);
 	if (bShooterArrivalReady && bPartnerArrivalReady) StartArrival();
 }
 
@@ -1459,7 +1510,7 @@ void AElevatorShaftController::StartArrival()
 		|| !GameMode->IsPairGameplayReady() || GameMode->IsGameOverSelectionActive()
 		|| ShooterController->GetPawn() != BlockedShooter.Get() || PartnerController->GetPawn() != BlockedPartner.Get())
 	{
-		AbortTransition();
+		AbortTransitionWithReason(TEXT("StartArrivalParticipantOrPairInvalid"));
 		return;
 	}
 	GetWorldTimerManager().ClearTimer(FadeTimeoutTimer);
@@ -1554,11 +1605,13 @@ void AElevatorShaftController::FinishExit()
 	if (!HasAuthority() || !InputBlockId.IsValid() || !Motion.bLanded
 		|| !bShooterFadeReady || !bPartnerFadeReady || !IsTransitionActive()) return;
 	const FGuid Execution = Motion.ExecutionId;
+	LogCollisionPlacement(TEXT("BeforeArrivalDoorRestore"));
 	if (!ArrivalDoor || !ArrivalDoor->SetPresentationOnly(false) || !ArrivalDoor->TrySetDoorOpen(true))
 	{
-		AbortTransition();
+		AbortTransitionWithReason(TEXT("ArrivalDoorOpenFailed"));
 		return;
 	}
+	LogCollisionPlacement(TEXT("AfterArrivalDoorRestore"));
 	bPairTeleported = false;
 	SetState(EElevatorShaftState::Completed);
 	if (Motion.ExecutionId == Execution && Motion.State == EElevatorShaftState::Completed) ReleaseTransition();
@@ -1624,7 +1677,27 @@ void AElevatorShaftController::RollbackPair()
 
 void AElevatorShaftController::AbortTransition()
 {
+	// 인자 없는 콜백은 FadeTimeoutTimer에서만 사용한다. 직접 취소 경로는 별도 사유를 전달한다.
+	AbortTransitionWithReason(TEXT("FadeTimeout"));
+}
+
+void AElevatorShaftController::AbortTransitionWithReason(const TCHAR* Reason)
+{
 	if (!HasAuthority() || !IsTransitionActive()) return;
+	// 복귀·정리 전에 기록해야 실패 당시의 좌표와 완료 응답을 보존할 수 있다.
+	UE_LOG(LogElevatorShaft, Warning, TEXT("[ElevatorAbort] Shaft=%s Execution=%s Reason=%s Timeout=%.2f PairTeleported=%d ShooterArrivalAck=%d PartnerArrivalAck=%d ShooterFadeAck=%d PartnerFadeAck=%d PairReady=%d GameOver=%d GenerationMatch=%d"),
+		*GetName(), *Motion.ExecutionId.ToString(), Reason, TransitionTimeout, bPairTeleported,
+		bShooterArrivalReady, bPartnerArrivalReady, bShooterFadeReady, bPartnerFadeReady,
+		GameMode.IsValid() && GameMode->IsPairGameplayReady(), GameMode.IsValid() && GameMode->IsGameOverSelectionActive(),
+		!Arena.IsValid() || Arena->GetGameplayGeneration() == Motion.Generation);
+	UE_LOG(LogElevatorShaft, Warning, TEXT("[ElevatorAbortPawn] Role=Shooter %s Location=%s Controller=%s CurrentPawn=%s"),
+		*DescribeArrivalReadiness(Motion.ExecutionId, BlockedShooter.Get()),
+		BlockedShooter.IsValid() ? *BlockedShooter->GetActorLocation().ToString() : TEXT("None"),
+		*GetNameSafe(ShooterController.Get()), *GetNameSafe(ShooterController.IsValid() ? ShooterController->GetPawn() : nullptr));
+	UE_LOG(LogElevatorShaft, Warning, TEXT("[ElevatorAbortPawn] Role=Partner %s Location=%s Controller=%s CurrentPawn=%s"),
+		*DescribeArrivalReadiness(Motion.ExecutionId, BlockedPartner.Get()),
+		BlockedPartner.IsValid() ? *BlockedPartner->GetActorLocation().ToString() : TEXT("None"),
+		*GetNameSafe(PartnerController.Get()), *GetNameSafe(PartnerController.IsValid() ? PartnerController->GetPawn() : nullptr));
 	GetWorldTimerManager().ClearTimer(FadeTimeoutTimer);
 	GetWorldTimerManager().ClearTimer(FadeMinimumTimer);
 	GetWorldTimerManager().ClearTimer(MotionPhaseTimer);

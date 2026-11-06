@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Enemy/EnemyAdaptationDefinition.h"
+#include "Enemy/EnemyAdaptationShieldComponent.h"
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolDefinition.h"
@@ -776,6 +777,70 @@ bool FEnemyAdaptationStackStateTest::RunTest(const FString& Parameters)
 		Adaptation->GetCurrentAdaptationState(), EEnemyAdaptationState::Normal);
 
 	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FEnemyAdaptationCombatPresentationTest,
+	"Outlier.Enemy.Adaptation.CombatPresentation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyAdaptationCombatPresentationTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	if (!TestNotNull(TEXT("Presentation world exists"), World)) return false;
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>();
+	if (!TestNotNull(TEXT("Enemy exists"), Enemy))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+	UEnemyAdaptationShieldComponent* Shield = Enemy->GetAdaptationShieldComponent();
+	if (!TestNotNull(TEXT("Shield exists"), Shield))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+
+	Enemy->ApplyAdaptationState(EEnemyAdaptationState::ResistanceMax);
+	TestFalse(TEXT("Central resistance stays hidden outside combat"), Shield->IsShieldActive());
+	TestEqual(TEXT("Hiding preserves the central state"),
+		Enemy->GetAdaptationState(), EEnemyAdaptationState::ResistanceMax);
+	Enemy->bInCombat = true;
+	Enemy->OnRep_InCombat();
+	TestTrue(TEXT("Combat arrival after resistance reveals the shield"), Shield->IsShieldActive());
+	Enemy->ApplyAdaptationState(EEnemyAdaptationState::Normal);
+	TestFalse(TEXT("Zero-stack state hides the shield during combat"), Shield->IsShieldActive());
+	Enemy->ApplyAdaptationState(EEnemyAdaptationState::ResistanceMax);
+	TestTrue(TEXT("Resistance arrival after combat reveals the shield"), Shield->IsShieldActive());
+	Enemy->bInCombat = false;
+	Enemy->OnRep_InCombat();
+	TestFalse(TEXT("Combat end deactivates the shield without changing stacks"), Shield->IsShieldActive());
+	Enemy->bInCombat = true;
+	Enemy->RefreshCombatStatePresentation();
+	TestTrue(TEXT("Server combat reentry restores the unchanged resistance"), Shield->IsShieldActive());
+	Enemy->CombatState = EEnemyCombatState::Stun;
+	Enemy->RefreshCombatStatePresentation();
+	TestTrue(TEXT("Stun retains the existing in-combat status"), Shield->IsShieldActive());
+	Enemy->PoolState = EEnemyPoolState::SpawnPresentation;
+	Enemy->RefreshAdaptationShieldPresentation();
+	TestFalse(TEXT("Pool spawn presentation suppresses the shield"), Shield->IsShieldActive());
+	Enemy->PoolState = EEnemyPoolState::CombatActive;
+	Enemy->RefreshAdaptationShieldPresentation();
+	TestTrue(TEXT("Pool activation restores the current resistance"), Shield->IsShieldActive());
+	Enemy->PoolState = EEnemyPoolState::Idle;
+	Enemy->RefreshAdaptationShieldPresentation();
+	TestFalse(TEXT("Pool idle suppresses the shield"), Shield->IsShieldActive());
+	Enemy->PoolState = EEnemyPoolState::Unmanaged;
+	Enemy->bInCombat = false;
+	Enemy->AdaptationState = EEnemyAdaptationState::ResistanceLevel2;
+	Enemy->OnRep_AdaptationState(EEnemyAdaptationState::ResistanceMax);
+	TestFalse(TEXT("Replicated resistance remains hidden outside combat"), Shield->IsShieldActive());
+	Enemy->bInCombat = true;
+	Enemy->OnRep_InCombat();
+	TestTrue(TEXT("Combat replication reveals the latest replicated resistance"), Shield->IsShieldActive());
+
+	World->DestroyWorld(false);
 	return true;
 }
 

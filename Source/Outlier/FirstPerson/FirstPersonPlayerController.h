@@ -489,6 +489,8 @@ private:
 	double ElevatorRevealStartServerTime = 0.0;
 	float ElevatorRevealDuration = 0.0f;
 	bool bLocalElevatorArrivalReadySent = false;
+	// 0.02초 도착 준비 검사에서는 조건이 달라질 때만 대기 사유를 기록한다.
+	FString LastElevatorArrivalWaitDiagnostic;
 	bool bLocalElevatorRevealScheduled = false;
 	bool bLocalElevatorRevealing = false;
 	bool bLocalElevatorFadeReadySent = false;

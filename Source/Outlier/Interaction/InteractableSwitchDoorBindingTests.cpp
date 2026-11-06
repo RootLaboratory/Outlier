@@ -29,6 +29,54 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FInteractableSwitchDoorBindingTest,
 	"Outlier.Interaction.Switch.ElevatorDoorBinding",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FElevatorPresentationDoorRelevancyTest,
+	"Outlier.Elevator.Presentation.DoorRelevancy",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FElevatorPresentationDoorRelevancyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("ElevatorDoorRelevancyTest")));
+	if (!TestNotNull(TEXT("Relevancy world exists"), World)) return false;
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+	Context.SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+	ON_SCOPE_EXIT
+	{
+		World->DestroyWorld(false);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	AInteractableDoor* Door = World->SpawnActor<AInteractableDoor>();
+	AActor* ShooterViewer = World->SpawnActor<AActor>();
+	AActor* PartnerViewer = World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("Door exists"), Door) || !TestNotNull(TEXT("Shooter viewer exists"), ShooterViewer)
+		|| !TestNotNull(TEXT("Partner viewer exists"), PartnerViewer)) return false;
+	Door->DispatchBeginPlay();
+	Door->SetActorHiddenInGame(true);
+	TestFalse(TEXT("Hidden ordinary door retains default relevancy policy"),
+		Door->IsNetRelevantFor(PartnerViewer, PartnerViewer, FVector::ZeroVector));
+
+	// 출발층이 사라진 뒤에도 양쪽 클라이언트는 도착 준비에서 같은 서버 문을 참조한다.
+	for (int32 Attempt = 0; Attempt < 2; ++Attempt)
+	{
+		if (!TestTrue(TEXT("Closed door enters presentation mode"), Door->SetPresentationOnly(true))) return false;
+		TestTrue(TEXT("Hidden presentation door remains relevant to shooter"),
+			Door->IsNetRelevantFor(ShooterViewer, ShooterViewer, FVector::ZeroVector));
+		TestTrue(TEXT("Hidden presentation door remains relevant to partner at arrival"),
+			Door->IsNetRelevantFor(PartnerViewer, PartnerViewer, FVector(1000000, 0, 0)));
+		TestTrue(TEXT("Relevancy does not make the presentation door visible"), Door->IsHidden());
+		TestEqual(TEXT("Presentation door keeps physical collision disabled"),
+			Door->DoorMeshLeft->GetCollisionEnabled(), ECollisionEnabled::NoCollision);
+		TestTrue(TEXT("Rollback or landing exits presentation mode"), Door->SetPresentationOnly(false));
+		TestFalse(TEXT("Exit restores default hidden-door relevancy"),
+			Door->IsNetRelevantFor(PartnerViewer, PartnerViewer, FVector::ZeroVector));
+	}
+	return true;
+}
+
 bool FInteractableSwitchDoorBindingTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;

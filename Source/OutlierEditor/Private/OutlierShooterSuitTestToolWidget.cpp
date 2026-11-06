@@ -19,6 +19,7 @@
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
+#include "Room/RoomTagComponent.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerTypes.h"
@@ -180,6 +181,24 @@ void SOutlierShooterSuitTestToolWidget::Construct(const FArguments& InArgs)
 		.ToolTipText(LOCTEXT("StartLevel1CombatTip", "가장 가까운 Level1 문의 CombatRoom 전투를 시작합니다. 입장·업그레이드 UI·문 연출은 건너뛰며 첫 Wave는 기존처럼 3초 뒤 소환됩니다. 전투 진행은 복원 버튼으로 되돌리지 않습니다."))
 		.IsEnabled_Lambda([this]() { return CanEdit(); })
 		.OnClicked(this, &SOutlierShooterSuitTestToolWidget::StartLevel1Combat)
+	];
+	Rows->AddSlot().AutoHeight().Padding(6.0f)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().AutoWidth()
+		[
+			SNew(SButton).Text(LOCTEXT("GrantPistol", "권총 획득"))
+			.ToolTipText(LOCTEXT("GrantPistolTip", "선택한 Shooter에게 BP_Pistol을 지급합니다. 이미 권총을 보유했다면 중복 지급하지 않습니다. 지급한 권총은 복원 버튼으로 회수하지 않습니다."))
+			.IsEnabled_Lambda([this]() { return CanEdit(); })
+			.OnClicked(this, &SOutlierShooterSuitTestToolWidget::GrantPistol)
+		]
+		+ SHorizontalBox::Slot().AutoWidth().Padding(8.0f, 0.0f)
+		[
+			SNew(SButton).Text(LOCTEXT("FinishCurrentRoomCombat", "현재 방 전투 종료 및 정리"))
+			.ToolTipText(LOCTEXT("FinishCurrentRoomCombatTip", "선택한 Shooter가 있는 방의 적·빙의된 적·Wave 터렛과 예약 소환을 정리하고 방 전체를 완료합니다. 다음 차수도 생략하며 완료 저장과 출입구 해제가 적용됩니다. 복원할 수 없습니다."))
+			.IsEnabled_Lambda([this]() { return CanEdit(); })
+			.OnClicked(this, &SOutlierShooterSuitTestToolWidget::FinishCurrentRoomCombat)
+		]
 	];
 	Rows->AddSlot().AutoHeight().Padding(6.0f)
 	[
@@ -748,6 +767,61 @@ FReply SOutlierShooterSuitTestToolWidget::StartLevel1Combat()
 			FText::FromString(NearestDoor->GetName()), FText::FromString(RoomTag.ToString()))
 		: FText::Format(LOCTEXT("Level1CombatRejected", "{0} / {1}: 시작 불가. Room·SpawnPoint 준비, 외부 트리거 차수, 진행 중이거나 완료된 전투를 확인하세요."),
 			FText::FromString(NearestDoor->GetName()), FText::FromString(RoomTag.ToString()));
+	return FReply::Handled();
+}
+
+FReply SOutlierShooterSuitTestToolWidget::GrantPistol()
+{
+	if (!CanEdit()) return FReply::Handled();
+	AShooterCharacter* Shooter = SelectedTarget->Shooter.Get();
+	UShooterInventoryComponent* Inventory = Shooter->GetInventoryComponent();
+	if (!Inventory)
+	{
+		Status = LOCTEXT("PistolNoInventory", "Shooter 인벤토리가 없어 권총을 지급하지 못했습니다.");
+		return FReply::Handled();
+	}
+	if (AWeaponBase* Existing = Inventory->GetWeaponInSlot(EWeaponSlot::Secondary))
+	{
+		Status = Existing->GetWeaponType() == EWeaponType::Pistol
+			? LOCTEXT("PistolAlreadyOwned", "이미 권총을 보유하고 있습니다. 중복 지급하지 않았습니다.")
+			: LOCTEXT("PistolSlotOccupied", "Secondary 슬롯에 다른 무기가 있어 권총을 지급하지 않았습니다.");
+		return FReply::Handled();
+	}
+	const TSubclassOf<AWeaponBase> PistolClass = LoadClass<AWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
+	AWeaponBase* Pistol = PistolClass ? AWeaponBase::SpawnLoadoutWeapon(Shooter->GetWorld(), PistolClass, Shooter) : nullptr;
+	// PIE 초기화 중 눌러도 DataTable의 무기 타입을 읽은 뒤에만 슬롯에 반영한다.
+	if (Pistol && !Pistol->HasActorBegunPlay()) Pistol->DispatchBeginPlay();
+	if (!Pistol || Pistol->GetWeaponType() != EWeaponType::Pistol)
+	{
+		if (Pistol) Pistol->Destroy();
+		Status = LOCTEXT("PistolSpawnFailed", "BP_Pistol 생성 또는 권총 타입 확인에 실패했습니다.");
+		return FReply::Handled();
+	}
+	// 실제 획득과 같은 장착 경로가 슬롯/PS 기록과 소유 클라이언트 복제를 함께 갱신한다.
+	Shooter->EquipWeapon(Pistol);
+	if (Inventory->GetWeaponInSlot(EWeaponSlot::Secondary) != Pistol)
+	{
+		Pistol->Destroy();
+		Status = LOCTEXT("PistolEquipFailed", "권총 장착이 거부되어 지급하지 않았습니다. 사망·장착 잠금 상태를 확인하세요.");
+		return FReply::Handled();
+	}
+	Status = LOCTEXT("PistolGranted", "권총 획득 완료. 장비 기록에 반영했으며 복원 버튼으로 회수하지 않습니다.");
+	return FReply::Handled();
+}
+
+FReply SOutlierShooterSuitTestToolWidget::FinishCurrentRoomCombat()
+{
+	if (!CanEdit()) return FReply::Handled();
+	AShooterCharacter* Shooter = SelectedTarget->Shooter.Get();
+	URoomTagComponent* RoomTags = Shooter->GetRoomTagComp();
+	const FGameplayTag RoomTag = RoomTags ? RoomTags->GetCurrentRoomTag() : FGameplayTag();
+	URoomCombatSubsystem* Combat = Shooter->GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	// 다른 방의 진행을 실수로 끝내지 않도록 전역 활성 방이나 가장 가까운 방으로 대체하지 않는다.
+	const bool bFinished = RoomTag.IsValid() && Combat && Combat->FinishRoomCombatForEditor(RoomTag);
+	Status = bFinished
+		? FText::Format(LOCTEXT("CurrentRoomFinished", "{0}: 방 전투 종료 및 정리 완료. 남은 차수는 생략했습니다."), FText::FromString(RoomTag.ToString()))
+		: FText::Format(LOCTEXT("CurrentRoomFinishRejected", "{0}: 정리 불가. 현재 방 등록·전투 설정·이미 완료된 상태인지 확인하세요."), FText::FromString(RoomTag.ToString()));
 	return FReply::Handled();
 }
 

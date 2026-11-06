@@ -1670,8 +1670,9 @@ bool FRoomCombatUpgradeInitialPhaseFinishTest::RunTest(const FString& Parameters
 {
 	(void)Parameters;
 	// 미발각 배치 적, 소환 중인 전투, 아군화된 Pool 적이 남은 전투를 각각 문 닫힘 경계에서 정리한다.
-	for (int32 Scenario = 0; Scenario < 3; ++Scenario)
+	for (int32 Run = 0; Run < 6; ++Run)
 	{
+		const int32 Scenario = Run % 3;
 		const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
 			EUniqueObjectNameOptions::GloballyUnique);
 		FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
@@ -1809,6 +1810,34 @@ bool FRoomCombatUpgradeInitialPhaseFinishTest::RunTest(const FString& Parameters
 		}
 		const int32 TurretGeneration = InitialTurret->GetRoomWaveGameplayGeneration();
 		const int32 ActivationSerial = InitialTurret->GetRoomWaveActivationSerial();
+#if WITH_EDITOR
+		if (Run >= 3)
+		{
+			TestFalse(TEXT("Editor cleanup rejects non-PIE worlds"), Combat->FinishRoomCombatForEditor(RoomTag));
+			TGuardValue<TEnumAsByte<EWorldType::Type>> PIE(World->WorldType, EWorldType::PIE);
+			TestFalse(TEXT("Editor cleanup rejects unknown rooms"), Combat->FinishRoomCombatForEditor(FGameplayTag()));
+			TestTrue(TEXT("Editor finishes the whole room"), Combat->FinishRoomCombatForEditor(RoomTag));
+			TestTrue(TEXT("Editor removes hostile and allied actors without kills"),
+				Enemy->IsActorBeingDestroyed() && !Enemy->IsDead() && Ally->IsActorBeingDestroyed());
+			TestTrue(TEXT("Editor removes turrets in all phases"), InitialTurret->IsActorBeingDestroyed() && NextTurret->IsActorBeingDestroyed());
+			TestFalse(TEXT("Editor preserves unrelated room actors"), OtherEnemy->IsActorBeingDestroyed());
+			TestEqual(TEXT("Editor cancels pending spawns"), Combat->GetPendingSpawnCount(RoomTag), 0);
+			TestEqual(TEXT("Editor cancels pending activations"), Combat->GetPendingActivationCount(RoomTag), 0);
+			TestEqual(TEXT("Editor returns pool leases"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 0);
+			TestEqual(TEXT("Editor clears the room without starting the next phase"), Combat->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+			TestFalse(TEXT("Editor releases room reservation"), Combat->IsRoomCombatReserved(RoomTag));
+			TestFalse(TEXT("Editor releases exit blocking"), Combat->IsExitBlocked(RoomTag));
+			TestTrue(TEXT("Editor records encounter completion"), Saves->HasWorldProgress(
+				EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()));
+			TestFalse(TEXT("Repeated editor cleanup is rejected"), Combat->FinishRoomCombatForEditor(RoomTag));
+			Point->SetForceSpawnLocationFailureForTesting(false);
+			Combat->RetryPendingSpawnsForTesting();
+			World->GetTimerManager().Tick(5.0f);
+			TestEqual(TEXT("Cancelled work cannot respawn enemies"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 0);
+			TestEqual(TEXT("Cleanup remains cleared after delayed callbacks"), Combat->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+			continue;
+		}
+#endif
 		TestFalse(TEXT("A missing Volume cannot finish a phase"), Combat->FinishInitialPhaseForUpgrade(nullptr, Generation));
 		TestFalse(TEXT("A stale generation cannot finish the initial phase"), Combat->FinishInitialPhaseForUpgrade(Room, Generation + 1));
 		TestFalse(TEXT("Another registered Volume cannot impersonate the target phase"), Combat->FinishInitialPhaseForUpgrade(OtherRoom, Generation));
@@ -1858,6 +1887,15 @@ bool FRoomCombatUpgradeInitialPhaseFinishTest::RunTest(const FString& Parameters
 		TestEqual(TEXT("Cancelled requests cannot respawn after cleanup"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 0);
 		TestEqual(TEXT("Late callbacks retain Phase1"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
 		TestEqual(TEXT("Late callbacks leave Phase1 waiting"), Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+#if WITH_EDITOR
+		if (Scenario == 1)
+		{
+			TGuardValue<TEnumAsByte<EWorldType::Type>> PIE(World->WorldType, EWorldType::PIE);
+			TestTrue(TEXT("Editor also finishes a room waiting for its next trigger"), Combat->FinishRoomCombatForEditor(RoomTag));
+			TestTrue(TEXT("Waiting room cleanup removes its remaining turret"), NextTurret->IsActorBeingDestroyed());
+			TestEqual(TEXT("Waiting room becomes cleared"), Combat->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+		}
+#endif
 		if (Scenario == 0)
 		{
 			// 재로드 시 터렛이 Room보다 먼저 등록될 수 있다. 저장 진행과 Room 복원 양쪽 경로에서

@@ -15,6 +15,9 @@
 #include "Explosion/ExplosionComponent.h"
 #include "Explosion/ExplosiveProp.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "HAL/IConsoleManager.h"
+#include "CollisionQueryParams.h"
+#include "CollisionShape.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
@@ -24,6 +27,11 @@ DEFINE_LOG_CATEGORY_STATIC(LogEnemyChargeCollision, Log, All);
 
 namespace
 {
+TAutoConsoleVariable<int32> CVarEnemyChargeDiagnostics(TEXT("outlier.Enemy.ChargeDiagnostics"), 1,
+	TEXT("Log self-destruct charge lifecycle, collision and replication diagnostics. 0 disables diagnostics."));
+TAutoConsoleVariable<float> CVarEnemyChargeDiagnosticInterval(TEXT("outlier.Enemy.ChargeDiagnosticInterval"), 0.25f,
+	TEXT("Charge diagnostic sample interval in seconds (minimum 0.05)."));
+
 void CollectMatchingExplosiveSockets(
 	const USkeletalMeshComponent* Mesh,
 	FName SocketPattern,
@@ -92,6 +100,104 @@ float ASelfDestructDrone::GetWeakPointDamageMultiplier(const UPrimitiveComponent
 	return Super::GetWeakPointDamageMultiplier(HitComponent);
 }
 
+void ASelfDestructDrone::LogChargeDiagnostics(const TCHAR* Event) const
+{
+	if (UE_BUILD_SHIPPING || CVarEnemyChargeDiagnostics.GetValueOnGameThread() == 0) return;
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	const UCharacterMovementComponent* Movement = GetCharacterMovement();
+	const double LocalTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	const AGameStateBase* Clock = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeDiag] Event=%s Drone=%s NetMode=%d Role=%d Authority=%d Time=%.3f ServerTime=%.3f Generation=%d Lease=%d Revision=%u Pool=%d Active=%d Dead=%d DeathHandling=%d Possessed=%d Location=%s Velocity=%s MeshLocation=%s MeshRelative=%s RepLocation=%s Controller=%s Hidden=%d Replicates=%d RepMovement=%d AlwaysRelevant=%d OwnerRelevancy=%d Dormancy=%d"),
+		Event, *GetName(), static_cast<int32>(GetNetMode()), static_cast<int32>(GetLocalRole()), HasAuthority(),
+		LocalTime, Clock ? Clock->GetServerWorldTimeSeconds() : LocalTime,
+		GetPoolGameplayGeneration(), GetPoolLeaseSerial(), ChargeState.Revision, static_cast<int32>(GetEnemyPoolState()),
+		ChargeState.bActive, IsDead(), bDeathHandling, IsEnemyPossessed(), *GetActorLocation().ToCompactString(),
+		*GetVelocity().ToCompactString(), GetMesh() ? *GetMesh()->GetComponentLocation().ToCompactString() : TEXT("None"),
+		GetMesh() ? *GetMesh()->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		*GetReplicatedMovement().Location.ToCompactString(), *GetNameSafe(GetController()), IsHidden(),
+		GetIsReplicated(), IsReplicatingMovement(), bAlwaysRelevant, bNetUseOwnerRelevancy, static_cast<int32>(NetDormancy));
+	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeCollisionState] Event=%s Drone=%s Revision=%u ActorCollision=%d Capsule=%s Root=%s UpdatedComponent=%s Profile=%s Enabled=%d ObjectType=%d WorldStatic=%d WorldDynamic=%d Pawn=%d PhysicsBody=%d OverlapEvents=%d Radius=%.2f HalfHeight=%.2f Mode=%d MovementActive=%d Smoothing=%d MaxFlySpeed=%.1f Direction=%s ImpactVelocity=%s Elapsed=%.3f Duration=%.3f Exploded=%d"),
+		Event, *GetName(), ChargeState.Revision, GetActorEnableCollision(), *GetNameSafe(Capsule), *GetNameSafe(GetRootComponent()),
+		*GetNameSafe(Movement ? Movement->UpdatedComponent.Get() : nullptr),
+		Capsule ? *Capsule->GetCollisionProfileName().ToString() : TEXT("None"),
+		Capsule ? static_cast<int32>(Capsule->GetCollisionEnabled()) : -1,
+		Capsule ? static_cast<int32>(Capsule->GetCollisionObjectType()) : -1,
+		Capsule ? static_cast<int32>(Capsule->GetCollisionResponseToChannel(ECC_WorldStatic)) : -1,
+		Capsule ? static_cast<int32>(Capsule->GetCollisionResponseToChannel(ECC_WorldDynamic)) : -1,
+		Capsule ? static_cast<int32>(Capsule->GetCollisionResponseToChannel(ECC_Pawn)) : -1,
+		Capsule ? static_cast<int32>(Capsule->GetCollisionResponseToChannel(ECC_PhysicsBody)) : -1,
+		Capsule && Capsule->GetGenerateOverlapEvents(), Capsule ? Capsule->GetScaledCapsuleRadius() : 0.0f,
+		Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 0.0f, Movement ? static_cast<int32>(Movement->MovementMode) : -1,
+		Movement && Movement->IsActive(), Movement ? static_cast<int32>(Movement->NetworkSmoothingMode) : -1,
+		Movement ? Movement->MaxFlySpeed : 0.0f, *CommittedChargeDirection.ToCompactString(),
+		*AccumulatedImpactVelocity.ToCompactString(), GetCommittedChargeElapsedTime(), ChargeState.Playback.Duration,
+		ExplosionComponent && ExplosionComponent->HasDetonated());
+	if (Capsule && FCString::Strcmp(Event, TEXT("Sample")) != 0)
+	{
+		FString Ignored;
+		for (const AActor* Actor : Capsule->GetMoveIgnoreActors()) Ignored += GetNameSafe(Actor) + TEXT(" ");
+		for (const UPrimitiveComponent* Component : Capsule->GetMoveIgnoreComponents()) Ignored += GetNameSafe(Component) + TEXT(" ");
+		UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeMoveIgnores] Event=%s Drone=%s Revision=%u Ignored=%s"),
+			Event, *GetName(), ChargeState.Revision, *Ignored);
+	}
+}
+
+void ASelfDestructDrone::RefreshChargeDiagnosticTimer()
+{
+	if (!GetWorld()) return;
+	GetWorldTimerManager().ClearTimer(ChargeDiagnosticTimer);
+	if (UE_BUILD_SHIPPING || CVarEnemyChargeDiagnostics.GetValueOnGameThread() == 0
+		|| !ChargeState.bActive || IsDead()
+		|| (IsPoolManaged() && GetEnemyPoolState() != EEnemyPoolState::CombatActive)) return;
+	PreviousChargeDiagnosticLocation = GetActorLocation();
+	PreviousChargeDiagnosticTime = GetWorld()->GetTimeSeconds();
+	LastChargeHitDiagnosticTime = -1.0;
+	GetWorldTimerManager().SetTimer(ChargeDiagnosticTimer, this, &ThisClass::SampleChargeDiagnostics,
+		FMath::Max(CVarEnemyChargeDiagnosticInterval.GetValueOnGameThread(), 0.05f), true);
+}
+
+void ASelfDestructDrone::SampleChargeDiagnostics()
+{
+	if (!ChargeState.bActive || IsDead() || CVarEnemyChargeDiagnostics.GetValueOnGameThread() == 0
+		|| (IsPoolManaged() && GetEnemyPoolState() != EEnemyPoolState::CombatActive))
+	{
+		GetWorldTimerManager().ClearTimer(ChargeDiagnosticTimer);
+		return;
+	}
+	LogChargeDiagnostics(TEXT("Sample"));
+	const FVector Location = GetActorLocation();
+	const double Now = GetWorld()->GetTimeSeconds();
+	const double Elapsed = Now - PreviousChargeDiagnosticTime;
+	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeDisplacement] Drone=%s Authority=%d Revision=%u DeltaSeconds=%.3f From=%s To=%s Distance=%.2f ObservedSpeed=%.1f"),
+		*GetName(), HasAuthority(), ChargeState.Revision, Elapsed, *PreviousChargeDiagnosticLocation.ToCompactString(),
+		*Location.ToCompactString(), FVector::Dist(Location, PreviousChargeDiagnosticLocation),
+		Elapsed > UE_DOUBLE_SMALL_NUMBER ? FVector::Dist(Location, PreviousChargeDiagnosticLocation) / Elapsed : 0.0);
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	if (Capsule && Capsule->IsQueryCollisionEnabled() && GetWorld()->GetPhysicsScene())
+	{
+		// 현재 채널/무시 목록 그대로 관찰 구간을 조회한다. 이동·충돌 결과를 수정하지 않는다.
+		// 두 샘플 사이 직선이므로 곡선 이동/움직이는 장애물에서는 관통의 확정 증거가 아니다.
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(ChargeDiagnostics), false, this);
+		Params.AddIgnoredActors(Capsule->GetMoveIgnoreActors());
+		Params.AddIgnoredComponents(Capsule->GetMoveIgnoreComponents());
+		FHitResult Hit;
+		if (GetWorld()->SweepSingleByChannel(Hit, PreviousChargeDiagnosticLocation, Location, Capsule->GetComponentQuat(),
+			Capsule->GetCollisionObjectType(), FCollisionShape::MakeCapsule(Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight()),
+			Params, FCollisionResponseParams(Capsule->GetCollisionResponseToChannels())))
+		{
+			const UPrimitiveComponent* Other = Hit.GetComponent();
+			UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeObservedPathBlocked] Drone=%s Authority=%d Revision=%u Other=%s Component=%s HitTime=%.3f StartPenetrating=%d Depth=%.2f Impact=%s Normal=%s OtherEnabled=%d OtherObjectType=%d CapsuleResponse=%d OtherResponse=%d"),
+				*GetName(), HasAuthority(), ChargeState.Revision, *GetNameSafe(Hit.GetActor()), *GetNameSafe(Other),
+				Hit.Time, Hit.bStartPenetrating, Hit.PenetrationDepth, *Hit.ImpactPoint.ToCompactString(), *Hit.ImpactNormal.ToCompactString(),
+				Other ? static_cast<int32>(Other->GetCollisionEnabled()) : -1, Other ? static_cast<int32>(Other->GetCollisionObjectType()) : -1,
+				Other ? static_cast<int32>(Capsule->GetCollisionResponseToChannel(Other->GetCollisionObjectType())) : -1,
+				Other ? static_cast<int32>(Other->GetCollisionResponseToChannel(Capsule->GetCollisionObjectType())) : -1);
+		}
+	}
+	PreviousChargeDiagnosticLocation = Location;
+	PreviousChargeDiagnosticTime = Now;
+}
+
 void ASelfDestructDrone::BeginPlay()
 {
 	Super::BeginPlay();
@@ -109,10 +215,19 @@ void ASelfDestructDrone::BeginPlay()
 			SpawnAndAttachMountedExplosives();
 		}
 	}
+	LogChargeDiagnostics(TEXT("BeginPlay"));
+	RefreshChargeDiagnosticTimer();
 }
 
 void ASelfDestructDrone::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (!UE_BUILD_SHIPPING && CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeEndPlay] Drone=%s Authority=%d Revision=%u Active=%d Reason=%d"),
+			*GetName(), HasAuthority(), ChargeState.Revision, ChargeState.bActive, static_cast<int32>(EndPlayReason));
+	}
+	LogChargeDiagnostics(TEXT("EndPlay"));
+	GetWorldTimerManager().ClearTimer(ChargeDiagnosticTimer);
 	StopChargePresentation();
 	DestroyMountedExplosives();
 	Super::EndPlay(EndPlayReason);
@@ -192,8 +307,10 @@ void ASelfDestructDrone::TriggerSelfDestruct()
 {
 	if (!HasAuthority() || bDeathHandling)
 	{
+		LogChargeDiagnostics(TEXT("DetonateRejected"));
 		return;
 	}
+	LogChargeDiagnostics(TEXT("DetonateRequested"));
 	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] DetonateRequested Drone=%s Committed=%d Health=%.1f"),
 		*GetNameSafe(this), ChargeState.bActive, GetCurrentHealth());
 
@@ -204,6 +321,7 @@ void ASelfDestructDrone::TriggerSelfDestruct()
 		this,
 		OutlierGameplayTags::Damage::Explosion());
 	if (!IsDead()) bTriggeredSelfDestruct = false;
+	LogChargeDiagnostics(TEXT("DetonateDamageResult"));
 }
 
 void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
@@ -211,6 +329,22 @@ void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
 	FVector NormalImpulse, const FHitResult& Hit)
 {
 	Super::NotifyHit(MyComp, Other, OtherComp, bSelfMoved, HitLocation, HitNormal, NormalImpulse, Hit);
+	// 거절된 충돌도 남겨야 메시 접촉/비차단/클라이언트 접촉과 서버 캡슐 충돌을 구분할 수 있다.
+	const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	if (ChargeState.bActive && CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0 && !UE_BUILD_SHIPPING
+		&& (LastChargeHitDiagnosticTime < 0.0 || Now - LastChargeHitDiagnosticTime >= 0.25 || Cast<ACharacter>(Other)))
+	{
+		LastChargeHitDiagnosticTime = Now;
+		UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeHit] Drone=%s Authority=%d Revision=%u MyComp=%s IsCapsule=%d Other=%s OtherComp=%s Character=%d Blocking=%d SelfMoved=%d InitialOverlap=%d HitTime=%.3f Location=%s Normal=%s OtherEnabled=%d OtherObjectType=%d MyResponse=%d OtherResponse=%d Dead=%d DeathHandling=%d"),
+			*GetName(), HasAuthority(), ChargeState.Revision, *GetNameSafe(MyComp), MyComp == GetCapsuleComponent(),
+			*GetNameSafe(Other), *GetNameSafe(OtherComp), Cast<ACharacter>(Other) != nullptr, Hit.bBlockingHit, bSelfMoved,
+			Hit.bStartPenetrating, Hit.Time, *HitLocation.ToCompactString(), *HitNormal.ToCompactString(),
+			OtherComp ? static_cast<int32>(OtherComp->GetCollisionEnabled()) : -1,
+			OtherComp ? static_cast<int32>(OtherComp->GetCollisionObjectType()) : -1,
+			MyComp && OtherComp ? static_cast<int32>(MyComp->GetCollisionResponseToChannel(OtherComp->GetCollisionObjectType())) : -1,
+			MyComp && OtherComp ? static_cast<int32>(OtherComp->GetCollisionResponseToChannel(MyComp->GetCollisionObjectType())) : -1,
+			IsDead(), bDeathHandling);
+	}
 	// 1. 커밋된 본체의 실제 차단 충돌만 검사한다. 메시/부착물 접촉은 제외한다.
 	if (!HasAuthority() || !ChargeState.bActive || bDeathHandling || IsDead()
 		|| MyComp != GetCapsuleComponent() || !Hit.bBlockingHit
@@ -233,7 +367,13 @@ bool ASelfDestructDrone::BeginCommittedSelfDestruct(
 {
 	if (!IsValid(TargetActor))
 	{
+		LogChargeDiagnostics(TEXT("CommitTargetInvalid"));
 		return false;
+	}
+	if (!UE_BUILD_SHIPPING && CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeTarget] Drone=%s Target=%s Location=%s TargetLocation=%s"),
+			*GetName(), *GetNameSafe(TargetActor), *GetActorLocation().ToCompactString(), *TargetActor->GetActorLocation().ToCompactString());
 	}
 
 	const FVector ToTarget = TargetActor->GetActorLocation() - GetActorLocation();
@@ -272,8 +412,11 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 		|| IsDead()
 		|| ChargeState.bActive)
 	{
+		LogChargeDiagnostics(TEXT("CommitRejected"));
 		return false;
 	}
+	LogChargeDiagnostics(TEXT("BeforeCommit"));
+	bChargeMovementDiagnosticStarted = false;
 
 	CommittedChargeDirection = ChargeDirection.GetSafeNormal();
 	if (CommittedChargeDirection.IsNearlyZero())
@@ -330,13 +473,20 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 		|| bDeathHandling
 		|| IsDead())
 	{
+		LogChargeDiagnostics(TEXT("MovementUpdateRejected"));
 		return false;
 	}
 
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
 	if (!Movement)
 	{
+		LogChargeDiagnostics(TEXT("MovementComponentMissing"));
 		return false;
+	}
+	const bool bFirstMovementUpdate = !bChargeMovementDiagnosticStarted;
+	if (bFirstMovementUpdate || Movement->MovementMode != MOVE_Flying)
+	{
+		LogChargeDiagnostics(TEXT("BeforeChargeMovement"));
 	}
 	if (Movement->MovementMode != MOVE_Flying)
 	{
@@ -392,6 +542,11 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 		ActiveController->SetControlRotation(ChargeRotation);
 	}
 	SetActorRotation(FRotator(0.0f, ChargeRotation.Yaw, 0.0f));
+	if (bFirstMovementUpdate)
+	{
+		bChargeMovementDiagnosticStarted = true;
+		LogChargeDiagnostics(TEXT("FirstChargeVelocityApplied"));
+	}
 	return true;
 }
 
@@ -402,6 +557,7 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 		return;
 	}
 	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Cancel Drone=%s"), *GetNameSafe(this));
+	LogChargeDiagnostics(TEXT("CancelRequested"));
 
 	PublishChargeState(false);
 	ChargeSpeedState.Reset();
@@ -426,6 +582,7 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 		Movement->StopMovementImmediately();
 		Movement->MaxFlySpeed = FMath::Max(GetRuntimeStat().MoveSpeed, 0.0f);
 	}
+	LogChargeDiagnostics(TEXT("CancelCompleted"));
 	ForceNetUpdate();
 }
 
@@ -437,6 +594,7 @@ bool ASelfDestructDrone::TryApplyCommittedImpactVelocity(const FVector& ImpactVe
 	}
 
 	AccumulateImpactVelocity(ImpactVelocity);
+	LogChargeDiagnostics(TEXT("ImpactVelocityApplied"));
 	CommittedImpactElapsedTime = 0.0f;
 
 	const FVector CurrentDirection = CommittedChargeDirection.GetSafeNormal();
@@ -495,6 +653,8 @@ void ASelfDestructDrone::PublishChargeState(bool bActive, float Duration)
 			*GetName(), Duration, ChargeSoundDuration);
 	}
 	RefreshChargePresentation();
+	LogChargeDiagnostics(bActive ? TEXT("ChargeStatePublishedActive") : TEXT("ChargeStatePublishedInactive"));
+	RefreshChargeDiagnosticTimer();
 	ForceNetUpdate();
 }
 
@@ -513,17 +673,23 @@ float ASelfDestructDrone::GetCommittedChargeElapsedTime() const
 
 void ASelfDestructDrone::OnRep_ChargeState()
 {
+	LogChargeDiagnostics(TEXT("ChargeStateReplicated"));
+	RefreshChargeDiagnosticTimer();
 	RefreshChargePresentation();
 }
 
 void ASelfDestructDrone::OnRep_MountedExplosives()
 {
+	LogChargeDiagnostics(TEXT("MountedExplosivesReplicated"));
 	RefreshChargePresentation();
 }
 
 void ASelfDestructDrone::OnPoolStateApplied(EEnemyPoolState PreviousState)
 {
+	LogChargeDiagnostics(TEXT("BeforePoolStateApplied"));
 	Super::OnPoolStateApplied(PreviousState);
+	LogChargeDiagnostics(TEXT("AfterPoolStateApplied"));
+	RefreshChargeDiagnosticTimer();
 	RefreshChargePresentation();
 }
 
@@ -615,6 +781,7 @@ void ASelfDestructDrone::HandleDeath()
 	}
 
 	bDeathHandling = true;
+	LogChargeDiagnostics(TEXT("DeathBeforeExplosion"));
 	PublishChargeState(false);
 	bCommittedChargeDistanceLimited = false;
 	// EnemyBase가 Actor를 제거하기 전에 폭발 Queue와 클라이언트 연출을 먼저 확정한다.
@@ -633,11 +800,13 @@ void ASelfDestructDrone::HandleDeath()
 	}
 	DestroyMountedExplosives();
 
+	LogChargeDiagnostics(TEXT("DeathExplosionResult"));
 	Super::HandleDeath();
 }
 
 void ASelfDestructDrone::ResetPoolRuntimeState()
 {
+	LogChargeDiagnostics(TEXT("BeforePoolReset"));
 	ChargeSpeedState.Reset();
 	// 본체는 재사용하지만 부착 폭발물은 Idle 진입 때 제거한다. 새 대여마다 폭발 가능한 부품을 다시 만든다.
 	Super::ResetPoolRuntimeState();
@@ -657,13 +826,16 @@ void ASelfDestructDrone::ResetPoolRuntimeState()
 	bCommittedChargeDistanceLimited = false;
 	CommittedImpactElapsedTime = 0.0f;
 	SpawnAndAttachMountedExplosives();
+	LogChargeDiagnostics(TEXT("AfterPoolReset"));
 }
 
 void ASelfDestructDrone::PrepareForPoolIdle()
 {
+	LogChargeDiagnostics(TEXT("BeforePoolIdle"));
 	PublishChargeState(false);
 	StopChargePresentation();
 	ChargeSpeedState.Reset();
 	Super::PrepareForPoolIdle();
 	DestroyMountedExplosives();
+	LogChargeDiagnostics(TEXT("AfterPoolIdle"));
 }
