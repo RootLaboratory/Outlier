@@ -152,6 +152,8 @@ struct FRoomCombatRuntime
 	bool bExitBlockActive = false;
 	// 시작/차수 완료 이벤트에서 차단 상태를 적용한 뒤 실제 Pool 대여를 실행한다.
 	bool bDeferSpawnExecution = false;
+	// 문 닫힘 경계의 강제 정리 중에는 제거 콜백으로 Wave/차수를 진행하지 않는다.
+	bool bPhaseCleanupInProgress = false;
 	FTimerHandle InitialSpawnDelayTimer;
 	// 차수 경계에서는 다음 인덱스만 확정한다. 이 대기가 끝나기 전에는 Wave 요청도 만들지 않는다.
 	bool bPhaseDelayPending = false;
@@ -262,6 +264,10 @@ public:
 	FOnRoomWaveFirstSpawned OnWaveFirstSpawned;
 	bool HasCurrentWaveSpawned(const FRoomCombatTriggerContext& Context) const;
 	bool IsSingleExternalTriggerEncounter(FGameplayTag RoomTag) const;
+	// 문이 시작할 첫 외부 차수와 이미 진행한 후속 차수를 구분한다. 미등록 Room도 Definition으로 조회한다.
+	int32 GetFirstExternalTriggerPhaseIndex(FGameplayTag RoomTag) const;
+	// 업그레이드 문이 닫힌 뒤, 해제 옵션이 있는 선행 InitialDetection 차수만 보상 없이 정리한다.
+	bool FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume, int32 GameplayGeneration);
 	bool IsElevatorEncounter(FGameplayTag RoomTag) const;
 	bool AcquireEncounterCheckpointHold(const FRoomCombatTriggerContext& Context, FGuid ExecutionId);
 	void ReleaseEncounterCheckpointHold(FGameplayTag RoomTag, FGuid ExecutionId);

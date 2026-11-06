@@ -921,6 +921,11 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 	Snapshot.SaveReason = EOutlierCheckpointSaveReason::Trigger;
 	Snapshot.RoomTag = Checkpoint->GetCombatRoomTag();
 	Snapshot.NextPhaseIndex = Snapshot.RoomTag.IsValid() ? 0 : INDEX_NONE;
+	// 업그레이드 추가 저장도 이미 완료한 차수를 보존한다. 입구 저장이라고 Phase0으로 되돌리지 않는다.
+	if (const FOutlierRoomPhaseProgress* Progress = Snapshot.RoomPhaseProgress.Find(Snapshot.RoomTag))
+	{
+		Snapshot.NextPhaseIndex = Progress->NextPhaseIndex;
+	}
 	if (!SaveSubsystem->CommitDurableCheckpointSnapshot(Snapshot, bRefreshSnapshot))
 	{
 		UE_LOG(LogTemp, Warning,
