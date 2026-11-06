@@ -678,7 +678,7 @@ bool UEnemyRoomSubsystem::TryGetRoomTargetObservation(
 }
 
 bool UEnemyRoomSubsystem::TrySelectRoomTarget(
-	AEnemyBase* Receiver, FEnemyRoomTargetObservationSnapshot& OutSnapshot)
+	AEnemyBase* Receiver, FEnemyRoomTargetObservationSnapshot& OutSnapshot, bool bRequireLiveObservation)
 {
 	OutSnapshot = {};
 	if (!IsValid(Receiver)) return false;
@@ -697,6 +697,7 @@ bool UEnemyRoomSubsystem::TrySelectRoomTarget(
 		if (!Controller->IsValidTrackingTarget(Target)) continue;
 		FEnemyRoomTargetObservationSnapshot Candidate;
 		if (!TryGetRoomTargetObservation(Receiver, Target, Candidate)) continue;
+		if (bRequireLiveObservation && !Candidate.bDirectlyObserved) continue;
 		const auto Priority = OutlierEnemyTargetRules::GetPriority(Target);
 		const float DistanceSquared = FVector::DistSquared(Receiver->GetActorLocation(), Target->GetActorLocation());
 		if (Priority != OutlierEnemyTargetRules::ETargetPriority::Invalid

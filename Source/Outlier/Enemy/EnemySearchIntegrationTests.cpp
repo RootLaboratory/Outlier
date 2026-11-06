@@ -34,6 +34,7 @@
 #include "Misc/ScopeExit.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
 #include "Perception/AIPerceptionComponent.h"
+#include "Perception/AISense_Hearing.h"
 #include "Perception/AISense_Sight.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -228,6 +229,194 @@ bool BeginSearch(FAutomationTestBase& Test, AEnemyBase* Enemy, const FVector& Ce
 	Test.TestTrue(TEXT("Search episode begins"), Enemy->BeginSearchEpisode());
 	return Enemy->GetSearchEpisode().bActive;
 }
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseFlightIntegrationTest,
+	"Outlier.Enemy.Perception.Investigation.Flight",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNoiseFlightIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : { TEXT("Arrival"), TEXT("Detour"), TEXT("NoPath"),
+		TEXT("BudgetExceeded"), TEXT("DirectReacquire"), TEXT("TimedSearch"), TEXT("RetargetDuringSearch") })
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNoiseFlightIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemySearchIntegrationWorld Fixture(true);
+	if (!TestTrue(TEXT("Flight test world begins play"), Fixture.World && Fixture.World->HasBegunPlay())
+		|| !TestTrue(TEXT("Flight room registers"), Fixture.CreateRoom(FVector(1200, 800, 500)))) return false;
+	FVector Start(-600, 0, 100);
+	const FVector HeardLocation(600, 0, 100);
+	UClass* EnemyClass = LoadClass<AEnemyBase>(nullptr,
+		TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	UClass* PlayerClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Flight enemy BP loads"), EnemyClass)
+		|| !TestNotNull(TEXT("Noise source BP loads"), PlayerClass)) return false;
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	// BeginPlay 월드에서는 실제 스탯 행이 있는 BP를 써야 첫 Tick에도 생존한다.
+	AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>(EnemyClass, FTransform(Start), Spawn);
+	if (!TestNotNull(TEXT("Flight enemy exists"), Enemy)) return false;
+	Enemy->GetRoomTagComp()->AssignDefaultRoomTag(Fixture.SearchRoomTag);
+	Enemy->EnterCombatFromRoom(Start, false);
+	AEnemyAIController* Controller = Cast<AEnemyAIController>(Enemy->GetController());
+	if (!TestNotNull(TEXT("Flight enemy controller exists"), Controller)) return false;
+	AShooterCharacter* Source = Fixture.World->SpawnActor<AShooterCharacter>(PlayerClass,
+		FTransform(FVector(8000, 8000, 100)), Spawn);
+	if (!TestNotNull(TEXT("Noise source BP spawns"), Source)) return false;
+	if (UStateTreeComponent* Tree = Enemy->GetStateTreeComponent())
+		Tree->StopLogic(TEXT("Noise flight integration owns movement"));
+	// 조사 입력만 주입하고 실제 이동은 World/CharacterMovement가 수행한다.
+	// 자동 Sight 입력은 차단해 소리 조사 중 우연히 직접 시야를 얻는 일을 방지한다.
+	Controller->SetEnemyPerceptionEnabled(false);
+	UCharacterMovementComponent* Movement = Enemy->GetCharacterMovement();
+	if (!TestNotNull(TEXT("Character movement exists"), Movement)) return false;
+	const_cast<FEnemyStat&>(Enemy->GetRuntimeStat()).MoveSpeed = 600.0f;
+	Movement->SetMovementMode(MOVE_Flying);
+	Movement->MaxFlySpeed = 600.0f;
+	Movement->MaxAcceleration = 2048.0f;
+	Movement->BrakingDecelerationFlying = 2048.0f;
+	Source->GetCharacterMovement()->SetComponentTickEnabled(false);
+	const bool bSealed = Parameters == TEXT("NoPath");
+	const bool bWall = bSealed || Parameters == TEXT("Detour") || Parameters == TEXT("BudgetExceeded");
+	if (bWall && !TestNotNull(TEXT("Flight obstacle exists"), Fixture.SpawnBlockingBox(
+		FVector::ZeroVector, FVector(40, bSealed ? 800 : 180, 500)))) return false;
+	Fixture.Tick(1.0f / 32.0f);
+	Start = Enemy->GetActorLocation();
+	if (!TestTrue(TEXT("Flight hears a fixed player-side occurrence"), Enemy->RecordHeardNoise(
+		Source, HeardLocation, Fixture.World->GetTimeSeconds()))) return false;
+
+	FEnemyFlyToLocationTaskInstanceData Data;
+	Data.Enemy = Enemy;
+	Data.bInvestigateNoise = true;
+	Data.bUsePathfinding = true;
+	Data.CachedController = Controller;
+	Data.CachedCapsule = Enemy->GetCapsuleComponent();
+	Data.CachedRoomSubsystem = Fixture.World->GetSubsystem<URoomCombatSubsystem>();
+	Data.CachedRoom = Fixture.Room;
+	Data.PathRoomTag = Fixture.SearchRoomTag;
+	Data.bOwnsMovement = true;
+	Data.MoveResult = EEnemyFlightMoveResult::Moving;
+	Data.AcceptanceRadius = 25.0f;
+	Data.GoalSearchRadius = 0.0f;
+	Data.MaxSearchNodes = Parameters == TEXT("BudgetExceeded") ? 1 : 65536;
+	Data.MaxCollisionChecks = 262144;
+	Data.MaxSearchMilliseconds = 10000.0f;
+	Data.MaxRepathAttempts = 2;
+	Data.RepathInterval = 0.125f;
+	Data.RepathTimeout = 1.0f;
+	ON_SCOPE_EXIT { EnemyFlightTesting::Stop(Data); };
+	EStateTreeRunStatus Status = EnemyFlightTesting::StartPath(Data);
+	if (!TestEqual(TEXT("Flight starts through the production path helper"), Status, EStateTreeRunStatus::Running)) return false;
+	const uint64 Serial = Data.CapturedNoiseSerial;
+	if (Parameters == TEXT("Detour"))
+	{
+		if (!TestEqual(TEXT("A bounded grid route exists around the wall"), Data.PathStatus, EFlightPathStatus::Success)) return false;
+		TestTrue(TEXT("Wall route contains intermediate waypoints"), Data.PathWaypoints.Num() > 2);
+	}
+	if (Parameters == TEXT("BudgetExceeded") || bSealed)
+	{
+		const EFlightPathStatus Expected = bSealed ? EFlightPathStatus::NoPathWithinBounds : EFlightPathStatus::BudgetExceeded;
+		if (!TestEqual(TEXT("Initial path result preserves physical versus budget failure"), Data.PathStatus, Expected)) return false;
+		TestFalse(TEXT("Failed query cannot expose an unverified movement path"), Data.PathWaypoints.IsValidIndex(Data.WaypointIndex));
+		TestTrue(TEXT("Failure enters a bounded retry episode"), Data.bWaitingForPath);
+	}
+	if (Parameters == TEXT("DirectReacquire"))
+	{
+		Controller->SetCachedVisibleTargetForTesting(Source);
+		Enemy->SetPlayerCurrentlyVisible(true);
+		Status = EnemyFlightTesting::TickPath(Data, 1.0f / 32.0f);
+		TestEqual(TEXT("Sight reacquisition interrupts the old flight"), Status, EStateTreeRunStatus::Failed);
+		TestEqual(TEXT("Interruption is not reported as arrival"), Data.MoveResult, EEnemyFlightMoveResult::Interrupted);
+		TestFalse(TEXT("Interrupted movement cannot publish a noise search"), Data.bNoiseSearchReady);
+		TestFalse(TEXT("Sight reacquisition releases investigation ownership"), Enemy->IsNoiseInvestigationActive());
+		TestFalse(TEXT("Old flight cannot complete after reacquisition"), Enemy->BeginNoiseInvestigationSearch(Serial, Enemy->GetActorLocation()));
+		return true;
+	}
+
+	float MaxSideDistance = 0.0f;
+	constexpr float Step = 1.0f / 32.0f;
+	for (int32 Frame = 0; Frame < 640 && Status == EStateTreeRunStatus::Running; ++Frame)
+	{
+		Status = EnemyFlightTesting::TickPath(Data, Step);
+		if (Status == EStateTreeRunStatus::Running) Fixture.Tick(Step);
+		MaxSideDistance = FMath::Max(MaxSideDistance, static_cast<float>(FMath::Abs(Enemy->GetActorLocation().Y)));
+	}
+	TestTrue(TEXT("Noise movement completes within the finite simulation bound"), Status != EStateTreeRunStatus::Running);
+	TestTrue(TEXT("Completed movement hands off a local noise search"), Data.bNoiseSearchReady);
+	TestTrue(TEXT("Noise search phase becomes active"), Enemy->IsNoiseSearchActive());
+	TestTrue(TEXT("Search center is the physically reached actor position"),
+		Enemy->GetSearchEpisode().Center.Equals(Enemy->GetActorLocation(), 1.0));
+	if (!bSealed && Parameters != TEXT("BudgetExceeded"))
+	{
+		TestEqual(TEXT("Valid path ends in arrival rather than fallback"), Data.MoveResult, EEnemyFlightMoveResult::Arrived);
+		TestTrue(TEXT("Actual movement reaches the sound acceptance radius"), Enemy->GetActorLocation().Equals(HeardLocation, Data.AcceptanceRadius + 1.0f));
+		TestTrue(TEXT("Movement is simulated rather than completed at the start"), FVector::Distance(Start, Enemy->GetActorLocation()) > 1000.0);
+		if (Parameters == TEXT("Detour")) TestTrue(TEXT("Actual flight travels around the wall"), MaxSideDistance > 180.0f);
+	}
+	else
+	{
+		TestEqual(TEXT("Exhausted retries report blocked movement"), Data.MoveResult, EEnemyFlightMoveResult::Blocked);
+		TestTrue(TEXT("Failed movement never crosses to the unreachable sound"), Enemy->GetActorLocation().Equals(Start, 1.0));
+		TestTrue(TEXT("Retries obey the configured attempt bound"), Data.RepathAttempts <= Data.MaxRepathAttempts);
+		TestTrue(TEXT("Fallback search does not adopt the unreached sound position"), !Enemy->GetSearchEpisode().Center.Equals(HeardLocation, 1.0));
+	}
+	if (Parameters == TEXT("TimedSearch") || Parameters == TEXT("RetargetDuringSearch"))
+	{
+		FEnemySearchSessionTaskInstanceData Search;
+		Search.Enemy = Enemy;
+		Search.bNoiseInvestigationSearch = true;
+		Search.NoiseSearchDuration = Parameters == TEXT("TimedSearch") ? 0.5f : 5.0f;
+		if (!TestEqual(TEXT("Reached noise search enters the production session"),
+			EnemySearchTesting::EnterSession(Search), EStateTreeRunStatus::Running)) return false;
+		// 이동 완료 시각부터 별도 수색 시간을 계산한다. 소리 발생 시각은 수색 타이머를 소모하지 않는다.
+		for (int32 Frame = 0; Frame < 15; ++Frame) Fixture.Tick(Step);
+		EnemySearchTesting::TickSession(Search);
+		TestFalse(TEXT("Noise search remains active before its duration"), Search.bNoiseSearchComplete);
+		Fixture.Tick(Step);
+		if (Parameters == TEXT("TimedSearch"))
+		{
+			EnemySearchTesting::TickSession(Search);
+			TestTrue(TEXT("Noise search completes exactly at the configured duration"), Search.bNoiseSearchComplete);
+			EnemySearchTesting::ExitSession(Search);
+			TestFalse(TEXT("Completed search releases investigation ownership"), Enemy->IsNoiseInvestigationActive());
+			TestFalse(TEXT("Completed search releases the search episode"), Enemy->GetSearchEpisode().bActive);
+			FVector Destination;
+			TestFalse(TEXT("Completion consumes the sound instead of restarting it"), Enemy->BeginNoiseInvestigation(Destination));
+		}
+		else
+		{
+			Search.NoiseSearchDuration = 0.5f;
+			EnemySearchTesting::TickSession(Search);
+			TestTrue(TEXT("Completion is published before newer evidence arrives"), Search.bNoiseSearchComplete);
+			for (int32 Frame = 0; Frame < 16; ++Frame) Fixture.Tick(Step);
+			// 기존 수색 중심에서 벗어난 뒤 2m 가까운 소리를 듣는다. 먼 소리는 재지정 근거가 아니다.
+			const FVector SearchCenter = Enemy->GetSearchEpisode().Center;
+			Enemy->SetActorLocation(SearchCenter + FVector(0, 400, 0));
+			const FVector NewSound = SearchCenter + FVector(0, 200, 0);
+			TestTrue(TEXT("A fresh separated sound is heard during search"),
+				Enemy->RecordHeardNoise(Source, NewSound, Fixture.World->GetTimeSeconds()));
+			EnemySearchTesting::RefreshSessionTransitions(Search);
+			TestTrue(TEXT("Search exposes a retarget transition for the new sound"), Search.bShouldInvestigateNoise);
+			TestFalse(TEXT("Retarget is not a completed search"), Search.bNoiseSearchComplete);
+			FVector Destination;
+			if (!TestTrue(TEXT("The replacement investigation starts"), Enemy->BeginNoiseInvestigation(Destination))) return false;
+			const uint64 ReplacementSerial = Enemy->GetNoiseInvestigationSerial();
+			TestTrue(TEXT("Replacement adopts the new occurrence position"), Destination.Equals(NewSound));
+			EnemySearchTesting::ExitSession(Search);
+			TestTrue(TEXT("Old session exit cannot release replacement ownership"), Enemy->IsNoiseInvestigationCurrent(ReplacementSerial));
+			TestFalse(TEXT("Old movement completion cannot overwrite replacement search"),
+				Enemy->BeginNoiseInvestigationSearch(Serial, Enemy->GetActorLocation()));
+		}
+	}
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySearchAnchorCorrectionIntegrationTest,
@@ -673,8 +862,9 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyChaseIntegrationTest,
 
 void FEnemyChaseIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
-	for (const TCHAR* Scenario : {TEXT("ChaseSuccess"), TEXT("LiveQuery"), TEXT("SightLost"), TEXT("TargetChanged"), TEXT("TargetMoved"),
-		TEXT("Empty"), TEXT("ForeignCandidate"), TEXT("BudgetExceeded"), TEXT("ChargeReady"), TEXT("ChargeBlocked"), TEXT("ChargeHeight"), TEXT("ChargeSightLost")})
+	for (const TCHAR* Scenario : {TEXT("ChaseSuccess"), TEXT("LiveQuery"), TEXT("SightLost"), TEXT("SightLostGrace"),
+		TEXT("TargetChanged"), TEXT("TargetMoved"), TEXT("Empty"), TEXT("ForeignCandidate"),
+		TEXT("BudgetExceeded"), TEXT("ChargeReady"), TEXT("ChargeBlocked"), TEXT("ChargeHeight"), TEXT("ChargeSightLost"), TEXT("ChargeSightLostGrace")})
 	{
 		Names.Add(Scenario);
 		Commands.Add(Scenario);
@@ -693,17 +883,22 @@ bool FEnemyChaseIntegrationTest::RunTest(const FString& Parameters)
 	Drone->GetRoomTagComp()->AssignDefaultRoomTag(Fixture.SearchRoomTag);
 	Drone->EnterCombatFromRoom(FVector(1000, 0, 150), false);
 	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
-	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	UClass* TargetClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Concrete player class exists"), TargetClass)) return false;
+	AShooterCharacter* Target = Fixture.World->SpawnActor<AShooterCharacter>(TargetClass,
+		FTransform(FVector(1000, 0, 150)), Spawn);
 	if (!TestNotNull(TEXT("Controller"), Controller) || !TestNotNull(TEXT("Target"), Target)) return false;
-	UBoxComponent* TargetRoot = NewObject<UBoxComponent>(Target);
-	Target->SetRootComponent(TargetRoot);
-	TargetRoot->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	TargetRoot->RegisterComponent();
-	Target->SetActorLocation(FVector(1000, 0, 150));
+	Target->SetActorEnableCollision(false);
+	Target->GetCharacterMovement()->SetComponentTickEnabled(false);
 	Controller->Possess(Drone);
-	// 감지 입력만 고정한다. 후보 생성/결과 적용/캡슐 Sweep/A*는 실제 게임 함수를 실행한다.
-	Controller->LastVisibleTarget = Target;
+	// 일반 Actor는 추적 대상으로 인정되지 않는다. 실제 플레이어를 관측한 상태부터 준비해
+	// 아래 시나리오가 타깃 검증에서 조기 종료하지 않고 후보/결과/캡슐 Sweep/A*까지 검사하게 한다.
+	const_cast<FEnemyStat&>(Drone->GetRuntimeStat()).TargetTrackingGraceSeconds = 3.0f;
+	Controller->SetCachedVisibleTargetForTesting(Target);
+	Drone->ObserveTrackedTarget(Target);
 	Drone->SetPlayerCurrentlyVisible(true);
+	if (!TestEqual(TEXT("Real player is tracked before scenario"), Drone->GetTrackedTarget(), static_cast<AActor*>(Target))) return false;
 	if (Parameters.StartsWith(TEXT("Charge")))
 	{
 		Target->SetActorLocation(FVector(400, 0, 150));
@@ -718,10 +913,16 @@ bool FEnemyChaseIntegrationTest::RunTest(const FString& Parameters)
 			Target->SetActorLocation(FVector(400, 0, 550));
 			Expected = EEnemyChargeEligibility::OutOfRange;
 		}
-		else if (Parameters == TEXT("ChargeSightLost"))
+		else if (Parameters == TEXT("ChargeSightLost") || Parameters == TEXT("ChargeSightLostGrace"))
 		{
+			// 유예 종료와 유예 중 진입을 분리한다. 0초 설정은 월드 Tick 없이 만료 경계를 검사한다.
+			const bool bGraceActive = Parameters == TEXT("ChargeSightLostGrace");
+			if (!bGraceActive) const_cast<FEnemyStat&>(Drone->GetRuntimeStat()).TargetTrackingGraceSeconds = 0.0f;
+			Controller->SetCachedVisibleTargetForTesting(nullptr);
 			Drone->SetPlayerCurrentlyVisible(false);
-			Expected = EEnemyChargeEligibility::NoVisibleTarget;
+			TestFalse(TEXT("Lost sight does not remain directly visible"), Drone->IsPlayerCurrentlyVisible());
+			TestEqual(TEXT("Charge tracking follows grace eligibility"), Drone->HasTrackableTarget(), bGraceActive);
+			Expected = bGraceActive ? EEnemyChargeEligibility::Ready : EEnemyChargeEligibility::NoVisibleTarget;
 		}
 		TestEqual(TEXT("Authoritative charge entry result"), EnemyCharge::Assess(Drone, Controller, Target, 500, 5), Expected);
 		return true;
@@ -732,6 +933,7 @@ bool FEnemyChaseIntegrationTest::RunTest(const FString& Parameters)
 	Data.RunMode = EEnvQueryRunMode::AllMatching;
 	Data.MaxSearchMilliseconds = 1000;
 	EnemySearchTesting::CaptureQuery(Data);
+	if (!TestEqual(TEXT("Chase snapshot captures the tracked player"), Data.CapturedTarget.Get(), static_cast<AActor*>(Target))) return false;
 	if (Parameters == TEXT("LiveQuery"))
 	{
 		UEnvQueryManager* Manager = UEnvQueryManager::GetCurrent(Fixture.World);
@@ -754,8 +956,26 @@ bool FEnemyChaseIntegrationTest::RunTest(const FString& Parameters)
 	if (!TestTrue(TEXT("Chase candidates exist"), !Candidates.IsEmpty())) return false;
 	EEnemyEnvQueryResult Expected = EEnemyEnvQueryResult::Stale;
 	if (Parameters == TEXT("ChaseSuccess")) Expected = EEnemyEnvQueryResult::Success;
-	else if (Parameters == TEXT("SightLost")) Drone->SetPlayerCurrentlyVisible(false);
-	else if (Parameters == TEXT("TargetChanged")) Controller->LastVisibleTarget.Reset();
+	else if (Parameters == TEXT("SightLost") || Parameters == TEXT("SightLostGrace"))
+	{
+		const bool bGraceActive = Parameters != TEXT("SightLost");
+		if (!bGraceActive) const_cast<FEnemyStat&>(Drone->GetRuntimeStat()).TargetTrackingGraceSeconds = 0.0f;
+		Controller->SetCachedVisibleTargetForTesting(nullptr);
+		Drone->SetPlayerCurrentlyVisible(false);
+		TestFalse(TEXT("Lost sight does not remain directly visible"), Drone->IsPlayerCurrentlyVisible());
+		TestEqual(TEXT("Chase tracking follows grace eligibility"), Drone->HasTrackableTarget(), bGraceActive);
+		Expected = bGraceActive ? EEnemyEnvQueryResult::Success : EEnemyEnvQueryResult::Stale;
+	}
+	else if (Parameters == TEXT("TargetChanged"))
+	{
+		AShooterCharacter* Replacement = Fixture.World->SpawnActor<AShooterCharacter>(TargetClass,
+			FTransform(Target->GetActorLocation()), Spawn);
+		if (!TestNotNull(TEXT("Replacement player"), Replacement)) return false;
+		Replacement->SetActorEnableCollision(false);
+		Controller->SetCachedVisibleTargetForTesting(Replacement);
+		Drone->ObserveTrackedTarget(Replacement);
+		if (!TestEqual(TEXT("Replacement player becomes tracked target"), Drone->GetTrackedTarget(), static_cast<AActor*>(Replacement))) return false;
+	}
 	else if (Parameters == TEXT("TargetMoved")) Target->SetActorLocation(FVector(1250, 0, 150));
 	else if (Parameters == TEXT("Empty"))
 	{
@@ -2432,6 +2652,54 @@ bool CheckSharedAttackContinuity(FEnemyRoomCombatIntegrationWorld& Fixture)
 	return true;
 }
 
+bool CheckNoiseAttackContinuity(FEnemyRoomCombatIntegrationWorld& Fixture)
+{
+	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+	if (!Fixture.Test.TestNotNull(TEXT("Investigation continuity has a real equipped gun"), Weapon)) return false;
+	FFloatProperty* Interval = FindFProperty<FFloatProperty>(Weapon->GetClass(), TEXT("AttackInterval"));
+	if (!Fixture.Test.TestNotNull(TEXT("Real shot interval is configurable"), Interval)) return false;
+	// 첫 발 직후 조사/재발견을 넣어 실제 무기 쿨다운을 건너뛰는 회귀를 탄약 소비로 구분한다.
+	Interval->SetPropertyValue_InContainer(Weapon, 1.0f);
+	if (!CheckGunMovingFire(Fixture)) return false;
+	const int32 AmmoAfterFirstShot = Weapon->GetCurrentAmmo();
+	const FVector NoiseLocation = Fixture.Enemy->GetActorLocation() + FVector(0, 300, 0);
+	if (!Fixture.Test.TestTrue(TEXT("Nearby player sound is accepted while a farther shared target exists"),
+		Fixture.Enemy->RecordHeardNoise(Fixture.Target, NoiseLocation, Fixture.World->GetTimeSeconds()))) return false;
+	FVector Destination;
+	if (!Fixture.Test.TestTrue(TEXT("Closer sound starts investigation during real firing"),
+		Fixture.Enemy->BeginNoiseInvestigation(Destination))) return false;
+	Fixture.Test.TestFalse(TEXT("Investigation pauses the actual weapon"), Weapon->IsAttacking());
+	Fixture.Test.TestFalse(TEXT("Investigation blocks starting another target attack"), Fixture.Enemy->StartAttackTarget(Fixture.Target));
+	Fixture.Test.TestEqual(TEXT("Investigation retains shared target knowledge"),
+		Fixture.Enemy->GetTrackedTarget(), static_cast<AActor*>(Fixture.Target));
+	const double ReadyAt = Fixture.World->GetTimeSeconds() + Weapon->GetAttackRetryDelay();
+	if (!Fixture.Test.TestTrue(TEXT("First shot leaves a measurable preserved cooldown"),
+		ReadyAt - Fixture.World->GetTimeSeconds() > 0.5)) return false;
+	// Slice 3는 네이티브 흐름을 검증한다. 에셋의 조사 State 연결 대신 기존 공격 Task의 실제 Exit를 실행한다.
+	Fixture.Tree->StopLogic(TEXT("Controlled investigation transition"));
+	for (int32 Frame = 0; Frame < 6; ++Frame) Fixture.Tick(Fixture.Step);
+	Fixture.Test.TestEqual(TEXT("Paused weapon consumes no ammunition during investigation"), Weapon->GetCurrentAmmo(), AmmoAfterFirstShot);
+	Fixture.SetSight(true);
+	Fixture.Test.TestFalse(TEXT("Direct reacquisition cancels the investigation"), Fixture.Enemy->IsNoiseInvestigationActive());
+	Fixture.Test.TestFalse(TEXT("Reacquisition does not clear the actual cooldown"), Weapon->CanAttack());
+	Fixture.Start();
+	const double Deadline = ReadyAt + Fixture.Enemy->GetTargetAttackRecoveryRemaining() + 1.0;
+	while (Fixture.World->GetTimeSeconds() < Deadline)
+	{
+		if (!Fixture.Advance()) return false;
+		if (!Fixture.Test.TestTrue(TEXT("Same-target reacquisition never repeats preparation"),
+			Fixture.Enemy->GetAttackPhase() != EEnemyAttackPhase::Telegraph)) return false;
+		if (Fixture.World->GetTimeSeconds() < ReadyAt - 2.0 * Fixture.Step)
+			if (!Fixture.Test.TestEqual(TEXT("Real gun cannot fire before its original cooldown expires"),
+				Weapon->GetCurrentAmmo(), AmmoAfterFirstShot)) return false;
+		if (Weapon->GetCurrentAmmo() < AmmoAfterFirstShot)
+			return Fixture.Test.TestTrue(TEXT("Actual resumed shot respects the preserved fire deadline"),
+				Fixture.World->GetTimeSeconds() >= ReadyAt - 2.0 * Fixture.Step);
+	}
+	Fixture.Test.AddError(TEXT("Same-target reacquisition did not resume actual fire after the preserved cooldown"));
+	return false;
+}
+
 bool CheckSharedChargeContinuity(FEnemyRoomCombatIntegrationWorld& Fixture)
 {
 	Fixture.Start();
@@ -2465,7 +2733,7 @@ void FEnemyRoomCombatWorldTest::GetTests(TArray<FString>& Names, TArray<FString>
 {
 	for (const TCHAR* Scenario : {TEXT("Gun.MovingFire"), TEXT("Gun.SourceContinuity"), TEXT("Gun.AttackContinuity"),
 		TEXT("Gun.ObserverHandoff"), TEXT("Gun.Expiry"), TEXT("Gun.Alternative"), TEXT("Gun.SearchReacquire"),
-		TEXT("Gun.ForcedHintOnly"), TEXT("Melee.Expiry"), TEXT("Melee.ChargeEntry"),
+		TEXT("Gun.ForcedHintOnly"), TEXT("Gun.NoiseAttackContinuity"), TEXT("Melee.Expiry"), TEXT("Melee.ChargeEntry"),
 		TEXT("Melee.BlockedChargeEntry"), TEXT("Melee.ChargeSourceContinuity"), TEXT("Melee.ChargeWallTimeout")})
 	{
 		Names.Add(Scenario);
@@ -2485,6 +2753,7 @@ bool FEnemyRoomCombatWorldTest::RunTest(const FString& Parameters)
 	if (!Fixture.InitializeShared(bMelee, FVector(Distance, 0, 0), Scenario != TEXT("ForcedHintOnly"))) return false;
 	if (Scenario == TEXT("MovingFire")) return CheckGunMovingFire(Fixture);
 	if (Scenario == TEXT("AttackContinuity")) return CheckSharedAttackContinuity(Fixture);
+	if (Scenario == TEXT("NoiseAttackContinuity")) return CheckNoiseAttackContinuity(Fixture);
 	if (Scenario == TEXT("SourceContinuity") || Scenario == TEXT("ObserverHandoff"))
 		return CheckSharedSourceContinuity(Fixture, Scenario == TEXT("ObserverHandoff"));
 	if (Scenario == TEXT("Expiry") || Scenario == TEXT("Alternative") || Scenario == TEXT("SearchReacquire"))
@@ -2508,6 +2777,188 @@ bool FEnemyRoomCombatWorldTest::RunTest(const FString& Parameters)
 		return true;
 	}
 	AddError(TEXT("Unknown shared combat integration scenario"));
+	return false;
+}
+
+namespace
+{
+bool HearInvestigationNoise(FEnemyCombatIntegrationWorld& Fixture, const FVector& Location)
+{
+	UAIPerceptionComponent* Perception = Fixture.Controller->GetPerceptionComponent();
+	if (!Fixture.Test.TestNotNull(TEXT("Noise input reaches the real perception component"), Perception)) return false;
+	// 감지 입력만 통제한다. 조사 시작/이동/수색은 저장된 StateTree의 전이가 직접 실행해야 한다.
+	FAIStimulus Stimulus(*GetDefault<UAISense_Hearing>(), 1.0f, Location, Fixture.Enemy->GetActorLocation());
+	Perception->RegisterStimulus(Fixture.Target, Stimulus);
+	Perception->ProcessStimuli();
+	FEnemyHeardNoise Heard;
+	return Fixture.Test.TestTrue(TEXT("The hearing callback stores the occurrence snapshot"),
+		Fixture.Enemy->TryGetHeardNoise(Heard) && Heard.Location.Equals(Location));
+}
+
+bool WaitForNoiseState(FEnemyCombatIntegrationWorld& Fixture, bool bSearch, int32 MaxFrames = 600)
+{
+	for (int32 Frame = 0; Frame < MaxFrames; ++Frame)
+	{
+		if (bSearch)
+		{
+			const auto* Session = Fixture.Data<FEnemySearchSessionTask>();
+			if (Session && Session->bNoiseInvestigationSearch && Fixture.Enemy->IsNoiseSearchActive()) return true;
+		}
+		else
+		{
+			const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+			if (Fly && Fly->bInvestigateNoise && Fixture.Enemy->IsNoiseInvestigationActive()) return true;
+		}
+		if (!Fixture.Advance()) break;
+	}
+	Fixture.Test.AddError(FString::Printf(TEXT("Saved tree did not enter noise %s. States=%s"),
+		bSearch ? TEXT("search") : TEXT("flight"), *Fixture.Snapshot.Describe()));
+	return false;
+}
+
+bool CheckSavedNoiseFlow(FEnemyCombatIntegrationWorld& Fixture, bool bAlert)
+{
+	Fixture.Start();
+	if (!Fixture.Advance()) return false;
+	const FVector Occurrence = Fixture.Enemy->GetActorLocation() + FVector(700, 0, 0);
+	const FVector Start = Fixture.Enemy->GetActorLocation();
+	if (!HearInvestigationNoise(Fixture, Occurrence) || !WaitForNoiseState(Fixture, false)) return false;
+	const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+	if (!Fixture.Test.TestTrue(TEXT("Saved noise flight enables bounded AStar movement"),
+		Fly && Fly->bUsePathfinding && Fly->MoveTimeout > 0.0f && Fly->NoProgressTimeout > 0.0f)) return false;
+	Fixture.Test.TestTrue(TEXT("Saved flight follows the heard snapshot"), Fly->Destination.Equals(Occurrence));
+	if (bAlert && !Fixture.Test.TestEqual(TEXT("Sound alone enters Alert rather than starting Room combat"),
+		Fixture.Enemy->GetCombatState(), EEnemyCombatState::Alert)) return false;
+	if (!WaitForNoiseState(Fixture, true)) return false;
+	const auto* Session = Fixture.Data<FEnemySearchSessionTask>();
+	if (!Fixture.Test.TestNotNull(TEXT("Saved noise search owns the timed session"), Session)) return false;
+	const double FinishAt = Session->NoiseSearchStartedAt + Session->NoiseSearchDuration;
+	const FVector Center = Fixture.Enemy->GetSearchEpisode().Center;
+	Fixture.Test.TestTrue(TEXT("World movement reaches the sound before entering search"),
+		FVector::Distance(Start, Center) > 400.0 && Center.Equals(Occurrence, 100.0));
+	Fixture.Test.TestFalse(TEXT("A sound never grants actor attack permission"), Fixture.Enemy->CanAttackTrackedTarget(Fixture.Target));
+	// 조사 이동 시간과 별개인 수색 제한을 확인한다. Alert의 기존 미발견 타이머가 먼저 종료하면 실패한다.
+	for (int32 Frame = 0; Frame < 900 && Fixture.World->GetTimeSeconds() < FinishAt + 1.0; ++Frame)
+	{
+		if (!Fixture.Advance()) return false;
+		if (Fixture.World->GetTimeSeconds() < FinishAt - 2.0 * Fixture.Step)
+		{
+			if (!Fixture.Test.TestTrue(TEXT("Noise search lasts for its own configured duration"), Fixture.Enemy->IsNoiseSearchActive())) return false;
+			if (bAlert && !Fixture.Test.TestEqual(TEXT("Alert loss timeout cannot interrupt active investigation"),
+				Fixture.Enemy->GetCombatState(), EEnemyCombatState::Alert)) return false;
+		}
+		if (Fixture.Enemy->IsNoiseInvestigationActive()) continue;
+		Fixture.Test.TestTrue(TEXT("Saved completion does not finish the search early"),
+			Fixture.World->GetTimeSeconds() >= FinishAt - 2.0 * Fixture.Step);
+		if (bAlert)
+			return Fixture.Test.TestEqual(TEXT("Unobserved Alert investigation returns to noncombat inside home Room"),
+				Fixture.Enemy->GetCombatState(), EEnemyCombatState::NonCombat);
+		return Fixture.Test.TestEqual(TEXT("An individual investigation cannot end an active Room combat"),
+			Fixture.Enemy->GetCombatState(), EEnemyCombatState::Combat);
+	}
+	Fixture.Test.AddError(TEXT("Saved noise search did not consume and finish its investigation"));
+	return false;
+}
+
+bool CheckSavedNoiseReacquire(FEnemyRoomCombatIntegrationWorld& Fixture)
+{
+	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+	if (!Fixture.Test.TestNotNull(TEXT("Saved noise continuity has a real gun"), Weapon)) return false;
+	FFloatProperty* Interval = FindFProperty<FFloatProperty>(Weapon->GetClass(), TEXT("AttackInterval"));
+	if (!Fixture.Test.TestNotNull(TEXT("Actual fire interval exists"), Interval)) return false;
+	Interval->SetPropertyValue_InContainer(Weapon, 1.0f);
+	if (!CheckGunMovingFire(Fixture)) return false;
+	const int32 Ammo = Weapon->GetCurrentAmmo();
+	const double ReadyAt = Fixture.World->GetTimeSeconds() + Weapon->GetAttackRetryDelay();
+	if (!HearInvestigationNoise(Fixture, Fixture.Enemy->GetActorLocation() + FVector(0, 700, 0))
+		|| !WaitForNoiseState(Fixture, false, 15)) return false;
+	if (!Fixture.Test.TestFalse(TEXT("Saved investigation transition pauses the actual gun"), Weapon->IsAttacking())) return false;
+	Fixture.Test.TestEqual(TEXT("Saved transition preserves ammunition during the cooldown"), Weapon->GetCurrentAmmo(), Ammo);
+	Fixture.SetSight(true);
+	if (!Fixture.Test.TestFalse(TEXT("Direct sight releases investigation ownership"), Fixture.Enemy->IsNoiseInvestigationActive())) return false;
+	const double Deadline = ReadyAt + Fixture.Enemy->GetTargetAttackRecoveryRemaining() + 1.0;
+	for (int32 Frame = 0; Frame < 300 && Fixture.World->GetTimeSeconds() < Deadline; ++Frame)
+	{
+		if (!Fixture.Advance()) return false;
+		if (!Fixture.Test.TestTrue(TEXT("Saved reacquisition never repeats same-target preparation"),
+			Fixture.Enemy->GetAttackPhase() != EEnemyAttackPhase::Telegraph)) return false;
+		if (Fixture.World->GetTimeSeconds() < ReadyAt - 2.0 * Fixture.Step)
+			if (!Fixture.Test.TestEqual(TEXT("Saved transition cannot fire before the original cooldown"), Weapon->GetCurrentAmmo(), Ammo)) return false;
+		if (Weapon->GetCurrentAmmo() < Ammo)
+			return Fixture.Test.TestTrue(TEXT("Saved transition resumes a real shot after the preserved cooldown"),
+				Fixture.World->GetTimeSeconds() >= ReadyAt - 2.0 * Fixture.Step);
+	}
+	Fixture.Test.AddError(TEXT("Saved combat tree did not resume actual fire after direct reacquisition"));
+	return false;
+}
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseStateTreeIntegrationTest,
+	"Outlier.Enemy.Perception.Investigation.StateTree", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNoiseStateTreeIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("Gun.SoundToSearch"), TEXT("Melee.SoundToSearch"), TEXT("Gun.SharedExpiry"),
+		TEXT("Gun.DirectReacquire"), TEXT("Alert.SoundToReturn"), TEXT("Melee.CommittedNoise")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNoiseStateTreeIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FString Type, Scenario;
+	if (!Parameters.Split(TEXT("."), &Type, &Scenario)) return false;
+	const bool bAlert = Type == TEXT("Alert");
+	const bool bMelee = Type == TEXT("Melee");
+	FEnemyRoomCombatIntegrationWorld Fixture(*this, Parameters);
+	if (bAlert)
+	{
+		if (!Fixture.Initialize(false, FVector(3500, 0, 0), false, false)) return false;
+		if (!TestEqual(TEXT("Alert-only setup begins outside combat"), Fixture.Enemy->GetCombatState(), EEnemyCombatState::NonCombat)) return false;
+		return CheckSavedNoiseFlow(Fixture, true);
+	}
+	if (!Fixture.InitializeShared(bMelee, FVector(Scenario == TEXT("CommittedNoise") ? 400.0f : 3500.0f, 0, 0),
+		Scenario != TEXT("SoundToSearch"))) return false;
+	if (Scenario == TEXT("SoundToSearch")) return CheckSavedNoiseFlow(Fixture, false);
+	if (Scenario == TEXT("DirectReacquire")) return CheckSavedNoiseReacquire(Fixture);
+	Fixture.Start();
+	if (Scenario == TEXT("CommittedNoise"))
+	{
+		if (!Fixture.WaitForTask<FEnemyChargeLastDirectionTask>()) return false;
+		ASelfDestructDrone* Drone = CastChecked<ASelfDestructDrone>(Fixture.Enemy);
+		const float Elapsed = Drone->GetCommittedChargeElapsedTime();
+		const FVector Direction = Drone->GetActorForwardVector();
+		if (!HearInvestigationNoise(Fixture, Fixture.Enemy->GetActorLocation() + FVector(0, 10, 0))) return false;
+		for (int32 Frame = 0; Frame < 4; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			if (!TestNotNull(TEXT("Closer sound cannot replace a committed charge task"), Fixture.Data<FEnemyChargeLastDirectionTask>())) return false;
+			if (!TestFalse(TEXT("Committed charge never starts sound investigation"), Fixture.Enemy->IsNoiseInvestigationActive())) return false;
+		}
+		TestTrue(TEXT("Sound does not reset committed elapsed time"), Drone->GetCommittedChargeElapsedTime() > Elapsed);
+		return TestTrue(TEXT("Sound does not redirect the committed charge"), FVector::DotProduct(Direction, Drone->GetActorForwardVector()) > 0.999);
+	}
+	if (Scenario == TEXT("SharedExpiry"))
+	{
+		if (!HearInvestigationNoise(Fixture, Fixture.Enemy->GetActorLocation() + FVector(700, 0, 0))
+			|| !WaitForNoiseState(Fixture, false)) return false;
+		const double Deadline = Fixture.World->GetTimeSeconds() + Fixture.Enemy->HeardNoiseLifetime + 1.0;
+		for (int32 Frame = 0; Frame < 300 && Fixture.World->GetTimeSeconds() < Deadline; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			if (Fixture.Enemy->IsNoiseInvestigationActive()) continue;
+			TestEqual(TEXT("Expired sound restores the continuously observed shared target"),
+				Fixture.Enemy->GetPerceptionGoal().Type, EEnemyPerceptionGoalType::Combat);
+			return TestEqual(TEXT("Noise selection never erases the real shared player"),
+				Fixture.Enemy->GetTrackedTarget(), static_cast<AActor*>(Fixture.Target));
+		}
+		AddError(TEXT("Saved tree did not return to live shared combat after sound expiry"));
+		return false;
+	}
+	AddError(TEXT("Unknown saved noise StateTree scenario"));
 	return false;
 }
 #endif

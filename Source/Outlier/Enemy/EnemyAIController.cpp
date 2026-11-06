@@ -158,6 +158,7 @@ void AEnemyAIController::OnUnPossess()
 	{
 		Enemy->ResetTargetAttackContinuity();
 		Enemy->ClearTargetTracking();
+		Enemy->ClearHeardNoise();
 	}
 	StopSharedTargetReporting(true);
 	ProcessedStealthedTargets.Reset();
@@ -261,6 +262,7 @@ void AEnemyAIController::RefreshTeamAndPerceptionFromPawn()
 	SetGenericTeamId(Enemy->GetGenericTeamId());
 	Enemy->ResetTargetAttackContinuity();
 	Enemy->ClearTargetTracking();
+	Enemy->ClearHeardNoise();
 	if (EnemyPerceptionComponent)
 	{
 		EnemyPerceptionComponent->ForgetAll();
@@ -291,6 +293,7 @@ void AEnemyAIController::SetEnemyPerceptionEnabled(bool bEnabled)
 		{
 			ControlledEnemy->ResetTargetAttackContinuity();
 			ControlledEnemy->ClearTargetTracking();
+			ControlledEnemy->ClearHeardNoise();
 		}
 		EnemyPerceptionComponent->ForgetAll();
 		ProcessedStealthedTargets.Reset();
@@ -495,13 +498,32 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	}
 
 	const FVector HeardLocation = Stimulus.StimulusLocation;
+	const float Age = Stimulus.GetAge();
+	// 청각 기록은 추적과 별개다. 성공한 자극의 경과시간을 빼서 오래된 수신을 연장하지 않는다.
+	if (!FMath::IsFinite(Age) || Age < 0.0f) return;
+	const double OccurredAt = Enemy->GetWorld()->GetTimeSeconds() - Age;
+	bool bValidStimulus = false;
+	const bool bRecorded = Enemy->RecordHeardNoise(Actor, HeardLocation, OccurredAt, &bValidStimulus);
+	if (!bRecorded) return;
 
+	// 후보 수신과 목적지 채택은 다르다. 보류된 소리로 경계 방향이나 수색 중심을 덮어쓰지 않는다.
+	const FEnemyPerceptionGoal& Goal = Enemy->GetPerceptionGoal();
+	const EEnemyCombatState State = Enemy->GetCombatState();
+	if (Enemy->IsNoiseInvestigationActive()) return;
+	FVector SelectedLocation = Goal.Location;
+	if (State == EEnemyCombatState::Stun)
+	{
+		// 기절 중에는 감지 의도가 비어 있다. 조사를 시작하지 않고 기존 복귀 상태 승격만 유지한다.
+		FEnemyHeardNoise Candidate;
+		if (!Enemy->TryGetHeardNoise(Candidate)) return;
+		SelectedLocation = Candidate.Location;
+	}
+	else if (Goal.Type != EEnemyPerceptionGoalType::InvestigateNoise) return;
 	// 유효한 전투 대상의 실제 추적 위치를 소리로 덮어쓰지 않는다.
 	// 청각만 남았다면 들린 위치를 기록하되 직접 시야나 방 공유 관측으로 취급하지 않는다.
 	// 진행 중인 수색의 고정 중심/공유 버전도 이 갱신만으로는 바뀌지 않는다.
-	if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(HeardLocation);
+	if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(SelectedLocation);
 
-	const EEnemyCombatState State = Enemy->GetCombatState();
 	// 이미 참여 중인 적의 수색이나 공격을 소리만으로 다시 시작하지 않는다.
 	if (State == EEnemyCombatState::Combat)
 	{
@@ -513,7 +535,7 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	const UEnemyRoomSubsystem* Rooms = Enemy->GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
 	if (Rooms && Rooms->IsRoomInCombat(Enemy->GetDefaultRoomTag()))
 	{
-		Enemy->EnterCombatFromRoom(HeardLocation, false, true);
+		Enemy->EnterCombatFromRoom(SelectedLocation, false, true);
 		return;
 	}
 
@@ -521,7 +543,7 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	if (State == EEnemyCombatState::NonCombat || State == EEnemyCombatState::Returning ||
 		State == EEnemyCombatState::Stun)
 	{
-		Enemy->EnterAlertFromPerception(HeardLocation);
+		Enemy->EnterAlertFromPerception(SelectedLocation);
 	}
 }
 

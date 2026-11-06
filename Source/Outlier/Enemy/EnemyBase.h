@@ -69,6 +69,33 @@ struct FEnemySearchEpisode
 	bool bLocalGuard = false;
 };
 
+// 청각은 발생 당시 위치만 제공한다. 발신자 참조로 현재 위치를 추적하지 않는다.
+struct FEnemyHeardNoise
+{
+	TWeakObjectPtr<AActor> Source;
+	FVector Location = FVector::ZeroVector;
+	double OccurredAt = -1.0;
+};
+
+UENUM(BlueprintType)
+enum class EEnemyPerceptionGoalType : uint8
+{
+	None,
+	Combat,
+	InvestigateNoise,
+	Search,
+	CommittedAction
+};
+
+// 행동 의도와 추적 지식은 분리한다. 소리 조사에는 공격용 Target을 제공하지 않는다.
+struct FEnemyPerceptionGoal
+{
+	EEnemyPerceptionGoalType Type = EEnemyPerceptionGoalType::None;
+	TWeakObjectPtr<AActor> Target;
+	FVector Location = FVector::ZeroVector;
+	double InformationAt = -1.0;
+};
+
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
 {
@@ -668,6 +695,39 @@ public:
 	void RefreshTargetTracking();
 	void ClearTargetTracking();
 
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
+	float HeardNoiseLifetime = 3.0f;
+
+	// 유효한 자극이라도 조사 후보 용량/우선순위 때문에 저장되지 않을 수 있다.
+	bool RecordHeardNoise(AActor* Source, const FVector& Location, double OccurredAt, bool* bValidStimulus = nullptr);
+	bool TryGetHeardNoise(FEnemyHeardNoise& OutNoise) const;
+	void ClearHeardNoise();
+
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float NoiseGoalSwitchDistance = 200.0f;
+
+	const FEnemyPerceptionGoal& GetPerceptionGoal() const { return PerceptionGoal; }
+	void RefreshPerceptionGoal();
+
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
+	float NoiseDestinationUpdateInterval = 1.0f;
+	// 공유 대상과의 비교 거리와 분리한다. 조사 중 다른 소리를 택할 때 필요한 거리 이득이다.
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float NoiseCandidateSwitchDistance = 200.0f;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float NoiseDestinationChangeDistance = 100.0f;
+
+	// 목표 선택과 실제 행동 활성화는 별개다. 조사 Task가 진입한 회차만 공격을 보류한다.
+	bool BeginNoiseInvestigation(FVector& OutDestination);
+	bool TryUpdateNoiseInvestigationDestination(FVector& OutDestination);
+	bool IsNoiseInvestigationActive() const { return bNoiseInvestigationActive; }
+	bool IsNoiseSearchActive() const { return bNoiseInvestigationActive && bNoiseInvestigationSearching; }
+	uint64 GetNoiseInvestigationSerial() const { return NoiseInvestigationSerial; }
+	bool IsNoiseInvestigationCurrent(uint64 Serial) const;
+	bool BeginNoiseInvestigationSearch(uint64 Serial, const FVector& ReachableCenter);
+	void EndNoiseInvestigation(bool bConsumeNoise = true);
+	bool CompleteNoiseInvestigation();
+
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool HasSharedTargetContact() const { return bHasSharedTargetContact; }
 
@@ -685,6 +745,7 @@ public:
 	uint64 GetSharedTargetRevision() const { return SharedTargetRevision; }
 	const FEnemySearchEpisode& GetSearchEpisode() const { return SearchEpisode; }
 	bool BeginSearchEpisode();
+	bool CanContinueSearchEpisode() const;
 	void EndSearchEpisode();
 	void CompleteSearchAnchor();
 	bool SetSearchPoints(const TArray<FVector>& Points);
@@ -818,6 +879,25 @@ protected:
 	uint64 NextSearchEpisodeSerial = 0;
 	bool bHasLastKnownPlayerLocation = false;
 	FEnemySearchEpisode SearchEpisode;
+	double LatestHeardNoiseAt = -1.0;
+	static constexpr int32 MaxHeardNoiseCandidates = 8;
+	TArray<FEnemyHeardNoise, TInlineAllocator<MaxHeardNoiseCandidates>> HeardNoiseCandidates;
+	FEnemyPerceptionGoal PerceptionGoal;
+	double LastPerceptionObservedAt = -1.0;
+	FTimerHandle PerceptionGoalTimer;
+	bool bNoiseInvestigationActive = false;
+	bool bNoiseInvestigationSearching = false;
+	uint64 NoiseInvestigationSerial = 0;
+	FVector NoiseInvestigationLocation = FVector::ZeroVector;
+	TWeakObjectPtr<AActor> NoiseInvestigationSource;
+	double NoiseInvestigationAt = -1.0;
+	double LastNoiseDestinationChangedAt = -1.0;
+	double ConsumedNoiseAt = -1.0;
+	bool IsNoiseDestinationChangeReady(const FVector& Location, double InformationAt) const;
+	bool IsHeardNoiseValid(const FEnemyHeardNoise& Noise) const;
+	bool SelectHeardNoise(FEnemyHeardNoise& OutNoise, bool bRequireNewObservation) const;
+	bool CanReplaceNoiseDestination(const FEnemyHeardNoise& Noise) const;
+	bool CommitToNonCombatAfterSearch();
 	TWeakObjectPtr<AActor> TrackedTarget;
 	TWeakObjectPtr<AEnemyAIController> TrackingController;
 	TWeakObjectPtr<UEnemyRoomSubsystem> TrackingRooms;

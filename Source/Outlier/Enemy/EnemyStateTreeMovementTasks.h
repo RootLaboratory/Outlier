@@ -153,6 +153,13 @@ struct FEnemyFlyToLocationTaskInstanceData
 	bool bOwnsMovement = false;
 	FVector LastPathPosition = FVector::ZeroVector;
 	float TravelledPathLength = 0.0f;
+
+	// 채택한 소리 좌표를 추적한다. 기존 순찰/전투 이동은 이 옵션을 사용하지 않는다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bInvestigateNoise = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNoiseSearchReady = false;
+	uint64 CapturedNoiseSerial = 0;
 };
 
 // 지상 NavMesh에 투영하지 않는다. 설정에 따라 직접 이동하거나 검증된 비행 경로를 추종한다.
