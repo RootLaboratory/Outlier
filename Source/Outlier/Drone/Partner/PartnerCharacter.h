@@ -337,8 +337,11 @@ protected:
 
 	// Boundary Data
 	// Injected from the Shooter suit data on the server and shared with the Partner HUD.
-	UPROPERTY(Replicated, EditAnywhere, BlueprintReadOnly, Category = "Boundary")
+	UPROPERTY(ReplicatedUsing = OnRep_SuitDisableBoundaryRadius, VisibleInstanceOnly, BlueprintReadOnly, Category = "Boundary")
 	float SuitDisableBoundaryRadius = 500.0f;
+
+	UFUNCTION()
+	void OnRep_SuitDisableBoundaryRadius();
 
 	// CameraAssist Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")

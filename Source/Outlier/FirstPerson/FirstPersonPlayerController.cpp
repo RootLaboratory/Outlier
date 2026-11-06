@@ -1397,14 +1397,27 @@ void AFirstPersonPlayerController::OnRep_PlayerState()
 	}
 }
 
-bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
+void AFirstPersonPlayerController::FlushPressedKeys()
 {
-	if (IsLocalController() && Params.Event == IE_Pressed)
+	// Focus loss flushes PlayerInput directly, bypassing our InputKey release handling.
+	if (IsLocalController())
 	{
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
 		{
-			// 완료 키가 위젯 확인이나 메뉴 열기도 실행하지 않도록 Enhanced Input보다 먼저 처리한다.
-			if (Cinematic->HandleCompleteCinematicKey(Params.Key)) return true;
+			Cinematic->ResetCompleteHold();
+		}
+	}
+	Super::FlushPressedKeys();
+}
+
+bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+	if (IsLocalController())
+	{
+		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+		{
+			// 스킵 홀드 키(누름/반복/해제)가 점프·위젯 확인 등으로 새지 않도록 Enhanced Input보다 먼저 처리한다.
+			if (Cinematic->HandleCompleteCinematicKey(Params.Key, Params.Event)) return true;
 		}
 	}
 	return Super::InputKey(Params);

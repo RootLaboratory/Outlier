@@ -34,6 +34,7 @@ struct FOutlierQuantumLeapChargeState
 };
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierQuantumLeapChargesChanged, bool /* bRecovered */);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierShooterConnectionDistanceChanged, float /* Distance */);
 
 USTRUCT()
 struct FOutlierPartnerHackChargeState
@@ -145,6 +146,7 @@ public:
 	// 능력 재-grant 없이 런타임에 SuitConfig 값만 교체한다 ( 업그레이드 AbilityConfig 투영용 ).
 	// ConfigureShooterSuitAbilities 의 grant 락과 무관하게 authority 에서 config 만 갱신한다.
 	bool UpdateShooterSuitConfig(const FOutlierShooterSuitConfig& Config);
+	FOutlierShooterConnectionDistanceChanged OnShooterConnectionDistanceChanged;
 	bool TryActivateShooterSuitAbility(const FGameplayTag& AbilityTag);
 	bool IsShooterSuitAbilityUpgradeGrantRequired(const FGameplayTag& AbilityTag) const;
 	// Grant 판정 규칙( 기본 제공이거나 Grant 근거가 있으면 통과 ). 근거 태그의 출처는 호출부가 고른다.

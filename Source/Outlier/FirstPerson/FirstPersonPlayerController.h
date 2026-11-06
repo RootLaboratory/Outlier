@@ -110,6 +110,7 @@ public:
 	void ServerNotifyPassageCovered(ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId);
 	virtual void SetPawn(APawn* InPawn) override;
 	virtual void ReceivedPlayer() override;
+	virtual void FlushPressedKeys() override;
 
 	/** 로컬 볼륨 진입은 레벨 액터의 RPC가 아닌 이 소유 transport를 사용한다. */
 	bool NotifyTutorialVolumeEntered(ATuto_EventTriggerVolume* Volume);

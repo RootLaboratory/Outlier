@@ -99,10 +99,23 @@ void UPartnerDistanceComponent::TickComponent(
 	}
 
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	RefreshDistance();
+}
+
+void UPartnerDistanceComponent::RefreshDistance()
+{
+	if (!IsComponentTickEnabled() || !PartnerCharacter || !ShooterCharacter)
+	{
+		return;
+	}
+	if (!CachedSubsystem)
+	{
+		CacheUISubsystem();
+	}
 
 	const float Distance = CalculateDistance();
 	const float BoundaryRadius = PartnerCharacter->SuitDisableBoundaryRadius; 
-	const float DistanceRatio = BoundaryRadius > 0.0f ? Distance / BoundaryRadius : 0.0f;
+	const float DistanceRatio = BoundaryRadius > 0.0f ? Distance / BoundaryRadius : (Distance > 0.0f ? 1.0f : 0.0f);
 
 	if (CachedSubsystem)
 	{

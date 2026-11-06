@@ -2072,13 +2072,22 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 
 void APartnerCharacter::ConfigureSuitDisableBoundaryRadius(float Radius)
 {
-	checkf(Radius > 0.0f, TEXT("Partner suit disable boundary radius must be positive."));
+	checkf(FMath::IsFinite(Radius) && Radius >= 0.0f, TEXT("Partner suit disable boundary radius must be finite and non-negative."));
 	if (!HasAuthority() || SuitDisableBoundaryRadius == Radius)
 	{
 		return;
 	}
 	SuitDisableBoundaryRadius = Radius;
+	OnRep_SuitDisableBoundaryRadius();
 	ForceNetUpdate();
+}
+
+void APartnerCharacter::OnRep_SuitDisableBoundaryRadius()
+{
+	if (DistanceComponent)
+	{
+		DistanceComponent->RefreshDistance();
+	}
 }
 
 void APartnerCharacter::NotifyOffensiveActionExecuted()

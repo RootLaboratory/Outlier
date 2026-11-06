@@ -13,12 +13,12 @@ const FName WeaponOverchargeRowName(TEXT("WeaponOvercharge"));
 // 음수만 실제로 잘못된 config 로 취급한다.
 bool RequireNonNegative(float Value, const TCHAR* Field, FString& OutError)
 {
-	if (Value >= 0.0f)
+	if (FMath::IsFinite(Value) && Value >= 0.0f)
 	{
 		return true;
 	}
 
-	OutError = FString::Printf(TEXT("%s must be non-negative"), Field);
+	OutError = FString::Printf(TEXT("%s must be finite and non-negative"), Field);
 	return false;
 }
 

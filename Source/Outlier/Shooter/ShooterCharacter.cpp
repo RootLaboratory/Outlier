@@ -767,7 +767,7 @@ void AShooterCharacter::InitializeGasSuitAbilities()
 		checkf(bConfigured, TEXT("Shooter suit abilities must configure on authority."));
 		if (CachedPartnerCharacter)
 		{
-			CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
+			HandleConnectionDistanceChanged(OutlierAbilitySystemComponent->GetShooterSuitConfig().MaxPartnerDistance);
 		}
 	}
 }
@@ -800,6 +800,8 @@ void AShooterCharacter::BindGasVitalityObservers()
 	WeaponOverchargeTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).AddUObject(
 			this, &AShooterCharacter::HandleWeaponOverchargeTagChanged);
+	ConnectionDistanceChangedHandle = OutlierAbilitySystemComponent->OnShooterConnectionDistanceChanged.AddUObject(
+		this, &AShooterCharacter::HandleConnectionDistanceChanged);
 	QuantumLeapChargesChangedHandle = OutlierAbilitySystemComponent->OnQuantumLeapChargesChanged.AddUObject(
 		this, &AShooterCharacter::HandleQuantumLeapChargesChanged);
 	BulletReflectionCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
@@ -838,6 +840,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
 	OutlierAbilitySystemComponent->OnQuantumLeapChargesChanged.Remove(QuantumLeapChargesChangedHandle);
+	OutlierAbilitySystemComponent->OnShooterConnectionDistanceChanged.Remove(ConnectionDistanceChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).Remove(BulletReflectionCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
@@ -855,6 +858,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	QuantumLeapTagChangedHandle.Reset();
 	WeaponOverchargeTagChangedHandle.Reset();
 	QuantumLeapChargesChangedHandle.Reset();
+	ConnectionDistanceChangedHandle.Reset();
 	BulletReflectionCooldownTagChangedHandle.Reset();
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
@@ -4497,9 +4501,17 @@ void AShooterCharacter::SetPartnerCharacter(APartnerCharacter* NewPartner)
 	BindPartnerSuitStateObserver();
 	if (HasAuthority() && CachedPartnerCharacter && bShooterSuitDataInitialized)
 	{
-		CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
+		HandleConnectionDistanceChanged(OutlierAbilitySystemComponent->GetShooterSuitConfig().MaxPartnerDistance);
 	}
 	RefreshShooterSuitAvailabilityUI();
+}
+
+void AShooterCharacter::HandleConnectionDistanceChanged(float Distance)
+{
+	if (HasAuthority() && CachedPartnerCharacter)
+	{
+		CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(Distance);
+	}
 }
 
 void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
