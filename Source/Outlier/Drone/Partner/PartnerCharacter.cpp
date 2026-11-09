@@ -259,7 +259,9 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 			FaceSpriteAnimationComponent->SetTemporaryEmotion(EPartnerEmotion::Surprised);
 		}
 		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.02.State.Hit"));
-		ClientShowDamageFeedback(Request.DamageOrigin);
+		// Partner 는 실드 없이 Health 로 바로 들어가지만, 같은 AttributeSet 기록을 그대로 쓴다.
+		const UOutlierVitalAttributeSet* VitalSet = OutlierAbilitySystemComponent->GetSet<UOutlierVitalAttributeSet>();
+		ClientShowDamageFeedback(Request.DamageOrigin, VitalSet ? VitalSet->GetLastHealthDamage() : 0.0f);
 	}
 
 	if (bApplied && bTriggerPairGameOver && ShooterAtHit.IsValid()

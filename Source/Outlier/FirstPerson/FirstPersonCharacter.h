@@ -172,8 +172,9 @@ protected:
 	void ClientOnHoldInteractFailed(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	// 서버에서 적용된 피해를 로컬 HUD에 방향 정보와 함께 전달한다.
+	// HealthDamage 는 실드를 넘어 Health 에 실제로 들어간 양이며, HUD 피격 단계 계산에 쓴다.
 	UFUNCTION(Client, Reliable)
-	void ClientShowDamageFeedback(FVector_NetQuantize DamageOrigin);
+	void ClientShowDamageFeedback(FVector_NetQuantize DamageOrigin, float HealthDamage);
 
 protected:
 

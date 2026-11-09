@@ -4,6 +4,7 @@
 
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/Image.h"
 #include "Components/RetainerBox.h"
 #include "DamageFeedbackIndicator.h"
 #include "Engine/GameViewportClient.h"
@@ -27,6 +28,13 @@ void UDamageFeedbackLayer::NativeOnInitialized()
 			TEXT("ShieldMaskRetainer and ShieldMaskCanvas must be bound in WBP_DamageFeedbackLayer: %s"), *GetName());
 	}
 	BuildPool(ShieldMaskCanvas, ShieldFeedbackClass, ShieldPoolSize, ShieldScale, ShieldDistance, ShieldAlignment, ShieldPool);
+
+	if (DamageFeedbackHUD)
+	{
+		// 브러시가 머티리얼이 아니면 null 이다. 그 경우 Image RenderOpacity 로만 페이드한다.
+		HealthFeedbackMID = DamageFeedbackHUD->GetDynamicMaterial();
+	}
+	ClearHealthFeedback();
 }
 
 void UDamageFeedbackLayer::NativeConstruct()
@@ -155,7 +163,7 @@ void UDamageFeedbackLayer::ApplyShieldUVScale()
 	ShieldMaskRetainer->RequestRender();
 }
 
-void UDamageFeedbackLayer::ShowDamageFeedback(AActor* InCharacter, const FVector& InDamageOrigin)
+void UDamageFeedbackLayer::ShowDamageFeedback(AActor* InCharacter, const FVector& InDamageOrigin, const float HealthDamage)
 {
 	if (!IsValid(InCharacter))
 	{
@@ -163,6 +171,11 @@ void UDamageFeedbackLayer::ShowDamageFeedback(AActor* InCharacter, const FVector
 	}
 
 	bool bShown = false;
+	// 단계 0(기준 미만)은 무시하고 진행 중인 Health HUD 도 그대로 둔다.
+	if (const int32 HealthLevel = ResolveHealthDamageLevel(HealthDamage); HealthLevel > 0)
+	{
+		bShown |= StartHealthFeedback(HealthLevel);
+	}
 	if (bShowRedFeedback)
 	{
 		bShown |= ShowFromPool(RedPool, InCharacter, InDamageOrigin);
@@ -195,6 +208,7 @@ void UDamageFeedbackLayer::ClearDamageFeedback()
 			Indicator->ClearFeedback();
 		}
 	}
+	ClearHealthFeedback();
 
 	// Collapsed 위젯은 Slate 가 Tick 하지 않는다. 사용 중인 인디케이터가 없으면 Layer Tick 을 이걸로 끈다.
 	SetVisibility(ESlateVisibility::Collapsed);
@@ -206,9 +220,124 @@ void UDamageFeedbackLayer::NativeTick(const FGeometry& MyGeometry, const float I
 
 	const bool bRedActive = TickPool(RedPool, InDeltaTime);
 	const bool bShieldActive = TickPool(ShieldPool, InDeltaTime);
-	if (!bRedActive && !bShieldActive)
+	const bool bHealthActive = TickHealthFeedback(InDeltaTime);
+	if (!bRedActive && !bShieldActive && !bHealthActive)
 	{
 		SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
+int32 UDamageFeedbackLayer::ResolveHealthDamageLevel(const float HealthDamage) const
+{
+	if (!FMath::IsFinite(HealthDamage) || HealthDamage <= 0.0f)
+	{
+		return 0;
+	}
+	if (HealthDamage >= HealthDamageLevel2Threshold)
+	{
+		return 2;
+	}
+	if (HealthDamage >= HealthDamageLevel1Threshold)
+	{
+		return 1;
+	}
+	return 0;
+}
+
+bool UDamageFeedbackLayer::StartHealthFeedback(const int32 Level)
+{
+	if (!DamageFeedbackHUD || Level <= 0)
+	{
+		return false;
+	}
+
+	if (!bHealthFeedbackActive)
+	{
+		// 비어 있던 화면: 이번 단계를 바로 보여준다.
+		HealthCurrentLevel = Level;
+	}
+	else if (HealthCurrentLevel != HealthNextLevel)
+	{
+		// 전환 도중 피격: 진행 중이던 목표 단계를 확정하고 거기서 새 전환을 시작한다.
+		HealthCurrentLevel = HealthNextLevel;
+	}
+	// 같은 단계면 Next == Current 라 전환 없이 페이드만 다시 시작한다.
+	HealthNextLevel = Level;
+	HealthBlend = 0.0f;
+	HealthBlendElapsed = 0.0f;
+	HealthFadeElapsed = 0.0f;
+	bHealthFeedbackActive = true;
+
+	DamageFeedbackHUD->SetVisibility(ESlateVisibility::HitTestInvisible);
+	PushHealthFeedbackParameters();
+	return true;
+}
+
+bool UDamageFeedbackLayer::TickHealthFeedback(const float DeltaTime)
+{
+	if (!bHealthFeedbackActive)
+	{
+		return false;
+	}
+
+	HealthFadeElapsed += DeltaTime;
+	if (HealthFadeElapsed >= HealthFadeOutDuration)
+	{
+		ClearHealthFeedback();
+		return false;
+	}
+
+	if (HealthCurrentLevel != HealthNextLevel)
+	{
+		HealthBlendElapsed += DeltaTime;
+		HealthBlend = HealthBlendDuration > KINDA_SMALL_NUMBER
+			? FMath::Clamp(HealthBlendElapsed / HealthBlendDuration, 0.0f, 1.0f)
+			: 1.0f;
+		if (HealthBlend >= 1.0f)
+		{
+			// 전환 완료: Next 를 Current 로 확정하면 Blend 0 이어도 같은 이미지다.
+			HealthCurrentLevel = HealthNextLevel;
+			HealthBlend = 0.0f;
+			HealthBlendElapsed = 0.0f;
+		}
+	}
+
+	PushHealthFeedbackParameters();
+	return true;
+}
+
+void UDamageFeedbackLayer::ClearHealthFeedback()
+{
+	bHealthFeedbackActive = false;
+	HealthCurrentLevel = 0;
+	HealthNextLevel = 0;
+	HealthBlend = 0.0f;
+	HealthBlendElapsed = 0.0f;
+	HealthFadeElapsed = 0.0f;
+
+	PushHealthFeedbackParameters();
+	if (DamageFeedbackHUD)
+	{
+		DamageFeedbackHUD->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
+void UDamageFeedbackLayer::PushHealthFeedbackParameters()
+{
+	const float Opacity = bHealthFeedbackActive && HealthFadeOutDuration > KINDA_SMALL_NUMBER
+		? FMath::Clamp(1.0f - HealthFadeElapsed / HealthFadeOutDuration, 0.0f, 1.0f)
+		: 0.0f;
+
+	if (HealthFeedbackMID)
+	{
+		HealthFeedbackMID->SetScalarParameterValue(CurrentLevelParameterName, static_cast<float>(HealthCurrentLevel));
+		HealthFeedbackMID->SetScalarParameterValue(NextLevelParameterName, static_cast<float>(HealthNextLevel));
+		HealthFeedbackMID->SetScalarParameterValue(BlendParameterName, HealthBlend);
+		HealthFeedbackMID->SetScalarParameterValue(OpacityParameterName, Opacity);
+	}
+	else if (DamageFeedbackHUD)
+	{
+		DamageFeedbackHUD->SetRenderOpacity(Opacity);
 	}
 }
 
