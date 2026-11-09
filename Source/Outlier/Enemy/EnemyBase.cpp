@@ -334,6 +334,7 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, bHasSharedTargetContact);
 	DOREPLIFETIME(AEnemyBase, SharedTargetLocation);
 	DOREPLIFETIME(AEnemyBase, AttackPhase);
+	DOREPLIFETIME(AEnemyBase, bAimTargetIsShooter);
 	DOREPLIFETIME(AEnemyBase, CurrentWeapon);
 	DOREPLIFETIME(AEnemyBase, PoolState);
 	DOREPLIFETIME(AEnemyBase, AdaptationState);
@@ -1560,6 +1561,18 @@ FGenericTeamId AEnemyBase::GetGenericTeamId() const
 	return FGenericTeamId(bIsPossessed ? OutlierTeamIds::Player : OutlierTeamIds::Enemy);
 }
 
+FVector AEnemyBase::GetCombatShotOrigin() const
+{
+	if (const AController* ActiveController = GetController())
+	{
+		FVector Location;
+		FRotator Rotation;
+		ActiveController->GetPlayerViewPoint(Location, Rotation);
+		return Location;
+	}
+	return GetPawnViewLocation();
+}
+
 FVector AEnemyBase::GetCombatAimPoint(const AActor* TargetActor) const
 {
 	if (const ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
@@ -1918,6 +1931,7 @@ void AEnemyBase::ObserveTrackedTarget(AActor* Target)
 		ResetTargetAttackContinuity();
 	if (TrackedTarget.Get() != Target) ClearTargetTracking();
 	TrackedTarget = Target;
+	bAimTargetIsShooter = Target->IsA<AShooterCharacter>();
 	TrackingController = TargetController;
 	bTrackingExpiredForSearch = false;
 	UpdateLastKnownPlayerLocation(Target->GetActorLocation());
@@ -2812,6 +2826,7 @@ void AEnemyBase::ClearTargetTracking()
 	if (!HasAuthority()) return;
 	GetWorldTimerManager().ClearTimer(TargetTrackingTimer);
 	TrackedTarget.Reset();
+	bAimTargetIsShooter = false;
 	TrackingController.Reset();
 	TrackingRoomTag = FGameplayTag();
 	TargetTrackingExpiresAt = 0.0;
@@ -4699,6 +4714,14 @@ bool AEnemyBase::CanAttackTrackedTarget(const AActor* TargetActor) const
 		&& CurrentWeapon->HasClearTargetAttackPath(TargetActor, GetCombatAimPoint(TargetActor));
 }
 
+bool AEnemyBase::IsTargetOutsideWeaponRange(const AActor* TargetActor) const
+{
+	if (!IsValid(TargetActor) || TargetActor != GetTrackedTarget() || !IsValid(CurrentWeapon)
+		|| !FMath::IsFinite(CurrentWeapon->GetEffectiveRange()) || CurrentWeapon->GetEffectiveRange() <= 0.0f)
+		return false;
+	return CurrentWeapon->IsOutsideEffectiveRange(GetCombatAimPoint(TargetActor));
+}
+
 bool AEnemyBase::RefreshTargetAttackForShot()
 {
 	AActor* Target = ActiveAttackTarget.Get();
@@ -4848,11 +4871,9 @@ bool AEnemyBase::UpdateAttackLocation(const FVector& TargetLocation)
 		return false;
 	}
 
-	FVector ViewLocation;
-	FRotator ViewRotation;
-	ActiveController->GetPlayerViewPoint(ViewLocation, ViewRotation);
-	const FVector Direction = TargetLocation - ViewLocation;
-	if (Direction.IsNearlyZero())
+	// 조준과 무기의 실제 발사가 같은 원점을 사용한다. Gun 드론은 높은 시점 대신 몸체 축에서 겨냥한다.
+	const FVector Direction = TargetLocation - GetCombatShotOrigin();
+	if (Direction.ContainsNaN() || Direction.IsNearlyZero())
 	{
 		return false;
 	}
@@ -4860,7 +4881,7 @@ bool AEnemyBase::UpdateAttackLocation(const FVector& TargetLocation)
 	FRotator AimRotation = Direction.Rotation();
 	AimRotation.Roll = 0.0f;
 
-	// ControlRotation에는 Pitch까지 보존해 사격 방향과 VEC의 3인칭 조준 연출이 같은 값을 사용하게 한다.
+	// ControlRotation에는 실제 사격 Pitch를 보존한다. 슈터 대상 외형의 하향 보정은 이동 컴포넌트에서 따로 적용한다.
 	// Character 본체는 이동/충돌을 위해 Yaw만 회전한다.
 	ActiveController->SetControlRotation(AimRotation);
 	SetActorRotation(FRotator(0.0f, AimRotation.Yaw, 0.0f));

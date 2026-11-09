@@ -12,6 +12,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
+#include "Weapon/RangedWeaponBase.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
 #endif
@@ -105,6 +106,40 @@ void LogDestinationCheck(const FEnvQueryInstance& Query, int32 Index, const AEne
 FVector MakeApproachCandidate(const FVector& Center, const FVector& Radial, float Radius, float Degrees)
 {
 	return Center + Radial.RotateAngleAxis(Degrees, FVector::UpVector) * Radius;
+}
+
+float GetApproachRangeLimit(float WeaponRange, float ConfiguredMargin)
+{
+	// 짧은 사거리에서도 여유 거리 때문에 유효한 접근 후보 전체가 사라지지 않게 한다.
+	return WeaponRange - FMath::Min(ConfiguredMargin, WeaponRange * 0.25f);
+}
+
+bool ResolveApproachRange(const AEnemyBase* Enemy, const UEnemyEnvQueryGenerator_Approach& Generator, float& OutRange)
+{
+	OutRange = TNumericLimits<float>::Max();
+	if (!Enemy || Enemy->GetRuntimeStat().Type != EEnemyType::Gun) return true;
+	const ARangedWeaponBase* Weapon = Enemy->GetCurrentWeapon();
+	if (!IsValid(Weapon) || !FMath::IsFinite(Weapon->GetEffectiveRange())
+		|| !FMath::IsFinite(Generator.AttackRangeMargin) || Generator.AttackRangeMargin < 0.0f) return false;
+	OutRange = GetApproachRangeLimit(Weapon->GetEffectiveRange(), Generator.AttackRangeMargin);
+	return FMath::IsFinite(OutRange) && OutRange > 0.0f;
+}
+
+bool ConstrainApproachRange(FVector& Candidate, const FVector& Target, float Range)
+{
+	if (Candidate.ContainsNaN() || Target.ContainsNaN() || !FMath::IsFinite(Range) || Range <= 0.0f) return false;
+	const double Height = Candidate.Z - Target.Z;
+	if (FMath::Abs(Height) >= Range) return false;
+	const FVector Offset = Candidate - Target;
+	const double Horizontal = Offset.Size2D();
+	const double MaxHorizontal = FMath::Sqrt(FMath::Max(0.0, FMath::Square(double(Range)) - Height * Height));
+	if (Horizontal > MaxHorizontal)
+	{
+		const double Scale = MaxHorizontal / Horizontal;
+		Candidate.X = Target.X + Offset.X * Scale;
+		Candidate.Y = Target.Y + Offset.Y * Scale;
+	}
+	return true;
 }
 
 bool CanProvideTrackedTarget(const AEnemyBase* Enemy)
@@ -481,6 +516,13 @@ void UEnemyEnvQueryGenerator_Approach::GenerateItems(FEnvQueryInstance& QueryIns
 		return;
 	}
 	const FVector Center = Target->GetActorLocation();
+	float RangeLimit = 0.0f;
+	if (!ResolveApproachRange(Enemy, *this, RangeLimit))
+	{
+		LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("InvalidWeaponRange"));
+		return;
+	}
+	const FVector RangeCenter = Enemy->GetCombatAimPoint(Target);
 	if (GenerateHeightCandidates(QueryInstance, Enemy, *this, Enemy->GetActorLocation(), Center)) return;
 	const FVector Radial = (Enemy->GetActorLocation() - Center).GetSafeNormal2D();
 	if (Radial.IsNearlyZero())
@@ -498,20 +540,29 @@ void UEnemyEnvQueryGenerator_Approach::GenerateItems(FEnvQueryInstance& QueryIns
 	// 거리 세 줄의 작은 부채꼴만 생성한다. 타깃 뒤편을 둘러싸는 전체 Grid는 만들지 않는다.
 	for (int32 Ring = -1; Ring <= 1; ++Ring)
 	{
-		const float Radius = FMath::Clamp(PreferredDistance + Ring * Spread, 1000.0f, 2000.0f);
+		const float Radius = FMath::Min(FMath::Clamp(PreferredDistance + Ring * Spread, 1000.0f, 2000.0f), RangeLimit);
 		for (int32 Index = 0; Index < Samples; ++Index)
 		{
 			const float Degrees = Samples == 1 ? 0.0f : FMath::Lerp(-Angle, Angle, float(Index) / (Samples - 1));
 			FVector Candidate = MakeApproachCandidate(Center, Radial, Radius, Degrees);
-			FHitResult Floor;
-			const FVector Probe(Candidate.X, Candidate.Y, FMath::Max(Center.Z, Enemy->GetActorLocation().Z));
-			if (!World->LineTraceSingleByChannel(Floor, Probe, Probe - FVector::UpVector * FloorProbeDistance,
-				ECC_WorldStatic, Params))
+			bool bValid = false;
+			// 바닥 높이를 얻은 뒤 3D 사거리로 보정한다. XY가 바뀌면 새 위치의 바닥도 한 번만 다시 확인한다.
+			for (int32 Pass = 0; Pass < 2; ++Pass)
 			{
-				++NoFloor;
-				continue;
+				FHitResult Floor;
+				const FVector Probe(Candidate.X, Candidate.Y, FMath::Max(Center.Z, Enemy->GetActorLocation().Z));
+				if (!World->LineTraceSingleByChannel(Floor, Probe, Probe - FVector::UpVector * FloorProbeDistance,
+					ECC_WorldStatic, Params))
+				{
+					++NoFloor;
+					break;
+				}
+				Candidate.Z = Floor.ImpactPoint.Z + FMath::Max(FlightHeight, 0.0f);
+				const FVector Before = Candidate;
+				if (!ConstrainApproachRange(Candidate, RangeCenter, RangeLimit)) break;
+				if (Candidate.Equals(Before, 0.01)) { bValid = true; break; }
 			}
-			Candidate.Z = Floor.ImpactPoint.Z + FMath::Max(FlightHeight, 0.0f);
+			if (!bValid) continue;
 			QueryInstance.AddItemData<UEnvQueryItemType_Point>(Candidate);
 			++Generated;
 		}
@@ -521,7 +572,7 @@ void UEnemyEnvQueryGenerator_Approach::GenerateItems(FEnvQueryInstance& QueryIns
 
 namespace
 {
-bool BuildHeightSourceCandidates(const UEnvQueryGenerator& Generator, const FVector& Start, const FVector& Target,
+bool BuildHeightSourceCandidates(const AEnemyBase& Enemy, const UEnvQueryGenerator& Generator, const FVector& Start, const FVector& Target,
 	float Length, bool bLeft, int32 Lane, TArray<FVector>& OutCandidates)
 {
 	if (Generator.IsA<UEnemyEnvQueryGenerator_Orbit>())
@@ -547,14 +598,16 @@ bool BuildHeightSourceCandidates(const UEnvQueryGenerator& Generator, const FVec
 	{
 		if (!FMath::IsFinite(Approach->PreferredDistance) || !FMath::IsFinite(Approach->DistanceSpread)
 			|| !FMath::IsFinite(Approach->HalfAngleDegrees)) return false;
+		float RangeLimit = 0.0f;
+		if (!ResolveApproachRange(&Enemy, *Approach, RangeLimit)) return false;
 		const FVector Radial = (Start - Target).GetSafeNormal2D();
 		if (Radial.IsNearlyZero()) return false;
 		const int32 Samples = FMath::Clamp(Approach->AngularSamples, 1, 9);
 		const float Angle = FMath::Clamp(Approach->HalfAngleDegrees, 0.0f, 80.0f);
 		for (int32 Ring = -1; Ring <= 1; ++Ring)
 		{
-			const float Radius = FMath::Clamp(Approach->PreferredDistance
-				+ Ring * FMath::Clamp(Approach->DistanceSpread, 0.0f, 500.0f), 1000.0f, 2000.0f);
+			const float Radius = FMath::Min(FMath::Clamp(Approach->PreferredDistance
+				+ Ring * FMath::Clamp(Approach->DistanceSpread, 0.0f, 500.0f), 1000.0f, 2000.0f), RangeLimit);
 			for (int32 Index = 0; Index < Samples; ++Index)
 			{
 				const float Degrees = Samples == 1 ? 0.0f : FMath::Lerp(-Angle, Angle, float(Index) / (Samples - 1));
@@ -683,17 +736,38 @@ EFlightPathStatus EnemyFlightHeight::PrepareQuery(const AEnemyBase& Enemy, const
 	FEnemyMovementRoomContext MovementRooms;
 	if (!Rooms || !Rooms->BuildEnemyMovementRoomContext(&Enemy, MovementRooms)) return EFlightPathStatus::Unavailable;
 	TArray<FVector> Sources;
-	if (!BuildHeightSourceCandidates(Generator, Start, Target, PreferredOrbitLength, bLeft, Lane, Sources))
+	if (!BuildHeightSourceCandidates(Enemy, Generator, Start, Target, PreferredOrbitLength, bLeft, Lane, Sources))
 		return EFlightPathStatus::InvalidRequest;
+	const UEnemyEnvQueryGenerator_Approach* Approach = Cast<UEnemyEnvQueryGenerator_Approach>(&Generator);
+	float RangeLimit = 0.0f;
+	if (Approach && !ResolveApproachRange(&Enemy, *Approach, RangeLimit)) return EFlightPathStatus::InvalidRequest;
+	const AActor* TrackedTarget = Approach ? Enemy.GetTrackedTarget() : nullptr;
+	const FVector RangeCenter = TrackedTarget
+		? Target + Enemy.GetCombatAimPoint(TrackedTarget) - TrackedTarget->GetActorLocation() : Target;
 	const double Started = FPlatformTime::Seconds();
 	EFlightPathStatus Result = EFlightPathStatus::Success;
 	for (FVector Source : Sources)
 	{
 		FEnemyFlightHeightCandidate& Candidate = OutSnapshot.Candidates.AddDefaulted_GetRef();
 		Candidate.Location = Source;
-		Candidate.Status = ResolveCandidateHeight(Enemy, *Capsule, MovementRooms, Start, Target,
-			Generator.IsA<UEnemyEnvQueryGenerator_Chase>(), Clearance, MaxChecks, Started, MaxMilliseconds,
-			OutSnapshot, Candidate);
+		for (int32 Pass = 0; Pass < 2; ++Pass)
+		{
+			Candidate.Status = ResolveCandidateHeight(Enemy, *Capsule, MovementRooms, Start, Target,
+				Generator.IsA<UEnemyEnvQueryGenerator_Chase>(), Clearance, MaxChecks, Started, MaxMilliseconds,
+				OutSnapshot, Candidate);
+			if (Candidate.Status != EFlightPathStatus::Success || !Approach) break;
+			const FVector Before = Candidate.Location;
+			if (!ConstrainApproachRange(Candidate.Location, RangeCenter, RangeLimit))
+			{
+				Candidate.Status = EFlightPathStatus::BlockedEndpoint;
+				Candidate.Reason = TEXT("HeightOutsideWeaponRange");
+				break;
+			}
+			if (Candidate.Location.Equals(Before, 0.01)) break;
+			// 높이 보정 뒤 XY를 줄였다면 새 바닥/천장/충돌도 확인한다. 기존 요청 예산은 공유한다.
+			Candidate.Status = EFlightPathStatus::BlockedEndpoint;
+			Candidate.Reason = TEXT("RangeCorrectionNeedsSafeHeight");
+		}
 		// NamedParam은 float다. Task도 EQS가 실제로 받은 정밀도의 좌표를 사용한다.
 		Candidate.Location = FVector(float(Candidate.Location.X), float(Candidate.Location.Y), float(Candidate.Location.Z));
 		if (ShouldLogCandidateDetails())
@@ -790,6 +864,46 @@ bool FEnemyApproachCandidatesTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Candidate remains on drone side of target"), FVector::DotProduct(Candidate - Center, Radial) > 0.0);
 		}
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyRangeAwareApproachCandidatesTest,
+	"Outlier.Enemy.EQS.RangeAwareApproachCandidates", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyRangeAwareApproachCandidatesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FVector Target(100, 200, 300);
+	TestEqual(TEXT("Short valid weapons retain an approach range when margin exceeds their range"),
+		GetApproachRangeLimit(100.0f, 150.0f), 75.0f);
+	TestEqual(TEXT("Normal weapon range retains the configured margin"),
+		GetApproachRangeLimit(5000.0f, 150.0f), 4850.0f);
+	for (float RangeLimit : {350.0f, 850.0f, 2350.0f})
+	{
+		for (float Height : {0.0f, 100.0f, 300.0f})
+		{
+			FVector Candidate = Target + FVector(1500, 500, Height);
+			const FVector OriginalDirection = (Candidate - Target).GetSafeNormal2D();
+			TestTrue(TEXT("A reachable height has a range-aware approach candidate"),
+				ConstrainApproachRange(Candidate, Target, RangeLimit));
+			TestTrue(TEXT("Height is included in the approach range instead of checking only XY"),
+				FVector::Distance(Candidate, Target) <= RangeLimit + 0.01);
+			TestTrue(TEXT("Range correction preserves the authored approach direction"),
+				FVector::DotProduct((Candidate - Target).GetSafeNormal2D(), OriginalDirection) > 0.999);
+			TestEqual(TEXT("Range correction does not invent a different floor height"), Candidate.Z, Target.Z + Height);
+		}
+	}
+	FVector Candidate = Target + FVector(1000, 0, 150);
+	const FVector Original = Candidate;
+	TestTrue(TEXT("Normal tactical candidate remains valid with a long-range weapon"),
+		ConstrainApproachRange(Candidate, Target, 4850.0f));
+	TestTrue(TEXT("Range-aware approach preserves normal tactical distances when they already fit"), Candidate.Equals(Original));
+	Candidate = Target + FVector(1500, 0, 1000);
+	TestFalse(TEXT("Impossible vertical separation cannot create a fake in-range endpoint"),
+		ConstrainApproachRange(Candidate, Target, 850.0f));
+	TestFalse(TEXT("Zero range is rejected rather than selecting a stationary approach loop"),
+		ConstrainApproachRange(Candidate, Target, 0.0f));
+	TestFalse(TEXT("Negative range is rejected"), ConstrainApproachRange(Candidate, Target, -1.0f));
 	return true;
 }
 

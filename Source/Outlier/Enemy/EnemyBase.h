@@ -497,6 +497,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_AttackPhase, Category = "Enemy|Weapon")
 	EEnemyAttackPhase AttackPhase = EEnemyAttackPhase::Idle;
 
+	// 클라이언트에는 AIController/추적 Actor가 없으므로 외형 제한에 필요한 대상 종류만 복제한다.
+	UPROPERTY(Replicated)
+	bool bAimTargetIsShooter = false;
+
 	// Enemy BP에서 ARangedWeaponBase 파생 무기 BP를 지정한다.
 	// 서버 BeginPlay에서 한 번 스폰하며 CurrentWeapon으로 복제한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Weapon")
@@ -535,6 +539,7 @@ public:
 	virtual bool UsesHearingPerception() const { return true; }
 	virtual bool CanUseRoomTargetSharing() const { return !bIsPossessed; }
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const;
+	virtual FVector GetCombatShotOrigin() const;
 
 	virtual FGameplayTag GetCurrentRoomTag() const override;
 
@@ -642,6 +647,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Weapon")
 	EEnemyAttackPhase GetAttackPhase() const { return AttackPhase; }
+	bool IsAimingAtShooter() const { return bAimTargetIsShooter; }
 
 	bool IsPossessedAttackHeld() const { return bPossessedAttackHeld; }
 	bool HasPossessedAttackQueued() const { return bPossessedAttackQueued; }
@@ -662,6 +668,8 @@ public:
 	// Target 버전은 Actor의 현재 위치를 사용하고 Location 버전은 LKP 위협 사격처럼 좌표만 조준한다.
 	bool StartAttackTarget(AActor* TargetActor);
 	bool CanAttackTrackedTarget(const AActor* TargetActor) const;
+	// 이동 판단에는 거리만 사용한다. 벽 차단/쿨다운을 사거리 이탈로 취급하지 않는다.
+	bool IsTargetOutsideWeaponRange(const AActor* TargetActor) const;
 	bool HasActiveTargetAttack() const { return bTargetAttackActive; }
 	bool RefreshTargetAttackForShot();
 	void PauseTargetAttack();

@@ -2,10 +2,33 @@
 
 #include "Enemy/EnemyAIController.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "GameFramework/Controller.h"
 
 namespace
 {
 constexpr float CombatDecisionRefreshInterval = 0.25f;
+
+void LogCloseAttackAim(const AEnemyBase& Enemy, const TCHAR* Task, const FVector& Input, float PreviousPitch)
+{
+	if (Enemy.IsEnemyPossessed() || Enemy.GetRuntimeStat().Type != EEnemyType::Gun) return;
+	const FVector Origin = Enemy.GetCombatShotOrigin();
+	if (FVector::DistSquared2D(Origin, Input) > FMath::Square(500.0)) return;
+	const AController* Controller = Enemy.GetController();
+	const AActor* Tracked = Enemy.GetTrackedTarget();
+	const FVector TrackedPoint = IsValid(Tracked) ? Enemy.GetCombatAimPoint(Tracked) : FVector::ZeroVector;
+	// 근거리 버스트를 실제로 시작한 순간만 기록한다. 매 Tick 로그 없이 Task 입력과 시선 덮어쓰기를 구분한다.
+	UE_LOG(LogTemp, Display, TEXT("[EnemyAimTask] Task=%s Enemy=%s Origin=%s Input=%s Tracked=%s TrackedPoint=%s Distance2D=%.2f HeightDelta=%.2f InputPitch=%.3f PreviousPitch=%.3f AppliedPitch=%.3f Phase=%s"),
+		Task, *Enemy.GetName(), *Origin.ToCompactString(), *Input.ToCompactString(), *GetNameSafe(Tracked),
+		*TrackedPoint.ToCompactString(), FVector::Dist2D(Origin, Input), Input.Z - Origin.Z,
+		(Input - Origin).Rotation().Pitch, PreviousPitch, Controller ? Controller->GetControlRotation().Pitch : 0.0f,
+		*UEnum::GetValueAsString(Enemy.GetAttackPhase()));
+}
+
+float ReadControlPitch(const AEnemyBase& Enemy)
+{
+	const AController* Controller = Enemy.GetController();
+	return Controller ? Controller->GetControlRotation().Pitch : 0.0f;
+}
 
 float SelectDuration(float MinDuration, float MaxDuration)
 {
@@ -89,12 +112,14 @@ EStateTreeRunStatus FEnemyAttackTargetTask::EnterState(
 		return EStateTreeRunStatus::Running;
 	}
 
+	const float PreviousPitch = ReadControlPitch(*InstanceData.Enemy);
 	if (!InstanceData.Enemy->StartAttackTarget(TargetActor))
 	{
 		return EStateTreeRunStatus::Running;
 	}
 
 	InstanceData.bAttackStarted = true;
+	LogCloseAttackAim(*InstanceData.Enemy, TEXT("AttackTarget.Enter"), InstanceData.Enemy->GetCombatAimPoint(TargetActor), PreviousPitch);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -157,12 +182,14 @@ EStateTreeRunStatus FEnemyAttackTargetTask::Tick(
 			return EStateTreeRunStatus::Running;
 		}
 
+		const float PreviousPitch = ReadControlPitch(*InstanceData.Enemy);
 		if (!InstanceData.Enemy->StartAttackTarget(TargetActor))
 		{
 			return EStateTreeRunStatus::Running;
 		}
 
 		InstanceData.bAttackStarted = true;
+		LogCloseAttackAim(*InstanceData.Enemy, TEXT("AttackTarget.TickStart"), InstanceData.Enemy->GetCombatAimPoint(TargetActor), PreviousPitch);
 		return EStateTreeRunStatus::Running;
 	}
 
@@ -224,12 +251,14 @@ EStateTreeRunStatus FEnemyAttackLocationTask::EnterState(
 		return EStateTreeRunStatus::Running;
 	}
 
+	const float PreviousPitch = ReadControlPitch(*InstanceData.Enemy);
 	if (!InstanceData.Enemy->StartAttackLocation(InstanceData.TargetLocation))
 	{
 		return EStateTreeRunStatus::Failed;
 	}
 
 	InstanceData.bAttackStarted = true;
+	LogCloseAttackAim(*InstanceData.Enemy, TEXT("AttackLocation.Enter"), InstanceData.TargetLocation, PreviousPitch);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -252,12 +281,14 @@ EStateTreeRunStatus FEnemyAttackLocationTask::Tick(
 			return EStateTreeRunStatus::Running;
 		}
 
+		const float PreviousPitch = ReadControlPitch(*InstanceData.Enemy);
 		if (!InstanceData.Enemy->StartAttackLocation(InstanceData.TargetLocation))
 		{
 			return EStateTreeRunStatus::Failed;
 		}
 
 		InstanceData.bAttackStarted = true;
+		LogCloseAttackAim(*InstanceData.Enemy, TEXT("AttackLocation.TickStart"), InstanceData.TargetLocation, PreviousPitch);
 		InstanceData.ElapsedTime = 0.0f;
 		return EStateTreeRunStatus::Running;
 	}

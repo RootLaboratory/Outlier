@@ -134,6 +134,7 @@ protected:
 	virtual USceneComponent* GetFlightViewModelRoot() const;
 	virtual bool CanRunInputMovement() const;
 	virtual bool ShouldUpdateMovementFeel() const;
+	virtual bool ShouldApplyMeshPitchTilt() const { return true; }
 	virtual EFlightInputMode GetFlightInputMode() const;
 	virtual void OnAfterInputMovement(float DeltaTime);
 

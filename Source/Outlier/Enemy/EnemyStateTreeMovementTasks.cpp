@@ -1655,7 +1655,8 @@ bool CanHoldStationaryFire(const FEnemyStationaryFireTaskInstanceData& Data)
 	if (Enemy->GetController() != Data.CachedController || Data.CachedController->GetPawn() != Enemy) return false;
 	if (Enemy->IsDead() || !Enemy->CanUseEnemyPerception() || Enemy->IsPossessionInProgress()
 		|| Enemy->GetCombatState() == EEnemyCombatState::Stun || !Enemy->IsPlayerCurrentlyVisible()) return false;
-	return Data.CapturedTarget.IsValid() && Data.CachedController->GetCachedVisibleTarget() == Data.CapturedTarget.Get()
+	return Data.CapturedTarget.IsValid() && !Enemy->IsTargetOutsideWeaponRange(Data.CapturedTarget.Get())
+		&& Data.CachedController->GetCachedVisibleTarget() == Data.CapturedTarget.Get()
 		&& Enemy->GetPoolGameplayGeneration() == Data.CapturedGeneration
 		&& Enemy->GetPoolLeaseSerial() == Data.CapturedLease;
 }
@@ -1675,6 +1676,7 @@ const TCHAR* GetStationaryFireReason(const FEnemyStationaryFireTaskInstanceData&
 	if (!Enemy->IsPlayerCurrentlyVisible()) return TEXT("SightLost");
 	if (!Data.CapturedTarget.IsValid()
 		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get()) return TEXT("TargetChangedOrInvalid");
+	if (Enemy->IsTargetOutsideWeaponRange(Data.CapturedTarget.Get())) return TEXT("WeaponRangeLost");
 	if (Enemy->GetPoolGameplayGeneration() != Data.CapturedGeneration
 		|| Enemy->GetPoolLeaseSerial() != Data.CapturedLease) return TEXT("PoolLifetimeChanged");
 	return TEXT("Valid");
@@ -1831,6 +1833,18 @@ EStateTreeRunStatus FEnemyMaintainFacingTask::EnterState(
 	const bool bValid = IsValid(InstanceData.Enemy)
 		&& InstanceData.Enemy->HasAuthority()
 		&& ResolveAIController(InstanceData.Enemy);
+	if (bValid && !InstanceData.Enemy->IsEnemyPossessed() && InstanceData.Enemy->GetRuntimeStat().Type == EEnemyType::Gun)
+	{
+		AAIController* Controller = ResolveAIController(InstanceData.Enemy);
+		const FVector Input = ResolveFacingLocation(InstanceData, *Controller);
+		const FVector Origin = InstanceData.Enemy->GetCombatShotOrigin();
+		// 공격 Task와 같은 좌표를 받았는지 진입 시에만 남긴다. 시선 Task의 바인딩 오류를 실제 레벨에서 확인한다.
+		if (FVector::DistSquared2D(Origin, Input) <= FMath::Square(500.0))
+			UE_LOG(LogEnemyFlight, Display, TEXT("[EnemyAimTask] Task=MaintainFacing.Enter Enemy=%s Actor=%s Preferred=%d Input=%s Origin=%s InputPitch=%.3f ControlPitch=%.3f AttackOwns=%d"),
+				*InstanceData.Enemy->GetName(), *GetNameSafe(InstanceData.TargetActor), InstanceData.bUsePreferredVisibleTarget,
+				*Input.ToCompactString(), *Origin.ToCompactString(), (Input - Origin).Rotation().Pitch,
+				Controller->GetControlRotation().Pitch, ShouldYieldRotationToAttack(*Controller));
+	}
 	if (CVarEnemyFlightDebug.GetValueOnGameThread() != 0)
 	{
 		UE_LOG(LogEnemyFlight, Log, TEXT("[Facing] Enter Enemy=%s Target=%s Valid=%d"),

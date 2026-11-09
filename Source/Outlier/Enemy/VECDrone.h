@@ -49,6 +49,7 @@ public:
 		float& OutSightStrength, int32* UserData = nullptr,
 		const FOnPendingVisibilityQueryProcessedDelegate* Delegate = nullptr) override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
+	virtual FVector GetCombatShotOrigin() const override;
 
 	UFUNCTION(BlueprintPure, Category = "VECDrone|Camera")
 	float GetCurrentCameraPitchDegrees() const;

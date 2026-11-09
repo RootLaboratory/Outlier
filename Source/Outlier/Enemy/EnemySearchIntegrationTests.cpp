@@ -15,6 +15,13 @@
 #include "AbilitySystemComponent.h"
 #include "Explosion/ExplosionComponent.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/WallShotProbe.h"
+#include "Enemy/VECDrone.h"
+#include "Enemy/VECDroneMovementComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "ReferenceSkeleton.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -45,6 +52,148 @@
 #include "Shooter/ShooterCharacter.h"
 #include "StateTree.h"
 #include "UObject/UnrealType.h"
+#include "Engine/NetDriver.h"
+#include "EngineUtils.h"
+#include "HAL/PlatformMisc.h"
+#include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
+
+namespace GunAimNetworkProbe
+{
+// 명시적 실행 인자가 있을 때만 동작한다. 클라이언트는 복제된 상태를 관측하며 조준값을 쓰지 않는다.
+struct FProbe
+{
+	FString Role, Output;
+	bool bRead = false, bHeader = false;
+	double Started = -1;
+	float ConnectedAt = -1, LastSample = -1;
+	TArray<TWeakObjectPtr<AVECDrone>> Drones;
+	TWeakObjectPtr<AActor> AlternateTarget;
+	bool bSwitchedTarget = false;
+	bool Enabled(UWorld* World)
+	{
+		if (!bRead)
+		{
+			bRead = true;
+			FParse::Value(FCommandLine::Get(), TEXT("OutlierGunAimProbe="), Role);
+			FParse::Value(FCommandLine::Get(), TEXT("OutlierGunAimOutput="), Output);
+		}
+		return !Output.IsEmpty() && World->IsGameWorld() && World->HasBegunPlay()
+			&& (Role == TEXT("Server") ? World->GetNetMode() == NM_DedicatedServer : World->GetNetMode() == NM_Client);
+	}
+	void Before(UWorld* World, ELevelTick, float)
+	{
+		if (!Enabled(World)) return;
+		if (Started < 0) Started = FPlatformTime::Seconds();
+		if (FPlatformTime::Seconds() - Started > 65) { FPlatformMisc::RequestExit(false); return; }
+		if (Role == TEXT("Server"))
+		{
+			if (!World->GetNetDriver() || World->GetNetDriver()->ClientConnections.Num() < 2) return;
+			if (ConnectedAt < 0) ConnectedAt = World->GetTimeSeconds();
+			if (World->GetTimeSeconds() - ConnectedAt < 3) return;
+			if (Drones.IsEmpty())
+			{
+				UClass* Class = LoadClass<AVECDrone>(nullptr, TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+				for (int32 Index = 0; Index < 4; ++Index)
+				{
+					FActorSpawnParameters Params;
+					Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+					AVECDrone* Drone = World->SpawnActor<AVECDrone>(Class, FVector(0, Index * 1000, 134), FRotator::ZeroRotator, Params);
+					if (!Drone) { UE_LOG(LogTemp, Error, TEXT("[GunAimNetwork] Spawn failed")); return; }
+					Drone->GetStateTreeComponent()->StopLogic(TEXT("Gun aim network probe"));
+					if (auto* Controller = Cast<AEnemyAIController>(Drone->GetController())) Controller->SetEnemyPerceptionEnabled(false);
+					Drone->GetCharacterMovement()->DisableMovement();
+					Drone->SetActorEnableCollision(false);
+					const float Distances[] = {466.50f, 235.64f, 103.45f, 103.45f};
+					const FVector Target = Drone->GetCombatShotOrigin() + FVector(Distances[Index], 0, -35.81f);
+					Drone->EnterCombatFromRoom(Target, false);
+					Drone->GetStateTreeComponent()->StopLogic(TEXT("Gun aim network probe"));
+					UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+					ACharacter* Observed = Index == 3
+						? static_cast<ACharacter*>(World->SpawnActor<AVECDrone>(Class, Target, FRotator::ZeroRotator, Params))
+						: World->SpawnActor<AShooterCharacter>(ShooterClass, Target, FRotator::ZeroRotator, Params);
+					if (AVECDrone* OtherDrone = Cast<AVECDrone>(Observed))
+					{
+						OtherDrone->GetStateTreeComponent()->StopLogic(TEXT("Observed drone target"));
+						// 관측용 드론만 플레이어 팀으로 둬 실제 유효 적대 대상 분류를 거치게 한다.
+						FindFProperty<FBoolProperty>(OtherDrone->GetClass(), TEXT("bIsPossessed"))->SetPropertyValue_InContainer(OtherDrone, true);
+						AlternateTarget = OtherDrone;
+					}
+					Observed->SetActorEnableCollision(false);
+					Observed->SetCanBeDamaged(false);
+					Observed->GetCharacterMovement()->DisableMovement();
+					Observed->SetActorTickEnabled(false);
+					auto* AI = CastChecked<AEnemyAIController>(Drone->GetController());
+					AI->SetCachedVisibleTargetForTesting(Observed);
+					Drone->SetPlayerCurrentlyVisible(true);
+					Drone->ObserveTrackedTarget(Observed);
+					Drones.Add(Drone);
+				}
+			}
+			const float Elapsed = World->GetTimeSeconds() - ConnectedAt - 3;
+			if (Elapsed >= 12 && !bSwitchedTarget && AlternateTarget.IsValid())
+			{
+				bSwitchedTarget = true;
+				AVECDrone* Drone = Drones[2].Get();
+				CastChecked<AEnemyAIController>(Drone->GetController())->SetCachedVisibleTargetForTesting(AlternateTarget.Get());
+				Drone->ObserveTrackedTarget(AlternateTarget.Get());
+			}
+			const int32 Step = int32(Elapsed / 4) % 3;
+			for (auto& Weak : Drones) if (AVECDrone* Drone = Weak.Get())
+			{
+				auto* Controller = Cast<AEnemyAIController>(Drone->GetController());
+				Controller->SetAttackAimActive(Step == 1);
+				Drone->SetAttackPhase(Step == 0 ? EEnemyAttackPhase::Telegraph : Step == 1 ? EEnemyAttackPhase::Firing : EEnemyAttackPhase::Recover);
+				if (Step == 1) Drone->UpdateAttackLocation(Drone->GetLastKnownPlayerLocation());
+			}
+			if (Elapsed > 25) FPlatformMisc::RequestExit(false);
+		}
+		else
+		{
+			// NullRHI에서는 렌더 시각만 보장한다. 실제 회전·애니메이션 평가·네트워크 복제는 그대로 실행한다.
+			for (TActorIterator<AVECDrone> It(World); It; ++It) It->GetMesh()->SetLastRenderTime(World->GetTimeSeconds());
+		}
+	}
+	void After(UWorld* World, ELevelTick, float)
+	{
+		if (!Enabled(World) || World->GetTimeSeconds() - LastSample < .1f) return;
+		LastSample = World->GetTimeSeconds();
+		FString Rows;
+		if (!bHeader) { Rows = TEXT("time,netMode,case,phase,expected,baseAim,facing,tilt,actor,body,shooter\n"); bHeader = true; }
+		for (TActorIterator<AVECDrone> It(World); It; ++It)
+		{
+			AVECDrone* Drone = *It;
+			if (Drone->IsEnemyPossessed()) continue;
+			USkeletalMeshComponent* Mesh = Drone->GetMesh();
+			const FReferenceSkeleton& Skeleton = Mesh->GetSkeletalMeshAsset()->GetRefSkeleton();
+			const int32 Bone = Skeleton.FindBoneIndex(TEXT("BodyBone"));
+			float BodyPitch = 999;
+			if (Bone != INDEX_NONE)
+			{
+				FTransform Ref = Skeleton.GetRefBonePose()[Bone];
+				for (int32 Parent = Skeleton.GetParentIndex(Bone); Parent != INDEX_NONE; Parent = Skeleton.GetParentIndex(Parent)) Ref = Ref * Skeleton.GetRefBonePose()[Parent];
+				const auto* DefaultMesh = Drone->GetClass()->GetDefaultObject<AVECDrone>()->GetMesh();
+				const FVector Forward = Ref.GetRotation().UnrotateVector(DefaultMesh->GetRelativeRotation().UnrotateVector(FVector::ForwardVector));
+				BodyPitch = Mesh->GetBoneTransform(Bone).GetRotation().RotateVector(Forward).Rotation().Pitch;
+			}
+			Rows += FString::Printf(TEXT("%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n"), World->GetTimeSeconds(), int32(World->GetNetMode()), FMath::RoundToInt(Drone->GetActorLocation().Y / 1000), int32(Drone->GetAttackPhase()),
+				(Drone->GetLastKnownPlayerLocation() - Drone->GetCombatShotOrigin()).Rotation().Pitch, Drone->GetBaseAimRotation().Pitch,
+				Drone->GetAIFacingPitchRoot()->GetRelativeRotation().Pitch, Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().Pitch, Drone->GetActorRotation().Pitch, BodyPitch, Drone->IsAimingAtShooter());
+		}
+		FFileHelper::SaveStringToFile(Rows, *Output, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
+	}
+};
+FProbe Probe;
+struct FRegister
+{
+	FRegister()
+	{
+		FWorldDelegates::OnWorldTickStart.AddRaw(&Probe, &FProbe::Before);
+		FWorldDelegates::OnWorldPostActorTick.AddRaw(&Probe, &FProbe::After);
+	}
+} Register;
+}
 
 namespace
 {
@@ -3629,6 +3778,169 @@ bool FEnemyHitExceptionIntegrationTest::RunTest(const FString& Parameters)
 	return false;
 }
 
+namespace
+{
+bool SetCombatTestRange(FEnemyCombatIntegrationWorld& Fixture, float Range)
+{
+	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+	if (!Fixture.Test.TestNotNull(TEXT("Range response uses the actual equipped weapon"), Weapon)) return false;
+	FFloatProperty* Property = FindFProperty<FFloatProperty>(Weapon->GetClass(), TEXT("EffectiveRange"));
+	if (!Fixture.Test.TestNotNull(TEXT("Weapon range can be configured for the scenario"), Property)) return false;
+	Property->SetPropertyValue_InContainer(Weapon, Range);
+	return true;
+}
+
+bool ReadCombatShotDistance(FEnemyCombatIntegrationWorld& Fixture, FVector& OutMuzzle, float& OutDistance)
+{
+	if (!Fixture.Test.TestNotNull(TEXT("Actual enemy provides the firing origin"), Fixture.Enemy)) return false;
+	OutMuzzle = Fixture.Enemy->GetCombatShotOrigin();
+	OutDistance = FVector::Dist(OutMuzzle, Fixture.Enemy->GetCombatAimPoint(Fixture.Target));
+	return true;
+}
+
+bool WaitForRangeApproach(FEnemyCombatIntegrationWorld& Fixture, int32 MaxFrames = 90)
+{
+	for (int32 Frame = 0; Frame < MaxFrames; ++Frame)
+	{
+		const auto* Query = Fixture.Data<FEnemyRunEnvQueryTask>();
+		if (Query && Query->SearchMode == EEnemySearchQueryMode::None && Query->bValidateReachability) return true;
+		if (!Fixture.Advance()) return false;
+	}
+	Fixture.Test.AddError(TEXT("Out-of-range target did not select the real Approach query"));
+	return false;
+}
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyRangeResponseIntegrationTest,
+	"Outlier.Enemy.Combat.RangeResponse", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyRangeResponseIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("MidBandApproach"), TEXT("HoldExitRange"), TEXT("PrecisionExitRange"), TEXT("VerticalRangeReselect"),
+		TEXT("ShortRangeLegacy"), TEXT("ShortRangeHeight")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyRangeResponseIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
+	if (!Fixture.Initialize(false, FVector(1500, 0, 0))) return false;
+	const bool bShortRange = Parameters.StartsWith(TEXT("ShortRange"));
+	Fixture.Enemy->FlightHeightSettings.bEnabled = Parameters != TEXT("ShortRangeLegacy");
+	if (!SetCombatTestRange(Fixture, bShortRange ? 700.0f : Parameters == TEXT("MidBandApproach") ? 1200.0f : 5000.0f)) return false;
+	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+	FBoolProperty* InfiniteAmmo = FindFProperty<FBoolProperty>(Weapon->GetClass(), TEXT("bInfiniteAmmo"));
+	if (!TestNotNull(TEXT("Actual ammunition consumption can be observed"), InfiniteAmmo)) return false;
+	InfiniteAmmo->SetPropertyValue_InContainer(Weapon, false);
+	const int32 InitialAmmo = Weapon->GetCurrentAmmo();
+	if (Parameters == TEXT("PrecisionExitRange"))
+	{
+		// 양쪽 선회를 막되 전방 접근 경로와 사선은 비워 둔다. 실제 후보 실패로 정밀 사격에 진입한다.
+		const FVector Start = Fixture.Enemy->GetActorLocation();
+		const double InnerEdge = Fixture.Enemy->GetCapsuleComponent()->GetScaledCapsuleRadius() + 15.0;
+		for (const double Sign : {-1.0, 1.0})
+			if (!Fixture.SpawnBlockingBox(Start + FVector(0, Sign * (InnerEdge + 300.0), 0), FVector(600, 300, 2500))) return false;
+	}
+	Fixture.Start();
+
+	if (Parameters == TEXT("MidBandApproach"))
+	{
+		if (!Fixture.WaitForTask<FEnemyRunEnvQueryTask>(2)) return false;
+		const auto* Query = Fixture.Data<FEnemyRunEnvQueryTask>();
+		return TestTrue(TEXT("A target inside the 10..20m tactical band but outside weapon range selects Approach"),
+			Query->bValidateReachability && !Query->bValidateOrbitPath);
+	}
+	if (bShortRange)
+	{
+		if (!WaitForRangeApproach(Fixture)) return false;
+		for (int32 Frame = 0; Frame < 900; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			if (Weapon->GetCurrentAmmo() >= InitialAmmo) continue;
+			const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+			return TestTrue(TEXT("A real short-range shot is fired before the approach destination is reached"),
+				Fly && Fixture.Enemy->GetVelocity().SizeSquared() > 1.0f
+				&& FVector::Dist(Fixture.Enemy->GetActorLocation(), Fly->Destination) > Fly->AcceptanceRadius + 5.0f);
+		}
+		AddError(TEXT("Short-range Approach did not produce an actual shot within its bounded movement window"));
+		return false;
+	}
+	if (Parameters == TEXT("PrecisionExitRange"))
+	{
+		for (int32 Frame = 0; Frame < 360 && !Fixture.Snapshot.HasState(TEXT("PrecisionFire")); ++Frame)
+			if (!Fixture.Advance()) return false;
+		if (!TestTrue(TEXT("Both blocked orbit sides select the real PrecisionFire state"),
+			Fixture.Snapshot.HasState(TEXT("PrecisionFire")))) return false;
+		FVector Muzzle;
+		float Distance;
+		if (!ReadCombatShotDistance(Fixture, Muzzle, Distance) || !SetCombatTestRange(Fixture, Distance + 20.0f)) return false;
+		if (!TestFalse(TEXT("Precision fire begins inside the actual weapon range"),
+			Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
+		const FVector Previous = Fixture.Target->GetActorLocation();
+		Fixture.Target->SetActorLocation(Previous + (Previous - Muzzle).GetSafeNormal() * 100.0f);
+		if (!TestTrue(TEXT("A small retreat crosses the weapon range during precision fire"),
+			Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
+		// 공격 Task가 Running으로 대기하더라도 전술 분기는 접근을 다시 선택해야 한다.
+		return WaitForRangeApproach(Fixture);
+	}
+	if (Parameters == TEXT("HoldExitRange"))
+	{
+		if (!Fixture.WaitForTask<FEnemyStationaryFireTask>()) return false;
+		FVector Muzzle;
+		float Distance;
+		if (!ReadCombatShotDistance(Fixture, Muzzle, Distance) || !SetCombatTestRange(Fixture, Distance + 20.0f)) return false;
+		if (!TestFalse(TEXT("The stationary target begins inside weapon range"),
+			Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
+		const FVector Previous = Fixture.Target->GetActorLocation();
+		const FVector Away = (Previous - Muzzle).GetSafeNormal();
+		Fixture.Target->SetActorLocation(Previous + Away * 100.0f);
+		if (!TestTrue(TEXT("Retreat input is below the old 200cm destination threshold"),
+			FVector::Dist(Previous, Fixture.Target->GetActorLocation()) < 200.0f)
+			|| !TestTrue(TEXT("The short retreat crosses the actual weapon range boundary"),
+				Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
+		for (int32 Frame = 0; Frame < 3; ++Frame) if (!Fixture.Advance()) return false;
+		if (!TestNull(TEXT("Range loss interrupts the selected stationary hold without waiting for its duration"),
+			Fixture.Data<FEnemyStationaryFireTask>())) return false;
+		return WaitForRangeApproach(Fixture);
+	}
+	if (Parameters == TEXT("VerticalRangeReselect"))
+	{
+		if (!Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+		const auto* Guard = Fixture.Data<FEnemyCombatDestinationGuardTask>();
+		if (!TestNotNull(TEXT("Vertical scenario uses the actual destination guard"), Guard)) return false;
+		const FVector Captured = Guard->SelectedTargetLocation;
+		FVector Muzzle;
+		float Distance;
+		if (!ReadCombatShotDistance(Fixture, Muzzle, Distance) || !SetCombatTestRange(Fixture, Distance + 1.0f)) return false;
+		if (!TestFalse(TEXT("The original orbit target begins inside weapon range"),
+			Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
+		// 드론의 접근으로 사거리 복귀가 섞이지 않게 이동만 고정하고, 트리·EQS·거리 판정은 실제 실행한다.
+		Fixture.Enemy->GetCharacterMovement()->StopMovementImmediately();
+		Fixture.Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+		const float Sign = Fixture.Enemy->GetCombatAimPoint(Fixture.Target).Z >= Muzzle.Z ? 1.0f : -1.0f;
+		const FVector Changed = Captured + FVector(0, 0, Sign * 150.0f);
+		Fixture.Target->SetActorLocation(Changed);
+		if (!TestTrue(TEXT("Vertical input preserves XY and remains below the old movement threshold"),
+			FVector::Dist2D(Captured, Changed) == 0.0f && FVector::Dist(Captured, Changed) < Guard->TargetChangeDistance)
+			|| !TestTrue(TEXT("Vertical movement crosses the actual three-dimensional weapon range boundary"),
+				Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
+		for (int32 Frame = 0; Frame < 90; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			const auto* Query = Fixture.Data<FEnemyRunEnvQueryTask>();
+			if (Query && Query->bValidateReachability && Query->SelectedTargetLocation.Equals(Changed, 1.0f)) return true;
+		}
+		AddError(TEXT("Pure vertical range loss did not replace orbit with a new Approach query"));
+		return false;
+	}
+	AddError(TEXT("Unknown range response scenario"));
+	return false;
+}
+
 IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyRotationStateTreeIntegrationTest,
 	"Outlier.Enemy.Rotation.StateTree", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -3766,6 +4078,294 @@ bool FEnemyRotationStateTreeIntegrationTest::RunTest(const FString& Parameters)
 	return false;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyGunAimPresentationDiagnostic,
+	"Outlier.Enemy.Combat.GunAimPresentationDiagnostic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyGunAimPresentationDiagnostic::RunTest(const FString& Parameters)
+{
+	struct FCase { const TCHAR* Name; FVector Offset; bool bMoving; };
+	const FCase Cases[] = {
+		{TEXT("CloseLevel50"), FVector(50, 0, 0), false},
+		{TEXT("CloseLevel100"), FVector(100, 0, 0), false},
+		{TEXT("CloseLevel200"), FVector(200, 0, 0), false},
+		{TEXT("CloseLevel400"), FVector(400, 0, 0), false},
+		{TEXT("CloseLevel1000"), FVector(1000, 0, 0), false},
+		{TEXT("CloseAbove"), FVector(100, 0, 50), false},
+		{TEXT("CloseBelow"), FVector(100, 0, -50), false},
+		{TEXT("StationaryLevel"), FVector(1200, 0, 0), false},
+		{TEXT("StationaryBelow"), FVector(1200, 0, -200), false},
+		{TEXT("StationaryCloseBelow"), FVector(400, 0, -200), false},
+		{TEXT("LiveApproach"), FVector(2400, 0, -200), true}
+	};
+	for (const FCase& Case : Cases)
+	{
+		FEnemyCombatIntegrationWorld Fixture(*this, Case.Name);
+		if (!Fixture.Initialize(false, Case.Offset)) return false;
+		AVECDrone* Drone = CastChecked<AVECDrone>(Fixture.Enemy);
+		if (!TestTrue(TEXT("Observed Shooter enables downward body pitch scaling"), Drone->IsAimingAtShooter())) return false;
+		ARangedWeaponBase* Weapon = Drone->GetCurrentWeapon();
+		if (!TestNotNull(TEXT("Production gun is equipped"), Weapon)) return false;
+		if (!TestTrue(TEXT("Visual tick requires a non-dedicated world"), Drone->GetNetMode() != NM_DedicatedServer)) return false;
+		AddInfo(FString::Printf(TEXT("[AimDefaults] Case=%s ControllerPitch=%d Actor=%s Aim=%s Tilt=%s Mesh=%s Anim=%s"),
+			Case.Name, Drone->bUseControllerRotationPitch, *Drone->GetActorRotation().ToCompactString(),
+			*Drone->GetAIFacingPitchRoot()->GetRelativeRotation().ToCompactString(),
+			*Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().ToCompactString(),
+			*Drone->GetMesh()->GetRelativeRotation().ToCompactString(), *GetNameSafe(Drone->GetMesh()->GetAnimClass())));
+		UVECDroneMovementComponent* Feel = Drone->FindComponentByClass<UVECDroneMovementComponent>();
+		for (const FName Name : {FName(TEXT("CameraPitchOnMove")), FName(TEXT("MeshInertialTiltScale")), FName(TEXT("MeshPitchInertialTiltScale"))})
+		{
+			const FFloatProperty* Property = Feel ? FindFProperty<FFloatProperty>(Feel->GetClass(), Name) : nullptr;
+			if (Property) AddInfo(FString::Printf(TEXT("[AimFeel] %s=%.3f"), *Name.ToString(), Property->GetPropertyValue_InContainer(Feel)));
+		}
+		for (TFieldIterator<FStructProperty> Property(Drone->GetMesh()->GetAnimClass()); Property; ++Property)
+		{
+			if (Property->Struct->GetName().StartsWith(TEXT("AnimNode_")))
+				AddInfo(FString::Printf(TEXT("[AimAnimNode] %s"), *Property->Struct->GetName()));
+		}
+		int32 Shots = 0;
+		double MaxBaseError = 0, MaxExtra = 0, MaxFiringExtra = 0;
+		int32 FiringFrames = 0;
+		const FDelegateHandle Handle = WallShotProbe::Observed().AddLambda([&](const FWallShotObservation& Shot)
+		{
+			if (Shot.Weapon != Weapon || Shot.bPresentation) return;
+			const FVector Center = Drone->GetCombatAimPoint(Fixture.Target);
+			TestTrue(TEXT("Actual shot starts at the shared body anchor"), Shot.Start.Equals(Drone->GetCombatShotOrigin(), 0.01));
+			const FVector Expected = (Center - Shot.Start).GetSafeNormal();
+			const double Error = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(Expected, Shot.BaseDirection), -1.0, 1.0)));
+			MaxBaseError = FMath::Max(MaxBaseError, Error);
+			++Shots;
+			if (Shots <= 3) AddInfo(FString::Printf(TEXT("[AimShot] Case=%s Start=%s Center=%s Expected=%.3f Base=%.3f Actual=%.3f Error=%.4f Actor=%.3f Aim=%.3f Tilt=%.3f World=%.3f Speed=%.1f"),
+				Case.Name, *Shot.Start.ToCompactString(), *Center.ToCompactString(), Expected.Rotation().Pitch,
+				Shot.BaseDirection.Rotation().Pitch, Shot.Direction.Rotation().Pitch, Error, Drone->GetActorRotation().Pitch,
+				Drone->GetAIFacingPitchRoot()->GetRelativeRotation().Pitch, Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().Pitch,
+				Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch, Drone->GetVelocity().Size()));
+		});
+		ON_SCOPE_EXIT { WallShotProbe::Observed().Remove(Handle); Drone->StopCurrentAttack(); };
+		if (Case.bMoving) Fixture.Start();
+		else
+		{
+			// 이동만 고정하고 BP 무기 설정과 실제 발사 타이머는 유지한다.
+			Drone->GetCharacterMovement()->SetComponentTickEnabled(false);
+			if (!TestTrue(TEXT("Production attack starts"), Drone->StartAttackTarget(Fixture.Target))) return false;
+		}
+		for (int32 Frame = 0; Frame < 240; ++Frame)
+		{
+			// NullRHI에서도 최근 렌더 조건만 열어 실제 외형 Tick을 실행한다.
+			Drone->GetMesh()->SetLastRenderTime(Fixture.World->GetTimeSeconds());
+			if (!Case.bMoving) Drone->UpdateAttackLocation(Drone->GetCombatAimPoint(Fixture.Target));
+			Fixture.Tick(FEnemyCombatIntegrationWorld::Step);
+			if (UEnvQueryManager* Queries = UEnvQueryManager::GetCurrent(Fixture.World)) Queries->Tick(FEnemyCombatIntegrationWorld::Step);
+			const double Extra = FMath::FindDeltaAngleDegrees(Drone->GetBaseAimRotation().Pitch,
+				Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch);
+			if (FMath::Abs(Extra) > FMath::Abs(MaxExtra)) MaxExtra = Extra;
+			if (Drone->GetAttackPhase() == EEnemyAttackPhase::Firing)
+			{
+				++FiringFrames;
+				double ExpectedBodyPitch = FMath::ClampAngle(Drone->GetBaseAimRotation().Pitch, -89.0f, 89.0f);
+				if (Drone->IsAimingAtShooter() && ExpectedBodyPitch < 0.0) ExpectedBodyPitch *= 0.5;
+				const double BodyError = FMath::FindDeltaAngleDegrees(ExpectedBodyPitch,
+					Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch);
+				MaxFiringExtra = FMath::Max(MaxFiringExtra, FMath::Abs(BodyError));
+			}
+		}
+		AddInfo(FString::Printf(TEXT("[AimSummary] Case=%s Shots=%d Error=%.4f MaxExtra=%.3f Control=%.3f Actor=%.3f Aim=%.3f Tilt=%.3f World=%.3f Rendered=%d"),
+			Case.Name, Shots, MaxBaseError, MaxExtra, Drone->GetBaseAimRotation().Pitch, Drone->GetActorRotation().Pitch,
+			Drone->GetAIFacingPitchRoot()->GetRelativeRotation().Pitch, Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().Pitch,
+			Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch, Drone->WasRecentlyRendered()));
+		// 조준 축 일치와 실제 에셋의 총열 축은 별개다. 클라이언트 시각 검증에 사용할 실제 소켓 변환도 남긴다.
+		TArray<FName> MuzzleSockets;
+		Drone->GetWeaponMuzzleSocketNames(false, MuzzleSockets);
+		for (const FName Socket : MuzzleSockets)
+		{
+			const bool bExists = Drone->GetMesh()->DoesSocketExist(Socket);
+			TestTrue(TEXT("Production visual muzzle socket exists"), bExists);
+			if (!bExists) continue;
+			const FTransform Muzzle = Drone->GetMesh()->GetSocketTransform(Socket);
+			AddInfo(FString::Printf(TEXT("[AimModel] Case=%s Socket=%s Position=%s Forward=%s TargetFromSocket=%s MeshRelative=%s"),
+				Case.Name, *Socket.ToString(), *Muzzle.GetLocation().ToCompactString(),
+				*Muzzle.GetUnitAxis(EAxis::X).Rotation().ToCompactString(),
+				*(Drone->GetCombatAimPoint(Fixture.Target) - Muzzle.GetLocation()).Rotation().ToCompactString(),
+				*Drone->GetMesh()->GetRelativeTransform().ToString()));
+		}
+		const auto ObserveBodyPose = [&](const TCHAR* Stage)
+		{
+			USkeletalMeshComponent* Mesh = Drone->GetMesh();
+			const FReferenceSkeleton& Skeleton = Mesh->GetSkeletalMeshAsset()->GetRefSkeleton();
+			const int32 Body = Skeleton.FindBoneIndex(TEXT("BodyBone"));
+			if (!TestTrue(TEXT("Actual model body bone exists"), Body != INDEX_NONE)) return;
+			FTransform Reference = Skeleton.GetRefBonePose()[Body];
+			for (int32 Parent = Skeleton.GetParentIndex(Body); Parent != INDEX_NONE; Parent = Skeleton.GetParentIndex(Parent))
+				Reference = Reference * Skeleton.GetRefBonePose()[Parent];
+			// 모델의 기준 포즈 정면을 본 공간으로 옮긴 뒤 실제 포즈로 되돌려, 조준 축과 몸통 본을 분리한다.
+			const FVector ModelForward = Mesh->GetRelativeRotation().UnrotateVector(FVector::ForwardVector);
+			const FVector BodyForward = Mesh->GetBoneTransform(Body).GetRotation().RotateVector(
+				Reference.GetRotation().UnrotateVector(ModelForward));
+			const FRotator Axis = Drone->GetThirdPersonTiltRoot()->GetForwardVector().Rotation();
+			AddInfo(FString::Printf(TEXT("[AimBodyPose] Case=%s Stage=%s Phase=%s Axis=%s BodyForward=%s PoseExtraPitch=%.3f BoneWorld=%s Reference=%s BodyPosition=%s RefPosition=%s Origin=%s MeshCenter=%s"),
+				Case.Name, Stage, *UEnum::GetValueAsString(Drone->GetAttackPhase()), *Axis.ToCompactString(),
+				*BodyForward.Rotation().ToCompactString(), FMath::FindDeltaAngleDegrees(Axis.Pitch, BodyForward.Rotation().Pitch),
+				*Mesh->GetBoneTransform(Body).GetRotation().Rotator().ToCompactString(), *Reference.GetRotation().Rotator().ToCompactString(),
+				*Mesh->GetBoneTransform(Body).GetLocation().ToCompactString(), *Reference.GetLocation().ToCompactString(),
+				*Drone->GetCombatShotOrigin().ToCompactString(), *Mesh->Bounds.Origin.ToCompactString()));
+		};
+		ObserveBodyPose(TEXT("Firing"));
+		TestTrue(TEXT("Actual production shots observed"), Shots > 0);
+		TestTrue(TEXT("Base shots point at capsule center"), MaxBaseError < 0.1);
+		TestTrue(TEXT("Firing presentation frames were observed"), FiringFrames > 0);
+		TestTrue(TEXT("Firing body applies 50 percent downward pitch for Shooter targets without additional tilt"), MaxFiringExtra < 0.25);
+		AddInfo(FString::Printf(TEXT("[AimAlignment] Case=%s FiringFrames=%d MaxError=%.4f"), Case.Name, FiringFrames, MaxFiringExtra));
+		if (Case.bMoving)
+		{
+			// 사격 외형만 제한했는지 양성 대조한다. 같은 드론의 비사격 이동 기울기는 다시 나타나야 한다.
+			Fixture.Tree->StopLogic(TEXT("Check presentation after firing"));
+			Drone->StopCurrentAttack();
+			Drone->SetAttackPhase(EEnemyAttackPhase::Idle);
+			Drone->GetCharacterMovement()->SetComponentTickEnabled(false);
+			Drone->GetCharacterMovement()->Velocity = Drone->GetActorForwardVector() * 300.0f;
+			for (int32 Frame = 0; Frame < 120; ++Frame)
+			{
+				Drone->GetMesh()->SetLastRenderTime(Fixture.World->GetTimeSeconds());
+				Fixture.Tick(FEnemyCombatIntegrationWorld::Step);
+			}
+			TestTrue(TEXT("Non-firing flight retains movement pitch"), FMath::Abs(Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().Pitch) > 0.5);
+		}
+		else
+		{
+			Drone->StopCurrentAttack();
+			Drone->SetAttackPhase(EEnemyAttackPhase::Idle);
+			for (int32 Frame = 0; Frame < 90; ++Frame)
+			{
+				Drone->GetMesh()->SetLastRenderTime(Fixture.World->GetTimeSeconds());
+				Fixture.Tick(FEnemyCombatIntegrationWorld::Step);
+			}
+			ObserveBodyPose(TEXT("Idle"));
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyGunBodyOriginContractTest,
+	"Outlier.Enemy.Combat.BodyOrigin.Contract", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyGunBodyOriginContractTest::RunTest(const FString& Parameters)
+{
+	FEnemyCombatIntegrationWorld Fixture(*this, TEXT("BodyOrigin"));
+	if (!Fixture.Initialize(false, FVector(100, 0, 0))) return false;
+	AVECDrone* Drone = CastChecked<AVECDrone>(Fixture.Enemy);
+	Drone->GetCharacterMovement()->SetComponentTickEnabled(false);
+	USceneComponent* Root = Drone->GetAIFacingPitchRoot();
+	const FVector OriginalRelative = Root->GetRelativeLocation();
+	Root->SetRelativeLocation(OriginalRelative + FVector(0, 0, 25));
+	const FVector Origin = Drone->GetCombatShotOrigin();
+	Root->SetRelativeRotation(FRotator(-50, 0, 0));
+	Drone->GetThirdPersonTiltRoot()->SetRelativeRotation(FRotator(-20, 0, 15));
+	TestTrue(TEXT("Aim and movement pitch cannot move the body origin"), Drone->GetCombatShotOrigin().Equals(Origin, 0.001));
+	TestTrue(TEXT("Authored fixed root location is respected"), Origin.Equals(Root->GetComponentLocation(), 0.001));
+	Root->SetRelativeRotation(FRotator::ZeroRotator);
+	Drone->GetThirdPersonTiltRoot()->SetRelativeRotation(FRotator::ZeroRotator);
+	Fixture.Target->SetActorLocation(Origin + FVector(100, 0, 0));
+	TestTrue(TEXT("Level close target can be aimed"), Drone->UpdateAttackLocation(Drone->GetCombatAimPoint(Fixture.Target)));
+	TestTrue(TEXT("Level close body aim is horizontal"), FMath::Abs(Fixture.Controller->GetControlRotation().Pitch) < 0.01);
+	FTransform Shot;
+	TestTrue(TEXT("Real weapon resolves its firing transform"), FWallShotProbeAccess::Resolve(Drone->GetCurrentWeapon(), Shot));
+	TestTrue(TEXT("Weapon and AI use exactly the same authored body origin"), Shot.GetLocation().Equals(Origin, 0.001));
+	const FRotator ValidRotation = Fixture.Controller->GetControlRotation();
+	TestFalse(TEXT("Zero direction does not authorize a new aim"), Drone->UpdateAttackLocation(Origin));
+	TestTrue(TEXT("Rejected aim preserves the last valid control rotation"), Fixture.Controller->GetControlRotation().Equals(ValidRotation));
+	// 타깃이 정확히 기준점에 있을 때는 공격 요청도 실패해야 탄약/연사 타이머가 잘못 진행되지 않는다.
+	Fixture.Target->SetActorLocation(Origin);
+	const int32 Ammo = Drone->GetCurrentWeapon()->GetCurrentAmmo();
+	TestFalse(TEXT("Degenerate target cannot start a burst"), Drone->StartAttackTarget(Fixture.Target));
+	TestEqual(TEXT("Rejected degenerate shot consumes no ammunition"), Drone->GetCurrentWeapon()->GetCurrentAmmo(), Ammo);
+	Root->SetRelativeLocation(OriginalRelative);
+	Drone->SetEnemyPossessed(true);
+	FVector View;
+	FRotator Rotation;
+	Fixture.Controller->GetPlayerViewPoint(View, Rotation);
+	TestTrue(TEXT("Possessed drone retains its existing viewpoint origin"), Drone->GetCombatShotOrigin().Equals(View, 0.001));
+	TestTrue(TEXT("Possessed weapon resolves"), FWallShotProbeAccess::Resolve(Drone->GetCurrentWeapon(), Shot));
+	TestTrue(TEXT("Possessed weapon retains viewpoint origin"), Shot.GetLocation().Equals(View, 0.001));
+	Drone->SetEnemyPossessed(false);
+	TestTrue(TEXT("Returning to AI immediately restores body origin"), Drone->GetCombatShotOrigin().Equals(Root->GetComponentLocation(), 0.001));
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyGunBodyOriginPathTest,
+	"Outlier.Enemy.Combat.BodyOrigin.PathAndRange", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyGunBodyOriginPathTest::RunTest(const FString& Parameters)
+{
+	FEnemyCombatIntegrationWorld Fixture(*this, TEXT("BodyPath"));
+	if (!Fixture.Initialize(false, FVector(400, 0, 0))) return false;
+	Fixture.Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+	const FVector Origin = Fixture.Enemy->GetCombatShotOrigin();
+	const FVector Center = Fixture.Enemy->GetCombatAimPoint(Fixture.Target);
+	const float Distance = FVector::Dist(Origin, Center);
+	if (!SetCombatTestRange(Fixture, Distance)) return false;
+	TestFalse(TEXT("Exact body range boundary is inside"), Weapon->IsOutsideEffectiveRange(Center));
+	TestTrue(TEXT("Open exact range boundary permits a shot"), Weapon->HasClearTargetAttackPath(Fixture.Target, Center));
+	TestTrue(TEXT("One cm beyond the shared range boundary is outside"), Weapon->IsOutsideEffectiveRange(Center + FVector(1, 0, 0)));
+	if (!SetCombatTestRange(Fixture, Distance + 100)) return false;
+	AActor* Wall = Fixture.SpawnBlockingBox(Origin + FVector(150, 0, 0), FVector(10, 100, 10));
+	if (!TestNotNull(TEXT("Low body-path obstruction exists"), Wall)) return false;
+	FVector View;
+	FRotator Rotation;
+	Fixture.Controller->GetPlayerViewPoint(View, Rotation);
+	FCollisionQueryParams Params;
+	Params.AddIgnoredActor(Fixture.Enemy);
+	Params.AddIgnoredActor(Weapon);
+	FHitResult Hit;
+	TestFalse(TEXT("Old high viewpoint would clear the low obstruction"), Fixture.World->LineTraceSingleByChannel(Hit, View, Center, ECC_Visibility, Params));
+	TestFalse(TEXT("New body path respects the low obstruction"), Weapon->HasClearTargetAttackPath(Fixture.Target, Center));
+	TestFalse(TEXT("Obstructed body path cannot start a real target attack"), Fixture.Enemy->StartAttackTarget(Fixture.Target));
+	Wall->Destroy();
+	TestTrue(TEXT("Removing the obstruction restores the same body path"), Weapon->HasClearTargetAttackPath(Fixture.Target, Center));
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyGunTaskFacingDiagnostic,
+	"Outlier.Enemy.Combat.BodyOrigin.TaskFacingDiagnostic", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyGunTaskFacingDiagnostic::RunTest(const FString& Parameters)
+{
+	for (const float Distance : { 100.0f, 200.0f, 400.0f })
+	{
+		FEnemyCombatIntegrationWorld Fixture(*this, TEXT("NearTaskFacing"));
+		if (!Fixture.Initialize(false, FVector(Distance, 0, 0))) return false;
+		AVECDrone* Drone = CastChecked<AVECDrone>(Fixture.Enemy);
+		// 움직일 공간이 막혀 제자리에서 후퇴를 시도하는 근거리 조건이다. Task와 조준은 실제 트리를 실행한다.
+		Drone->GetCharacterMovement()->SetComponentTickEnabled(false);
+		Fixture.Start();
+		double LowestControlError = 0, LowestVisualError = 0;
+		int32 Logged = 0;
+		for (int32 Frame = 0; Frame < 360; ++Frame)
+		{
+			Drone->GetMesh()->SetLastRenderTime(Fixture.World->GetTimeSeconds());
+			if (!Fixture.Advance()) return false;
+			const double Expected = (Drone->GetCombatAimPoint(Fixture.Target) - Drone->GetCombatShotOrigin()).Rotation().Pitch;
+			const double ControlError = FMath::FindDeltaAngleDegrees(Expected, Fixture.Controller->GetControlRotation().Pitch);
+			const double VisualError = FMath::FindDeltaAngleDegrees(Expected, Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch);
+			LowestControlError = FMath::Min(LowestControlError, ControlError);
+			LowestVisualError = FMath::Min(LowestVisualError, VisualError);
+			if ((ControlError < -5 || VisualError < -5) && Logged++ < 8)
+			{
+				const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+				const auto* Facing = Fixture.Data<FEnemyMaintainFacingTask>();
+				AddInfo(FString::Printf(TEXT("[TaskFacing] Distance=%.0f Time=%.3f Expected=%.3f Control=%.3f Axis=%.3f Tilt=%.3f Visual=%.3f Phase=%s AttackOwns=%d FlyFacesMove=%d Destination=%s FacingActor=%s FacingLocation=%s Preferred=%d States=%s"),
+					Distance, Fixture.World->GetTimeSeconds(), Expected, Fixture.Controller->GetControlRotation().Pitch,
+					Drone->GetAIFacingPitchRoot()->GetRelativeRotation().Pitch, Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().Pitch,
+					Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch, *UEnum::GetValueAsString(Drone->GetAttackPhase()),
+					Fixture.Controller->IsAttackAimActive(), Fly && Fly->bRotateTowardDestination,
+					Fly ? *Fly->Destination.ToCompactString() : TEXT("None"), Facing ? *GetNameSafe(Facing->TargetActor) : TEXT("None"),
+					Facing ? *Facing->TargetLocation.ToCompactString() : TEXT("None"), Facing && Facing->bUsePreferredVisibleTarget, *Fixture.Snapshot.Describe()));
+			}
+		}
+		AddInfo(FString::Printf(TEXT("[TaskFacingSummary] Distance=%.0f LowestControlError=%.3f LowestVisualError=%.3f"), Distance, LowestControlError, LowestVisualError));
+	}
+	return !HasAnyErrors();
+}
 #endif
 
 #endif

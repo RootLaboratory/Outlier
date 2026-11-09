@@ -878,7 +878,9 @@ void UFlightMovementComponentBase::ApplyMeshTilt()
 	const FRotator TargetMeshRot =
 		BaseMeshRelativeRotation +
 		FRotator(
-			CurrentMeshPitch * MeshInertialTiltScale * MeshPitchInertialTiltScale + CurrentImpactMeshPitch,
+			ShouldApplyMeshPitchTilt()
+				? CurrentMeshPitch * MeshInertialTiltScale * MeshPitchInertialTiltScale + CurrentImpactMeshPitch
+				: 0.0f,
 			0.0f,
 			CurrentMeshRoll * MeshInertialTiltScale * MeshRollInertialTiltScale + CurrentImpactMeshRoll
 		);

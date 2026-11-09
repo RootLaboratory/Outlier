@@ -128,6 +128,9 @@ public:
 	virtual void GenerateItems(FEnvQueryInstance& QueryInstance) const override;
 	UPROPERTY(EditDefaultsOnly, Category = Approach, meta = (ClampMin = "1000.0", ClampMax = "2000.0", Units = "cm"))
 	float PreferredDistance = 1500.0f;
+	// 도착 허용 반경 안쪽에서 정지해도 사거리 밖에 남지 않도록 여유를 둔다.
+	UPROPERTY(EditDefaultsOnly, Category = Approach, meta = (ClampMin = "0.0", Units = "cm"))
+	float AttackRangeMargin = 150.0f;
 	UPROPERTY(EditDefaultsOnly, Category = Approach, meta = (ClampMin = "0.0", ClampMax = "500.0", Units = "cm"))
 	float DistanceSpread = 250.0f;
 	UPROPERTY(EditDefaultsOnly, Category = Approach, meta = (ClampMin = "0.0", ClampMax = "80.0"))

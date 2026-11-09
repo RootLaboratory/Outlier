@@ -32,6 +32,7 @@ struct FEnemyCombatDestinationGuardTaskInstanceData
 	float TargetChangeDistance = 200.0f;
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bShouldReselect = false;
+	bool bStartedOutsideWeaponRange = false;
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AEnemyAIController> CachedController;
 };
@@ -70,6 +71,8 @@ struct FEnemyCombatAssessmentTaskInstanceData
 	TEnumAsByte<ECollisionChannel> WallTraceChannel = ECC_Visibility;
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bHasValidTarget = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bTargetOutsideWeaponRange = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	float HorizontalDistance = 0.0f;
 	UPROPERTY(EditAnywhere, Category = Output)

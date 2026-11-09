@@ -118,6 +118,17 @@ AVECDrone::AVECDrone()
 	VECMovementComponent = CreateDefaultSubobject<UVECDroneMovementComponent>(TEXT("VECMovementComponent"));
 }
 
+FVector AVECDrone::GetCombatShotOrigin() const
+{
+	if (!IsEnemyPossessed() && GetRuntimeStat().Type == EEnemyType::Gun)
+	{
+		// 축 자신의 Pitch는 원점 위치를 바꾸지 않는다. 고정된 Capsule 하위 위치만 사용하므로
+		// 조준/비행 기울기나 애니메이션 총구를 다시 읽는 피드백과 서버 본 평가가 생기지 않는다.
+		return AIFacingPitchRoot ? AIFacingPitchRoot->GetComponentLocation() : GetActorLocation();
+	}
+	return Super::GetCombatShotOrigin();
+}
+
 void AVECDrone::BeginPlay()
 {
 	// Blueprint 인스턴스가 네이티브 생성자의 부착 관계를 런타임에 다시 틀어놓는 경우가 있어
