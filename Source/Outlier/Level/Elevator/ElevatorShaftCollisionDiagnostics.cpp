@@ -280,7 +280,7 @@ void AElevatorShaftController::SampleCollisionDiagnostics()
 			*Character->GetVelocity().ToCompactString(), Movement ? static_cast<int32>(Movement->MovementMode) : -1, bOverlapping);
 		if (!Location.Equals(Sample.PreviousLocation, 0.01f))
 		{
-			// これは移動処理ではなく通過区間の再検査。Contact と合わせて位置補正・隙間を切り分ける。
+			// 통과 구간을 다시 검사하고 Contact 정보와 대조해 위치 보정과 틈새 통과를 구분한다.
 			FHitResult Hit;
 			const bool bBlocked = GetWorld()->SweepSingleByChannel(Hit, Sample.PreviousLocation, Location,
 				Capsule->GetComponentQuat(), Capsule->GetCollisionObjectType(), Shape, Params, Responses);
