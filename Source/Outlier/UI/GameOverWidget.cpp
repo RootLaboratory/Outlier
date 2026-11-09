@@ -3,6 +3,8 @@
 #include "UI/GameOverChoiceWidget.h"
 #include "UI/UILayerKeyHintWidget.h"
 #include "UI/StagePreviewWidget.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
+#include "Engine/LocalPlayer.h"
 
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
@@ -246,7 +248,20 @@ void UGameOverWidget::NativeOnInitialized()
 		PresetLoad->OnPresetStageHoverChanged.AddUObject(
 			this,
 			&UGameOverWidget::HandlePresetStageHoverChanged);
+		PresetLoad->OnPresetMouseLeft.AddUObject(this, &UGameOverWidget::HandlePresetMouseLeft);
 	}
+}
+
+FReply UGameOverWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+	ULocalPlayerUILayerSubsystem* Layers = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>() : nullptr;
+	if (Layers && Layers->RouteWidgetPreviewKeyDown(this, InKeyEvent))
+	{
+		return FReply::Handled();
+	}
+	return Super::NativeOnPreviewKeyDown(InGeometry, InKeyEvent);
 }
 
 void UGameOverWidget::HandleChoiceConfirmed(EGameOverMenuChoice Choice)
@@ -297,6 +312,15 @@ void UGameOverWidget::HandleLevelSelectButtonClicked()
 	}
 	PresetLoad->SetVisibility(ESlateVisibility::Visible);
 	PresetLoad->SelectFirstStage();
+}
+
+void UGameOverWidget::HandlePresetMouseLeft()
+{
+	// Disabling the list for a pending request must not move focus off its dialog.
+	if (!ActivePendingWidget)
+	{
+		ClosePresetLoad();
+	}
 }
 
 void UGameOverWidget::ClosePresetLoad()

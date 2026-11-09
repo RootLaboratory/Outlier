@@ -458,10 +458,13 @@ bool AInteractableDoor::PlayDoorMovementAudio(bool bOpen)
 		return false;
 	}
 
-	const FGameplayTag MovementContextTag = FGameplayTag::RequestGameplayTag(
-		bOpen
-			? TEXT("Audio.Context.Object.Door.Open")
-			: TEXT("Audio.Context.Object.Door.Close"));
+	// 문별 컨텍스트(예: 엘리베이터 문)가 지정되면 열림/닫힘 공용으로 그 태그를 쓴다.
+	const FGameplayTag MovementContextTag = !DoorMovementAudioContextTags.IsEmpty()
+		? DoorMovementAudioContextTags.First()
+		: FGameplayTag::RequestGameplayTag(
+			bOpen
+				? TEXT("Audio.Context.Object.Door.Open")
+				: TEXT("Audio.Context.Object.Door.Close"));
 
 	return UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
 		this,

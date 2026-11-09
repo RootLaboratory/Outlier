@@ -25,6 +25,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPresetStageConfirmed, FName, Stag
 
 /** 스테이지 버튼의 hover 상태가 바뀔 때 발화. 미리보기 이미지는 이 위젯을 품은 쪽(GameOverWidget)이 그린다. */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPresetStageHoverChanged, EOutlierStage /*Stage*/, bool /*bHovered*/);
+DECLARE_MULTICAST_DELEGATE(FOnPresetMouseLeft);
 
 /** Preset stage selection widget. */
 UCLASS()
@@ -56,8 +57,11 @@ public:
 	FOnPresetStageConfirmed OnPresetStageConfirmed;
 
 	FOnPresetStageHoverChanged OnPresetStageHoverChanged;
+	FOnPresetMouseLeft OnPresetMouseLeft;
 
 protected:
+	virtual void NativeOnMouseLeave(const FPointerEvent& InMouseEvent) override;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Preset|Stage")
 	TObjectPtr<UButton> UnPresetButton;
 

@@ -22,6 +22,7 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 		return;
 	}
 
+	LastHealthDamage = 0.0f;
 	const float Damage = FMath::Max(GetIncomingDamage(), 0.0f);
 	SetIncomingDamage(0.0f);
 	if (Damage <= 0.0f)
@@ -68,6 +69,8 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 
 	if (bInstantKill || RemainingDamage > 0.0f)
 	{
+		// UI 피드백 단계는 실드를 넘어 Health 에 도달한 양으로 정한다. 즉사는 남은 Health 전체를 기록한다.
+		LastHealthDamage = bInstantKill ? FMath::Max(GetHealth(), 0.0f) : RemainingDamage;
 		AbilitySystem->SetNumericAttributeBase(
 			GetHealthAttribute(),
 			bInstantKill ? 0.0f : FMath::Max(GetHealth() - RemainingDamage, 0.0f));

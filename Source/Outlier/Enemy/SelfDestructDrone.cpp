@@ -71,6 +71,7 @@ ASelfDestructDrone::ASelfDestructDrone()
 	DetectAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Detect"));
 	HoverAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.Hovering.Loop"));
 	AppearAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Appear"));
+	CombatLoopAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Combat.Loop"));
 	TelegraphAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Exlode.sign"));
 	SelfDestructAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Exlode.Act"));
 

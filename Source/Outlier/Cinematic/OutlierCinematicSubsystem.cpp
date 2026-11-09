@@ -7,6 +7,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Event/OutlierEventSubsystem.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "Camera/PlayerCameraManager.h"
@@ -353,7 +354,17 @@ void UOutlierCinematicSubsystem::CompleteCinematic(const FGuid& IntroId)
 	}
 	// 마지막 프레임을 평가하고 시퀀스 상태를 복원한다. GoToEndAndStop은 OnFinished를 호출하지 않는다.
 	Player->GoToEndAndStop();
+	// 마지막 프레임에서 제출한 이벤트까지 지운 뒤 완료 콜백에 제어를 돌려준다.
+	ClearCinematicEvents();
 	HandleSequenceFinished();
+}
+
+void UOutlierCinematicSubsystem::ClearCinematicEvents()
+{
+	if (UOutlierEventSubsystem* Events = GetLocalPlayer()->GetSubsystem<UOutlierEventSubsystem>())
+	{
+		Events->ClearPresentation();
+	}
 }
 
 void UOutlierCinematicSubsystem::HandleSequenceFinished()
@@ -370,7 +381,17 @@ void UOutlierCinematicSubsystem::HandleSequenceFinished()
 void UOutlierCinematicSubsystem::FailCinematic(const TCHAR* Reason)
 {
 	if (State == EOutlierCinematicState::Failed) return;
+	const bool bWasPlaying = State == EOutlierCinematicState::Playing;
 	State = EOutlierCinematicState::Failed;
+	if (bWasPlaying)
+	{
+		if (ULevelSequencePlayer* Player = ActivePlayer.Get())
+		{
+			Player->OnFinished.RemoveDynamic(this, &UOutlierCinematicSubsystem::HandleSequenceFinished);
+			if (Player->IsPlaying() || Player->IsPaused()) Player->Stop();
+		}
+		ClearCinematicEvents();
+	}
 	PopCinematicHint();
 	RestorePairPawnVisuals();
 	UE_LOG(LogTemp, Error, TEXT("[Cinematic] Intro=%s failed: %s"), *ActiveIntroId.ToString(), Reason);
@@ -425,6 +446,9 @@ bool UOutlierCinematicSubsystem::PlayTitleCinematic()
 
 void UOutlierCinematicSubsystem::ClearLevelCinematics()
 {
+	// 정상 종료 후 Release에서 호출될 때에는 완료 콜백이 시작한 이벤트를 보존한다.
+	const bool bInterrupted = State == EOutlierCinematicState::Playing
+		|| (ActivePlayer.IsValid() && (ActivePlayer->IsPlaying() || ActivePlayer->IsPaused()));
 	PopCinematicHint();
 	CinematicHintkeyClass = nullptr;
 	State = EOutlierCinematicState::Idle;
@@ -440,6 +464,7 @@ void UOutlierCinematicSubsystem::ClearLevelCinematics()
 		if (Player->IsPlaying() || Player->IsPaused()) Player->Stop();
 	}
 	ActivePlayer.Reset();
+	if (bInterrupted) ClearCinematicEvents();
 	if (InputScope.IsValid())
 	{
 		if (auto* Layers = GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>())

@@ -3,8 +3,11 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/Image.h"
+#include "Components/TextBlock.h"
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Interface/HackableInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "UI/HackCandidateMarkerWidget.h"
 
 void UHackCandidateLayerWidget::BindHackComponent(UPartnerHackComponent* InHackComponent)
@@ -33,6 +36,22 @@ void UHackCandidateLayerWidget::ClearMarkers()
 	}
 
 	MarkerWidgets.Reset();
+	UpdateCandidateNullVisibility();
+}
+
+void UHackCandidateLayerWidget::UpdateCandidateNullVisibility()
+{
+	if (!HackCandidateNull)
+	{
+		return;
+	}
+
+	const ESlateVisibility NullVisibility = MarkerWidgets.IsEmpty()
+		? ESlateVisibility::Visible : ESlateVisibility::Collapsed;
+	if (HackCandidateNull->GetVisibility() != NullVisibility)
+	{
+		HackCandidateNull->SetVisibility(NullVisibility);
+	}
 }
 
 void UHackCandidateLayerWidget::NativeConstruct()
@@ -51,12 +70,16 @@ void UHackCandidateLayerWidget::NativeConstruct()
 	{
 		MarkerCanvas->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	}
+
+	StartReveal();
+	UpdateCandidateNullVisibility();
 }
 
 void UHackCandidateLayerWidget::NativeDestruct()
 {
 	BindHackComponent(nullptr);
 	ClearMarkers();
+	bRevealActive = false;
 
 	Super::NativeDestruct();
 }
@@ -65,20 +88,28 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
+	UpdateReveal(InDeltaTime);
+
 	APlayerController* PC = GetOwningPlayer();
 	if (!PC)
 	{
 		return;
 	}
 
+	bool bCandidatesRemoved = false;
 	for (auto It = MarkerWidgets.CreateIterator(); It; ++It)
 	{
 		AActor* TargetActor = It.Key();
 		UHackCandidateMarkerWidget* Marker = It.Value();
 
-		if (!TargetActor || !Marker)
+		if (!IsValid(TargetActor) || !IsValid(Marker))
 		{
+			if (IsValid(Marker))
+			{
+				Marker->RemoveFromParent();
+			}
 			It.RemoveCurrent();
+			bCandidatesRemoved = true;
 			continue;
 		}
 
@@ -98,6 +129,61 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 			CanvasSlot->SetPosition(ScreenLocation / ViewportScale);
 		}
 
+	}
+
+	if (bCandidatesRemoved)
+	{
+		UpdateCandidateNullVisibility();
+	}
+}
+
+void UHackCandidateLayerWidget::EnsureRevealMaterial()
+{
+	if (RevealMaterial || !HackingHUD)
+	{
+		return;
+	}
+
+	RevealMaterial = HackingHUD->GetDynamicMaterial();
+}
+
+void UHackCandidateLayerWidget::StartReveal()
+{
+	RevealElapsedTime = 0.0f;
+	bRevealActive = RevealDuration > 0.0f;
+	EnsureRevealMaterial();
+
+	if (RevealMaterial)
+	{
+		RevealMaterial->SetScalarParameterValue(RevealRadiusParameterName,
+			bRevealActive ? 0.0f : RevealMaxRadius);
+	}
+}
+
+void UHackCandidateLayerWidget::UpdateReveal(float InDeltaTime)
+{
+	if (!bRevealActive)
+	{
+		return;
+	}
+
+	EnsureRevealMaterial();
+	if (!RevealMaterial)
+	{
+		bRevealActive = false;
+		return;
+	}
+
+	RevealElapsedTime += InDeltaTime;
+	const float Duration = FMath::Max(RevealDuration, KINDA_SMALL_NUMBER);
+	const float Progress = FMath::Clamp(RevealElapsedTime / Duration, 0.0f, 1.0f);
+	const float EasedProgress = FMath::InterpEaseOut(0.0f, 1.0f, Progress, 2.0f);
+	RevealMaterial->SetScalarParameterValue(RevealRadiusParameterName,
+		FMath::Lerp(0.0f, RevealMaxRadius, EasedProgress));
+
+	if (Progress >= 1.0f)
+	{
+		bRevealActive = false;
 	}
 }
 
@@ -134,6 +220,7 @@ void UHackCandidateLayerWidget::AddCandidate(AActor* TargetActor, UHackableCompo
 
 	Marker->EnsureHackableInfoWidget();
 	MarkerWidgets.Add(TargetActor, Marker);
+	UpdateCandidateNullVisibility();
 }
 
 void UHackCandidateLayerWidget::RemoveCandidate(AActor* TargetActor, UHackableComponent* HackableComponent)
@@ -146,5 +233,6 @@ void UHackCandidateLayerWidget::RemoveCandidate(AActor* TargetActor, UHackableCo
 		}
 
 		MarkerWidgets.Remove(TargetActor);
+		UpdateCandidateNullVisibility();
 	}
 }

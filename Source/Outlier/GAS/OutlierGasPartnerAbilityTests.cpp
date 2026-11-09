@@ -447,14 +447,14 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Cancelled Hack preserves its charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
 	TestTrue(TEXT("Cancelled Hack starts its separate retry restriction"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
 	TestTrue(TEXT("Cancellation exposes the remaining retry time for HUD"),
-		IsNearlyEqualDuration(AbilitySystem->GetPartnerHackRetryRemaining(), MakeTestConfig().HackCooldown * 0.5f));
+		IsNearlyEqualDuration(AbilitySystem->GetPartnerHackRetryRemaining(), 0.3f));
 	TestFalse(TEXT("Cancellation retry blocks an otherwise available charge"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
 	// 클라이언트에 남아 있던 검색 입력이 직접 Component RPC를 보내도 GAS 제한을 우회하지 못한다.
 	HackComponent->TryHack();
 	TestFalse(TEXT("A direct search RPC cannot bypass the cancellation retry"), HackComponent->IsHackInteractionActive());
 	TestFalse(TEXT("A rejected search RPC cannot leave a hacking ability active"), IsAbilityWithTagActive(*AbilitySystem, HackAbility));
-	Fixture.Tick(MakeTestConfig().HackCooldown * 0.5f - 0.1f);
-	TestTrue(TEXT("Cancellation restriction remains until half the configured cooldown"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
+	Fixture.Tick(0.2f);
+	TestTrue(TEXT("Cancellation restriction remains until the unrefunded cooldown expires"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
 	Fixture.Tick(0.2f);
 	TestFalse(TEXT("Cancellation retry restriction expires independently"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
 	TestEqual(TEXT("Expired retry clears the HUD duration"), AbilitySystem->GetPartnerHackChargeState().RetryDuration, 0.0f);

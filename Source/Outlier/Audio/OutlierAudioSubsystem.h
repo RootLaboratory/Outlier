@@ -358,6 +358,8 @@ private:
 		int32 Priority = 1;
 	};
 
+	/** 우선순위 규칙 적용: 같거나 낮은 대기 항목 제거 후 추가, 같거나 높으면 활성 음성 중단. */
+	void AdmitVoiceRequest(const FVoiceRequest& Request);
 	void StartNextVoice();
 	void FinishActiveVoice(bool bCompleted);
 	/** 중단이 아닌 재생 실패. 활성 음성을 종료한 뒤 사용 불가로 알린다. */

@@ -558,7 +558,8 @@ void ULocalPlayerUISubSystem::OnRep_InfiniteAmmoDisplayChanged(bool bActive)
 
 void ULocalPlayerUISubSystem::OnDamageFeedback(
 	AActor* DamagedCharacter,
-	const FVector& DamageOrigin)
+	const FVector& DamageOrigin,
+	const float HealthDamage)
 {
 	if (bTransientWidgetsSuppressed)
 	{
@@ -567,7 +568,7 @@ void ULocalPlayerUISubSystem::OnDamageFeedback(
 	UMainUIBase* MainUI = GetMainUI();
 	if (MainUI && MainUI->DamageFeedbackLayer)
 	{
-		MainUI->DamageFeedbackLayer->ShowDamageFeedback(DamagedCharacter, DamageOrigin);
+		MainUI->DamageFeedbackLayer->ShowDamageFeedback(DamagedCharacter, DamageOrigin, HealthDamage);
 	}
 }
 

@@ -1,4 +1,5 @@
 #include "UI/GameOverChoiceWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/Button.h"
 #include "Blueprint/WidgetTree.h"
@@ -232,7 +233,9 @@ void UGameOverChoiceWidget::HandleQuitGameHovered()
 void UGameOverChoiceWidget::MoveSelection(int32 Step)
 {
 	const int32 Count = GetButtonCount();
+	const int32 PreviousIndex = ChosenIndex;
 	SetChosenIndex((ChosenIndex + Step + Count) % Count, true);
+	if (ChosenIndex != PreviousIndex) OutlierAudioFeedback::MenuNavigate(this);
 }
 
 void UGameOverChoiceWidget::SetChosenIndex(int32 Index, bool bFocusButton)

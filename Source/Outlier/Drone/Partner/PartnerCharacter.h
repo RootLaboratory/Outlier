@@ -302,6 +302,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
 	float HackCooldown = 3.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float HackCancelCooldownRefundRate = 0.9f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
 	float HackFailPenaltyTime = 3.0f;
 
@@ -537,6 +540,7 @@ protected:
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
 	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
 	void ApplyAccelerateState(bool bNewAccelerate);
+	void RefreshMovementLoopAudio();
 	void StartBoostNoiseTimer();
 	void StopBoostNoiseTimer();
 	void ReportBoostNoise();
@@ -578,8 +582,10 @@ protected:
 	void HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleBoostSpeedChanged(const FOnAttributeChangeData& ChangeData);
 	void RefreshMobilityFromAttributes();
+	void HandleRebootingTagChanged(const FGameplayTag Tag, int32 NewCount);
 	FDelegateHandle MoveSpeedChangedHandle;
 	FDelegateHandle BoostSpeedChangedHandle;
+	FDelegateHandle RebootingTagChangedHandle;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 

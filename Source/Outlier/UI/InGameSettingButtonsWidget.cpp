@@ -165,6 +165,7 @@ void UInGameSettingButtonsWidget::HandleExitHovered()
 
 void UInGameSettingButtonsWidget::MoveSelection(int32 Step)
 {
+	const EInGameSettingButtonAction PreviousAction = SelectedAction;
 	int32 Index = static_cast<int32>(SelectedAction);
 	for (int32 Attempt = 0; Attempt < ButtonCount; ++Attempt)
 	{
@@ -174,6 +175,7 @@ void UInGameSettingButtonsWidget::MoveSelection(int32 Step)
 		if (IsActionEnabled(Candidate))
 		{
 			SelectAction(Candidate);
+			if (SelectedAction != PreviousAction) OutlierAudioFeedback::MenuNavigate(this);
 			return;
 		}
 	}

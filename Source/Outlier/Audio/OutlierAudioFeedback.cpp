@@ -39,6 +39,10 @@ void Local(const UObject* Context, const TCHAR* AudioContext, const TCHAR* Type)
 			*GetNameSafe(Context), AudioContext);
 	}
 }
+void MenuNavigate(const UObject* Context)
+{
+	Local(Context, TEXT("Audio.Context.UI.Menu.Hover"));
+}
 void Owner(AActor* Emitter, const TCHAR* AudioContext, const TCHAR* Type)
 {
 	if (!IsValid(Emitter) || !Emitter->HasAuthority()) return;

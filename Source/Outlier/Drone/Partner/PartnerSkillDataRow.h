@@ -32,6 +32,10 @@ struct OUTLIER_API FPartnerSkillDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float HackCooldown = 3.0f;
 
+	/** 취소 시 환급률. 0.9이면 HackCooldown의 10%만 재시도 대기한다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float HackCancelCooldownRefundRate = 0.9f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float HackFailPenaltyTime = 3.0f;
 

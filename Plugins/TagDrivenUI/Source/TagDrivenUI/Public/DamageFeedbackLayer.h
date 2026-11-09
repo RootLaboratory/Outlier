@@ -10,6 +10,8 @@ class AActor;
 class FViewport;
 class UCanvasPanel;
 class UDamageFeedbackIndicator;
+class UImage;
+class UMaterialInstanceDynamic;
 class URedDamageFeedbackWidget;
 class URetainerBox;
 class UShieldDamageFeedbackWidget;
@@ -24,11 +26,16 @@ class TAGDRIVENUI_API UDamageFeedbackLayer : public UUserWidget
 	GENERATED_BODY()
 
 public:
+	// HealthDamage: 실드를 넘어 Health 에 실제로 들어간 피해량. 0 이면 방향 인디케이터만 띄운다.
 	UFUNCTION(BlueprintCallable, Category = "Damage Feedback")
-	void ShowDamageFeedback(AActor* InCharacter, const FVector& InDamageOrigin);
+	void ShowDamageFeedback(AActor* InCharacter, const FVector& InDamageOrigin, float HealthDamage = 0.0f);
 
 	UFUNCTION(BlueprintCallable, Category = "Damage Feedback")
 	void ClearDamageFeedback();
+
+	// Threshold 를 높은 단계부터 검사해 1~2 단계를 돌려준다. Level1Threshold 미만이면 0.
+	UFUNCTION(BlueprintPure, Category = "Damage Feedback|Health")
+	int32 ResolveHealthDamageLevel(float HealthDamage) const;
 
 	// 전체 Shield Canvas 의 실제 픽셀 크기. 뷰포트 크기 변경 시에는 자동으로 갱신된다.
 	UFUNCTION(BlueprintCallable, Category = "Damage Feedback|Shield|Mask")
@@ -51,6 +58,38 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UCanvasPanel> ShieldMaskCanvas;
+
+	// Health 피격 단계 HUD. Brush 에 M_DamageFeedbackHUD(또는 그 인스턴스)를 지정한다.
+	// 머티리얼은 CurrentLevel / NextLevel / Blend / Opacity 파라미터로 단계 이미지와 전환을 그린다.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> DamageFeedbackHUD;
+
+	// Health 피해량 단계 기준. 높은 단계부터 검사하며 피해량 >= 값이면 해당 단계다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage Feedback|Health", meta = (ClampMin = "0.0"))
+	float HealthDamageLevel2Threshold = 20.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage Feedback|Health", meta = (ClampMin = "0.0"))
+	float HealthDamageLevel1Threshold = 1.0f;
+
+	// 마지막 피격부터 HUD 가 사라질 때까지의 시간. 새 피격마다 처음부터 다시 센다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage Feedback|Health", meta = (ClampMin = "0.0"))
+	float HealthFadeOutDuration = 0.5f;
+
+	// 페이드 중 다른 단계로 맞았을 때 Current → Next 로 넘어가는 시간.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage Feedback|Health", meta = (ClampMin = "0.0"))
+	float HealthBlendDuration = 0.15f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Damage Feedback|Health|Material")
+	FName CurrentLevelParameterName = TEXT("CurrentLevel");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Damage Feedback|Health|Material")
+	FName NextLevelParameterName = TEXT("NextLevel");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Damage Feedback|Health|Material")
+	FName BlendParameterName = TEXT("Blend");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Damage Feedback|Health|Material")
+	FName OpacityParameterName = TEXT("Opacity");
 
 	// 피격 시 Red / Shield 중 어떤 인디케이터를 띄울지. 둘 다 켜면 함께 뜬다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Damage Feedback")
@@ -107,6 +146,21 @@ private:
 	bool ShowFromPool(const TArray<TObjectPtr<UDamageFeedbackIndicator>>& Pool, AActor* InCharacter,
 		const FVector& InDamageOrigin);
 	bool TickPool(const TArray<TObjectPtr<UDamageFeedbackIndicator>>& Pool, float DeltaTime);
+
+	bool StartHealthFeedback(int32 Level);
+	bool TickHealthFeedback(float DeltaTime);
+	void ClearHealthFeedback();
+	void PushHealthFeedbackParameters();
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HealthFeedbackMID;
+
+	int32 HealthCurrentLevel = 0;
+	int32 HealthNextLevel = 0;
+	float HealthBlend = 0.0f;
+	float HealthBlendElapsed = 0.0f;
+	float HealthFadeElapsed = 0.0f;
+	bool bHealthFeedbackActive = false;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UDamageFeedbackIndicator>> RedPool;

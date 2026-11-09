@@ -130,8 +130,10 @@ void UTitleButtonsWidget::HandleExitHovered()
 
 void UTitleButtonsWidget::MoveSelection(int32 Step)
 {
+	const ETitleButtonAction PreviousAction = SelectedAction;
 	const int32 Index = (static_cast<int32>(SelectedAction) + Step + TitleButtonCount) % TitleButtonCount;
 	SelectAction(static_cast<ETitleButtonAction>(Index));
+	if (SelectedAction != PreviousAction) OutlierAudioFeedback::MenuNavigate(this);
 	if (UButton* Button = GetButton(SelectedAction))
 	{
 		if (APlayerController* Player = GetOwningPlayer()) Button->SetUserFocus(Player);

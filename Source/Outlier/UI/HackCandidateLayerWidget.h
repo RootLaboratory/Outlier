@@ -5,6 +5,9 @@
 #include "HackCandidateLayerWidget.generated.h"
 
 class UCanvasPanel;
+class UImage;
+class UTextBlock;
+class UMaterialInstanceDynamic;
 class UHackableInfoWidget;
 class UHackCandidateMarkerWidget;
 class UHackableComponent;
@@ -31,6 +34,21 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UCanvasPanel> MarkerCanvas;
 
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> HackingHUD;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UTextBlock> HackCandidateNull;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Hack|Reveal")
+	float RevealDuration = 0.35f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Hack|Reveal")
+	float RevealMaxRadius = 0.7072f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Hack|Reveal")
+	FName RevealRadiusParameterName = TEXT("RevealRadius");
+
 	UPROPERTY(EditDefaultsOnly, Category = "Hack")
 	TSubclassOf<UHackCandidateMarkerWidget> MarkerWidgetClass;
 
@@ -42,6 +60,17 @@ protected:
 
 
 private:
+	void UpdateCandidateNullVisibility();
+	void EnsureRevealMaterial();
+	void StartReveal();
+	void UpdateReveal(float InDeltaTime);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> RevealMaterial;
+
+	float RevealElapsedTime = 0.0f;
+	bool bRevealActive = false;
+
 	UPROPERTY()
 	TObjectPtr<UPartnerHackComponent> HackComponent;
 

@@ -179,6 +179,16 @@ bool FOutlierInputBindingTableRow::IsVisibleForRole(EOutlierPlayerRole Role) con
 	return UOutlierInputBindingTable::IsScopeVisibleForRole(GetEffectiveDisplayScopes(), Role);
 }
 
+bool FOutlierInputBindingTableRow::SharesAnyRoleWith(const FOutlierInputBindingTableRow& Other) const
+{
+	// Common 범위는 모든 역할에 보이므로 어떤 행과도 겹친다. 슈터 전용과 파트너 전용만 서로 분리된다.
+	for (const EOutlierPlayerRole Role : { EOutlierPlayerRole::None, EOutlierPlayerRole::Shooter, EOutlierPlayerRole::Partner })
+	{
+		if (IsVisibleForRole(Role) && Other.IsVisibleForRole(Role)) return true;
+	}
+	return false;
+}
+
 bool UOutlierInputBindingTable::IsScopeVisibleForRole(int32 Scopes, EOutlierPlayerRole Role)
 {
 	const EOutlierInputSettingScope RoleScope = Role == EOutlierPlayerRole::Shooter

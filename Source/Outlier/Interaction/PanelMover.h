@@ -2,10 +2,41 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "GameplayTagContainer.h"
 #include "PanelMover.generated.h"
 
 class UCurveFloat;
+class UMaterialInterface;
 class UStaticMeshComponent;
+
+/** 이동 중에만 지정 슬롯의 Material을 바꾼다. MovingMaterial이 비면 변경하지 않는다. */
+USTRUCT(BlueprintType)
+struct FPanelMoverMovingMaterial
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Panel|Material", meta = (ClampMin = "0"))
+	int32 MaterialIndex = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Panel|Material")
+	TObjectPtr<UMaterialInterface> MovingMaterial;
+};
+
+/** 이동 종료까지 원래 Material을 GC로부터 보존하는 런타임 캐시. */
+USTRUCT()
+struct FPanelMoverCachedMaterial
+{
+	GENERATED_BODY()
+
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UStaticMeshComponent> Mesh;
+
+	UPROPERTY(Transient)
+	int32 MaterialIndex = INDEX_NONE;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> OriginalMaterial;
+};
 
 /**
  * 스위치가 MoveToTarget을 부르면 TargetLocationActor 위치까지 한 번 이동하는 판넬(편도, 회전 없음).
@@ -57,6 +88,22 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Panel|Motion", meta = (ClampMin = "0.0", Units = "s"))
 	float MoveDuration = 1.0f;
 
+	/** 이동 중 Supporter에 적용할 Material. 도착하면 원래 Material로 되돌린다. */
+	UPROPERTY(EditAnywhere, Category = "Panel|Material")
+	FPanelMoverMovingMaterial SupporterMovingMaterial;
+
+	/** 이동 중 PanelMesh(LiftPlatform)에 적용할 Material. 도착하면 원래 Material로 되돌린다. */
+	UPROPERTY(EditAnywhere, Category = "Panel|Material")
+	FPanelMoverMovingMaterial LiftPlatformMovingMaterial;
+
+	/** 이동 루프 사운드 Type. 비우면 Audio.Type.Environment. */
+	UPROPERTY(EditAnywhere, Category = "Panel|Audio", meta = (Categories = "Audio.Type"))
+	FGameplayTag MovingAudioTypeTag;
+
+	/** 이동 루프 사운드 Context. 비우면 Audio.Context.Ambience.Panel.Moving. DA의 PlaybackPolicy가 Loop여야 반복된다. */
+	UPROPERTY(EditAnywhere, Category = "Panel|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag MovingAudioContextTag;
+
 private:
 	UPROPERTY(ReplicatedUsing = OnRep_IsMoved)
 	bool bIsMoved = false;
@@ -70,6 +117,15 @@ private:
 	void StartMove();
 	void SnapToTarget();
 	float EvaluateProgress(float TimeRatio) const;
+
+	void ApplyMovingMaterials();
+	void RestoreOriginalMaterials();
+	void SetMovingAudio(bool bEnabled);
+
+	/** StartMove에서 바꾼 슬롯의 원래 Material. 캐시가 없으면 복원하지 않는다. */
+	UPROPERTY(Transient)
+	TArray<FPanelMoverCachedMaterial> CachedMaterials;
+	bool bMovingAudioActive = false;
 
 	FVector StartLocation = FVector::ZeroVector;
 	FVector TargetLocation = FVector::ZeroVector;

@@ -21,6 +21,19 @@ struct FOutlinePolicy
 // Thickness 0은 외곽선 끄기다. 샘플링 전에 반환해 비용도 들지 않게 한다.
 float Width = clamp(Thickness, 0.0, 4.0);
 if (Width <= 0.0) return Scene.rgb;
+// UE binds 1x1 fallback textures when this view has no produced CustomDepth/Stencil.
+// The integer stencil fallback contains 255, which also matches our managed/team bits.
+// Check the bound resources before any screen-sized Load or neighbor edge detection.
+uint StencilWidth, StencilHeight;
+uint CustomDepthWidth, CustomDepthHeight;
+SceneTexturesStruct.CustomStencilTexture.GetDimensions(StencilWidth, StencilHeight);
+SceneTexturesStruct.CustomDepthTexture.GetDimensions(CustomDepthWidth, CustomDepthHeight);
+if (StencilWidth <= 1u || StencilHeight <= 1u ||
+    CustomDepthWidth <= 1u || CustomDepthHeight <= 1u ||
+    StencilWidth != CustomDepthWidth || StencilHeight != CustomDepthHeight)
+{
+    return Scene.rgb;
+}
 FOutlinePolicy Policy;
 float2 Pixel = View.ViewSizeAndInvSize.zw;
 float2 HalfPixel = Pixel * 0.5;

@@ -1,8 +1,16 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "UI/PreSetLoadWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/Button.h"
+
+void UPreSetLoadWidget::NativeOnMouseLeave(const FPointerEvent& InMouseEvent)
+{
+	Super::NativeOnMouseLeave(InMouseEvent);
+	// Leaving the whole list closes it; moving between its buttons must keep it open.
+	OnPresetMouseLeft.Broadcast();
+}
 
 void UPreSetLoadWidget::NativeConstruct()
 {
@@ -62,6 +70,7 @@ void UPreSetLoadWidget::SelectFirstStage()
 void UPreSetLoadWidget::MoveStageSelection(int32 Step)
 {
 	const int32 Direction = Step < 0 ? -1 : 1;
+	const int32 PreviousIndex = ChosenStageIndex;
 	int32 NextIndex = (ChosenStageIndex + Step % 4 + 4) % 4;
 	for (int32 Checked = 0; Checked < 4; ++Checked)
 	{
@@ -69,6 +78,7 @@ void UPreSetLoadWidget::MoveStageSelection(int32 Step)
 		if (GetStageButton(Stage))
 		{
 			SetChosenStage(Stage, true);
+			if (ChosenStageIndex != PreviousIndex) OutlierAudioFeedback::MenuNavigate(this);
 			return;
 		}
 		// Optional stage buttons must not trap keyboard selection at a missing entry.
