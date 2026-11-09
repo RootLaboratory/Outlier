@@ -52,6 +52,7 @@
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Engine/LocalPlayer.h"
 #include "Templates/UnrealTemplate.h"
+#include "Environment/PartnerLightVolume.h"
 
 UAISense_Sight::EVisibilityResult APartnerCharacter::CanBeSeenFrom(
 	const FCanBeSeenFromContext& Context, FVector& OutSeenLocation,
@@ -138,11 +139,20 @@ void APartnerCharacter::BeginPlay()
 
 	EnsurePartnerDataInitialized();
 	AttachBoostVFXToMeshes();
+	RefreshMovementLoopAudio();
+	// Also initialize Partners spawned after the volumes, including spawns outside all volumes.
+	GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		if (!HasActorBegunPlay() || IsActorBeingDestroyed()) return;
+		GetCapsuleComponent()->UpdateOverlaps();
+		APartnerLightVolume::RefreshPartnerLights(this);
+	}));
 }
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	BoneSight.Shutdown();
+	OutlierAudioFeedback::StopLoops(this);
 	UnbindAccelerateInputSettings();
 	SetStandby(false);
 	if (HasAuthority())
@@ -453,6 +463,10 @@ void APartnerCharacter::BindGasMobilityObservers()
 	BoostSpeedChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
 		UOutlierPartnerMovementAttributeSet::GetBoostSpeedAttribute()).AddUObject(
 			this, &APartnerCharacter::HandleBoostSpeedChanged);
+	// Down(Reboot) 진입/해제는 태그 복제로 모든 머신에 전달된다. 이동 루프를 각 머신에서 갱신한다.
+	RebootingTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Rebooting(), EGameplayTagEventType::NewOrRemoved).AddUObject(
+			this, &APartnerCharacter::HandleRebootingTagChanged);
 }
 
 void APartnerCharacter::UnbindGasMobilityObservers()
@@ -466,8 +480,16 @@ void APartnerCharacter::UnbindGasMobilityObservers()
 		UOutlierPartnerMovementAttributeSet::GetMoveSpeedAttribute()).Remove(MoveSpeedChangedHandle);
 	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
 		UOutlierPartnerMovementAttributeSet::GetBoostSpeedAttribute()).Remove(BoostSpeedChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Rebooting(), EGameplayTagEventType::NewOrRemoved).Remove(RebootingTagChangedHandle);
 	MoveSpeedChangedHandle.Reset();
 	BoostSpeedChangedHandle.Reset();
+	RebootingTagChangedHandle.Reset();
+}
+
+void APartnerCharacter::HandleRebootingTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	RefreshMovementLoopAudio();
 }
 
 void APartnerCharacter::HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData)
@@ -1651,6 +1673,18 @@ void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
 	{
 		StopBoostNoiseTimer();
 	}
+	RefreshMovementLoopAudio();
+}
+
+void APartnerCharacter::RefreshMovementLoopAudio()
+{
+	// 루프는 각 머신이 로컬로 재생한다. bIsAccelerate는 복제되며 OnRep에서도 이 경로를 탄다.
+	// 이동 루프는 속도와 무관하게 항상 재생하고, 부스트 중에는 부스트 루프로 교체한다.
+	// Down(Reboot) 중에는 둘 다 끈다.
+	const bool bDown = OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
+	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Player.02.Movement.Move.Loop"), !bDown && !bIsAccelerate, TEXT("Audio.Type.Player"));
+	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Player.02.Movement.Boost.Loop"), !bDown && bIsAccelerate, TEXT("Audio.Type.Player"));
 }
 
 void APartnerCharacter::StartBoostNoiseTimer()
@@ -1905,6 +1939,7 @@ void  APartnerCharacter::InitializeFromDataTables()
 		HackEffectiveRange	= SkillDataRow->HackEffectiveRange;
 		HackMiniGameTime	= SkillDataRow->HackMiniGameTime;
 		HackCooldown		= SkillDataRow->HackCooldown;
+		HackCancelCooldownRefundRate = SkillDataRow->HackCancelCooldownRefundRate;
 		HackFailPenaltyTime	= SkillDataRow->HackFailPenaltyTime;
 
 		AreaOfEffectRange	= SkillDataRow->AreaOfEffectRange;
@@ -1939,7 +1974,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 		AssistDeadZoneAngle		= CameraAssistDataRow->AssistDeadZoneAngle;
 		AssistInterpSpeed		= CameraAssistDataRow->AssistInterpSpeed;
 		AssistStrength			= CameraAssistDataRow->AssistStrength;
-		HackCancelCooldownRefundRate = SkillDataRow->HackCancelCooldownRefundRate;
 	}
 
 	FPartnerHackAbilityData HackAbilityData;
@@ -1966,6 +2000,7 @@ void  APartnerCharacter::InitializeFromDataTables()
 		AbilityConfig.EMPCooldown = AreaOfEffectCooldown;
 		AbilityConfig.ShieldCooldown = ShieldCooldown;
 		AbilityConfig.HackCooldown = HackCooldown;
+		AbilityConfig.HackCancelCooldownRefundRate = HackCancelCooldownRefundRate;
 		AbilityConfig.ScanCooldown = ScanCooldown;
 		AbilityConfig.ScanDuration = ScanDuration;
 		// Upgrade AbilityConfig 투영이 참조하는 필드. DT_Partner_Skill 에서 읽어온 캐릭터 멤버값을 그대로 넣는다.
@@ -2000,7 +2035,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 void APartnerCharacter::LookInput(const FInputActionValue& Value)
 {
 	if (!CanAcceptInput())
-		AbilityConfig.HackCancelCooldownRefundRate = HackCancelCooldownRefundRate;
 	{
 		return;
 	}

@@ -540,6 +540,7 @@ protected:
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
 	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
 	void ApplyAccelerateState(bool bNewAccelerate);
+	void RefreshMovementLoopAudio();
 	void StartBoostNoiseTimer();
 	void StopBoostNoiseTimer();
 	void ReportBoostNoise();
@@ -581,8 +582,10 @@ protected:
 	void HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleBoostSpeedChanged(const FOnAttributeChangeData& ChangeData);
 	void RefreshMobilityFromAttributes();
+	void HandleRebootingTagChanged(const FGameplayTag Tag, int32 NewCount);
 	FDelegateHandle MoveSpeedChangedHandle;
 	FDelegateHandle BoostSpeedChangedHandle;
+	FDelegateHandle RebootingTagChangedHandle;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 

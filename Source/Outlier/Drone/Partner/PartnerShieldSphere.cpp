@@ -156,6 +156,8 @@ void APartnerShieldSphere::EndShield()
 {
 	if (HasAuthority())
 	{
+		// 실드가 사라지는 위치에서 종료음을 재생한다. 위치를 요청에 담으므로 Destroy 이후에도 재생된다.
+		OutlierAudioFeedback::World(this, TEXT("Audio.Context.Player.02.Skill.Shield.Off"), TEXT("Audio.Type.Player"));
 		Destroy();
 	}
 }
