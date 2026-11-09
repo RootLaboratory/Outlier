@@ -1519,7 +1519,7 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Timeout equal to longest phase duration rejects reservation"), Suit->Interact(Shooter));
 	Shooter->SuitTransitionResponseTimeout = 0.5f;
 	ShooterController->bTestLocalController = false;
-	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, FGuid::NewGuid(), ESuitTransitionPhase::FadingOut, Timing);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, FGuid::NewGuid(), ESuitTransitionPhase::FadingOut, Timing, FVector::ZeroVector);
 	TestTrue(TEXT("A non-local controller does not start local presentation"),
 		ShooterController->FadeOutRequests == 0 && !ShooterController->LocalSuitTransitionId.IsValid());
 	ShooterController->bTestLocalController = true;
@@ -1566,7 +1566,7 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	ShooterController->SetRole(ROLE_Authority);
 	ShooterController->NotifySuitFadeOutFinished(Id);
 	ShooterController->NotifySuitFadeOutFinished(Id);
-	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, Id, ESuitTransitionPhase::FadingOut, Timing);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, Id, ESuitTransitionPhase::FadingOut, Timing, FVector::ZeroVector);
 	TestTrue(TEXT("Duplicate phase request neither restarts fade nor resets its sent response"),
 		ShooterController->FadeOutRequests == 1 && ShooterController->bLocalSuitTransitionReadySent);
 	TestFalse(TEXT("Duplicate Shooter ready is not Partner ready"), Shooter->bSuitTransitionPartnerReady);
@@ -1602,7 +1602,7 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Unconnected transition can start"), Suit->Interact(Shooter));
 	const FGuid UnconnectedId = Shooter->GetSuitTransitionId();
 	ShooterController->NotifySuitFadeOutFinished(Id);
-	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, Id, ESuitTransitionPhase::Idle, Timing);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, Id, ESuitTransitionPhase::Idle, Timing, FVector::ZeroVector);
 	TestTrue(TEXT("Old callback and old cleanup cannot affect a new transition"),
 		ShooterController->LocalSuitTransitionId == UnconnectedId && !Shooter->bSuitTransitionShooterReady);
 	// 대괄호가 포함된 로그 접두사는 정규식이 아닌 일반 문자열로 비교한다.
@@ -1662,6 +1662,60 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Pre-commit EndPlay releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
 	TestFalse(TEXT("Pre-commit EndPlay grants nothing"), ShooterPS->GetAcquiredSuit());
 
+	// 암전 전에는 위치를 바꾸지 않는다. 암전 후 목적지가 막히면 지급/소비 없이 예약을 해제한다.
+	const FVector PartnerBeforeBlockedMove = Partner->GetActorLocation();
+	AActor* Obstacle = World->SpawnActor<AActor>();
+	UBoxComponent* BlockingBox = NewObject<UBoxComponent>(Obstacle);
+	Obstacle->SetRootComponent(BlockingBox);
+	BlockingBox->SetBoxExtent(FVector(1000.0f));
+	BlockingBox->SetCollisionProfileName(TEXT("BlockAll"));
+	BlockingBox->RegisterComponent();
+	Obstacle->SetActorLocation(Shooter->GetActorLocation() + FVector(0.0f, 200.0f, 0.0f));
+	TestTrue(TEXT("Blocked destination can reserve before blackout"), Suit->Interact(Shooter));
+	Id = Shooter->GetSuitTransitionId();
+	TestEqual(TEXT("Reservation does not move Partner"), Partner->GetActorLocation(), PartnerBeforeBlockedMove);
+	ShooterController->NotifySuitFadeOutFinished(Id);
+	PartnerController->NotifySuitFadeOutFinished(Id);
+	TestFalse(TEXT("Blocked destination cancels the transition"), Shooter->GetSuitTransitionId().IsValid());
+	TestFalse(TEXT("Blocked destination grants neither player a suit"), ShooterPS->GetAcquiredSuit() || PartnerPS->GetAcquiredSuit());
+	TestEqual(TEXT("Blocked destination preserves Partner position"), Partner->GetActorLocation(), PartnerBeforeBlockedMove);
+	TestTrue(TEXT("Blocked destination releases reservation for retry"), Suit->CanReserveFor(Shooter));
+	TestFalse(TEXT("Blocked destination releases both movement blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
+	Obstacle->Destroy();
+
+	// 공간이 비어 있어도 Shooter와 겹치는 목적지는 거부한다. Pawn 충돌 설정에 의존하지 않는다.
+	Suit->SetPartnerTeleportOffset(FVector::ZeroVector);
+	TestTrue(TEXT("Overlapping destination case reserves"), Suit->Interact(Shooter));
+	Id = Shooter->GetSuitTransitionId();
+	ShooterController->NotifySuitFadeOutFinished(Id);
+	PartnerController->NotifySuitFadeOutFinished(Id);
+	TestFalse(TEXT("Overlapping destination cancels without acquiring"), ShooterPS->GetAcquiredSuit());
+	TestTrue(TEXT("Overlapping destination preserves the suit"), Suit->CanReserveFor(Shooter));
+	Suit->SetPartnerTeleportOffset(FVector(0.0f, 200.0f, 0.0f));
+
+	// 실제 위치 갱신 콜백에서 취소를 재진입시킨다. 이동 성공 뒤라도 지급 전이면 원래 위치로 복구해야 한다.
+	bool bCanceledDuringTeleport = false;
+	const FDelegateHandle CancelOnMove = Partner->GetRootComponent()->TransformUpdated.AddLambda(
+		[Shooter, Partner, PartnerBeforeBlockedMove, &bCanceledDuringTeleport](USceneComponent*, EUpdateTransformFlags, ETeleportType)
+		{
+			if (!bCanceledDuringTeleport && Shooter->GetSuitTransitionPhase() == ESuitTransitionPhase::FadingOut
+				&& !Partner->GetActorLocation().Equals(PartnerBeforeBlockedMove))
+			{
+				bCanceledDuringTeleport = true;
+				Shooter->CancelSuitTransition();
+			}
+		});
+	TestTrue(TEXT("Reentrant teleport cancellation case reserves"), Suit->Interact(Shooter));
+	Id = Shooter->GetSuitTransitionId();
+	ShooterController->NotifySuitFadeOutFinished(Id);
+	PartnerController->NotifySuitFadeOutFinished(Id);
+	Partner->GetRootComponent()->TransformUpdated.Remove(CancelOnMove);
+	TestTrue(TEXT("Actual teleport invokes the cancellation callback"), bCanceledDuringTeleport);
+	TestFalse(TEXT("Reentrant cancellation cannot grant a suit"), ShooterPS->GetAcquiredSuit() || PartnerPS->GetAcquiredSuit());
+	TestTrue(TEXT("Pre-commit cancellation restores the original position"), Partner->GetActorLocation().Equals(PartnerBeforeBlockedMove));
+	TestTrue(TEXT("Pre-commit cancellation leaves the suit available"), Suit->CanReserveFor(Shooter));
+	TestFalse(TEXT("Reentrant cancellation releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
+
 	UShooterInventoryComponent* Inventory = Shooter->GetInventoryComponent();
 	ASuitInteractionTestRifle* OldRifle = World->SpawnActor<ASuitInteractionTestRifle>();
 	ASuitInteractionTestRifle* Pistol = World->SpawnActor<ASuitInteractionTestRifle>();
@@ -1681,10 +1735,38 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 		&& Inventory->GetWeaponInSlot(EWeaponSlot::Melee) == Melee);
 
 	// 최소 시간 경계는 위에서 검사했다. 이 구간은 명시적 완료 응답으로 commit 이후 수명을 검사한다.
+	Shooter->SetActorRotation(FRotator(0.0f, 90.0f, 0.0f));
+	const FVector ExpectedPartnerDestination = Shooter->GetActorLocation() + FVector(-200.0f, 0.0f, 0.0f);
+	Partner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
 	TestTrue(TEXT("Commit case reserves"), Suit->Interact(Shooter));
 	Id = Shooter->GetSuitTransitionId();
 	ShooterController->NotifySuitFadeOutFinished(Id);
+	TestEqual(TEXT("One covered screen cannot move Partner"), Partner->GetActorLocation(), PartnerBeforeBlockedMove);
 	PartnerController->NotifySuitFadeOutFinished(Id);
+	TestTrue(TEXT("Partner arrives to the right in Shooter yaw space"), Partner->GetActorLocation().Equals(ExpectedPartnerDestination, 1.0f));
+	TestEqual(TEXT("Teleport retains the movement stop until reveal"), EMovementMode(Partner->GetCharacterMovement()->MovementMode), MOVE_None);
+	TestTrue(TEXT("Both screens receive the committed destination"),
+		ShooterController->LocalSuitPartnerDestination.Equals(Partner->GetActorLocation())
+		&& PartnerController->LocalSuitPartnerDestination.Equals(Partner->GetActorLocation()));
+	TestTrue(TEXT("Owning Partner screen observes arrival"), PartnerController->IsSuitPartnerArrivalReady());
+	const FVector CommittedPartnerLocation = Partner->GetActorLocation();
+	Partner->SetActorLocation(CommittedPartnerLocation + FVector(100.0f, 0.0f, 0.0f));
+	TestFalse(TEXT("Shooter screen waits for Partner movement replication"), ShooterController->IsSuitPartnerArrivalReady());
+	TestFalse(TEXT("Partner screen waits for its own movement correction"), PartnerController->IsSuitPartnerArrivalReady());
+	ShooterController->NotifySuitFadeOutFinished(FGuid::NewGuid());
+	TestTrue(TEXT("Old completion cannot replace the destination"), ShooterController->LocalSuitPartnerDestination.Equals(CommittedPartnerLocation));
+	Partner->SetActorLocation(CommittedPartnerLocation);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(
+		Shooter, FGuid::NewGuid(), ESuitTransitionPhase::Applying, Timing, FVector(9000.0f));
+	TestTrue(TEXT("Foreign phase request cannot replace the arrival target"),
+		ShooterController->LocalSuitPartnerDestination.Equals(CommittedPartnerLocation));
+	// 원격 관찰자는 위치가 도착했어도 시각 보간이 끝나기 전에는 화면을 복구하지 않는다.
+	PartnerController->bTestLocalController = false;
+	Partner->GetCharacterMovement()->bNetworkSmoothingComplete = false;
+	TestFalse(TEXT("Observer waits for visual smoothing"), ShooterController->IsSuitPartnerArrivalReady());
+	Partner->GetCharacterMovement()->bNetworkSmoothingComplete = true;
+	TestTrue(TEXT("Observer accepts the completed arrival"), ShooterController->IsSuitPartnerArrivalReady());
+	PartnerController->bTestLocalController = true;
 	TestTrue(TEXT("Commit acquires both PlayerStates"), ShooterPS->GetAcquiredSuit() && PartnerPS->GetAcquiredSuit());
 	TestTrue(TEXT("Commit grants exact stored Rifle"), Shooter->GetCurrentWeapon() == StoredRifle);
 	TestTrue(TEXT("Commit grants exact stored Partner weapon"), Partner->GetCurrentWeapon() == StoredPartnerWeapon);
@@ -1700,6 +1782,7 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Consumed Interaction teardown does not own transition lifetime"), Shooter->GetSuitTransitionId() == Id);
 	TestWorld.AdvanceTime(0.6f);
 	TestFalse(TEXT("Post-commit timeout releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
+	TestEqual(TEXT("Post-commit timeout restores Partner flight"), EMovementMode(Partner->GetCharacterMovement()->MovementMode), MOVE_Flying);
 	TestTrue(TEXT("Post-commit timeout keeps acquired state"), ShooterPS->GetAcquiredSuit() && PartnerPS->GetAcquiredSuit());
 	TestTrue(TEXT("Post-commit timeout preserves grants"), Shooter->GetCurrentWeapon() == StoredRifle && Partner->GetCurrentWeapon() == StoredPartnerWeapon);
 	TestTrue(TEXT("Post-commit timeout keeps Suit presentation"), Shooter->GetAppliedPresentation() == EShooterPresentation::Suit);
@@ -1714,18 +1797,18 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	const FGuid LocalCleanupId = FGuid::NewGuid();
 	FOutlierScreenTransitionTiming LocalTiming = Timing;
 	LocalTiming.FadeOutDuration = 0.2f;
-	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, LocalTiming);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, LocalTiming, FVector::ZeroVector);
 	ShooterController->SetPawn(Shooter);
 	TestTrue(TEXT("Setting the same Pawn preserves the active local transition"), ShooterController->LocalSuitTransitionId == LocalCleanupId);
 	ShooterController->SetPawn(nullptr);
 	TestTrue(TEXT("Pawn replacement clears the cached transition even without a server phase notification"),
 		!ShooterController->LocalSuitTransitionId.IsValid() && ShooterController->LastCleanupId == LocalCleanupId);
 	ShooterController->SetPawn(Shooter);
-	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, LocalTiming);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, LocalTiming, FVector::ZeroVector);
 	ShooterController->ClientPrepareForArenaExit_Implementation();
 	TestTrue(TEXT("Arena exit clears the local transition before leaving play"),
 		!ShooterController->LocalSuitTransitionId.IsValid() && ShooterController->LastCleanupId == LocalCleanupId);
-	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, LocalTiming);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, LocalTiming, FVector::ZeroVector);
 	const int32 CleanupRequestsBeforeEndPlay = ShooterController->CleanupRequests;
 	ShooterController->EndPlay(EEndPlayReason::LevelTransition);
 	ShooterController->NotifySuitFadeOutFinished(LocalCleanupId);

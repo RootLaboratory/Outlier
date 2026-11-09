@@ -144,6 +144,8 @@ class ASuitInteractionTestActor : public ASuitInteraction
 	GENERATED_BODY()
 
 public:
+	void SetPartnerTeleportOffset(const FVector& Offset) { PartnerTeleportOffset = Offset; }
+
 	void Configure(
 		UStaticMesh* DisplayMesh,
 		USkeletalMesh* FirstPersonMesh,

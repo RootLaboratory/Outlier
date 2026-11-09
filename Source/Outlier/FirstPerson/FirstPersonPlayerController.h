@@ -518,14 +518,14 @@ private:
 
 	UFUNCTION(Client, Reliable)
 	void ClientSetSuitTransitionPhase(AShooterCharacter* Shooter, FGuid TransitionId,
-		ESuitTransitionPhase Phase, FOutlierScreenTransitionTiming Timing);
+		ESuitTransitionPhase Phase, FOutlierScreenTransitionTiming Timing, FVector PartnerDestination);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifySuitTransitionPhaseFinished(AShooterCharacter* Shooter, FGuid TransitionId,
 		ESuitTransitionPhase Phase);
 
 	void ApplyLocalSuitTransitionPhase(AShooterCharacter* Shooter, const FGuid& TransitionId,
-		ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing);
+		ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing, const FVector& PartnerDestination);
 	void NotifySuitTransitionPhaseFinished(const FGuid& TransitionId, ESuitTransitionPhase Phase);
 	void ClearLocalSuitTransition();
 
@@ -534,10 +534,12 @@ private:
 	void HandleSuitScreenBlackoutRevealed(FGuid TransitionId);
 	void PollSuitPresentationReady(FGuid TransitionId);
 	bool IsSuitPresentationReady() const;
+	bool IsSuitPartnerArrivalReady() const;
 
 	TWeakObjectPtr<AShooterCharacter> LocalSuitTransitionShooter;
 	TWeakObjectPtr<APawn> LocalSuitTransitionPawn;
 	FGuid LocalSuitTransitionId;
+	FVector LocalSuitPartnerDestination = FVector::ZeroVector;
 	float LocalSuitCleanupRevealDuration = 0.0f;
 	FTimerHandle SuitPresentationPollTimer;
 	// 조건이 처음 맞은 폴링에서는 새 ABP가 포즈를 한 번 평가하도록 다음 폴링까지 기다린다.

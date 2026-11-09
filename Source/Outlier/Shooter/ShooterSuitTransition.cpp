@@ -2,10 +2,13 @@
 
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
+#include "CollisionQueryParams.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/World.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Interaction/SuitInteraction.h"
@@ -182,6 +185,49 @@ bool AShooterCharacter::CanCommitSuitTransition() const
 		&& Configuration.ThirdPersonMesh == SuitTransitionConfiguration.ThirdPersonMesh
 		&& Configuration.FirstPersonAnimClass == SuitTransitionConfiguration.FirstPersonAnimClass
 		&& Configuration.ThirdPersonAnimClass == SuitTransitionConfiguration.ThirdPersonAnimClass;
+}
+
+bool AShooterCharacter::TeleportSuitTransitionPartner()
+{
+	APartnerCharacter* Partner = SuitTransitionPartner.Get();
+	const ASuitInteraction* Interaction = SuitTransitionInteraction.Get();
+	if (!IsValid(Partner) || !IsValid(Interaction) || Interaction->PartnerTeleportOffset.ContainsNaN())
+	{
+		return false;
+	}
+
+	// 1. 화면이 가려진 시점의 Shooter 위치/Yaw로 목적지를 정한다. Pitch/Roll은 높이에 영향을 주지 않는다.
+	const FRotator ShooterYaw(0.0f, GetActorRotation().Yaw, 0.0f);
+	const FVector Destination = GetActorLocation() + ShooterYaw.RotateVector(Interaction->PartnerTeleportOffset);
+	const FRotator PartnerRotation = Partner->GetActorRotation();
+	// 2. Pawn끼리 충돌을 무시하는 설정에서도 두 캡슐이 겹친 위치는 사용하지 않는다.
+	const UCapsuleComponent* ShooterCapsule = GetCapsuleComponent();
+	const UCapsuleComponent* PartnerCapsule = Partner->GetCapsuleComponent();
+	const float CombinedRadius = ShooterCapsule->GetScaledCapsuleRadius() + PartnerCapsule->GetScaledCapsuleRadius();
+	const float CombinedHalfHeight = ShooterCapsule->GetScaledCapsuleHalfHeight() + PartnerCapsule->GetScaledCapsuleHalfHeight();
+	if (FVector::DistSquared2D(Destination, GetActorLocation()) < FMath::Square(CombinedRadius)
+		&& FMath::Abs(Destination.Z - GetActorLocation().Z) < CombinedHalfHeight)
+	{
+		return false;
+	}
+	// 3. 실제 캡슐/충돌 응답으로 목적지를 검사한다. 막힌 곳을 엔진이 멀리 보정하면 '옆으로 합류'가 아니므로 취소한다.
+	const FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SuitPartnerTeleport), false, Partner);
+	const FCollisionResponseParams ResponseParams(PartnerCapsule->GetCollisionResponseToChannels());
+	if (GetWorld()->OverlapBlockingTestByChannel(Destination, PartnerRotation.Quaternion(),
+		PartnerCapsule->GetCollisionObjectType(), PartnerCapsule->GetCollisionShape(), QueryParams, ResponseParams))
+	{
+		return false;
+	}
+	// 4. 검증한 좌표로만 이동한다. 공통 TeleportTo 경로가 이동 정지와 최초 Flying 복원 정보를 유지한다.
+	if (!Partner->TeleportTo(Destination, PartnerRotation, false, true))
+	{
+		return false;
+	}
+	Partner->SetBase(nullptr);
+	Partner->GetCharacterMovement()->StopMovementImmediately();
+	SuitTransitionPartnerDestination = Partner->GetActorLocation();
+	Partner->ForceNetUpdate();
+	return true;
 }
 
 float AShooterCharacter::GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase) const
@@ -384,10 +430,22 @@ void AShooterCharacter::AdvanceSuitTransition()
 			CancelSuitTransition();
 			return;
 		}
-		// 지급/획득 이벤트의 재진입은 commit 중복이나 중간 차단 해제를 만들지 않는다.
-		// 취소 요청은 동기 commit 결과가 확정된 뒤 처리하여 성공 여부를 정확히 구분한다.
+		// 이동의 Overlap 이벤트도 Pair 변경/취소로 재진입할 수 있다. 이동부터 지급까지 같은 가드로 보호한다.
+		APartnerCharacter* Partner = SuitTransitionPartner.Get();
+		const FTransform PreviousPartnerTransform = Partner->GetActorTransform();
 		bSuitTransitionCommitInProgress = true;
-		bSuitTransitionCommitted = SuitTransitionInteraction->CommitReservedSuit(this);
+		const bool bPartnerMoved = TeleportSuitTransitionPartner();
+		if (bPartnerMoved && !bSuitTransitionCancelRequested && ValidateSuitTransitionParticipants(false)
+			&& CanCommitSuitTransition())
+		{
+			bSuitTransitionCommitted = SuitTransitionInteraction->CommitReservedSuit(this);
+		}
+		// 지급 전 실패는 원래 위치로 돌린 뒤 예약을 해제한다. 지급 후 취소는 획득과 이동 결과를 유지한다.
+		if (bPartnerMoved && !bSuitTransitionCommitted && IsValid(Partner) && !Partner->IsActorBeingDestroyed())
+		{
+			Partner->TeleportTo(PreviousPartnerTransform.GetLocation(), PreviousPartnerTransform.Rotator(), false, true);
+			Partner->ForceNetUpdate();
+		}
 		bSuitTransitionCommitInProgress = false;
 		if (!bSuitTransitionCommitted || bSuitTransitionCancelRequested)
 		{
@@ -477,6 +535,7 @@ void AShooterCharacter::FinishSuitTransition()
 	}
 	SuitTransitionInteraction.Reset();
 	SuitTransitionPartner.Reset();
+	SuitTransitionPartnerDestination = FVector::ZeroVector;
 	SuitTransitionShooterController.Reset();
 	SuitTransitionPartnerController.Reset();
 	SuitTransitionShooterPlayerState.Reset();
