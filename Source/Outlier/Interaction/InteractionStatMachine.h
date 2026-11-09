@@ -61,6 +61,9 @@ protected:
 	TObjectPtr<UHackableComponent> HackableComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
+	TObjectPtr<USceneComponent> HackTargetPoint;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<URoomTagComponent> RoomTagComponent;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Stat Machine|UI")

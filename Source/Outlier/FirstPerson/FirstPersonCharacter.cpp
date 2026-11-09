@@ -1137,9 +1137,8 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 	const bool bSphereTrace =
 		InteractionTraceMode == EInteractionTraceMode::SphereTrace;
 	const float SphereRadius = FMath::Max(InteractionSphereTraceRadius, 0.0f);
-	const float TraceDistance = bSphereTrace
-		? FMath::Max(InteractionAvailableRange - SphereRadius, 0.0f)
-		: FMath::Max(InteractionAvailableRange, 0.0f);
+	// 카메라에서 끝점까지의 거리이며, SphereTrace는 구 중심을 이 거리만큼 이동시킨다.
+	const float TraceDistance = FMath::Max(InteractionAvailableRange, 0.0f);
 
 	const FVector Start = CameraLocation;
 	const FVector End = Start + CameraRotation.Vector() * TraceDistance;

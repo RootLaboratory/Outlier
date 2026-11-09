@@ -3,6 +3,7 @@
 #include "Interaction/InteractableComponent.h"
 
 #include "Components/WidgetComponent.h"
+#include "Components/SceneComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Drone/Partner/HackableComponent.h"
@@ -57,6 +58,7 @@ UInteractableComponent::UInteractableComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
+	bWantsInitializeComponent = true;
 	SetIsReplicatedByDefault(true);
 	HoldSessions.Reserve(MaxConcurrentHoldSessions);
 }
@@ -66,11 +68,60 @@ void UInteractableComponent::OnRegister()
 	// BP 복제 시 생성자의 참조가 템플릿을 가리키지 않도록 실제 소유 노드로 다시 연결한다.
 	InteractionNode = Cast<AInteractionNode>(GetOwner());
 	Super::OnRegister();
+	RefreshInteractionTargetPoint();
+}
+
+void UInteractableComponent::InitializeComponent()
+{
+	Super::InitializeComponent();
+	RefreshInteractionTargetPoint();
+}
+
+void UInteractableComponent::OnUnregister()
+{
+	CachedInteractionTargetPoint.Reset();
+	Super::OnUnregister();
+}
+
+void UInteractableComponent::RefreshInteractionTargetPoint()
+{
+	CachedInteractionTargetPoint.Reset();
+	const AActor* Owner = GetOwner();
+	const FComponentReference& Reference = InteractionTargetPointReference;
+	// 빈 참조는 엔진에서 Root로 해석되므로 제외한다. 미지정 상태는 기존 높이 보정을 유지한다.
+	const bool bHasComponentSelection = !Reference.ComponentProperty.IsNone()
+		|| !Reference.PathToComponent.IsEmpty() || !Reference.OverrideComponent.IsExplicitlyNull();
+	if (!IsValid(Owner) || !bHasComponentSelection
+		|| (!Reference.OtherActor.IsExplicitlyNull() && Reference.OtherActor.Get() != Owner)
+		|| (!Reference.OverrideComponent.IsExplicitlyNull() && !Reference.OverrideComponent.IsValid()))
+	{
+		return;
+	}
+
+	USceneComponent* TargetPoint = Cast<USceneComponent>(Reference.GetComponent(GetOwner()));
+	if (IsValid(TargetPoint) && TargetPoint->GetOwner() == Owner && !TargetPoint->IsEditorOnly())
+	{
+		CachedInteractionTargetPoint = TargetPoint;
+	}
+}
+
+FVector UInteractableComponent::GetInteractionWidgetLocation(float LegacyZOffset) const
+{
+	const AActor* Owner = GetOwner();
+	const USceneComponent* TargetPoint = CachedInteractionTargetPoint.Get();
+	if (IsValid(TargetPoint) && TargetPoint->IsRegistered() && TargetPoint->GetOwner() == Owner)
+	{
+		// 명시적 기준점에는 기존 ZOffset을 더하지 않는다. BP에서 배치한 위치가 기준이다.
+		return TargetPoint->GetComponentLocation();
+	}
+	return (Owner ? Owner->GetActorLocation() : FVector::ZeroVector) + FVector::UpVector * LegacyZOffset;
 }
 
 void UInteractableComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	// BP Construction에서 생성·재부착된 컴포넌트까지 확정된 뒤 참조를 다시 해결한다.
+	RefreshInteractionTargetPoint();
 	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
 	{
 		Subsystem->RegisterWidgetOwner(this);
@@ -108,9 +159,7 @@ void UInteractableComponent::UpdateWidgetPresentation()
 	const auto Apply = [this](UWidgetComponent* Component, const FWorldWidgetPresentation& Settings, float ZOffset)
 	{
 		if (!IsValid(Component) || !Component->IsVisible() || !GetOwner()) return;
-		const FVector Anchor = Component->GetAttachParent()
-			? Component->GetAttachParent()->GetComponentLocation() : GetOwner()->GetActorLocation();
-		Settings.Apply(Component, Anchor + FVector::UpVector * ZOffset);
+		Settings.Apply(Component, GetInteractionWidgetLocation(ZOffset));
 	};
 	Apply(InteractInfoWidgetComponent, InteractInfoWidgetPresentation, InteractInfoWidgetZOffset);
 	Apply(InteractKeyWidgetComponent, InteractKeyWidgetPresentation, InteractKeyWidgetZOffset);
@@ -282,10 +331,7 @@ bool UInteractableComponent::BeginHoldInteract(AFirstPersonCharacter* Interactor
 	{
 		if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
 		{
-			const AActor* Owner = GetOwner();
-			DescActor->SetActorLocation(
-				(Owner ? Owner->GetActorLocation() : FVector::ZeroVector)
-				+ FVector::UpVector * InteractionDescActorZOffset);
+			DescActor->SetActorLocation(GetInteractionWidgetLocation(InteractionDescActorZOffset));
 			DescActor->ActivateDescFromSource(Interactor, this);
 			DescActor->SetProgress(0.0f);
 		}
@@ -465,10 +511,7 @@ void UInteractableComponent::ActivateInteractionDesc(AFirstPersonCharacter* Inte
 
 	if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
 	{
-		const AActor* Owner = GetOwner();
-		DescActor->SetActorLocation(
-			(Owner ? Owner->GetActorLocation() : FVector::ZeroVector)
-			+ FVector::UpVector * InteractionDescActorZOffset);
+		DescActor->SetActorLocation(GetInteractionWidgetLocation(InteractionDescActorZOffset));
 		DescActor->ActivateDescFromSource(Interactor, this);
 		DescActor->PopupAnimationCall(false);
 		return;
@@ -523,10 +566,6 @@ void UInteractableComponent::InteractInfoWidgetActivate(AFirstPersonCharacter* I
 
 	InteractKeyWidgetDeactivate();
 	WidgetComponent->SetVisibility(true);
-	WidgetComponent->SetWorldLocation(
-		WidgetComponent->GetAttachParent()
-			? WidgetComponent->GetAttachParent()->GetComponentLocation() + FVector::UpVector * InteractInfoWidgetZOffset
-			: GetOwner()->GetActorLocation() + FVector::UpVector * InteractInfoWidgetZOffset);
 
 	if (!InteractInfoWidget)
 	{
@@ -579,12 +618,7 @@ void UInteractableComponent::InteractKeyWidgetActivate(AFirstPersonCharacter* In
 		return;
 	}
 
-	WidgetComponent->SetRelativeLocation(FVector(0.0f, 0.0f, InteractKeyWidgetZOffset));
 	WidgetComponent->SetVisibility(true);
-	WidgetComponent->SetWorldLocation(
-		WidgetComponent->GetAttachParent()
-			? WidgetComponent->GetAttachParent()->GetComponentLocation() + FVector::UpVector * InteractKeyWidgetZOffset
-			: GetOwner()->GetActorLocation() + FVector::UpVector * InteractKeyWidgetZOffset);
 
 	if (!InteractKeyWidget)
 	{
@@ -924,7 +958,7 @@ AInteractionDescActor* UInteractableComponent::EnsureInteractionDescActor()
 	SpawnParams.Owner = Owner;
 	InteractionDescActor = GetWorld()->SpawnActor<AInteractionDescActor>(
 		InteractionDescActorClass,
-		Owner->GetActorLocation() + FVector::UpVector * InteractionDescActorZOffset,
+		GetInteractionWidgetLocation(InteractionDescActorZOffset),
 		Owner->GetActorRotation(),
 		SpawnParams);
 

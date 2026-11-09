@@ -87,7 +87,7 @@ protected:
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Interaction")
 	TArray<TObjectPtr<AActor>> OutlineInteractables;
 
-	/** Maximum reach of the line or sphere trace used to interact. */
+	/** 카메라에서 끝점까지의 거리. SphereTrace는 구 중심을 이 거리만큼 이동시키며, 구 반경은 끝점 바깥까지 확장된다. */
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction", meta = (DisplayName = "Interaction Available Range", ClampMin = "0.0", Units = "cm"))
 	float InteractionAvailableRange = 100.0f;
 

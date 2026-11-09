@@ -42,6 +42,9 @@ protected:
 
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class AHackTargetPointNetworkProbe;
+#endif
 	UPROPERTY()
 	TObjectPtr<UPartnerHackComponent> HackComponent;
 

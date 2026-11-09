@@ -361,6 +361,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Hack")
 	TObjectPtr<UHackableComponent> HackableComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Hack")
+	TObjectPtr<USceneComponent> HackTargetPoint;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|EMP")
 	TObjectPtr<UEMPableComponent> EmpableComponent;
 

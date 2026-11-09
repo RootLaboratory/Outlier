@@ -1,5 +1,6 @@
 #include "Interaction/InteractionStatMachine.h"
 #include "Audio/OutlierAudioFeedback.h"
+#include "Components/SceneComponent.h"
 #include "Net/UnrealNetwork.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
@@ -42,6 +43,10 @@ AInteractionStatMachine::AInteractionStatMachine()
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
 	HackableComponent = CreateDefaultSubobject<UHackableComponent>(TEXT("HackableComponent"));
+	HackTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("HackTargetPoint"));
+	HackTargetPoint->SetupAttachment(SceneRoot);
+	HackTargetPoint->bEditableWhenInherited = true;
+	HackableComponent->HackTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AInteractionStatMachine, HackTargetPoint);
 	RoomTagComponent = CreateDefaultSubobject<URoomTagComponent>(TEXT("RoomTagComponent"));
 }
 

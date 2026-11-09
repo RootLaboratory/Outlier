@@ -152,6 +152,10 @@ protected:
 
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	// 네트워크 검증은 실제 검색·RPC 결과를 관측한다. 테스트를 위한 판정 우회 API는 노출하지 않는다.
+	friend class AHackTargetPointNetworkProbe;
+#endif
 	UPROPERTY(VisibleInstanceOnly, Category = "Hack")
 	FPartnerHackAbilityData CachedAbilityData;
 

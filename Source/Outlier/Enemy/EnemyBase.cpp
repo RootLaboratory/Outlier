@@ -179,6 +179,12 @@ AEnemyBase::AEnemyBase()
 	EnemyCameraComponent->SetupAttachment(GetRootComponent());
 
 	HackableComponent = CreateDefaultSubobject<UHackableComponent>(TEXT("HackableComponent"));
+	// 목표점은 루트 원점에서 시작하며, 파생 BP에서 메시와 독립적으로 배치한다.
+	// 터렛도 이 부착을 유지해 머리의 조준 회전에 목표점이 따라 돌지 않게 한다.
+	HackTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("HackTargetPoint"));
+	HackTargetPoint->SetupAttachment(GetRootComponent());
+	HackTargetPoint->bEditableWhenInherited = true;
+	HackableComponent->HackTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AEnemyBase, HackTargetPoint);
 	HackableComponent->HackTags.AddTag(HackGameplayTags::Target::Possessable());
 	HackableComponent->SuccessEffectTags.AddTag(HackGameplayTags::Effect::Possess());
 

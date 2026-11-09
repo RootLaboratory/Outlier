@@ -114,6 +114,10 @@ class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
 {
 	GENERATED_BODY()
 	friend class FEnemyHackEffectGameplayTest;
+#if WITH_DEV_AUTOMATION_TESTS
+	// 격리 네트워크 검증에서 실제 전개 시작·완료 경로를 호출한다.
+	friend class AHackTargetPointNetworkProbe;
+#endif
 
 public:
 	AAutoTurret();

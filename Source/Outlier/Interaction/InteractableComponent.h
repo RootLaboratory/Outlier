@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Engine/EngineTypes.h"
 #include "GameplayTagContainer.h"
 #include "Interface/ActorBasedWidgetInterface.h"
 #include "UI/WorldWidgetPresentation.h"
@@ -13,6 +14,7 @@ class AFirstPersonCharacter;
 class AInteractionNode;
 class AInteractionDescActor;
 class APlayerController;
+class USceneComponent;
 class UInteractInfoWidget;
 class UInteractKeyWidget;
 class UInteractionLockedWidget;
@@ -47,6 +49,8 @@ class OUTLIER_API UInteractableComponent : public UActorComponent, public IActor
 public:
 	UInteractableComponent();
 	virtual void OnRegister() override;
+	virtual void InitializeComponent() override;
+	virtual void OnUnregister() override;
 	virtual void BeginPlay() override;
 	virtual void DismissActorBasedWidgets_Implementation() override;
 
@@ -56,6 +60,19 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_InteractableTags, Category = "Interaction")
 	FGameplayTagContainer InteractableTags;
+
+	// 같은 Actor의 SceneComponent를 지정하면 기존 ZOffset 대신 해당 위치를 UI 기준으로 사용한다.
+	// HackTargetPoint를 선택하면 일반 상호작용 UI와 해킹 UI의 기준점을 공유할 수 있다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI",
+		meta = (UseComponentPicker, AllowedClasses = "/Script/Engine.SceneComponent"))
+	FComponentReference InteractionTargetPointReference;
+
+	UFUNCTION(BlueprintCallable, Category = "Interaction|UI")
+	void RefreshInteractionTargetPoint();
+
+	// 유효한 기준점이 없을 때만 기존 높이 보정을 사용한다. WidgetOffset은 별도로 적용한다.
+	UFUNCTION(BlueprintPure, Category = "Interaction|UI")
+	FVector GetInteractionWidgetLocation(float LegacyZOffset) const;
 
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction")
@@ -138,10 +155,12 @@ private:
 	friend class AInteractionNode;
 	friend class FInteractionNodePresentationTest;
 	friend class FInteractionNodeHoldAttemptTest;
+	friend class FInteractionTargetPointTest;
 	UPROPERTY(Transient)
 	TObjectPtr<AInteractionNode> InteractionNode;
 
 	void UpdateWidgetPresentation();
+	TWeakObjectPtr<USceneComponent> CachedInteractionTargetPoint;
 	void RefreshWidgetTick();
 	bool MeetsInteractionRequirements(const FGameplayTagContainer& InteractorTags) const;
 

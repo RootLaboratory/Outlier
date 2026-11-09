@@ -42,6 +42,8 @@
 
 namespace
 {
+	const FName HackTargetNeckBone(TEXT("TurretNeck"));
+
 	TAutoConsoleVariable<int32> CVarTurretDiagnostics(
 		TEXT("outlier.Enemy.TurretDiagnostics"),
 		0,
@@ -65,6 +67,8 @@ AAutoTurret::AAutoTurret()
 
 	// 데디 서버에서도 전개 애니메이션의 본 위치를 갱신해야 Physics Asset이 열린 해치 위치를 따라간다.
 	GetMesh()->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	// 몸체의 목 본은 전개 높이를 따라가고, 별도 Head 피벗의 조준 회전은 상속하지 않는다.
+	HackTargetPoint->SetupAttachment(GetMesh(), HackTargetNeckBone);
 
 	TurretHeadPivot = CreateDefaultSubobject<USceneComponent>(TEXT("TurretHeadPivot"));
 	TurretHeadPivot->SetupAttachment(GetRootComponent());
@@ -312,7 +316,13 @@ FVector AAutoTurret::GetPawnViewLocation() const
 
 FVector AAutoTurret::GetHackTargetLocation() const
 {
-	// 해치/바닥에 놓인 Actor 원점 대신 전개된 머리를 시야 검사와 UI의 기준으로 사용한다.
+	FVector TargetLocation;
+	if (HackableComponent && HackableComponent->TryGetHackTargetLocation(TargetLocation))
+	{
+		return TargetLocation;
+	}
+
+	// 명시적 목표점이 없을 때만 기존 머리 시점을 사용한다. 전투용 시점 계산은 그대로 유지한다.
 	return GetPawnViewLocation();
 }
 
@@ -442,6 +452,13 @@ void AAutoTurret::ConfigureHeadPivotAttachment()
 	CacheAimOriginMuzzleSockets();
 
 	USkeletalMeshComponent* BodyMesh = GetMesh();
+	if (HackTargetPoint && BodyMesh && BodyMesh->DoesSocketExist(HackTargetNeckBone)
+		&& (HackTargetPoint->GetAttachParent() != BodyMesh || HackTargetPoint->GetAttachSocketName() != HackTargetNeckBone))
+	{
+		// 기존 BP의 루트 부착을 갱신하되, BP·인스턴스에서 조절한 목 기준 상대 Transform은 보존한다.
+		// 목표점 참조는 건드리지 않으므로 별도로 지정한 사용자 컴포넌트도 계속 사용할 수 있다.
+		HackTargetPoint->AttachToComponent(BodyMesh, FAttachmentTransformRules::KeepRelativeTransform, HackTargetNeckBone);
+	}
 	if (!TurretHeadPivot || !TurretHeadPitchPivot || !TurretHeadMesh || !BodyMesh
 		|| HeadPivotSocketName.IsNone()
 		|| !BodyMesh->DoesSocketExist(HeadPivotSocketName))
