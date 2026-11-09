@@ -167,10 +167,24 @@ bool UVECDroneMovementComponent::CanRunInputMovement() const
 		: Drone->IsLocallyControlled() && !Drone->IsPossessedImpactInputLocked();
 }
 
+void UVECDroneMovementComponent::ResetPoolMovementPresentation()
+{
+	ResetMovementFeel();
+	NoiseFacingTiltWeight = 0.0f;
+	if (AVECDrone* Drone = GetVECDroneOwner())
+	{
+		if (bAIFacingPitchInitialized && Drone->GetAIFacingPitchRoot())
+			Drone->GetAIFacingPitchRoot()->SetRelativeRotation(BaseAIFacingPitchRotation);
+	}
+	// 이동 기록과 함께 화면에 남은 기울기도 즉시 기본 자세로 돌린다.
+	ApplyMeshTilt();
+}
+
 bool UVECDroneMovementComponent::ShouldUpdateMovementFeel() const
 {
 	const AVECDrone* Drone = GetVECDroneOwner();
-	if (!Drone || Drone->GetNetMode() == NM_DedicatedServer)
+	if (!Drone || Drone->GetNetMode() == NM_DedicatedServer
+		|| (Drone->IsPoolManaged() && Drone->GetEnemyPoolState() != EEnemyPoolState::CombatActive))
 	{
 		return false;
 	}

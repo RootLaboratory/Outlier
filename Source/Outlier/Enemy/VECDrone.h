@@ -85,6 +85,8 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PostNetReceive() override;
+	virtual void PostNetReceiveLocationAndRotation() override;
+	void ResetPoolMovementPresentation();
 	virtual void UnPossessed() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void ApplyMovementFromRuntimeStat() override;
@@ -202,6 +204,7 @@ private:
 	int64 LastReceivedHitReactionSerial = 0;
 	int32 PresentationGeneration = INDEX_NONE;
 	int32 PresentationLease = INDEX_NONE;
+	bool bPoolMovementResetPending = false;
 
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FDroneHitReactionTestAccess;

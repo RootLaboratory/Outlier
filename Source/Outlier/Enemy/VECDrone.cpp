@@ -483,12 +483,46 @@ void AVECDrone::ResetPoolPresentationState()
 	}
 	if (PresentationGeneration != GetPoolGameplayGeneration() || PresentationLease != GetPoolLeaseSerial())
 	{
+		bPoolMovementResetPending = true;
+		ResetPoolMovementPresentation();
 		StopHitReaction(0.0f);
 		NextHitReactionTime = 0.0;
 		PresentationGeneration = GetPoolGameplayGeneration();
 		PresentationLease = GetPoolLeaseSerial();
 	}
 	RefreshStateSpotLight();
+}
+
+void AVECDrone::ResetPoolMovementPresentation()
+{
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		if (IsPoolManaged() && GetEnemyPoolState() != EEnemyPoolState::CombatActive)
+		{
+			Movement->StopMovementImmediately();
+		}
+		// 새 대여는 지하 대기 위치에서 소환 위치로 보간하지 않는다.
+		if (!HasAuthority() && !IsLocallyControlled()) Movement->ResetPredictionData_Client();
+		Movement->bNetworkSmoothingComplete = true;
+	}
+	if (USkeletalMeshComponent* DroneMesh = GetMesh())
+	{
+		DroneMesh->SetRelativeLocationAndRotation(GetBaseTranslationOffset(), GetBaseRotationOffset());
+	}
+	if (VECMovementComponent) VECMovementComponent->ResetPoolMovementPresentation();
+}
+
+void AVECDrone::PostNetReceiveLocationAndRotation()
+{
+	Super::PostNetReceiveLocationAndRotation();
+	// 이동 복제가 대여/상태 통지보다 늦게 도착해도 이전 위치 보정이 다시 남지 않게 한다.
+	if (IsPoolManaged() && (bPoolMovementResetPending
+		|| GetEnemyPoolState() == EEnemyPoolState::Idle
+		|| GetEnemyPoolState() == EEnemyPoolState::SpawnPresentation))
+	{
+		ResetPoolMovementPresentation();
+		bPoolMovementResetPending = false;
+	}
 }
 
 void AVECDrone::OnPoolStateApplied(EEnemyPoolState PreviousState)

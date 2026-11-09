@@ -3,6 +3,9 @@
 #include "Enemy/VECDrone.h"
 #include "Enemy/SelfDestructDrone.h"
 #include "Components/SpotLightComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Enemy/VECDroneMovementComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Engine/Engine.h"
 #include "EngineGlobals.h"
 #include "Engine/World.h"
@@ -15,6 +18,34 @@
 
 struct FDroneStateLightTestAccess
 {
+	static void DirtyMovement(AVECDrone& Drone)
+	{
+		auto* Flight = Drone.VECMovementComponent.Get();
+		Flight->bMovementFeelInitialized = true;
+		Flight->LastLocation = FVector(0, 0, -1000000);
+		Flight->SmoothedVelocity = FVector(10000, 20000, -1000000);
+		Flight->CurrentMeshPitch = 30.0f;
+		Flight->CurrentMeshRoll = -20.0f;
+		Flight->bMeshRotationInitialized = true;
+		Flight->bVisualTiltInitialized = true;
+		Flight->BaseMeshRelativeRotation = FRotator::ZeroRotator;
+		Flight->ApplyMeshTilt();
+		Drone.GetMesh()->SetRelativeLocation(FVector(-6453, -2255, -1000156));
+		Drone.GetCharacterMovement()->bNetworkSmoothingComplete = false;
+		Drone.GetCharacterMovement()->Velocity = FVector(1000, 500, -200);
+	}
+	static bool MovementHistoryIsReset(AVECDrone& Drone)
+	{
+		const auto* Flight = Drone.VECMovementComponent.Get();
+		return !Flight->bMovementFeelInitialized && !Flight->bMeshRotationInitialized
+			&& Flight->CurrentMeshPitch == 0 && Flight->CurrentMeshRoll == 0;
+	}
+	static void ReceiveLocation(AVECDrone& Drone)
+	{
+		Drone.SetRole(ROLE_SimulatedProxy);
+		Drone.GetReplicatedMovement_Mutable().Location = Drone.GetActorLocation();
+		Drone.PostNetReceiveLocationAndRotation();
+	}
 	static void Configure(AVECDrone& Drone, const FDroneStateLightSettings& Settings)
 	{
 		Drone.NonCombatLightSettings = Settings;
@@ -146,6 +177,43 @@ struct FDroneStateLightWorld
 		return Drone;
 	}
 };
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDronePoolPresentationResetTest,
+	"Outlier.Enemy.PoolPresentation.ResetMovement", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDronePoolPresentationResetTest::RunTest(const FString& Parameters)
+{
+	FDroneStateLightWorld Fixture;
+	for (UClass* Class : { AVECDrone::StaticClass(), ASelfDestructDrone::StaticClass() })
+	{
+		AVECDrone* Drone = Fixture.Spawn(Class);
+		if (!TestNotNull(TEXT("Drone"), Drone)) return false;
+		FDroneStateLightTestAccess::DirtyMovement(*Drone);
+		FDroneStateLightTestAccess::SetLease(*Drone, 1, 1, EEnemyPoolState::SpawnPresentation);
+		TestTrue(TEXT("New lease restores mesh translation"), Drone->GetMesh()->GetRelativeLocation().Equals(Drone->GetBaseTranslationOffset()));
+		TestTrue(TEXT("New lease completes old network smoothing"), Drone->GetCharacterMovement()->bNetworkSmoothingComplete);
+		TestTrue(TEXT("Presentation clears old physical velocity"), Drone->GetVelocity().IsNearlyZero());
+		TestTrue(TEXT("New lease clears teleport and tilt history"), FDroneStateLightTestAccess::MovementHistoryIsReset(*Drone));
+		TestTrue(TEXT("Displayed tilt is neutral immediately"), Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().IsNearlyZero());
+		// 늦게 도착한 이동 통지가 이전 지하 대기 위치의 메시 보정을 되살리지 않아야 한다.
+		FDroneStateLightTestAccess::DirtyMovement(*Drone);
+		FDroneStateLightTestAccess::ReceiveLocation(*Drone);
+		TestTrue(TEXT("Late movement notification restores mesh"), Drone->GetMesh()->GetRelativeLocation().Equals(Drone->GetBaseTranslationOffset()));
+		TestTrue(TEXT("Late movement notification clears tilt history"), FDroneStateLightTestAccess::MovementHistoryIsReset(*Drone));
+		FDroneStateLightTestAccess::DirtyMovement(*Drone);
+		FDroneStateLightTestAccess::SetLease(*Drone, 1, 2, EEnemyPoolState::CombatActive);
+		TestTrue(TEXT("Skipped presentation replication still resets new lease"), FDroneStateLightTestAccess::MovementHistoryIsReset(*Drone));
+		FDroneStateLightTestAccess::DirtyMovement(*Drone);
+		FDroneStateLightTestAccess::ReceiveLocation(*Drone);
+		TestTrue(TEXT("First active movement packet consumes pending lease reset"), FDroneStateLightTestAccess::MovementHistoryIsReset(*Drone));
+		FDroneStateLightTestAccess::DirtyMovement(*Drone);
+		static_cast<AActor*>(Drone)->PostNetReceive();
+		TestFalse(TEXT("Same active lease retains normal movement history"), FDroneStateLightTestAccess::MovementHistoryIsReset(*Drone));
+		FDroneStateLightTestAccess::ReceiveLocation(*Drone);
+		TestFalse(TEXT("Subsequent active movement packets keep normal interpolation"), FDroneStateLightTestAccess::MovementHistoryIsReset(*Drone));
+	}
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDroneStateLightTransitionTest,

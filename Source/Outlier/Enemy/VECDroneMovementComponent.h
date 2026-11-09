@@ -16,6 +16,7 @@ public:
 	UVECDroneMovementComponent();
 
 	void ApplyDroneMoveSpeed(float NewMoveSpeed);
+	void ResetPoolMovementPresentation();
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 protected:
