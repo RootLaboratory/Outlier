@@ -31,6 +31,11 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformTime.h"
 #include "Weapon/WeaponBase.h"
+#include "Shooter/Anim/FootstepNoiseTestProbe.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include <limits>
 
 namespace OutlierBoneSightTests
@@ -904,9 +909,199 @@ bool FOutlierBoneSightDedicatedPoseTest::RunTest(const FString& Parameters)
 	Shooter->SetMeleeTracePoseRefreshEnabled(false);
 	TestTrue(TEXT("Melee release preserves active sight refresh"), Mesh->VisibilityBasedAnimTickOption == EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones);
 	Shooter->BoneSight.Shutdown();
-	TestTrue(TEXT("Both released restore dedicated montage-only policy"), Mesh->VisibilityBasedAnimTickOption == EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered);
+	TestTrue(TEXT("Both released preserve dedicated locomotion notifies"), Mesh->VisibilityBasedAnimTickOption == EVisibilityBasedAnimTickOption::AlwaysTickPose);
 	Mesh->UnregisterOnBoneTransformsFinalizedDelegate(Counter);
 	return true;
+}
+
+namespace OutlierFootstepTests
+{
+	struct FRemoteWorld : OutlierBoneSightTests::FWorld
+	{
+		TArray<AShooterCharacter*> Shooters;
+		TArray<APlayerController*> Controllers;
+		float MoveTime = 0;
+		bool bMoving = true;
+
+		FRemoteWorld() : FWorld(true) {}
+
+		bool Initialize(FAutomationTestBase& Test, bool bSuit, bool bSprint, int32 Count)
+		{
+			if (!Test.TestEqual(TEXT("Footsteps use a dedicated NetDriver world"), World->GetNetMode(), NM_DedicatedServer)) return false;
+			AActor* Floor = World->SpawnActor<AActor>();
+			UBoxComponent* Box = NewObject<UBoxComponent>(Floor);
+			Floor->SetRootComponent(Box);
+			Box->SetBoxExtent(FVector(10000, 10000, 40));
+			Box->SetWorldLocation(FVector(0, 0, -40));
+			Box->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			Box->SetCollisionResponseToAllChannels(ECR_Block);
+			Box->RegisterComponent();
+			UClass* Class = LoadClass<AShooterCharacter>(nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+			if (!Test.TestNotNull(TEXT("Production Shooter BP"), Class)) return false;
+			FActorSpawnParameters Spawn;
+			Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				AShooterCharacter* Shooter = World->SpawnActor<AShooterCharacter>(Class, FVector(0, 200 + Index * 800, 100), FRotator::ZeroRotator, Spawn);
+				APlayerController* Controller = World->SpawnActor<APlayerController>();
+				if (!Shooter || !Controller) return false;
+				Controller->Possess(Shooter);
+				Controller->AcknowledgedPawn = Shooter;
+				if (!Test.TestTrue(TEXT("Production Suit presentation applies"), Shooter->SetSuitPresentation(bSuit))) return false;
+				Shooter->GetMesh()->bOnlyAllowAutonomousTickPose = true;
+				Shooter->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+				Shooters.Add(Shooter);
+				Controllers.Add(Controller);
+			}
+			// 준비/낙하/최근 렌더 판정 구간을 측정에서 제외한다. 원격 포즈 조건은 그대로 유지한다.
+			bMoving = false;
+			for (int32 Frame = 0; Frame < 90; ++Frame) Step();
+			if (bSprint)
+			{
+				for (AShooterCharacter* Shooter : Shooters)
+				{
+					UShooterCharacterMovementComponent* Movement = CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
+					Movement->ApplyActionInput(Movement->GetActionInputRequest() + 1, Movement->GetMovementInputEpoch(), true, false);
+				}
+			}
+			bMoving = true;
+			return true;
+		}
+
+		void Step(int32 MovesPerFrame = 1)
+		{
+			++GFrameCounter;
+			for (int32 Move = 0; Move < MovesPerFrame; ++Move)
+			{
+				MoveTime += 1.0f / (60 * MovesPerFrame);
+				for (int32 Index = 0; Index < Shooters.Num(); ++Index)
+				{
+					AShooterCharacter* Shooter = Shooters[Index];
+					UCharacterMovementComponent* Movement = Shooter->GetCharacterMovement();
+					// 감지 반경 안에서 왕복한다. 이동과 포즈 진행은 실제 ServerMove가 담당한다.
+					float Direction = Shooter->GetActorForwardVector().X >= 0 ? 1.0f : -1.0f;
+					if (Shooter->GetActorLocation().X > 80) Direction = -1;
+					if (Shooter->GetActorLocation().X < -80) Direction = 1;
+					FCharacterNetworkMoveData Data;
+					Data.TimeStamp = MoveTime;
+					Data.ControlRotation = FRotator(0, Direction > 0 ? 0 : 180, 0);
+					Data.Location = Shooter->GetActorLocation();
+					Data.MovementMode = Movement->PackNetworkMovementMode();
+					Data.Acceleration = bMoving ? FVector(Direction * Movement->GetMaxAcceleration(), 0, 0) : FVector::ZeroVector;
+					Movement->ServerMove_PerformMovement(Data);
+				}
+			}
+			World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+			if (UAIPerceptionSystem* Perception = UAIPerceptionSystem::GetCurrent(World)) Perception->Tick(1.0f / 60.0f);
+		}
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShooterFootstepRemoteGenerationTest,
+	"Outlier.Shooter.Footsteps.RemoteGeneration", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FShooterFootstepRemoteGenerationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	for (bool bSuit : { false, true })
+	for (bool bSprint : { false, true })
+	{
+		OutlierFootstepTests::FRemoteWorld Fixture;
+		if (!Fixture.Initialize(*this, bSuit, bSprint, 1)) return false;
+		AShooterCharacter* Shooter = Fixture.Shooters[0];
+		USkeletalMeshComponent* Mesh = Shooter->GetMesh();
+		int32 Reports = 0, OtherMeshReports = 0;
+		const FDelegateHandle Handle = OutlierFootstepTesting::Reported().AddLambda([&](USkeletalMeshComponent* Source, const FVector& Location)
+		{
+			if (Source->GetOwner() != Shooter) return;
+			++Reports;
+			if (Source != Mesh) ++OtherMeshReports;
+		});
+		ON_SCOPE_EXIT { OutlierFootstepTesting::Reported().Remove(Handle); };
+		// 원래 정책에서 실제 Notify가 끊기는지 대조한다. 테스트는 소음 이벤트를 직접 주입하지 않는다.
+		Mesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
+		for (int32 Frame = 0; Frame < 180; ++Frame) Fixture.Step();
+		const int32 Before = Reports;
+		Shooter->SetMeleeTracePoseRefreshEnabled(true);
+		Shooter->SetMeleeTracePoseRefreshEnabled(false);
+		TestTrue(TEXT("Production release keeps locomotion pose updates"), Mesh->VisibilityBasedAnimTickOption == EVisibilityBasedAnimTickOption::AlwaysTickPose);
+		UClass* EnemyClass = LoadClass<AVECDrone>(nullptr, TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+		if (!TestNotNull(TEXT("Production hearing enemy BP"), EnemyClass)) return false;
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AVECDrone* Enemy = Fixture.World->SpawnActor<AVECDrone>(EnemyClass, FVector(0, 0, 100), FRotator::ZeroRotator, Spawn);
+		if (!TestNotNull(TEXT("Actual hearing enemy spawns"), Enemy)) return false;
+		Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+		AEnemyAIController* AI = CastChecked<AEnemyAIController>(Enemy->GetController());
+		// 시야 요청이 서버 포즈를 강제로 활성화해 결함을 가리지 않게 한다. 청각과 실제 트리는 그대로 실행한다.
+		AI->GetPerceptionComponent()->SetSenseEnabled(UAISense_Sight::StaticClass(), false);
+		bool bHeard = false, bAlerted = false;
+		for (int32 Frame = 0; Frame < 240; ++Frame)
+		{
+			Fixture.Step();
+			FEnemyHeardNoise Noise;
+			bHeard |= Enemy->TryGetHeardNoise(Noise) && Noise.Source.Get() == Shooter;
+			bAlerted |= Enemy->GetCombatState() == EEnemyCombatState::Alert || Enemy->GetCombatState() == EEnemyCombatState::Combat;
+		}
+		AddInfo(FString::Printf(TEXT("[FootstepGeneration] Suit=%d Sprint=%d OldReports=%d NewReports=%d Speed=%.1f Mesh=%s Anim=%s"),
+			bSuit, bSprint, Before, Reports - Before, Shooter->GetVelocity().Size2D(), *GetNameSafe(Mesh->GetSkeletalMeshAsset()), *GetNameSafe(Mesh->GetAnimClass())));
+		TestTrue(TEXT("Actual remote locomotion emits server footsteps"), Reports - Before > 0);
+		TestEqual(TEXT("Only authoritative TP mesh reports footsteps"), OtherMeshReports, 0);
+		TestTrue(TEXT("Actual Hearing receives the authored footsteps"), bHeard);
+		TestTrue(TEXT("Actual StateTree reacts to footsteps without direct sight"), bAlerted);
+		TestFalse(TEXT("Footsteps cannot manufacture direct sight"), Enemy->IsPlayerCurrentlyVisible());
+		TestFalse(TEXT("Footsteps cannot grant live actor tracking"), Enemy->HasTrackableTarget());
+		Fixture.bMoving = false;
+		for (int32 Frame = 0; Frame < 120; ++Frame) Fixture.Step();
+		const int32 Settled = Reports;
+		for (int32 Frame = 0; Frame < 120; ++Frame) Fixture.Step();
+		TestEqual(TEXT("Stationary Shooter emits no continuing footsteps"), Reports, Settled);
+	}
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShooterFootstepPerformanceTest,
+	"Outlier.Shooter.Footsteps.Performance", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FShooterFootstepPerformanceTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FString Csv = TEXT("Suit,Motion,Players,Trial,Policy,Frames,MillisecondsPerFrame,FootstepReports\n");
+	for (bool bSuit : { false, true })
+	for (int32 Motion : { 0, 1, 2 })
+	for (int32 Players : { 1, 4 })
+	{
+		OutlierFootstepTests::FRemoteWorld Fixture;
+		if (!Fixture.Initialize(*this, bSuit, Motion == 2, Players)) return false;
+		Fixture.bMoving = Motion != 0;
+		for (int32 Trial = 0; Trial < 5; ++Trial)
+		for (int32 Order = 0; Order < 2; ++Order)
+		{
+			// 실행 순서를 번갈아 바꿔 캐시·시간 경과가 한 정책에만 유리하지 않도록 한다.
+			const bool bAfter = ((Trial + Order) % 2) != 0;
+			for (AShooterCharacter* Shooter : Fixture.Shooters)
+				Shooter->GetMesh()->VisibilityBasedAnimTickOption = bAfter
+					? EVisibilityBasedAnimTickOption::AlwaysTickPose : EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
+			for (int32 Frame = 0; Frame < 60; ++Frame) Fixture.Step();
+			int32 Reports = 0;
+			const FDelegateHandle Handle = OutlierFootstepTesting::Reported().AddLambda([&](USkeletalMeshComponent* Mesh, const FVector& Location)
+			{
+				if (Mesh->GetWorld() == Fixture.World) ++Reports;
+			});
+			constexpr int32 Frames = 300;
+			const double Start = FPlatformTime::Seconds();
+			for (int32 Frame = 0; Frame < Frames; ++Frame) Fixture.Step();
+			const double Milliseconds = (FPlatformTime::Seconds() - Start) * 1000.0 / Frames;
+			OutlierFootstepTesting::Reported().Remove(Handle);
+			Csv += FString::Printf(TEXT("%d,%s,%d,%d,%s,%d,%.6f,%d\n"), bSuit, Motion == 0 ? TEXT("Idle") : Motion == 1 ? TEXT("Walk") : TEXT("Run"), Players, Trial,
+				bAfter ? TEXT("After") : TEXT("Before"), Frames, Milliseconds, Reports);
+		}
+	}
+	const FString Path = FPaths::ProjectSavedDir() / TEXT("FootstepHearingValidation/Performance.csv");
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
+	TestTrue(TEXT("Performance samples saved"), FFileHelper::SaveStringToFile(Csv, *Path));
+	AddInfo(FString::Printf(TEXT("[FootstepPerformance] CSV=%s; dedicated remote ServerMove + WorldTick, 60Hz, 300 frames/sample, 5 alternating trials. Editor NullRHI CPU wall time; not a packaged load benchmark."), *FPaths::ConvertRelativePathToFull(Path)));
+	return !HasAnyErrors();
 }
 
 #endif

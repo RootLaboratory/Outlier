@@ -1523,14 +1523,10 @@ void AShooterCharacter::RefreshFirstPersonShadowPolicy()
 			// 하나라도 활성 상태면 렌더 여부와 관계없이 같은 TP 포즈를 갱신한다.
 			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 		}
-		else if (GetNetMode() == NM_DedicatedServer)
-		{
-			// Dedicated servers still need montage position updates for authoritative gameplay Notifies.
-			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
-		}
 		else
 		{
-			// 화면 밖에서도 가청 발걸음 Notify는 진행한다. 뼈 갱신은 렌더될 때만 하고 바닥 조회는 캡슐로 보완한다.
+			// 서버에서도 이동 애니메이션을 진행해야 시야 밖 플레이어의 발소리 Notify가 청각 단서를 보고한다.
+			// 최신 본이 필요 없는 평상시에는 포즈만 진행한다. 시야/근접 요청이 끝나도 이 정책으로 복귀한다.
 			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPose;
 		}
 	}

@@ -185,8 +185,8 @@ struct FMeleeDedicatedWorld
 		}
 		Test.TestTrue(TEXT("Actual montage Notify commits the attack to Recovery"), bObservedRecovery);
 		Test.TestEqual(TEXT("Released montage attack finishes in Idle"), Hammer->GetAttackPhase(), EMeleeAttackPhase::Idle);
-		Test.TestTrue(TEXT("Completion restores the server's inactive pose policy"), Shooter->GetMesh()->VisibilityBasedAnimTickOption
-			== EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered);
+		Test.TestTrue(TEXT("Completion preserves server locomotion notifies"), Shooter->GetMesh()->VisibilityBasedAnimTickOption
+			== EVisibilityBasedAnimTickOption::AlwaysTickPose);
 		return bObservedRecovery;
 	}
 
