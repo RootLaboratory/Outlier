@@ -1939,6 +1939,7 @@ void  APartnerCharacter::InitializeFromDataTables()
 		AssistDeadZoneAngle		= CameraAssistDataRow->AssistDeadZoneAngle;
 		AssistInterpSpeed		= CameraAssistDataRow->AssistInterpSpeed;
 		AssistStrength			= CameraAssistDataRow->AssistStrength;
+		HackCancelCooldownRefundRate = SkillDataRow->HackCancelCooldownRefundRate;
 	}
 
 	FPartnerHackAbilityData HackAbilityData;
@@ -1999,6 +2000,7 @@ void  APartnerCharacter::InitializeFromDataTables()
 void APartnerCharacter::LookInput(const FInputActionValue& Value)
 {
 	if (!CanAcceptInput())
+		AbilityConfig.HackCancelCooldownRefundRate = HackCancelCooldownRefundRate;
 	{
 		return;
 	}

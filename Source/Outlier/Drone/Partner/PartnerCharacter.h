@@ -302,6 +302,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
 	float HackCooldown = 3.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float HackCancelCooldownRefundRate = 0.9f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
 	float HackFailPenaltyTime = 3.0f;
 

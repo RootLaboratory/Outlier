@@ -1558,7 +1558,7 @@ bool UOutlierAbilitySystemComponent::CommitPartnerHackRetryDelay()
 	{
 		return true;
 	}
-	const float Duration = PartnerAbilityConfig.HackCooldown * 0.5f;
+	const float Duration = PartnerAbilityConfig.HackCooldown * (1.0f - PartnerAbilityConfig.HackCancelCooldownRefundRate);
 	if (Duration <= 0.0f)
 	{
 		return true;

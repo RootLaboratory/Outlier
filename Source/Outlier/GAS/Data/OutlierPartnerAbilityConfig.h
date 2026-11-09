@@ -17,6 +17,10 @@ struct OUTLIER_API FOutlierPartnerAbilityConfig
 	UPROPERTY()
 	float HackCooldown = 0.0f;
 
+	// 취소 시 환급률 [0, 1]. 재시도 대기 = HackCooldown * (1 - 환급률).
+	UPROPERTY()
+	float HackCancelCooldownRefundRate = 0.9f;
+
 	UPROPERTY()
 	float ScanCooldown = 0.0f;
 
