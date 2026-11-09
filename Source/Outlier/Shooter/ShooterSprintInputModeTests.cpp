@@ -344,6 +344,8 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 	ULocalPlayer* LocalPlayer = NewObject<ULocalPlayer>(GEngine);
 	ULocalPlayerSettingsSubsystem* Settings = NewObject<ULocalPlayerSettingsSubsystem>(LocalPlayer);
 	UOutlierInputUserSettings* SavedSettings = NewObject<UOutlierInputUserSettings>();
+	// Exercise an actual Toggle -> Hold change independently of the new-user default.
+	SavedSettings->SetSprintInputMode(EOutlierPlayerRole::Shooter, EOutlierSprintInputMode::Toggle);
 	Settings->InputUserSettings = SavedSettings;
 	LocalPlayer->PlayerController = InputController;
 	InputController->Player = LocalPlayer;

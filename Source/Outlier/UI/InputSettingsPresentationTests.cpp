@@ -233,10 +233,10 @@ struct FInputSettingsPresentationTestAccess
 		State->SetPlayerRole(ERole::Shooter);
 		Page->HandleInputSettingsContextChanged(Settings->GetInputSettingsRole());
 		Test.TestEqual(TEXT("Role source selects Shooter in the shared module"), Module->DisplayedRole, ERole::Shooter);
-		Test.TestEqual(TEXT("Shooter initially displays Toggle"), Module->SprintModeText->GetText().ToString(), FString(TEXT("Toggle")));
+		Test.TestEqual(TEXT("Shooter initially displays Hold"), Module->SprintModeText->GetText().ToString(), FString(TEXT("Hold")));
 		Click(Module->SprintModeRightButton);
-		Test.TestEqual(TEXT("Right button changes Shooter preference through the subsystem"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Hold);
-		Test.TestEqual(TEXT("Mode change delegate refreshes the text"), Module->SprintModeText->GetText().ToString(), FString(TEXT("Hold")));
+		Test.TestEqual(TEXT("Right button changes Shooter preference through the subsystem"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
+		Test.TestEqual(TEXT("Mode change delegate refreshes the text"), Module->SprintModeText->GetText().ToString(), FString(TEXT("Toggle")));
 		Test.TestEqual(TEXT("Shooter click preserves Partner preference"), Settings->GetSprintInputMode(ERole::Partner), EMode::Toggle);
 
 		State->SetPlayerRole(ERole::Partner);
@@ -244,7 +244,7 @@ struct FInputSettingsPresentationTestAccess
 		Test.TestEqual(TEXT("Role refresh reads Partner without overwriting it"), Module->SprintModeText->GetText().ToString(), FString(TEXT("Toggle")));
 		Click(Module->SprintModeLeftButton);
 		Test.TestEqual(TEXT("Left button changes only Partner preference"), Settings->GetSprintInputMode(ERole::Partner), EMode::Hold);
-		Test.TestEqual(TEXT("Partner click preserves Shooter Hold"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Hold);
+		Test.TestEqual(TEXT("Partner click preserves Shooter Toggle"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
 		// 페이지 재진입처럼 바인딩을 반복해도 한 클릭은 한 번만 처리한다.
 		Module->BindButtons();
 		Module->BindButtons();
@@ -254,14 +254,14 @@ struct FInputSettingsPresentationTestAccess
 		Module->SprintModeLeftButton->OnPressed.Broadcast();
 		State->SetPlayerRole(ERole::Shooter);
 		Module->SprintModeLeftButton->OnClicked.Broadcast();
-		Test.TestEqual(TEXT("Old-role click cannot change Shooter"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Hold);
+		Test.TestEqual(TEXT("Old-role click cannot change Shooter"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
 		Test.TestEqual(TEXT("Old-role click cannot change Partner"), Settings->GetSprintInputMode(ERole::Partner), EMode::Toggle);
-		Test.TestEqual(TEXT("Returning role displays its independent preference"), Module->SprintModeText->GetText().ToString(), FString(TEXT("Hold")));
+		Test.TestEqual(TEXT("Returning role displays its independent preference"), Module->SprintModeText->GetText().ToString(), FString(TEXT("Toggle")));
 		Module->SprintModeRightButton->OnPressed.Broadcast();
 		State->SetPlayerRole(ERole::None);
 		Module->SprintModeRightButton->OnClicked.Broadcast();
 		Test.TestFalse(TEXT("Role removal hides the shared mode module"), Module->IsVisible());
-		Test.TestEqual(TEXT("Role removal discards a pending click"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Hold);
+		Test.TestEqual(TEXT("Role removal discards a pending click"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
 
 		TArray<uint8> Bytes;
 		if (Test.TestTrue(TEXT("UI preferences serialize without writing a save slot"), UGameplayStatics::SaveGameToMemory(UserSettings, Bytes)))
@@ -269,12 +269,12 @@ struct FInputSettingsPresentationTestAccess
 			UOutlierInputUserSettings* Loaded = Cast<UOutlierInputUserSettings>(UGameplayStatics::LoadGameFromMemory(Bytes));
 			if (Test.TestNotNull(TEXT("UI preferences reload in memory"), Loaded))
 			{
-				Test.TestEqual(TEXT("UI round trip keeps Shooter Hold"), Loaded->GetSprintInputMode(ERole::Shooter), EMode::Hold);
+				Test.TestEqual(TEXT("UI round trip keeps Shooter Toggle"), Loaded->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
 				Test.TestEqual(TEXT("UI round trip keeps Partner Toggle"), Loaded->GetSprintInputMode(ERole::Partner), EMode::Toggle);
 			}
 		}
 		UOutlierInputUserSettings* OtherUser = NewObject<UOutlierInputUserSettings>();
-		Test.TestEqual(TEXT("UI edits do not affect another user"), OtherUser->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
+		Test.TestEqual(TEXT("UI edits do not affect another user"), OtherUser->GetSprintInputMode(ERole::Shooter), EMode::Hold);
 	}
 };
 

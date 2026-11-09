@@ -7,6 +7,7 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "TimerManager.h"
 
 #if WITH_EDITOR
@@ -19,8 +20,7 @@
 
 APartnerLightVolume::APartnerLightVolume()
 {
-	PrimaryActorTick.bCanEverTick = true;
-	PrimaryActorTick.TickGroup = TG_PostPhysics;
+	PrimaryActorTick.bCanEverTick = false;
 	bGenerateOverlapEventsDuringLevelStreaming = true;
 	if (UBrushComponent* BrushComp = GetBrushComponent())
 	{
@@ -67,26 +67,8 @@ void APartnerLightVolume::BeginPlay()
 {
 	bEndingPlay = false;
 	Super::BeginPlay();
-	SetActorTickEnabled(true);
 	// Initial overlaps may precede either actor's BeginPlay. Reconcile after this initialization pass.
 	GetWorldTimerManager().SetTimerForNextTick(this, &APartnerLightVolume::RefreshInitialOverlaps);
-}
-
-void APartnerLightVolume::Tick(float DeltaSeconds)
-{
-	Super::Tick(DeltaSeconds);
-	if (bEndingPlay) return;
-	// One volume drives the world-wide check to avoid repeating it for every volume.
-	for (TActorIterator<APartnerLightVolume> It(GetWorld()); It; ++It)
-	{
-		if (It->bEndingPlay || !It->HasActorBegunPlay()) continue;
-		if (*It != this) return;
-		break;
-	}
-	for (TActorIterator<APartnerCharacter> It(GetWorld()); It; ++It)
-	{
-		RefreshPartnerLights(*It);
-	}
 }
 
 void APartnerLightVolume::RefreshInitialOverlaps()
@@ -115,9 +97,12 @@ void APartnerLightVolume::RefreshPartnerLights(APartnerCharacter* Partner)
 
 	bool bInsideLightVolume = false;
 	const UCapsuleComponent* Capsule = Partner->GetCapsuleComponent();
+	const UOutlierArenaSubsystem* Arena = Partner->GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	const bool bGameplayReady = !Arena || !Arena->IsGameplayLevelsConfigured() || Arena->IsGameplayLevelsReady();
 	for (TActorIterator<APartnerLightVolume> It(Partner->GetWorld()); It; ++It)
 	{
-		if (It->bEndingPlay) continue;
+		if (!bGameplayReady) break;
+		if (It->bEndingPlay || !It->HasActorBegunPlay()) continue;
 		if (It->GetBrushComponent()->OverlapComponent(Capsule->GetComponentLocation(),
 			Capsule->GetComponentQuat(), Capsule->GetCollisionShape()))
 		{

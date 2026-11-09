@@ -16,7 +16,6 @@ class OUTLIER_API APartnerLightVolume : public AVolume, public IMeleeIgnoreInter
 public:
 	APartnerLightVolume();
 	static void RefreshPartnerLights(APartnerCharacter* Partner);
-	virtual void Tick(float DeltaSeconds) override;
 
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
