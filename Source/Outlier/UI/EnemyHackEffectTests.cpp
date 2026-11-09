@@ -2,6 +2,7 @@
 
 #include "Enemy/EnemyBase.h"
 #include "Enemy/AutoTurret.h"
+#include "Enemy/EnemyAIController.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackType.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -328,10 +329,42 @@ bool FEnemyHackEffectGameplayTest::RunTest(const FString& Parameters)
 	Turret->GetOutlierAbilitySystemComponent()->InitializeForPawn(Turret);
 	Turret->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.0f);
 	Turret->TurretLifecycleState = EAutoTurretLifecycleState::Active;
+	AEnemyAIController* TurretAI = Fixture.World->SpawnActor<AEnemyAIController>();
+	if (!TestNotNull(TEXT("Turret AI for team handoff"), TurretAI)) return false;
+	TurretAI->Possess(Turret);
+	FEnemyHitClue ActiveHit, PendingHit, UnpublishedHit, ReadHit;
+	const auto ArmTurretResponse = [this, Turret, &Fixture, &ActiveHit, &PendingHit, &UnpublishedHit]()
+	{
+		const double Now = Fixture.World->GetTimeSeconds();
+		if (!Turret->CreateHitClue(FVector(-500, 0, 0), Now, 120.0, ActiveHit) || !Turret->RecordHitClue(ActiveHit)) return false;
+		Turret->TickHitResponse(0.0f);
+		if (!TestTrue(TEXT("Turret starts a real direction response before team or lifetime transition"), Turret->IsHitDirectionConfirmationActive())) return false;
+		return Turret->CreateHitClue(FVector(0, 500, 0), Now, 120.0, PendingHit) && Turret->RecordHitClue(PendingHit)
+			&& Turret->CreateHitClue(FVector(500, 0, 0), Now, 120.0, UnpublishedHit);
+	};
+	const auto CheckTurretResponseCleared = [this, Turret, &ActiveHit, &PendingHit, &UnpublishedHit, &ReadHit]()
+	{
+		return TestFalse(TEXT("Turret transition releases direction ownership"), Turret->HasHitResponse())
+			&& TestFalse(TEXT("Turret transition clears the pending clue"), Turret->TryGetPendingHitClue(ReadHit))
+			&& TestFalse(TEXT("Turret transition clears the alert clock"), Turret->HasAlertClue())
+			&& TestFalse(TEXT("Old turret completion cannot finish a new response"), Turret->EndHitInvestigation(ActiveHit.Serial))
+			&& TestFalse(TEXT("Old pending turret hit cannot replay"), Turret->RecordHitClue(PendingHit))
+			&& TestFalse(TEXT("Unpublished turret callback cannot cross the transition"), Turret->RecordHitClue(UnpublishedHit));
+	};
+	if (!ArmTurretResponse()) return false;
 	FHackResultContext Context;
 	Context.Result = EHackResult::Success;
 	Turret->HandleHackEffect(HackGameplayTags::Effect::ChangeTeam(), Context);
 	TestTrue(TEXT("Turret team conversion starts the lifetime"), Turret->IsHackedToPlayerTeam() && Turret->IsHackEffectActive());
+	if (!CheckTurretResponseCleared()) return false;
+	// 현재 해킹 만료 정책은 원래 팀 복귀가 아니라 사망이다. 양방향 팀 갱신 정리는 별도로 통과시킨다.
+	if (!ArmTurretResponse()) return false;
+	Turret->bHackedToPlayerTeam = false;
+	Turret->ApplyHackedTeamState();
+	if (!CheckTurretResponseCleared() || !ArmTurretResponse()) return false;
+	Turret->bHackedToPlayerTeam = true;
+	Turret->ApplyHackedTeamState();
+	if (!CheckTurretResponseCleared() || !ArmTurretResponse()) return false;
 	const double TurretDeadline = Turret->HackEffectState.EndServerTime;
 	Fixture.AdvanceTime(1.0f);
 	Turret->HandleHackEffect(HackGameplayTags::Effect::ChangeTeam(), Context);
@@ -341,6 +374,7 @@ bool FEnemyHackEffectGameplayTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Turret remains on hacked team at death"), Turret->IsHackedToPlayerTeam());
 	TestTrue(TEXT("Turret expiry enters its existing death lifecycle"),
 		Turret->GetTurretLifecycleState() == EAutoTurretLifecycleState::DeadPresentation);
+	if (!CheckTurretResponseCleared()) return false;
 	return true;
 }
 

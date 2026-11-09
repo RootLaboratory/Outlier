@@ -365,6 +365,8 @@ public:
 	virtual void StopAttack() override;
 	void PauseTargetAttack();
 	bool HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint) const;
+	bool IsOutsideEffectiveRange(const FVector& AimPoint) const;
+	float GetEffectiveRange() const { return EffectiveRange; }
 	virtual void PerformAttack() override;
 	bool HasFixedBurst() const { return BurstShotCount > 0; }
 	int32 GetCurrentBurstShotCount() const { return CurrentBurstShotCount; }

@@ -10,6 +10,7 @@ class AFirstPersonCharacter;
 class UHackableComponent;
 class UInteractableComponent;
 class UMaterialInstanceDynamic;
+class USceneComponent;
 class UStaticMeshComponent;
 
 /**
@@ -65,6 +66,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UHackableComponent> HackableComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
+	TObjectPtr<USceneComponent> HackTargetPoint;
+
 	/** 이 해킹 성공 이펙트가 오면 State.Locked를 풀어 상호작용을 허용한다. 기본은 Hack.Effect.Unblock. */
 	FGameplayTag UnblockEffectTag;
 
@@ -109,6 +113,9 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UInteractableComponent> InteractableComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
+	TObjectPtr<USceneComponent> InteractionTargetPoint;
 
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch")
 	FName SwitchId = NAME_None;

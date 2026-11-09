@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "UI/TargetPointHudWidget.h"
 #include "HackCandidateLayerWidget.generated.h"
 
 class UCanvasPanel;
@@ -58,6 +59,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Hack")
 	FVector2D MarkerSize = FVector2D(64.0f, 64.0f);
 
+	UPROPERTY(EditDefaultsOnly, Category = "Hack|HUD")
+	FTargetPointHudSettings HudPresentation;
+
 
 private:
 	void UpdateCandidateNullVisibility();
@@ -71,6 +75,9 @@ private:
 	float RevealElapsedTime = 0.0f;
 	bool bRevealActive = false;
 
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class AHackTargetPointNetworkProbe;
+#endif
 	UPROPERTY()
 	TObjectPtr<UPartnerHackComponent> HackComponent;
 

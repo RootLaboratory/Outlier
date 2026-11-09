@@ -625,6 +625,11 @@ bool ARangedWeaponBase::ResolveShotTransform(FName FiredMuzzleSocketName, FTrans
 	FVector ViewLocation;
 	FRotator ViewRotation;
 	WeaponOwner->GetController()->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	if (const AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner))
+	{
+		// 사거리/사선 검사와 실제 발사는 이 경로를 공유한다. AI 조준이 고른 원점을 그대로 사용한다.
+		ViewLocation = Enemy->GetCombatShotOrigin();
+	}
 	OutTransform = FTransform(ViewRotation, ViewLocation);
 	return !OutTransform.ContainsNaN();
 }
@@ -821,6 +826,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			DamageRequest.StunDurationSeconds = ProjectileStunTime;
 			DamageRequest.HitResult = ResolvedDamageHit;
 			DamageRequest.DamageOrigin = Start;
+			DamageRequest.bHasDamageOrigin = true;
 			DamageRequest.EventInstigator = OwnerCharacter->GetController();
 			DamageRequest.DamageCauser = this;
 			DamageRequest.StealthSession = StealthSession;
@@ -2778,6 +2784,14 @@ void ARangedWeaponBase::PauseTargetAttack()
 	StopAttack();
 	PreservedAttackReadyAt = ReadyAt;
 	CurrentBurstShotCount = BurstCount;
+}
+
+bool ARangedWeaponBase::IsOutsideEffectiveRange(const FVector& AimPoint) const
+{
+	FTransform Shot;
+	return FMath::IsFinite(EffectiveRange) && EffectiveRange > 0.0f && !AimPoint.ContainsNaN()
+		&& ResolveShotTransform(NAME_None, Shot)
+		&& FVector::DistSquared(Shot.GetLocation(), AimPoint) > FMath::Square(EffectiveRange);
 }
 
 bool ARangedWeaponBase::HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint) const

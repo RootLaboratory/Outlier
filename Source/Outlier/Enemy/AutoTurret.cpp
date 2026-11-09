@@ -42,6 +42,8 @@
 
 namespace
 {
+	const FName HackTargetNeckBone(TEXT("TurretNeck"));
+
 	TAutoConsoleVariable<int32> CVarTurretDiagnostics(
 		TEXT("outlier.Enemy.TurretDiagnostics"),
 		0,
@@ -65,6 +67,8 @@ AAutoTurret::AAutoTurret()
 
 	// 데디 서버에서도 전개 애니메이션의 본 위치를 갱신해야 Physics Asset이 열린 해치 위치를 따라간다.
 	GetMesh()->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	// 몸체의 목 본은 전개 높이를 따라가고, 별도 Head 피벗의 조준 회전은 상속하지 않는다.
+	HackTargetPoint->SetupAttachment(GetMesh(), HackTargetNeckBone);
 
 	TurretHeadPivot = CreateDefaultSubobject<USceneComponent>(TEXT("TurretHeadPivot"));
 	TurretHeadPivot->SetupAttachment(GetRootComponent());
@@ -312,7 +316,13 @@ FVector AAutoTurret::GetPawnViewLocation() const
 
 FVector AAutoTurret::GetHackTargetLocation() const
 {
-	// 해치/바닥에 놓인 Actor 원점 대신 전개된 머리를 시야 검사와 UI의 기준으로 사용한다.
+	FVector TargetLocation;
+	if (HackableComponent && HackableComponent->TryGetHackTargetLocation(TargetLocation))
+	{
+		return TargetLocation;
+	}
+
+	// 명시적 목표점이 없을 때만 기존 머리 시점을 사용한다. 전투용 시점 계산은 그대로 유지한다.
 	return GetPawnViewLocation();
 }
 
@@ -331,6 +341,16 @@ FVector AAutoTurret::GetCombatAimPoint(const AActor* TargetActor) const
 	return Super::GetCombatAimPoint(TargetActor);
 }
 
+FRotator AAutoTurret::GetLocalHeadRotation() const
+{
+	FRotator Rotation = CurrentAimOffset + ImpactRotationOffset;
+	const float DownLimit = FMath::IsFinite(RuntimeTurretBehavior.MaxPitchDegrees)
+		? FMath::Clamp(RuntimeTurretBehavior.MaxPitchDegrees, 0.0f, 90.0f) : 60.0f;
+	Rotation.Pitch = FMath::Clamp(Rotation.Pitch, -DownLimit, 90.0f);
+	Rotation.Roll = 0.0f;
+	return Rotation;
+}
+
 FRotator AAutoTurret::GetViewRotation() const
 {
 	if (!TurretHeadPitchPivot)
@@ -338,9 +358,70 @@ FRotator AAutoTurret::GetViewRotation() const
 		return Super::GetViewRotation();
 	}
 
-	FRotator LocalAimRotation = CurrentAimOffset + ImpactRotationOffset;
-	LocalAimRotation.Roll = 0.0f;
+	const FRotator LocalAimRotation = GetLocalHeadRotation();
 	return (GetActorQuat() * LocalAimRotation.Quaternion()).Rotator();
+}
+
+void AAutoTurret::ClearHitClues()
+{
+	if (!HasAuthority()) return;
+	Super::ClearHitClues();
+	bHitGuardRotationActive = false;
+	HitGuardElapsed = 0.0f;
+}
+
+void AAutoTurret::OnDirectSightForHitResponse(const FVector& ObservedLocation)
+{
+	if (!HasAuthority() || ObservedLocation.ContainsNaN()) return;
+	// 시각 관측 콜백에서 즉시 양보해 같은 프레임의 옛 탐색이 전투 회전을 덮지 않게 한다.
+	bHitGuardRotationActive = false;
+	Super::OnDirectSightForHitResponse(ObservedLocation);
+}
+
+void AAutoTurret::TickHitResponse(float DeltaTime)
+{
+	if (!HasAuthority() || bProcessingDamageHitResponse) return;
+	const bool bWasConfirming = IsHitDirectionConfirmationActive();
+	const FVector ConfirmedLocation = ActiveHitClue.Location;
+	Super::TickHitResponse(DeltaTime);
+	if (!CanUseEnemyPerception() || GetCombatState() == EEnemyCombatState::Stun || HasActiveStunTag()
+		|| IsPlayerCurrentlyVisible() || HasTrackableTarget() || IsHitResponseCommitted())
+	{
+		bHitGuardRotationActive = false;
+		return;
+	}
+	if (HasHitResponse())
+	{
+		bHitGuardRotationActive = false;
+		return;
+	}
+	if (bWasConfirming)
+	{
+		// 자연 완료한 확인만 경계 중심으로 인계한다. 팀/생명 정리는 ClearHitClues에서 폐기한다.
+		const FVector Direction = GetActorQuat().UnrotateVector(ConfirmedLocation - GetPawnViewLocation());
+		const double HorizontalDistance = FVector2D(Direction.X, Direction.Y).Size();
+		HitGuardCenterYaw = HorizontalDistance > FMath::Max(1.0, Direction.Size() * 0.001)
+			? FMath::RadiansToDegrees(FMath::Atan2(Direction.Y, Direction.X)) : CurrentAimOffset.Yaw;
+		HitGuardElapsed = 0.0f;
+		bHitGuardRotationActive = true;
+	}
+	if (!bHitGuardRotationActive) return;
+	if (GetCombatState() == EEnemyCombatState::NonCombat)
+	{
+		const float NeutralPitch = FMath::Clamp(RuntimeTurretBehavior.SearchNeutralPitchDegrees,
+			FMath::Min(RuntimeTurretBehavior.SearchMinPitchDegrees, RuntimeTurretBehavior.SearchMaxPitchDegrees),
+			FMath::Max(RuntimeTurretBehavior.SearchMinPitchDegrees, RuntimeTurretBehavior.SearchMaxPitchDegrees));
+		const FVector DefaultDirection = GetActorQuat().RotateVector(FRotator(NeutralPitch, 0.0f, 0.0f).Vector());
+		if (UpdateTurretAimAtLocation(GetPawnViewLocation() + DefaultDirection * 10000.0f, DeltaTime, false, true))
+			bHitGuardRotationActive = false;
+		return;
+	}
+	// 탐색은 상태를 연장하지 않는다. Alert/Combat의 기존 종료 판단이 끝나면 기본 방향으로 복귀한다.
+	HitGuardElapsed += FMath::Max(0.0f, DeltaTime);
+	const float HalfCycle = FMath::Max(0.01f, RuntimeTurretBehavior.SearchHalfCycleDuration);
+	const float Yaw = HitGuardCenterYaw + FMath::Sin(HitGuardElapsed * PI / HalfCycle) * RuntimeTurretBehavior.SearchYawDegrees;
+	const FVector SearchDirection = GetActorQuat().RotateVector(FRotator(0.0f, Yaw, 0.0f).Vector());
+	UpdateTurretAimAtLocation(GetPawnViewLocation() + SearchDirection * 10000.0f, DeltaTime, false, true);
 }
 
 bool AAutoTurret::CanUseEnemyPerception() const
@@ -442,6 +523,13 @@ void AAutoTurret::ConfigureHeadPivotAttachment()
 	CacheAimOriginMuzzleSockets();
 
 	USkeletalMeshComponent* BodyMesh = GetMesh();
+	if (HackTargetPoint && BodyMesh && BodyMesh->DoesSocketExist(HackTargetNeckBone)
+		&& (HackTargetPoint->GetAttachParent() != BodyMesh || HackTargetPoint->GetAttachSocketName() != HackTargetNeckBone))
+	{
+		// 기존 BP의 루트 부착을 갱신하되, BP·인스턴스에서 조절한 목 기준 상대 Transform은 보존한다.
+		// 목표점 참조는 건드리지 않으므로 별도로 지정한 사용자 컴포넌트도 계속 사용할 수 있다.
+		HackTargetPoint->AttachToComponent(BodyMesh, FAttachmentTransformRules::KeepRelativeTransform, HackTargetNeckBone);
+	}
 	if (!TurretHeadPivot || !TurretHeadPitchPivot || !TurretHeadMesh || !BodyMesh
 		|| HeadPivotSocketName.IsNone()
 		|| !BodyMesh->DoesSocketExist(HeadPivotSocketName))
@@ -831,6 +919,7 @@ void AAutoTurret::ApplyWaitingForWaveState()
 		return;
 	}
 
+	ClearHitClues();
 	bInCombat = false;
 	CombatState = EEnemyCombatState::NonCombat;
 	bPlayerCurrentlyVisible = false;
@@ -1260,71 +1349,48 @@ bool AAutoTurret::UpdateTurretAimAtActor(AActor* TargetActor, float DeltaTime, b
 bool AAutoTurret::UpdateTurretAimAtLocation(
 	const FVector& TargetLocation, float DeltaTime, bool bAttackRotation, bool bUseSearchPitch)
 {
-	if (!HasAuthority() || !IsCombatActive() || !TurretHeadPivot)
-	{
-		return false;
-	}
-
-	const FVector Direction = TargetLocation - GetPawnViewLocation();
-	if (Direction.IsNearlyZero())
-	{
-		return false;
-	}
-
+	if (!HasAuthority() || !IsCombatActive() || !TurretHeadPivot || TargetLocation.ContainsNaN()) return false;
+	const FVector Direction = GetActorQuat().UnrotateVector(TargetLocation - GetPawnViewLocation());
 	CurrentAimLocation = TargetLocation;
-	const FRotator DesiredWorldRotation = Direction.Rotation();
-	// 소켓은 위치만 따라가고 회전은 터렛 Actor의 로컬 X Forward/Z Up 축을 기준으로 계산한다.
-	const FTransform AimParentTransform = GetActorTransform();
-	FRotator DesiredOffset = FRotator::ZeroRotator;
+	const double HorizontalDistance = FVector2D(Direction.X, Direction.Y).Size();
+	FRotator DesiredOffset = CurrentAimOffset;
+	// 수직/근접 출처는 Yaw를 정할 수 없다. 현재 방향을 유지한 채 도달 가능한 Pitch만 확인한다.
+	if (HorizontalDistance > FMath::Max(1.0, Direction.Size() * 0.001))
+		DesiredOffset.Yaw = FMath::RadiansToDegrees(FMath::Atan2(Direction.Y, Direction.X));
 	if (bUseSearchPitch)
 	{
-		// 탐색 좌표의 높이는 버리고 소켓 로컬 평면의 X/Y로 Yaw를 직접 계산한다.
-		// 월드 회전을 Rotator로 변환한 뒤 Pitch만 덮으면 뒤쪽 목표에서 Euler 축이 뒤집힐 수 있다.
-		const FVector LocalDirection = AimParentTransform.InverseTransformVectorNoScale(Direction);
-		if (FVector2D(LocalDirection.X, LocalDirection.Y).IsNearlyZero())
-		{
-			return false;
-		}
-
-		const float DesiredRelativeYaw = FMath::RadiansToDegrees(
-			FMath::Atan2(LocalDirection.Y, LocalDirection.X));
-		DesiredOffset.Yaw = FMath::UnwindDegrees(DesiredRelativeYaw);
-		const float SearchMinPitch = FMath::Min(RuntimeTurretBehavior.SearchMinPitchDegrees,
-			RuntimeTurretBehavior.SearchMaxPitchDegrees);
-		const float SearchMaxPitch = FMath::Max(RuntimeTurretBehavior.SearchMinPitchDegrees,
-			RuntimeTurretBehavior.SearchMaxPitchDegrees);
 		DesiredOffset.Pitch = FMath::Clamp(RuntimeTurretBehavior.SearchNeutralPitchDegrees,
-			SearchMinPitch, SearchMaxPitch);
+			FMath::Min(RuntimeTurretBehavior.SearchMinPitchDegrees, RuntimeTurretBehavior.SearchMaxPitchDegrees),
+			FMath::Max(RuntimeTurretBehavior.SearchMinPitchDegrees, RuntimeTurretBehavior.SearchMaxPitchDegrees));
 	}
-	else
+	else if (!Direction.IsNearlyZero())
 	{
-		const FRotator DesiredRelativeRotation =
-			AimParentTransform.InverseTransformRotation(DesiredWorldRotation.Quaternion()).Rotator();
-		DesiredOffset = DesiredRelativeRotation.GetNormalized();
-		DesiredOffset.Pitch = FMath::Clamp(DesiredOffset.Pitch,
-			-RuntimeTurretBehavior.MaxPitchDegrees, RuntimeTurretBehavior.MaxPitchDegrees);
+		DesiredOffset.Pitch = FMath::RadiansToDegrees(FMath::Atan2(Direction.Z, HorizontalDistance));
 	}
-	const float ConfiguredMaxYawDegrees = bAttackRotation
-		? RuntimeTurretBehavior.AttackMaxYawDegrees
-		: RuntimeTurretBehavior.MaxYawDegrees;
-	const float MaxYawDegrees = FMath::Clamp(ConfiguredMaxYawDegrees, 0.0f, 180.0f);
-	DesiredOffset.Yaw = FMath::Clamp(DesiredOffset.Yaw, -MaxYawDegrees, MaxYawDegrees);
+	const float DownLimit = FMath::IsFinite(RuntimeTurretBehavior.MaxPitchDegrees)
+		? FMath::Clamp(RuntimeTurretBehavior.MaxPitchDegrees, 0.0f, 90.0f) : 60.0f;
+	DesiredOffset.Pitch = FMath::Clamp(DesiredOffset.Pitch, -DownLimit, 90.0f);
 	DesiredOffset.Roll = 0.0f;
-
-	const float RotationSpeed = bAttackRotation
-		? RuntimeTurretBehavior.AttackRotationSpeedDegrees
-		: RuntimeTurretBehavior.DefaultRotationSpeedDegrees;
-	CurrentAimOffset = FMath::RInterpConstantTo(CurrentAimOffset, DesiredOffset,
-		FMath::Max(DeltaTime, 0.0f), FMath::Max(RotationSpeed, 0.0f));
-
+	const float YawError = FMath::FindDeltaAngleDegrees(CurrentAimOffset.Yaw, DesiredOffset.Yaw);
+	const float PitchError = DesiredOffset.Pitch - CurrentAimOffset.Pitch;
+	float Speed = bAttackRotation
+		? RuntimeTurretBehavior.AttackRotationSpeedDegrees : RuntimeTurretBehavior.DefaultRotationSpeedDegrees;
+	const float Tolerance = FMath::Max(0.01f, RuntimeTurretBehavior.AimToleranceDegrees);
+	// 확인/복귀는 목표 근처에서 감속한다. 공격 추적은 기존 종류별 속도를 그대로 사용한다.
+	if (!bAttackRotation)
+	{
+		const float AngularError = FMath::Max(FMath::Abs(YawError), FMath::Abs(PitchError));
+		Speed = FMath::Min(Speed, FMath::Max(Tolerance * 2.0f, AngularError * 6.0f));
+	}
+	const float Step = FMath::Max(0.0f, DeltaTime) * FMath::Max(0.0f, Speed);
+	// Euler 전체 보간 대신 축별 최단 각도를 사용해 ±180도 횡단과 +90도에서 축이 뒤집히지 않게 한다.
+	CurrentAimOffset.Yaw = FMath::UnwindDegrees(CurrentAimOffset.Yaw + FMath::Clamp(YawError, -Step, Step));
+	CurrentAimOffset.Pitch += FMath::Clamp(PitchError, -Step, Step);
+	CurrentAimOffset.Roll = 0.0f;
 	ApplyHeadRotation();
-
-	return FMath::Abs(FMath::FindDeltaAngleDegrees(CurrentAimOffset.Yaw, DesiredOffset.Yaw))
-		<= RuntimeTurretBehavior.AimToleranceDegrees
-		&& FMath::Abs(FMath::FindDeltaAngleDegrees(CurrentAimOffset.Pitch, DesiredOffset.Pitch))
-		<= RuntimeTurretBehavior.AimToleranceDegrees;
+	return FMath::Abs(FMath::FindDeltaAngleDegrees(CurrentAimOffset.Yaw, DesiredOffset.Yaw)) <= Tolerance
+		&& FMath::Abs(CurrentAimOffset.Pitch - DesiredOffset.Pitch) <= Tolerance;
 }
-
 bool AAutoTurret::UpdateAttackLocation(const FVector& TargetLocation)
 {
 	if (!HasAuthority() || !IsCombatActive() || IsAIControlSuppressed()
@@ -1489,8 +1555,7 @@ void AAutoTurret::ApplyHeadRotation()
 		return;
 	}
 
-	FRotator LocalAimRotation = CurrentAimOffset + ImpactRotationOffset;
-	LocalAimRotation.Roll = 0.0f;
+	const FRotator LocalAimRotation = GetLocalHeadRotation();
 	// Actor 회전에 로컬 조준 회전을 Quaternion으로 합성해 Yaw/Pitch가 월드 Roll로 뒤집히지 않게 한다.
 	const FQuat YawRotation = FRotator(0.0f, LocalAimRotation.Yaw, 0.0f).Quaternion();
 	TurretHeadPivot->SetWorldRotation(GetActorQuat() * YawRotation);
@@ -1571,6 +1636,9 @@ void AAutoTurret::RefreshTeammateOutline()
 
 void AAutoTurret::ApplyHackedTeamState()
 {
+	// Controller가 아직 없거나 교체 중이어도 이전 팀의 단서·예약 회차는 이월하지 않는다.
+	ClearAlertClue();
+	ClearHitClues();
 	RefreshTeammateOutline();
 	StopCurrentAttack();
 	SetPlayerCurrentlyVisible(false);

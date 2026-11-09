@@ -821,6 +821,7 @@ public:
 	void AcknowledgeSuitTransition(APlayerController* Sender, const FGuid& TransitionId, ESuitTransitionPhase Phase);
 	FGuid GetSuitTransitionId() const { return ActiveSuitTransitionId; }
 	ESuitTransitionPhase GetSuitTransitionPhase() const { return SuitTransitionPhase; }
+	FVector GetSuitTransitionPartnerDestination() const { return SuitTransitionPartnerDestination; }
 	FOnSuitTransitionPhaseChanged OnSuitTransitionPhaseChanged;
 
 	// 미연결/응답 유실도 유한하게 정리한다. 단계별 최소 시간보다 커야 한다.
@@ -1042,6 +1043,7 @@ protected:
 	bool ValidateSuitTransitionPair() const;
 	bool ValidateSuitTransitionPartnerState(bool bForReservation) const;
 	bool CanCommitSuitTransition() const;
+	bool TeleportSuitTransitionPartner();
 	float GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase) const;
 	bool IsSuitTransitionPhaseReady() const;
 	void EnterSuitTransitionPhase(ESuitTransitionPhase Phase);
@@ -1055,6 +1057,7 @@ protected:
 	ESuitTransitionPhase SuitTransitionPhase = ESuitTransitionPhase::Idle;
 	TWeakObjectPtr<ASuitInteraction> SuitTransitionInteraction;
 	TWeakObjectPtr<APartnerCharacter> SuitTransitionPartner;
+	FVector SuitTransitionPartnerDestination = FVector::ZeroVector;
 	TWeakObjectPtr<APlayerController> SuitTransitionShooterController;
 	TWeakObjectPtr<APlayerController> SuitTransitionPartnerController;
 	TWeakObjectPtr<AOutlierPlayerState> SuitTransitionShooterPlayerState;

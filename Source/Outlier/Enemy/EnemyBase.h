@@ -77,6 +77,46 @@ struct FEnemyHeardNoise
 	TWeakObjectPtr<AActor> Source;
 	FVector Location = FVector::ZeroVector;
 	double OccurredAt = -1.0;
+	uint64 Serial = 0;
+	bool bUsedForDirectionConfirmation = false;
+};
+
+enum class EEnemyNoiseConfirmationPhase : uint8
+{
+	None,
+	Rotating,
+	Holding
+};
+
+// 회전 표현과 사건 수명은 분리한다. 확인 중에는 출처 Actor가 아니라 이 고정 좌표만 사용한다.
+struct FEnemyNoiseDirectionConfirmation
+{
+	EEnemyNoiseConfirmationPhase Phase = EEnemyNoiseConfirmationPhase::None;
+	FEnemyHeardNoise Clue;
+	uint64 Serial = 0;
+	double StartedAt = -1.0;
+	double PhaseEndsAt = -1.0;
+	double EndedAt = -1.0;
+	bool bStartedWhileMoving = false;
+};
+
+// 마지막 실제 관측과 이동 목표 채택은 다른 시계다. 같은 위치 재관측은 채택 시간을 늘리지 않는다.
+struct FEnemyVisualInvestigation
+{
+	TWeakObjectPtr<AActor> Target;
+	FVector Location = FVector::ZeroVector;
+	double LastObservedAt = -1.0;
+	double AdoptedAt = -1.0;
+};
+
+// 피격 당시의 위치만 보관한다. 공격자 참조가 없어 사망·팀 변경·풀 재사용 뒤에도 좌표가 바뀌지 않는다.
+struct FEnemyHitClue
+{
+	TWeakObjectPtr<AEnemyBase> Receiver;
+	FVector Location = FVector::ZeroVector;
+	double OccurredAt = -1.0;
+	double ExpiresAt = -1.0;
+	uint64 Serial = 0;
 };
 
 UENUM(BlueprintType)
@@ -86,7 +126,8 @@ enum class EEnemyPerceptionGoalType : uint8
 	Combat,
 	InvestigateNoise,
 	Search,
-	CommittedAction
+	CommittedAction,
+	InvestigateHit
 };
 
 // 행동 의도와 추적 지식은 분리한다. 소리 조사에는 공격용 Target을 제공하지 않는다.
@@ -96,6 +137,7 @@ struct FEnemyPerceptionGoal
 	TWeakObjectPtr<AActor> Target;
 	FVector Location = FVector::ZeroVector;
 	double InformationAt = -1.0;
+	uint64 NoiseClueSerial = 0;
 };
 
 UENUM(BlueprintType)
@@ -138,6 +180,9 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 	GENERATED_BODY()
 	friend class FOutlierSightBoneTargetsTest;
 	friend class FEnemyAdaptationCombatPresentationTest;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FEnemyHitClueLifecycleTest;
+#endif
 
 public:
 	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
@@ -361,6 +406,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Hack")
 	TObjectPtr<UHackableComponent> HackableComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Hack")
+	TObjectPtr<USceneComponent> HackTargetPoint;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|EMP")
 	TObjectPtr<UEMPableComponent> EmpableComponent;
 
@@ -480,6 +528,13 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_AttackPhase, Category = "Enemy|Weapon")
 	EEnemyAttackPhase AttackPhase = EEnemyAttackPhase::Idle;
 
+	// 클라이언트에는 AIController/추적 Actor가 없으므로 외형 제한에 필요한 대상 종류만 복제한다.
+	UPROPERTY(Replicated)
+	bool bAimTargetIsShooter = false;
+	// 회전 판단은 서버만 소유한다. 클라이언트에는 이동 기울기/사격 보정을 양보할 표현 여부만 보낸다.
+	UPROPERTY(Replicated)
+	bool bNoiseDirectionFacing = false;
+
 	// Enemy BP에서 ARangedWeaponBase 파생 무기 BP를 지정한다.
 	// 서버 BeginPlay에서 한 번 스폰하며 CurrentWeapon으로 복제한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Weapon")
@@ -518,6 +573,7 @@ public:
 	virtual bool UsesHearingPerception() const { return true; }
 	virtual bool CanUseRoomTargetSharing() const { return !bIsPossessed; }
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const;
+	virtual FVector GetCombatShotOrigin() const;
 
 	virtual FGameplayTag GetCurrentRoomTag() const override;
 
@@ -625,6 +681,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Weapon")
 	EEnemyAttackPhase GetAttackPhase() const { return AttackPhase; }
+	bool IsAimingAtShooter() const { return bAimTargetIsShooter; }
 
 	bool IsPossessedAttackHeld() const { return bPossessedAttackHeld; }
 	bool HasPossessedAttackQueued() const { return bPossessedAttackQueued; }
@@ -645,6 +702,8 @@ public:
 	// Target 버전은 Actor의 현재 위치를 사용하고 Location 버전은 LKP 위협 사격처럼 좌표만 조준한다.
 	bool StartAttackTarget(AActor* TargetActor);
 	bool CanAttackTrackedTarget(const AActor* TargetActor) const;
+	// 이동 판단에는 거리만 사용한다. 벽 차단/쿨다운을 사거리 이탈로 취급하지 않는다.
+	bool IsTargetOutsideWeaponRange(const AActor* TargetActor) const;
 	bool HasActiveTargetAttack() const { return bTargetAttackActive; }
 	bool RefreshTargetAttackForShot();
 	void PauseTargetAttack();
@@ -714,7 +773,75 @@ public:
 	// 유효한 자극이라도 조사 후보 용량/우선순위 때문에 저장되지 않을 수 있다.
 	bool RecordHeardNoise(AActor* Source, const FVector& Location, double OccurredAt, bool* bValidStimulus = nullptr);
 	bool TryGetHeardNoise(FEnemyHeardNoise& OutNoise) const;
+	bool TryGetDirectionConfirmationNoise(FEnemyHeardNoise& OutNoise) const;
+	bool MarkNoiseDirectionUsed(uint64 ClueSerial);
+	// 다음 회전 연결에서 시작/도달/종료를 요청한다. 옛 회차의 도달·종료는 새 확인을 변경하지 않는다.
+	bool TryBeginNoiseDirectionConfirmation();
+	bool NotifyNoiseDirectionReached(uint64 Serial);
+	bool EndNoiseDirectionConfirmation(uint64 Serial);
+	bool UpdateNoiseDirectionFacing(float DeltaTime);
+	void UpdateNoiseInvestigationTravelDirection(uint64 InvestigationSerial, const FVector& Direction, float RotationSpeed);
+	void UpdateNoiseInvestigationProgress(uint64 InvestigationSerial, const FVector& PreviousLocation, const FVector& CurrentLocation, float AcceptanceRadius);
+	bool RecordNoiseInvestigationFailure(uint64 InvestigationSerial, const FVector& Destination, const FBox& SearchBounds);
+	bool IsNoiseDirectionFacing() const { return bNoiseDirectionFacing; }
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", ClampMax = "180.0", Units = "deg"))
+	float NoiseDirectionMovingHalfAngle = 60.0f;
+	const FEnemyNoiseDirectionConfirmation& GetNoiseDirectionConfirmation() const { return NoiseDirectionConfirmation; }
+	bool IsNoiseDirectionConfirmationActive() const { return NoiseDirectionConfirmation.Phase != EEnemyNoiseConfirmationPhase::None; }
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
+	float NoiseDirectionConfirmationInterval = 1.0f;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
+	float NoiseDirectionConfirmationHold = 0.3f;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.001", Units = "s"))
+	float NoiseDirectionConfirmationMaxRotationTime = 1.0f;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", ClampMax = "180.0", Units = "deg"))
+	float NoiseDirectionMergeYaw = 30.0f;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", ClampMax = "180.0", Units = "deg"))
+	float NoiseDirectionMergePitch = 20.0f;
+	const FEnemyHeardNoise& GetActiveNoiseInvestigationClue() const { return NoiseInvestigationClue; }
+	bool RecordInvestigationSight(AActor* Target, const FVector& Location, double ObservedAt);
+	const FEnemyVisualInvestigation& GetVisualInvestigation() const { return VisualInvestigation; }
+	bool IsVisualInvestigationHoldActive() const;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
+	float VisualInvestigationHoldDuration = 1.0f;
 	void ClearHeardNoise();
+
+	// 실제 관측·채택 지점에서만 발생 시각을 전달한다. 상태/Task 재진입은 새 단서가 아니다.
+	bool RecordAlertClue(double OccurredAt);
+	bool HasAlertClue() const { return LastAlertClueAt >= 0.0; }
+	double GetLastAlertClueAt() const { return LastAlertClueAt; }
+	bool IsAlertHoldActive() const;
+	void ClearAlertClue();
+
+	// 피해 수락 지점에서 한 번 생성하고 같은 사건의 후속 처리에는 원래 단서를 전달한다.
+	// 생성은 사건 번호만 발급한다. 저장·행동 시작·소비는 각 단계가 명시적으로 요청한다.
+	bool CreateHitClue(const FVector& Location, double OccurredAt, double LifetimeSeconds, FEnemyHitClue& OutClue);
+	bool RecordHitClue(const FEnemyHitClue& Clue);
+	bool TryGetPendingHitClue(FEnemyHitClue& OutClue) const;
+	bool BeginHitInvestigation(uint64 ClueSerial, FEnemyHitClue& OutClue);
+	bool IsHitInvestigationCurrent(uint64 ClueSerial) const;
+	bool EndHitInvestigation(uint64 ClueSerial);
+	bool ConsumeHitClue(uint64 ClueSerial);
+	virtual void ClearHitClues();
+
+	// 공통 위치 조사는 출처를 구분한 채 기존 이동/수색 Task를 재사용한다.
+	virtual void TickHitResponse(float DeltaTime);
+	virtual void OnDirectSightForHitResponse(const FVector& ObservedLocation);
+	bool HasHitResponse() const { return HitResponsePhase != EHitResponsePhase::None; }
+	bool IsHitDirectionConfirmationActive() const { return HitResponsePhase == EHitResponsePhase::Confirm; }
+	bool IsLocationInvestigationGoal() const;
+	float GetLocationSearchDuration(float DefaultDuration) const;
+	bool BeginLocationInvestigation(FVector& OutDestination);
+	bool TryUpdateLocationInvestigationDestination(FVector& OutDestination);
+	bool IsLocationInvestigationActive() const;
+	bool CanRunHitInvestigationMovement() const;
+	bool IsLocationInvestigationAdopted() const;
+	bool IsLocationSearchActive() const;
+	uint64 GetLocationInvestigationSerial() const { return NoiseInvestigationSerial; }
+	bool IsLocationInvestigationCurrent(uint64 Serial) const;
+	bool BeginLocationInvestigationSearch(uint64 Serial, const FVector& ReachableCenter);
+	void EndLocationInvestigation();
+	bool CompleteLocationInvestigation();
 
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
 	float NoiseGoalSwitchDistance = 200.0f;
@@ -727,6 +854,9 @@ public:
 	// 공유 대상과의 비교 거리와 분리한다. 조사 중 다른 소리를 택할 때 필요한 거리 이득이다.
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
 	float NoiseCandidateSwitchDistance = 200.0f;
+	// 이동 중 현재 목적지와 새 후보의 동거리 예외다. 후보끼리의 거리 순위에는 적용하지 않는다.
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float NoiseEqualDistanceTolerance = 10.0f;
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
 	float NoiseDestinationChangeDistance = 100.0f;
 
@@ -894,24 +1024,74 @@ protected:
 	uint64 NextSearchEpisodeSerial = 0;
 	bool bHasLastKnownPlayerLocation = false;
 	FEnemySearchEpisode SearchEpisode;
-	double LatestHeardNoiseAt = -1.0;
+	// 대기 후보는 최신 하나만 보관한다. 실행 중 위치는 새 피격이나 원래 단서 만료로 덮어쓰지 않는다.
+	FEnemyHitClue PendingHitClue;
+	// 인지 누적, 추적 유예, 피격 단서 TTL과 분리한다. 스턴 중에도 원래 기한이 흐른다.
+	double LastAlertClueAt = -1.0;
+	FEnemyHitClue ActiveHitClue;
+	bool bProcessingDamageHitResponse = false;
+	enum class EHitResponsePhase : uint8 { None, Confirm, Move, Search };
+	EHitResponsePhase HitResponsePhase = EHitResponsePhase::None;
+	double HitConfirmationStartedAt = -1.0;
+	double HitResponseLastEndedAt = -1.0;
+	bool bHitReturnDirectionOnly = false;
+	bool bHitMovementAdopted = false;
+	FVector HitSearchCenter = FVector::ZeroVector;
+	bool bObservedInvestigationPending = false;
+	bool bInvestigatingObservedLocation = false;
+	FVector ObservedInvestigationLocation = FVector::ZeroVector;
+	double ObservedInvestigationAt = -1.0;
+	void FinishHitResponse();
+	bool IsHitResponseCommitted() const;
+	uint64 NextHitClueSerial = 0;
+	uint64 LastRecordedHitClueSerial = 0;
+	double LastRecordedHitClueAt = -1.0;
+	bool CanStorePerceptionClue() const;
+	bool IsHitClueValid(const FEnemyHitClue& Clue) const;
 	static constexpr int32 MaxHeardNoiseCandidates = 8;
 	TArray<FEnemyHeardNoise, TInlineAllocator<MaxHeardNoiseCandidates>> HeardNoiseCandidates;
 	FEnemyPerceptionGoal PerceptionGoal;
+	FEnemyVisualInvestigation VisualInvestigation;
+	uint64 VisualInvestigationRevision = 0;
+	uint64 ObservedInvestigationRevision = 0;
+	uint64 NextHeardNoiseSerial = 0;
+	FEnemyNoiseDirectionConfirmation NoiseDirectionConfirmation;
+	uint64 NextNoiseDirectionConfirmationSerial = 0;
+	FTimerHandle NoiseDirectionConfirmationTimer;
+	bool bNoiseDirectionEvaluationPending = false;
+	FVector NoiseInvestigationTravelDirection = FVector::ZeroVector;
+	float NoiseDirectionRotationSpeed = 180.0f;
+	float NoiseDirectionTurnSign = 1.0f;
+	float NoiseInvestigationAcceptanceRadius = 50.0f;
+	FEnemyHeardNoise FailedNoiseInvestigationClue;
+	FBox FailedNoiseInvestigationBounds = FBox(ForceInit);
+	double NoiseInvestigationFailedAt = -1.0;
+	bool bNoiseFailureRetryAllowed = false;
+	TWeakObjectPtr<class URoomCombatSubsystem> NoiseFailureRooms;
+	FDelegateHandle NoiseFailureObstacleHandle;
+	void ClearNoiseInvestigationFailure();
+	void HandleNoiseInvestigationObstacleOpened(const FBox& Bounds);
+	bool IsFailedNoiseLocation(const FVector& Location) const;
+	bool CanRunNoiseDirectionConfirmation() const;
+	bool IsNoiseDirectionMerged(const FEnemyHeardNoise& Noise) const;
+	void MergePendingNoiseDirections();
+	void ScheduleNoiseDirectionConfirmationEnd();
+	void ClearNoiseDirectionConfirmation();
 	double LastPerceptionObservedAt = -1.0;
 	FTimerHandle PerceptionGoalTimer;
 	bool bNoiseInvestigationActive = false;
 	bool bNoiseInvestigationSearching = false;
 	uint64 NoiseInvestigationSerial = 0;
 	FVector NoiseInvestigationLocation = FVector::ZeroVector;
-	TWeakObjectPtr<AActor> NoiseInvestigationSource;
-	double NoiseInvestigationAt = -1.0;
+	// 발생 좌표는 고정 보관한다. 위 Location은 도착/실패 후 실제 수색 중심으로 바뀔 수 있다.
+	FEnemyHeardNoise NoiseInvestigationClue;
 	double LastNoiseDestinationChangedAt = -1.0;
 	double ConsumedNoiseAt = -1.0;
-	bool IsNoiseDestinationChangeReady(const FVector& Location, double InformationAt) const;
+	bool IsNoiseDestinationChangeReady(uint64 ClueSerial) const;
 	bool IsHeardNoiseValid(const FEnemyHeardNoise& Noise) const;
 	bool SelectHeardNoise(FEnemyHeardNoise& OutNoise, bool bRequireNewObservation) const;
 	bool CanReplaceNoiseDestination(const FEnemyHeardNoise& Noise) const;
+	bool TryGetNoiseGoalClue(FEnemyHeardNoise& OutClue) const;
 	bool CommitToNonCombatAfterSearch();
 	TWeakObjectPtr<AActor> TrackedTarget;
 	TWeakObjectPtr<AEnemyAIController> TrackingController;

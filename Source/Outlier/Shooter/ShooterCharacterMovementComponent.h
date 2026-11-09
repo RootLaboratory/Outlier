@@ -253,7 +253,7 @@ protected:
 		const FVector& Delta, const FVector& SubLocation) override;
 
 private:
-	EOutlierSprintInputMode SprintInputMode = EOutlierSprintInputMode::Toggle;
+	EOutlierSprintInputMode SprintInputMode = EOutlierSprintInputMode::Hold;
 	bool bSprintKeyDown = false;
 	bool bAwaitingFreshSprintPress = false;
 	void RestoreCrouchedPosture(bool bCrouched);

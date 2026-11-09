@@ -23,6 +23,11 @@ AInteractionNode::AInteractionNode()
 	RootComponent = SceneRoot;
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
+	// BP에서는 이 기준점의 상대 위치만 조절한다. 별도 UI 위치 보정은 적용하지 않는다.
+	InteractionTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("InteractionTargetPoint"));
+	InteractionTargetPoint->SetupAttachment(GetRootComponent());
+	InteractionTargetPoint->bEditableWhenInherited = true;
+	InteractableComponent->InteractionTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AInteractionNode, InteractionTargetPoint);
 
 	// 기본 곡선은 (1 - 진행률)^3이다. 초반에 빠르게 낮아져 진행 중 밝기 차이를 드러낸다.
 	FRichCurve* Curve = EmissiveFadeCurve.GetRichCurve();

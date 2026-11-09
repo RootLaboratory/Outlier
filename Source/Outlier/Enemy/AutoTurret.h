@@ -57,14 +57,16 @@ struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0"))
 	float AttackRotationSpeedDegrees = 30.0f;
 
+	// 기존 Row 호환용 Yaw 필드. 탐색/확인/공격은 모두 좌우 전 방향으로 회전한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "180.0"))
-	float MaxYawDegrees = 160.0f;
+	float MaxYawDegrees = 180.0f;
 
-	// 공격 중에는 정후방 표적까지 조준할 수 있도록 별도의 Yaw 범위를 사용한다.
+	// 기존 Row 직렬화 호환용이다. MaxYawDegrees와 함께 실제 회전을 제한하지 않는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "180.0"))
 	float AttackMaxYawDegrees = 180.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "89.0"))
+	// 아래쪽 회전 한계. 위쪽은 모든 종류에서 +90도로 고정한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "90.0"))
 	float MaxPitchDegrees = 60.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0"))
@@ -114,6 +116,11 @@ class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
 {
 	GENERATED_BODY()
 	friend class FEnemyHackEffectGameplayTest;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FEnemyHitClueLifecycleTest;
+	// 격리 네트워크 검증에서 실제 전개 시작·완료 경로를 호출한다.
+	friend class AHackTargetPointNetworkProbe;
+#endif
 
 public:
 	AAutoTurret();
@@ -127,6 +134,10 @@ public:
 	virtual EScanRevealCondition GetScanRevealCondition() const override { return EScanRevealCondition::RevealHackable; }
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const override;
 	virtual FRotator GetViewRotation() const override;
+	virtual void TickHitResponse(float DeltaTime) override;
+	virtual void ClearHitClues() override;
+	virtual void OnDirectSightForHitResponse(const FVector& ObservedLocation) override;
+	bool IsTurretGuardRotationActive() const { return bHitGuardRotationActive; }
 	virtual bool CanUseEnemyPerception() const override;
 	virtual bool UsesHearingPerception() const override { return false; }
 	virtual bool CanUseRoomTargetSharing() const override;
@@ -186,6 +197,7 @@ public:
 	void StopFireMontage();
 
 #if WITH_DEV_AUTOMATION_TESTS
+	friend class FAutoTurretAimPolicyTest;
 	void ConfigureWaveRegistrationForTesting(
 		FGameplayTag InRoomTag,
 		int32 InCombatPhaseIndex,
@@ -390,6 +402,11 @@ private:
 	static void StopMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage = nullptr);
 
 	FRotator CurrentAimOffset = FRotator::ZeroRotator;
+	// 기본 방향은 Actor 로컬 정면이다. 피격 후 탐색 중심만 별도로 보관해 기본 방향을 덮지 않는다.
+	bool bHitGuardRotationActive = false;
+	float HitGuardCenterYaw = 0.0f;
+	float HitGuardElapsed = 0.0f;
+	FRotator GetLocalHeadRotation() const;
 	FRotator ImpactRotationOffset = FRotator::ZeroRotator;
 	FQuat HeadMountBasisRotation = FQuat::Identity;
 	FVector CurrentAimLocation = FVector::ZeroVector;

@@ -47,6 +47,9 @@ protected:
 	TObjectPtr<UInteractableComponent> InteractableComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
+	TObjectPtr<USceneComponent> InteractionTargetPoint;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UStaticMeshComponent> SuitDisplayMesh;
 
 	// Shooter BP의 SuitPresentation 미설정 기간에만 사용하는 이전 콘텐츠 호환 필드다.
@@ -61,6 +64,10 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Weapon")
 	TSubclassOf<ARangedWeaponBase> PartnerWeaponClass;
+
+	// Shooter의 Yaw 기준 상대 위치다. 두 화면이 가려진 뒤 서버에서만 이동한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Suit|Transition")
+	FVector PartnerTeleportOffset = FVector(0.0f, 200.0f, 0.0f);
 
 private:
 	friend class AShooterCharacter;

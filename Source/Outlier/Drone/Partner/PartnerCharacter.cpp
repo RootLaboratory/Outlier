@@ -53,6 +53,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Templates/UnrealTemplate.h"
 #include "Environment/PartnerLightVolume.h"
+#include "Components/SpotLightComponent.h"
 
 UAISense_Sight::EVisibilityResult APartnerCharacter::CanBeSeenFrom(
 	const FCanBeSeenFromContext& Context, FVector& OutSeenLocation,
@@ -110,6 +111,17 @@ void APartnerCharacter::InitializeReadabilityStencil_Implementation(bool bPreser
 	for (USceneComponent* Component : Components)
 	{
 		ApplyReadabilityStencil(Cast<UMeshComponent>(Component), ReadabilityStencilValue, bPreserveExistingStencil);
+	}
+}
+
+void APartnerCharacter::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+	// Blueprint lights may default to visible. Start dark before BeginPlay or the first rendered frame.
+	TInlineComponentArray<USpotLightComponent*> Lights(this);
+	for (USpotLightComponent* Light : Lights)
+	{
+		Light->SetVisibility(false);
 	}
 }
 
@@ -723,10 +735,12 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	// FreeMove
 	EnhancedInputComponent->BindAction(PartnerInputConfig->FreeMoveAction,		ETriggerEvent::Triggered, this, &APartnerCharacter::FreeMove);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->FreeMoveAction,		ETriggerEvent::Completed, this, &APartnerCharacter::StopFreeMove);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->FreeMoveAction, ETriggerEvent::Canceled, this, &APartnerCharacter::StopFreeMove);
 
 	// VerticalMove
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction,	ETriggerEvent::Triggered, this, &APartnerCharacter::VerticalMove);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction, ETriggerEvent::Completed, this, &APartnerCharacter::StopVerticalMove);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction, ETriggerEvent::Canceled, this, &APartnerCharacter::StopVerticalMove);
 }
 
 void APartnerCharacter::DoMove(float Right, float Forward)
@@ -750,6 +764,15 @@ void APartnerCharacter::DoMove(float Right, float Forward)
 	{
 		MovementComponent->SetMoveInput(MoveValue);
 	}
+}
+
+void APartnerCharacter::ResetMovementInput()
+{
+	Super::ResetMovementInput();
+	if (!MovementComponent) return;
+
+	// 컴포넌트가 추종 serial 해제와 경로/자유비행 정리를 속도 보존 범위 안에서 함께 처리한다.
+	MovementComponent->ResetMovementInput();
 }
 
 void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
@@ -825,6 +848,8 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 void APartnerCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	// The Partner survives gameplay-volume reloads and must also turn lights off when no volume remains.
+	APartnerLightVolume::RefreshPartnerLights(this);
 	// 이동 입력 없이 해킹/EMP 후보 선택 화면만 열어 둔 경우에도 대기를 막는다.
 	const UPartnerHackComponent* RuntimeHack = GetRuntimeHackComponent();
 	const UPartnerEMPComponent* RuntimeEMP = GetRuntimeEMPComponent();

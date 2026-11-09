@@ -56,7 +56,7 @@ private:
 	bool bChangingLinkedBinding = false;
 
 	UPROPERTY(SaveGame)
-	EOutlierSprintInputMode ShooterSprintInputMode = EOutlierSprintInputMode::Toggle;
+	EOutlierSprintInputMode ShooterSprintInputMode = EOutlierSprintInputMode::Hold;
 
 	UPROPERTY(SaveGame)
 	EOutlierSprintInputMode PartnerSprintInputMode = EOutlierSprintInputMode::Toggle;

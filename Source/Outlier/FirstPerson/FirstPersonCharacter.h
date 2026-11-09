@@ -40,6 +40,7 @@ class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTag
 	GENERATED_BODY()
 	friend class FInteractionNodePresentationTest;
 	friend class FInteractionNodeHoldAttemptTest;
+	friend class FPartnerMovementRecoveryTest;
 	// 상호작용 세션은 캐릭터의 기존 입력 가능 판정을 재사용한다.
 	friend class UInteractableComponent;
 
@@ -87,7 +88,7 @@ protected:
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Interaction")
 	TArray<TObjectPtr<AActor>> OutlineInteractables;
 
-	/** Maximum reach of the line or sphere trace used to interact. */
+	/** 카메라에서 끝점까지의 거리. SphereTrace는 구 중심을 이 거리만큼 이동시키며, 구 반경은 끝점 바깥까지 확장된다. */
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction", meta = (DisplayName = "Interaction Available Range", ClampMin = "0.0", Units = "cm"))
 	float InteractionAvailableRange = 100.0f;
 
@@ -122,6 +123,10 @@ public:
 	bool IsSuitTransitionBlocked() const { return SuitTransitionBlockId.IsValid(); }
 	bool AcquireSuitTransitionBlock(const FGuid& TransitionId);
 	void ReleaseSuitTransitionBlock(const FGuid& TransitionId);
+	virtual bool TeleportTo(const FVector& DestLocation, const FRotator& DestRotation,
+		bool bIsATest = false, bool bNoCheck = false) override;
+	/** 저장된 이동 의도와 미소비 입력만 정리하며 현재 속도는 유지한다. */
+	virtual void ResetMovementInput();
 	FOnSuitTransitionParticipantInvalidated OnSuitTransitionParticipantInvalidated;
 
 	/** Builds and submits the owning-client world request bound to InteractionAudioEventTag. */
@@ -135,6 +140,7 @@ protected:
 	virtual void TryStopAttack();
 
 	void MoveInput(const FInputActionValue& Value);
+	void StopMoveInput();
 
 	virtual void LookInput(const FInputActionValue& Value);
 
@@ -151,6 +157,7 @@ protected:
 	virtual void PrepareForSuitTransition();
 	virtual void OnSuitTransitionBlockChanged() {}
 	virtual bool CanResumeMovementAfterSuitTransition() const { return true; }
+	virtual bool CanRestoreFlyingAfterSuitTransition() const { return false; }
 	virtual void UnPossessed() override;
 
 	UFUNCTION(Server, Reliable)

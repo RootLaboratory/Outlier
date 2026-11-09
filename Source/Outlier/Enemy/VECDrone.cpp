@@ -119,6 +119,17 @@ AVECDrone::AVECDrone()
 	VECMovementComponent = CreateDefaultSubobject<UVECDroneMovementComponent>(TEXT("VECMovementComponent"));
 }
 
+FVector AVECDrone::GetCombatShotOrigin() const
+{
+	if (!IsEnemyPossessed() && GetRuntimeStat().Type == EEnemyType::Gun)
+	{
+		// 축 자신의 Pitch는 원점 위치를 바꾸지 않는다. 고정된 Capsule 하위 위치만 사용하므로
+		// 조준/비행 기울기나 애니메이션 총구를 다시 읽는 피드백과 서버 본 평가가 생기지 않는다.
+		return AIFacingPitchRoot ? AIFacingPitchRoot->GetComponentLocation() : GetActorLocation();
+	}
+	return Super::GetCombatShotOrigin();
+}
+
 void AVECDrone::BeginPlay()
 {
 	// Blueprint 인스턴스가 네이티브 생성자의 부착 관계를 런타임에 다시 틀어놓는 경우가 있어
@@ -473,12 +484,46 @@ void AVECDrone::ResetPoolPresentationState()
 	}
 	if (PresentationGeneration != GetPoolGameplayGeneration() || PresentationLease != GetPoolLeaseSerial())
 	{
+		bPoolMovementResetPending = true;
+		ResetPoolMovementPresentation();
 		StopHitReaction(0.0f);
 		NextHitReactionTime = 0.0;
 		PresentationGeneration = GetPoolGameplayGeneration();
 		PresentationLease = GetPoolLeaseSerial();
 	}
 	RefreshStateSpotLight();
+}
+
+void AVECDrone::ResetPoolMovementPresentation()
+{
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		if (IsPoolManaged() && GetEnemyPoolState() != EEnemyPoolState::CombatActive)
+		{
+			Movement->StopMovementImmediately();
+		}
+		// 새 대여는 지하 대기 위치에서 소환 위치로 보간하지 않는다.
+		if (!HasAuthority() && !IsLocallyControlled()) Movement->ResetPredictionData_Client();
+		Movement->bNetworkSmoothingComplete = true;
+	}
+	if (USkeletalMeshComponent* DroneMesh = GetMesh())
+	{
+		DroneMesh->SetRelativeLocationAndRotation(GetBaseTranslationOffset(), GetBaseRotationOffset());
+	}
+	if (VECMovementComponent) VECMovementComponent->ResetPoolMovementPresentation();
+}
+
+void AVECDrone::PostNetReceiveLocationAndRotation()
+{
+	Super::PostNetReceiveLocationAndRotation();
+	// 이동 복제가 대여/상태 통지보다 늦게 도착해도 이전 위치 보정이 다시 남지 않게 한다.
+	if (IsPoolManaged() && (bPoolMovementResetPending
+		|| GetEnemyPoolState() == EEnemyPoolState::Idle
+		|| GetEnemyPoolState() == EEnemyPoolState::SpawnPresentation))
+	{
+		ResetPoolMovementPresentation();
+		bPoolMovementResetPending = false;
+	}
 }
 
 void AVECDrone::OnPoolStateApplied(EEnemyPoolState PreviousState)

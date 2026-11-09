@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "TimerManager.h"
+#include "UI/TargetPointHudWidget.h"
 #include "HackCandidateMarkerWidget.generated.h"
 
 class UButton;
@@ -22,6 +23,8 @@ public:
 	void SetHackHoldProgress(float InProgress);
 	void StartHackHold(float InHoldDuration);
 	void CancelHackHold();
+	void SetProjectionVisible(bool bVisible);
+	void UpdateHudLayout(const FTargetPointHudSettings& Settings);
 
 protected:
 	virtual void NativeConstruct() override;
@@ -43,7 +46,7 @@ private:
 	void ShowHackableInfoWidget();
 	void HideHackableInfoWidget();
 	void TickHackHold();
-	bool CalculateInfoWidgetLayout(FVector2D& OutPosition, FVector2D& OutSize) const;
+	FTargetPointHudSettings CurrentHudSettings;
 
 	UPROPERTY()
 	TObjectPtr<AActor> TargetActor;

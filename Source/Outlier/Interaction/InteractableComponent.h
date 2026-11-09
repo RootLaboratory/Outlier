@@ -4,21 +4,23 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Engine/EngineTypes.h"
 #include "GameplayTagContainer.h"
 #include "Interface/ActorBasedWidgetInterface.h"
-#include "UI/WorldWidgetPresentation.h"
+#include "UI/TargetPointHudWidget.h"
 #include "InteractableComponent.generated.h"
 
 class AFirstPersonCharacter;
 class AInteractionNode;
 class AInteractionDescActor;
 class APlayerController;
+class USceneComponent;
 class UInteractInfoWidget;
 class UInteractKeyWidget;
 class UInteractionLockedWidget;
 class UInteractionOutlineWidget;
 class UUserWidget;
-class UWidgetComponent;
+class UTargetPointHudWidget;
 
 /**
  * One active hold attempt. The interaction supports at most two players, so a
@@ -47,6 +49,8 @@ class OUTLIER_API UInteractableComponent : public UActorComponent, public IActor
 public:
 	UInteractableComponent();
 	virtual void OnRegister() override;
+	virtual void InitializeComponent() override;
+	virtual void OnUnregister() override;
 	virtual void BeginPlay() override;
 	virtual void DismissActorBasedWidgets_Implementation() override;
 
@@ -56,6 +60,19 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_InteractableTags, Category = "Interaction")
 	FGameplayTagContainer InteractableTags;
+
+	// 같은 Actor의 SceneComponent 위치를 UI 기준으로 사용한다. 위치 Offset은 적용하지 않는다.
+	// HackTargetPoint를 선택하면 일반 상호작용 UI와 해킹 UI의 기준점을 공유할 수 있다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI",
+		meta = (UseComponentPicker, AllowedClasses = "/Script/Engine.SceneComponent"))
+	FComponentReference InteractionTargetPointReference;
+
+	UFUNCTION(BlueprintCallable, Category = "Interaction|UI")
+	void RefreshInteractionTargetPoint();
+
+	// 기준점이 유효하지 않으면 Actor 원점을 사용한다.
+	UFUNCTION(BlueprintPure, Category = "Interaction|UI")
+	FVector GetInteractionWidgetLocation() const;
 
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction")
@@ -122,26 +139,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget")
 	FVector2D InteractKeyWidgetDrawSize = FVector2D(64.0f, 64.0f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget|Info")
-	FWorldWidgetPresentation InteractInfoWidgetPresentation;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget|Key")
-	FWorldWidgetPresentation InteractKeyWidgetPresentation;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget|Locked")
-	FWorldWidgetPresentation InteractionLockedWidgetPresentation;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget|Outline")
-	FWorldWidgetPresentation InteractionOutlineWidgetPresentation;
-
 private:
 	friend class AInteractionNode;
 	friend class FInteractionNodePresentationTest;
 	friend class FInteractionNodeHoldAttemptTest;
+	friend class FInteractionTargetPointTest;
 	UPROPERTY(Transient)
 	TObjectPtr<AInteractionNode> InteractionNode;
 
 	void UpdateWidgetPresentation();
+	TWeakObjectPtr<USceneComponent> CachedInteractionTargetPoint;
 	void RefreshWidgetTick();
 	bool MeetsInteractionRequirements(const FGameplayTagContainer& InteractorTags) const;
 
@@ -157,10 +164,9 @@ private:
 
 	AInteractionDescActor* EnsureInteractionDescActor();
 	void ClearInteractionDescActor();
-	UWidgetComponent* EnsureInteractInfoWidgetComponent(APlayerController* PlayerController);
-	UWidgetComponent* EnsureInteractKeyWidgetComponent(APlayerController* PlayerController);
-	UWidgetComponent* CreateRangeWidgetComponent(APlayerController* PlayerController,
-		TSubclassOf<UUserWidget> WidgetClass, FName Name, FVector2D DrawSize, float ZOffset);
+	UUserWidget* EnsureInteractInfoWidget(APlayerController* PlayerController);
+	UUserWidget* EnsureInteractKeyWidget(APlayerController* PlayerController);
+	UUserWidget* CreateHudWidget(APlayerController* PlayerController, TSubclassOf<UUserWidget> WidgetClass);
 	bool GetPrimaryInteractTag(FGameplayTag& OutInteractTag) const;
 
 	/** Concurrent is a separate policy from access queries and multiple use. */
@@ -172,14 +178,10 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|Desc", meta = (AllowPrivateAccess = "true"))
 	TSubclassOf<AInteractionDescActor> InteractionDescActorClass;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|Desc", meta = (AllowPrivateAccess = "true"))
-	float InteractionDescActorZOffset = 120.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	TSubclassOf<UInteractInfoWidget> InteractInfoWidgetClass;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
-	float InteractInfoWidgetZOffset = 120.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
 	FVector2D InteractInfoWidgetDrawSize = FVector2D(1500.0f, 400.0f);
@@ -188,8 +190,6 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	TSubclassOf<UInteractKeyWidget> InteractKeyWidgetClass;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
-	float InteractKeyWidgetZOffset = 20.0f;
 
 	/** 소유 BP의 컴포넌트에서 지정한다. 미지정 시 잠금 위젯을 생성하지 않는다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
@@ -198,8 +198,6 @@ private:
 	UPROPERTY(EditAnywhere, Category = "Interaction|UI", meta = (ClampMin = "1.0"))
 	FVector2D InteractionLockedWidgetDrawSize = FVector2D(64.0f, 64.0f);
 
-	UPROPERTY(EditAnywhere, Category = "Interaction|UI")
-	float InteractionLockedWidgetZOffset = 20.0f;
 
 	/** 소유 BP의 컴포넌트에서 지정한다. 미지정 시 외곽 위젯을 생성하지 않는다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
@@ -208,17 +206,15 @@ private:
 	UPROPERTY(EditAnywhere, Category = "Interaction|UI", meta = (ClampMin = "1.0"))
 	FVector2D InteractionOutlineWidgetDrawSize = FVector2D(32.0f, 32.0f);
 
-	UPROPERTY(EditAnywhere, Category = "Interaction|UI")
-	float InteractionOutlineWidgetZOffset = 20.0f;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInteractionLockedWidget> InteractionLockedWidget;
 	UPROPERTY(Transient)
-	TObjectPtr<UWidgetComponent> InteractionLockedWidgetComponent;
+	TObjectPtr<UUserWidget> InteractionLockedHudWidget;
 	UPROPERTY(Transient)
 	TObjectPtr<UInteractionOutlineWidget> InteractionOutlineWidget;
 	UPROPERTY(Transient)
-	TObjectPtr<UWidgetComponent> InteractionOutlineWidgetComponent;
+	TObjectPtr<UUserWidget> InteractionOutlineHudWidget;
 
 	UPROPERTY(Transient)
 	TObjectPtr<AInteractionDescActor> InteractionDescActor;
@@ -227,13 +223,20 @@ private:
 	TObjectPtr<UInteractInfoWidget> InteractInfoWidget;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UWidgetComponent> InteractInfoWidgetComponent;
+	TObjectPtr<UUserWidget> InteractInfoHudWidget;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInteractKeyWidget> InteractKeyWidget;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UWidgetComponent> InteractKeyWidgetComponent;
+	TObjectPtr<UUserWidget> InteractKeyHudWidget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTargetPointHudWidget> HudLayer;
+	bool bInfoShown = false;
+	bool bKeyShown = false;
+	bool bLockedShown = false;
+	bool bOutlineShown = false;
 
 	TArray<FHoldInteractionSession> HoldSessions;
 };

@@ -58,13 +58,6 @@ void UHackableInfoWidget::SetPopupAudioOpen(bool bOpen)
 	OutlierAudioFeedback::Local(this, bOpen ? TEXT("Audio.Context.UI.Ingame.Open") : TEXT("Audio.Context.UI.Ingame.Close"));
 }
 
-FVector2D UHackableInfoWidget::GetOffsetForDistance(float Distance) const
-{
-	const float DistanceRange = FMath::Max(FarDistance - NearDistance, KINDA_SMALL_NUMBER);
-	const float Alpha = FMath::Clamp((Distance - NearDistance) / DistanceRange, 0.0f, 1.0f);
-	return FMath::Lerp(MinOffset, MaxOffset, Alpha);
-}
-
 void UHackableInfoWidget::NativeConstruct()
 {
 	Super::NativeConstruct();

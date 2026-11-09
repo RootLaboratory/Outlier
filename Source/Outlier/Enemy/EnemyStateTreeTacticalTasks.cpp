@@ -511,13 +511,13 @@ bool IsEnvQueryTargetCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 		const FEnemySearchEpisode& Episode = Data.Enemy->GetSearchEpisode();
 		return Episode.bActive && !Episode.bLocalGuard && Episode.Serial == Data.CapturedSearchSerial
 			&& Data.Enemy->CanContinueSearchEpisode()
-			&& (Data.Enemy->IsNoiseSearchActive() || Data.Enemy->GetSharedTargetRevision() == Data.CapturedSharedRevision);
+			&& (Data.Enemy->IsLocationSearchActive() || Data.Enemy->GetSharedTargetRevision() == Data.CapturedSharedRevision);
 	}
 	if (!Data.bRequireVisibleTarget)
 	{
 		return true;
 	}
-	if (Data.Enemy->IsNoiseInvestigationActive() || !Data.Enemy->HasTrackableTarget() || !Data.CapturedTarget.IsValid()
+	if (Data.Enemy->IsLocationInvestigationActive() || !Data.Enemy->HasTrackableTarget() || !Data.CapturedTarget.IsValid()
 		|| Data.Enemy->GetTrackedTarget() != Data.CapturedTarget.Get()) return false;
 	const float ChangeDistance = (Data.bValidateOrbitPath || Data.bValidateRetreatPath || Data.bValidateChasePath) && Data.TargetChangeDistance <= 0.0f
 		? 200.0f : Data.TargetChangeDistance;
@@ -1710,10 +1710,11 @@ EStateTreeRunStatus EnterSearchSession(FEnemySearchSessionTaskInstanceData& Data
 	Data.CapturedNoiseSerial = 0;
 	if (Data.bNoiseInvestigationSearch)
 	{
-		if (!IsValid(Data.Enemy) || !Data.Enemy->IsNoiseSearchActive()
+		if (IsValid(Data.Enemy)) Data.NoiseSearchDuration = Data.Enemy->GetLocationSearchDuration(Data.NoiseSearchDuration);
+		if (!IsValid(Data.Enemy) || !Data.Enemy->IsLocationSearchActive()
 			|| !Data.Enemy->CanContinueSearchEpisode() || !FMath::IsFinite(Data.NoiseSearchDuration)
 			|| Data.NoiseSearchDuration <= 0.0f) return EStateTreeRunStatus::Failed;
-		Data.CapturedNoiseSerial = Data.Enemy->GetNoiseInvestigationSerial();
+		Data.CapturedNoiseSerial = Data.Enemy->GetLocationInvestigationSerial();
 		Data.NoiseSearchStartedAt = Data.Enemy->GetWorld()->GetTimeSeconds();
 		Data.bSkipLossWait = true;
 		if (!Data.Enemy->GetSearchEpisode().bActive && !Data.Enemy->BeginSearchEpisode()) return EStateTreeRunStatus::Failed;
@@ -1738,10 +1739,14 @@ EStateTreeRunStatus TickSearchSession(FEnemySearchSessionTaskInstanceData& Data)
 		AEnemyBase* Enemy = Data.Enemy;
 		if (!IsValid(Enemy) || !Enemy->HasAuthority() || Enemy->IsDead() || !Enemy->CanUseEnemyPerception())
 			return EStateTreeRunStatus::Failed;
+		// 같은 프레임에 소리/기한이 바뀌었으면 완료보다 새 의도를 먼저 본다. 귀환 후 재진입하는 중간 전이를 막는다.
+		Enemy->RefreshPerceptionGoal();
 		// 상위 전투 전이와 새 소리 이동 전이는 출력으로만 요청한다. 부모 완료로 덮어쓰지 않는다.
-		const bool bOwnsEpisode = Enemy->IsNoiseInvestigationActive()
-			&& Data.CapturedNoiseSerial == Enemy->GetNoiseInvestigationSerial();
-		Data.bShouldInvestigateNoise = bOwnsEpisode && Enemy->GetPerceptionGoal().Type == EEnemyPerceptionGoalType::InvestigateNoise;
+		const bool bOwnsEpisode = Enemy->IsLocationInvestigationActive()
+			&& Data.CapturedNoiseSerial == Enemy->GetLocationInvestigationSerial();
+		// 새 피격이 회차를 교체했어도 이전 수색에서 새 이동으로 빠져나가야 한다.
+		// Exit의 회차 검사가 새 조사를 보호하므로, 전환 출력은 현재 의도를 기준으로 낸다.
+		Data.bShouldInvestigateNoise = Enemy->IsLocationInvestigationActive() && Enemy->IsLocationInvestigationGoal();
 		if (!bOwnsEpisode || Data.bShouldInvestigateNoise) return EStateTreeRunStatus::Running;
 		if (!Enemy->CanContinueSearchEpisode() || !Enemy->GetSearchEpisode().bActive) return EStateTreeRunStatus::Failed;
 		Data.bNoiseSearchComplete = Enemy->GetWorld()->GetTimeSeconds() - Data.NoiseSearchStartedAt >= Data.NoiseSearchDuration;
@@ -1807,12 +1812,12 @@ void ExitSearchSession(FEnemySearchSessionTaskInstanceData& Data)
 	{
 		if (Data.bNoiseInvestigationSearch)
 		{
-			if (Data.CapturedNoiseSerial != 0 && Data.Enemy->GetNoiseInvestigationSerial() == Data.CapturedNoiseSerial)
+			if (Data.CapturedNoiseSerial != 0 && Data.Enemy->GetLocationInvestigationSerial() == Data.CapturedNoiseSerial)
 			{
 				// 새 소리로 이동할 때만 의도를 넘긴다. 완료·중단은 소리를 소비해 반복 조사를 막는다.
-				if (Data.Enemy->GetPerceptionGoal().Type == EEnemyPerceptionGoalType::InvestigateNoise)
+				if (Data.Enemy->IsLocationInvestigationGoal())
 					Data.Enemy->EndSearchEpisode();
-				else Data.Enemy->EndNoiseInvestigation();
+				else Data.Enemy->EndLocationInvestigation();
 			}
 			return;
 		}
@@ -1844,7 +1849,7 @@ EStateTreeRunStatus AdvanceSearchProgress(FEnemySearchProgressTaskInstanceData& 
 	AEnemyBase* Enemy = Data.Enemy;
 	if (Data.Action == EEnemySearchProgress::FinishNoiseInvestigation)
 	{
-		return IsValid(Enemy) && Enemy->CompleteNoiseInvestigation()
+		return IsValid(Enemy) && Enemy->CompleteLocationInvestigation()
 			? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Failed;
 	}
 	if (!IsValid(Enemy) || !Enemy->CanContinueSearchEpisode() || !Enemy->GetSearchEpisode().bActive)

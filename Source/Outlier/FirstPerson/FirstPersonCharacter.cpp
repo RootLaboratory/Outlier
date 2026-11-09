@@ -125,7 +125,8 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 
 	// Move
 	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::MoveInput);
-	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::MoveInput);
+	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::StopMoveInput);
+	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Canceled, this, &AFirstPersonCharacter::StopMoveInput);
 
 	// Look
 	EnhancedInputComponent->BindAction(InputConfig->LookAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::LookInput);
@@ -190,6 +191,19 @@ void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)
 	DoMove(MovementVector.X, MovementVector.Y);
 
 	OnMoveInputUpdated(MovementVector);
+}
+
+void AFirstPersonCharacter::StopMoveInput()
+{
+	// 종료 이벤트가 마지막 축 값을 전달해도 저장된 방향을 다시 살리지 않는다.
+	DoMove(0.0f, 0.0f);
+	OnMoveInputUpdated(FVector2D::ZeroVector);
+}
+
+void AFirstPersonCharacter::ResetMovementInput()
+{
+	StopMoveInput();
+	ConsumeMovementInputVector();
 }
 
 void AFirstPersonCharacter::LookInput(const FInputActionValue& Value)
@@ -804,9 +818,25 @@ void AFirstPersonCharacter::ReleaseSuitTransitionBlock(const FGuid& TransitionId
 	ForceNetUpdate();
 }
 
+bool AFirstPersonCharacter::TeleportTo(const FVector& DestLocation, const FRotator& DestRotation,
+	bool bIsATest, bool bNoCheck)
+{
+	const bool bSucceeded = Super::TeleportTo(DestLocation, DestRotation, bIsATest, bNoCheck);
+	if (!bIsATest && !IsActorBeingDestroyed() && IsSuitTransitionBlocked())
+	{
+		// 엔진의 순간이동 후 바닥 판정이 None을 Falling으로 바꿀 수 있다.
+		// 성공/실패 후 현재 차단만 재적용하고, 최초 복원 모드와 소유권은 건드리지 않는다.
+		ResetMovementInput();
+		GetCharacterMovement()->StopMovementImmediately();
+		GetCharacterMovement()->DisableMovement();
+	}
+	return bSucceeded;
+}
+
 void AFirstPersonCharacter::OnRep_SuitTransitionBlockId()
 {
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	ResetMovementInput();
 	if (IsSuitTransitionBlocked())
 	{
 		// Slide/비행 등 기존 행동 취소가 이동 모드를 바꿀 수 있어, 취소 후의 복구 가능한 모드를 기록한다.
@@ -826,7 +856,12 @@ void AFirstPersonCharacter::OnRep_SuitTransitionBlockId()
 	else
 	{
 		// 다른 원인의 이동 정지/사망/Reboot는 해제하지 않는다. 이 전환이 멈춘 살아 있는 Pawn만 복구한다.
-		if (bSuitTransitionOwnsMovementStop && !IsActorBeingDestroyed() && Movement->MovementMode == MOVE_None
+		// 원래 비행하던 Partner에 한해 순간이동으로 남은 Falling도 복구한다.
+		// Shooter의 정상 낙하나 다른 시스템이 적용한 모드는 이 예외에 포함하지 않는다.
+		const bool bRestoreTeleportedFlight = CanRestoreFlyingAfterSuitTransition()
+			&& MovementModeBeforeSuitTransition == MOVE_Flying && Movement->MovementMode == MOVE_Falling;
+		if (bSuitTransitionOwnsMovementStop && !IsActorBeingDestroyed()
+			&& (Movement->MovementMode == MOVE_None || bRestoreTeleportedFlight)
 			&& CanResumeMovementAfterSuitTransition())
 		{
 			Movement->SetMovementMode(MovementModeBeforeSuitTransition, CustomMovementModeBeforeSuitTransition);
@@ -1138,9 +1173,8 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 	const bool bSphereTrace =
 		InteractionTraceMode == EInteractionTraceMode::SphereTrace;
 	const float SphereRadius = FMath::Max(InteractionSphereTraceRadius, 0.0f);
-	const float TraceDistance = bSphereTrace
-		? FMath::Max(InteractionAvailableRange - SphereRadius, 0.0f)
-		: FMath::Max(InteractionAvailableRange, 0.0f);
+	// 카메라에서 끝점까지의 거리이며, SphereTrace는 구 중심을 이 거리만큼 이동시킨다.
+	const float TraceDistance = FMath::Max(InteractionAvailableRange, 0.0f);
 
 	const FVector Start = CameraLocation;
 	const FVector End = Start + CameraRotation.Vector() * TraceDistance;

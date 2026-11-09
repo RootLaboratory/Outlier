@@ -8,6 +8,7 @@
 
 class UBoxComponent;
 class UHackableComponent;
+class USceneComponent;
 class UStaticMeshComponent;
 
 UCLASS()
@@ -37,6 +38,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Jumper")
 	TObjectPtr<UHackableComponent> HackableComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Jumper|Components")
+	TObjectPtr<USceneComponent> HackTargetPoint;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Jumper")
 	FName EffectId = TEXT("Jumper.Direction");

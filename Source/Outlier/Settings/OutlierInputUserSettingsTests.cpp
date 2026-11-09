@@ -38,7 +38,7 @@ bool FOutlierSprintInputSettingsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Configured settings class"), GetDefault<UEnhancedInputDeveloperSettings>()->UserSettingsClass.Get(),
 		UOutlierInputUserSettings::StaticClass());
 	UOutlierInputUserSettings* Settings = NewObject<UOutlierInputUserSettings>();
-	TestEqual(TEXT("Shooter defaults to Toggle"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
+	TestEqual(TEXT("Shooter defaults to Hold"), Settings->GetSprintInputMode(ERole::Shooter), EMode::Hold);
 	TestEqual(TEXT("Partner defaults to Toggle"), Settings->GetSprintInputMode(ERole::Partner), EMode::Toggle);
 	TestTrue(TEXT("Shooter accepts Hold"), Settings->SetSprintInputMode(ERole::Shooter, EMode::Hold));
 	TestEqual(TEXT("Shooter change preserves Partner"), Settings->GetSprintInputMode(ERole::Partner), EMode::Toggle);
@@ -70,7 +70,7 @@ bool FOutlierSprintInputSettingsTest::RunTest(const FString& Parameters)
 	FOutlierSprintInputSettingsTestAccess::SetInvalidShooterMode(Settings);
 	if (UOutlierInputUserSettings* Loaded = RoundTrip(Settings))
 	{
-		TestEqual(TEXT("Invalid Shooter value defaults to Toggle"), Loaded->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
+		TestEqual(TEXT("Invalid Shooter value defaults to Hold"), Loaded->GetSprintInputMode(ERole::Shooter), EMode::Hold);
 		TestEqual(TEXT("Invalid Shooter preserves Partner Hold"), Loaded->GetSprintInputMode(ERole::Partner), EMode::Hold);
 	}
 	Settings->SetSprintInputMode(ERole::Shooter, EMode::Hold);
@@ -114,7 +114,7 @@ bool FOutlierSprintInputSettingsTest::RunTest(const FString& Parameters)
 	UOutlierInputUserSettings* Migrated = NewObject<UOutlierInputUserSettings>();
 	FOutlierSprintInputSettingsTestAccess::Migrate(Migrated, LoadedLegacy);
 	TestEqual(TEXT("Legacy active profile preserved"), Migrated->GetActiveKeyProfileId(), ProfileArgs.ProfileStringIdentifier);
-	TestEqual(TEXT("Legacy save without Shooter field defaults to Toggle"), Migrated->GetSprintInputMode(ERole::Shooter), EMode::Toggle);
+	TestEqual(TEXT("Legacy save without Shooter field defaults to Hold"), Migrated->GetSprintInputMode(ERole::Shooter), EMode::Hold);
 	TestEqual(TEXT("Legacy save without Partner field defaults to Toggle"), Migrated->GetSprintInputMode(ERole::Partner), EMode::Toggle);
 	Migrated->RegisterInputMappingContext(Context);
 	const FPlayerKeyMapping* MigratedKey = Migrated->FindCurrentMappingForSlot(MapArgs.MappingName, MapArgs.Slot);

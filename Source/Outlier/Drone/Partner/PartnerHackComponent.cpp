@@ -445,9 +445,10 @@ void UPartnerHackComponent::RefreshHackCandidates()
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PartnerHackCandidateOverlap), false);
 	QueryParams.AddIgnoredActor(PartnerCharacter);
 
+	// 탐색 구와 후보 거리 검사는 같은 시점을 기준으로 한다.
 	GetWorld()->OverlapMultiByObjectType(
 		OverlapResults,
-		PartnerCharacter->GetActorLocation(),
+		Context.ViewLocation,
 		FQuat::Identity,
 		ObjectParams,
 		FCollisionShape::MakeSphere(CachedAbilityData.EffectiveRange),
@@ -584,6 +585,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 
 	FVector2D ScreenLocation = FVector2D::ZeroVector;
 	const FHackQueryContext Context = BuildQueryContext();
+	// 후보 검사에서 서버 시점 기준 거리와 각도, 가시선을 검증하므로 몸체 거리로 다시 제한하지 않는다.
 	if (!IsCandidateActorValid(TargetActor, HackableComponent, Context, ScreenLocation))
 	{
 		if (bDebugHack)
@@ -591,19 +593,6 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 			UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryStartHack failed: invalid candidate Target=%s Hackable=%s"),
 				*GetNameSafe(TargetActor),
 				*GetNameSafe(HackableComponent));
-		}
-		return;
-	}
-
-	const float EffectiveRange = CachedAbilityData.EffectiveRange;
-	if (FVector::DistSquared(PartnerCharacter->GetActorLocation(),
-		IHackableInterface::ResolveHackTargetLocation(TargetActor)) > FMath::Square(EffectiveRange))
-	{
-		if (bDebugHack)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryStartHack failed: outside effective range Target=%s Range=%.1f"),
-				*GetNameSafe(TargetActor),
-				EffectiveRange);
 		}
 		return;
 	}

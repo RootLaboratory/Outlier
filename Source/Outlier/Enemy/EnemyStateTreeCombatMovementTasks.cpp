@@ -22,9 +22,10 @@ DEFINE_LOG_CATEGORY_STATIC(LogEnemyCombatNavigation, Log, All);
 
 float CalculateTacticalDistance(const FVector& From, const FVector& To, EEnemyTacticalDistanceMode DistanceMode);
 
-bool HasCombatTargetMoved(const FVector& Selected, const FVector& Current, float Threshold)
+bool HasCombatTargetMoved(const FVector& Selected, const FVector& Current, float Threshold, bool bUseSpatialDistance = false)
 {
-	return FVector::DistSquared2D(Selected, Current) >= FMath::Square(Threshold);
+	return (bUseSpatialDistance ? FVector::DistSquared(Selected, Current) : FVector::DistSquared2D(Selected, Current))
+		>= FMath::Square(Threshold);
 }
 
 bool IsCombatDestinationCurrent(const FEnemyCombatDestinationGuardTaskInstanceData& Data)
@@ -38,7 +39,11 @@ bool IsCombatDestinationCurrent(const FEnemyCombatDestinationGuardTaskInstanceDa
 	{
 		return false;
 	}
-	return !HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(), Data.TargetChangeDistance);
+	const bool bGun = Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
+	// 사거리 밖에서 시작한 접근은 도착까지 진행한다. 매 Tick 재선정하면 접근 자체가 시작되지 않는다.
+	if (bGun && !Data.bStartedOutsideWeaponRange && Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor)) return false;
+	return !HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(),
+		Data.TargetChangeDistance, bGun);
 }
 
 const TCHAR* GetCombatDestinationGuardReason(const FEnemyCombatDestinationGuardTaskInstanceData& Data)
@@ -57,7 +62,10 @@ const TCHAR* GetCombatDestinationGuardReason(const FEnemyCombatDestinationGuardT
 		return TEXT("ControllerChanged");
 	if (!IsValid(Data.SelectedTargetActor)) return TEXT("InvalidSelectedTarget");
 	if (Enemy->GetTrackedTarget() != Data.SelectedTargetActor) return TEXT("TargetChanged");
-	if (HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(), Data.TargetChangeDistance))
+	const bool bGun = Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
+	if (bGun && !Data.bStartedOutsideWeaponRange && Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor))
+		return TEXT("WeaponRangeLost");
+	if (HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(), Data.TargetChangeDistance, bGun))
 		return TEXT("TargetMoved");
 	return Data.bShouldReselect ? TEXT("ReselectLatched") : TEXT("Current");
 }
@@ -68,14 +76,18 @@ void LogCombatDestinationGuard(const TCHAR* Phase, const FEnemyCombatDestination
 	// 기존 FlightDebug 옵션을 공유한다. 진입/신호 발생/종료 시에만 로그를 남긴다.
 	static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.FlightDebug"));
 	if (!Debug || Debug->GetInt() == 0) return;
+	const AEnemyBase* Enemy = IsValid(Data.Enemy) ? Data.Enemy.Get() : nullptr;
+	const bool bGun = Enemy && Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
 	const AActor* Target = IsValid(Data.SelectedTargetActor) ? Data.SelectedTargetActor.Get() : nullptr;
 	const FVector CurrentLocation = Target ? Target->GetActorLocation() : FVector::ZeroVector;
 	UE_LOG(LogEnemyCombatNavigation, Log,
-		TEXT("[CombatDestinationGuard] %s Enemy=%s ShouldReselect=%d Reason=%s SelectedTarget=%s CurrentTarget=%s SelectedLocation=%s CurrentLocation=%s Moved2D=%.1f Threshold=%.1f CurrentState=%s TargetState=%s"),
+		TEXT("[CombatDestinationGuard] %s Enemy=%s ShouldReselect=%d Reason=%s SelectedTarget=%s CurrentTarget=%s SelectedLocation=%s CurrentLocation=%s Moved=%.1f Spatial=%d Threshold=%.1f CurrentState=%s TargetState=%s"),
 		Phase, *GetNameSafe(Data.Enemy), Data.bShouldReselect, GetCombatDestinationGuardReason(Data),
-		*GetNameSafe(Target), *GetNameSafe(Data.CachedController.IsValid() ? Data.Enemy->GetTrackedTarget() : nullptr),
+		*GetNameSafe(Target), *GetNameSafe(Enemy && Data.CachedController.IsValid() ? Enemy->GetTrackedTarget() : nullptr),
 		*Data.SelectedTargetLocation.ToCompactString(), *CurrentLocation.ToCompactString(),
-		Target ? FVector::Dist2D(Data.SelectedTargetLocation, CurrentLocation) : 0.0f, Data.TargetChangeDistance,
+		Target ? (bGun
+			? FVector::Dist(Data.SelectedTargetLocation, CurrentLocation) : FVector::Dist2D(Data.SelectedTargetLocation, CurrentLocation)) : 0.0f,
+		bGun, Data.TargetChangeDistance,
 		Transition ? *Transition->CurrentState.Describe() : TEXT("None"),
 		Transition ? *Transition->TargetState.Describe() : TEXT("None"));
 }
@@ -83,6 +95,7 @@ void LogCombatDestinationGuard(const TCHAR* Phase, const FEnemyCombatDestination
 void ResetAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 {
 	Data.bHasValidTarget = false;
+	Data.bTargetOutsideWeaponRange = false;
 	Data.HorizontalDistance = 0.0f;
 	Data.bLeftBlocked = false;
 	Data.bRightBlocked = false;
@@ -112,6 +125,8 @@ void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 	UWorld* World = Enemy->GetWorld();
 	if (!World) return;
 	Data.bHasValidTarget = true;
+	Data.bTargetOutsideWeaponRange = Enemy->GetRuntimeStat().Type == EEnemyType::Gun
+		&& Enemy->IsTargetOutsideWeaponRange(Target);
 	Data.bPrefersLeft = Enemy->PrefersCombatLeft();
 	const FVector Origin = Enemy->GetActorLocation();
 	Data.HorizontalDistance = CalculateTacticalDistance(Origin, Target->GetActorLocation(), EEnemyTacticalDistanceMode::Horizontal2D);
@@ -376,6 +391,13 @@ void ApplyFlightMovement(
 		Movement->StopMovementImmediately();
 		return;
 	}
+	// 기존 전투 이동은 새 위치 조사에 입력과 회전을 양보한다. 조사 비행은 별도 공통 Task가 수행한다.
+	if (Enemy.IsLocationInvestigationActive())
+	{
+		Enemy.ConsumeMovementInputVector();
+		Movement->StopMovementImmediately();
+		return;
+	}
 
 	if (Movement->MovementMode != MOVE_Flying)
 	{
@@ -579,6 +601,8 @@ EStateTreeRunStatus FEnemyCombatDestinationGuardTask::EnterState(FStateTreeExecu
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	Data.CachedController = IsValid(Data.Enemy) ? Cast<AEnemyAIController>(Data.Enemy->GetController()) : nullptr;
+	Data.bStartedOutsideWeaponRange = IsValid(Data.Enemy)
+		&& Data.Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor);
 	Data.bShouldReselect = !FMath::IsFinite(Data.TargetChangeDistance) || Data.TargetChangeDistance < 1.0f
 		|| Data.SelectedTargetLocation.ContainsNaN() || !IsCombatDestinationCurrent(Data);
 	LogCombatDestinationGuard(TEXT("Enter"), Data, &Transition);

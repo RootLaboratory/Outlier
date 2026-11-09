@@ -15,6 +15,7 @@
 #include "Level/Elevator/ElevatorShaftController.h"
 #include "Level/Elevator/ElevatorShaftSection.h"
 #include "EngineUtils.h"
+#include "Room/RoomCombatSubsystem.h"
 
 AInteractableDoor::AInteractableDoor()
 {
@@ -205,12 +206,25 @@ void AInteractableDoor::OnDoorTimelineFinished()
 	if (HasAuthority())
 	{
 		PublishDoorMotion();
+		NotifyMovementObstacleOpened();
 	}
 	if (HasAuthority() && bMotionCompletionPending)
 	{
 		// 서버의 실제 문 이동만 알린다. 초기 배치/저장 복원에서는 Pending을 세우지 않는다.
 		bMotionCompletionPending = false;
 		OnDoorMotionFinished.Broadcast(this, bIsOpen);
+	}
+}
+
+void AInteractableDoor::NotifyMovementObstacleOpened()
+{
+	if (!HasAuthority() || !bIsOpen || !GetWorld()) return;
+	// 초기 배치/저장 복원에서는 호출하지 않는다. 안전 재개방도 실제 통로가 열린 경우에는 재평가 근거다.
+	if (URoomCombatSubsystem* Rooms = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+	{
+		const FBox OpenBounds = GetComponentsBoundingBox(true);
+		if (OpenBounds.IsValid)
+			Rooms->NotifyMovementObstacleOpened(OpenBounds.ExpandBy(FMath::Max(OpenOffsetLeft.Size(), OpenOffsetRight.Size())));
 	}
 }
 
@@ -415,6 +429,8 @@ void AInteractableDoor::StartDoorMotion(bool bOpen, bool bSafetyReopen)
 	ApplyDoorState(bOpen);
 	bMotionCompletionPending = !bSafetyReopen && DoorTimeline.IsPlaying();
 	PublishDoorMotion();
+	// 곡선이 없는 즉시 개방도 새 서버 조작이다. 같은 상태 반복 요청은 StartDoorMotion에 진입하지 않는다.
+	if (!DoorTimeline.IsPlaying()) NotifyMovementObstacleOpened();
 
 	if (bProgressIdRegistered)
 	{

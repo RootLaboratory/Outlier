@@ -248,7 +248,8 @@ void ULocalPlayerSettingsSubsystem::ApplyLinkedInputBindings(bool bSave)
 
 EOutlierSprintInputMode ULocalPlayerSettingsSubsystem::GetSprintInputMode(EOutlierPlayerRole Role) const
 {
-	return InputUserSettings ? InputUserSettings->GetSprintInputMode(Role) : EOutlierSprintInputMode::Toggle;
+	return InputUserSettings ? InputUserSettings->GetSprintInputMode(Role)
+		: Role == EOutlierPlayerRole::Shooter ? EOutlierSprintInputMode::Hold : EOutlierSprintInputMode::Toggle;
 }
 
 bool ULocalPlayerSettingsSubsystem::SetSprintInputMode(EOutlierPlayerRole Role, EOutlierSprintInputMode Mode)

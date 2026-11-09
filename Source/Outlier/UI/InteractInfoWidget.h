@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Blueprint/UserWidget.h"
+#include "UI/TargetPointHudWidget.h"
 #include "GameplayTagContainer.h"
 #include "Interaction/InteractInfoRow.h"
 #include "InteractInfoWidget.generated.h"
@@ -10,7 +10,7 @@ class USizeBox;
 class UTextBlock;
 
 UCLASS()
-class OUTLIER_API UInteractInfoWidget : public UUserWidget
+class OUTLIER_API UInteractInfoWidget : public UTargetPointWidget
 {
 	GENERATED_BODY()
 

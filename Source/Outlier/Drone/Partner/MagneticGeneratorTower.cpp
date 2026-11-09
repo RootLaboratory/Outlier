@@ -2,6 +2,7 @@
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/SphereComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackableComponent.h"
@@ -29,6 +30,11 @@ AMagneticGeneratorTower::AMagneticGeneratorTower()
 	RootMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("RootMesh"));
 	SetRootComponent(RootMesh);
 	RootMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+
+	HackTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("HackTargetPoint"));
+	HackTargetPoint->SetupAttachment(RootMesh);
+	HackTargetPoint->bEditableWhenInherited = true;
+	HackableComponent->HackTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AMagneticGeneratorTower, HackTargetPoint);
 
 	SphereVisual = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SphereVisual"));
 	SphereVisual->SetupAttachment(RootMesh);

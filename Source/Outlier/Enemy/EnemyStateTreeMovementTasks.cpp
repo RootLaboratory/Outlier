@@ -4,6 +4,7 @@
 #include "Components/ActorComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/AutoTurret.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "HAL/IConsoleManager.h"
@@ -12,6 +13,7 @@
 #include "Room/RoomVolume.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "AbilitySystemComponent.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "Engine/Engine.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
@@ -126,7 +128,38 @@ FVector ResolveFacingLocation(
 bool ShouldYieldRotationToAttack(const AAIController& AIController)
 {
 	const AEnemyAIController* EnemyController = Cast<AEnemyAIController>(&AIController);
-	return EnemyController && EnemyController->IsAttackAimActive();
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(AIController.GetPawn());
+	return (EnemyController && EnemyController->IsAttackAimActive())
+		|| (Enemy && (Enemy->IsHitDirectionConfirmationActive() || Enemy->IsNoiseDirectionConfirmationActive()));
+}
+
+bool ShouldYieldPassiveRotation(const AEnemyBase& Enemy, const AAIController& AIController)
+{
+	const AAutoTurret* Turret = Cast<AAutoTurret>(&Enemy);
+	return ShouldYieldRotationToAttack(AIController)
+		|| (Enemy.HasHitResponse() && !Enemy.IsLocationSearchActive())
+		|| (Turret && Turret->IsTurretGuardRotationActive())
+		|| Enemy.GetCombatState() == EEnemyCombatState::Stun
+		|| Enemy.IsDead() || Enemy.IsEnemyPossessed();
+}
+
+// 이동/전투 회전의 속도 계약은 유지하고, 대기 탐색에만 목표 근처 감속을 적용한다.
+FRotator GetPassiveRotation(const FRotator& Current, const FRotator& Desired,
+	float MaxSpeed, float SlowdownRate, float AngleTolerance, float DeltaTime)
+{
+	const float SafeSpeed = FMath::IsFinite(MaxSpeed) ? FMath::Max(0.0f, MaxSpeed) : 0.0f;
+	const float SafeTime = FMath::IsFinite(DeltaTime) ? FMath::Max(0.0f, DeltaTime) : 0.0f;
+	const float Tolerance = FMath::IsFinite(AngleTolerance) ? FMath::Max(0.0f, AngleTolerance) : 1.0f;
+	const float Rate = FMath::IsFinite(SlowdownRate) ? FMath::Max(0.0f, SlowdownRate) : 6.0f;
+	const float Error = FMath::Max(
+		FMath::Abs(FMath::FindDeltaAngleDegrees(Current.Yaw, Desired.Yaw)),
+		FMath::Abs(FMath::FindDeltaAngleDegrees(Current.Pitch, Desired.Pitch)));
+	if (Error <= Tolerance || SafeSpeed == 0.0f || SafeTime == 0.0f) return Current;
+	// 오차가 작아져도 완료 허용 범위에는 도달한다. 속도 0은 의도된 정지 설정이다.
+	const float Speed = FMath::Min(SafeSpeed, FMath::Max(FMath::Max(1.0f, Tolerance * 2.0f), Error * Rate));
+	FRotator Next = FMath::RInterpConstantTo(Current, Desired, SafeTime, Speed).GetNormalized();
+	Next.Roll = 0.0f;
+	return Next;
 }
 
 // Capsule(Actor 본체)은 Yaw만 돌리고, AIController의 ControlRotation에는 Pitch까지 반영한다.
@@ -146,6 +179,9 @@ bool RotateTowardLocation(
 	{
 		return false;
 	}
+	// 공통 Alert에서도 고정형 본체를 돌리지 않는다. 헤드의 기존 각도 제한과 도달 판정을 사용한다.
+	if (AAutoTurret* Turret = Cast<AAutoTurret>(&Enemy))
+		return Turret->UpdateTurretAimAtLocation(TargetLocation, DeltaTime, false);
 
 	const FVector Direction = TargetLocation - Enemy.GetActorLocation();
 	if (Direction.IsNearlyZero())
@@ -241,7 +277,7 @@ void StopFlyTask(FEnemyFlyToLocationTaskInstanceData& Data)
 	// 빙의/재점유 또는 조사 회차 종료 뒤의 새 이동은 이전 Task가 정리하지 않는다.
 	// 회차를 얻기 전 진입 실패(CapturedNoiseSerial == 0)는 자신의 초기화만 정리한다.
 	const bool bReplacedNoiseMove = Data.bInvestigateNoise && Data.CapturedNoiseSerial != 0
-		&& Data.Enemy->GetNoiseInvestigationSerial() != Data.CapturedNoiseSerial;
+		&& Data.Enemy->GetLocationInvestigationSerial() != Data.CapturedNoiseSerial;
 	if (!bReplacedNoiseMove && IsValid(Data.CachedController) && Data.Enemy->GetController() == Data.CachedController)
 	{
 		Data.Enemy->ConsumeMovementInputVector();
@@ -284,36 +320,50 @@ bool PrepareNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
 bool BeginNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	if (!Data.bInvestigateNoise) return true;
-	if (!Data.Enemy->BeginNoiseInvestigation(Data.Destination)) return false;
-	Data.CapturedNoiseSerial = Data.Enemy->GetNoiseInvestigationSerial();
+	if (!Data.Enemy->BeginLocationInvestigation(Data.Destination)) return false;
+	Data.CapturedNoiseSerial = Data.Enemy->GetLocationInvestigationSerial();
+	Data.LastNoiseProgressLocation = Data.Enemy->GetActorLocation();
+	Data.NoiseInvestigationSearchBounds = FBox(ForceInit);
+	Data.Enemy->UpdateNoiseInvestigationProgress(Data.CapturedNoiseSerial,
+		Data.LastNoiseProgressLocation, Data.LastNoiseProgressLocation, Data.AcceptanceRadius);
 	return true;
 }
 
 bool UpdateNoiseFlightDestination(FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	if (!Data.bInvestigateNoise) return true;
-	if (!Data.Enemy->IsNoiseInvestigationCurrent(Data.CapturedNoiseSerial))
+	if (!Data.Enemy->IsLocationInvestigationCurrent(Data.CapturedNoiseSerial))
 	{
 		Data.MoveResult = EEnemyFlightMoveResult::Interrupted;
 		StopFlyTask(Data);
 		return false;
 	}
+	const FVector CurrentLocation = Data.Enemy->GetActorLocation();
+	Data.Enemy->UpdateNoiseInvestigationProgress(Data.CapturedNoiseSerial,
+		Data.LastNoiseProgressLocation, CurrentLocation, Data.AcceptanceRadius);
+	Data.LastNoiseProgressLocation = CurrentLocation;
 	// 소리 기록은 매번 받아도 실제 이동 경로는 Pawn의 갱신 간격/거리 제한을 따른다.
-	Data.Enemy->TryUpdateNoiseInvestigationDestination(Data.Destination);
+	Data.Enemy->TryUpdateLocationInvestigationDestination(Data.Destination);
 	return true;
 }
 
 EStateTreeRunStatus FinishNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data, EStateTreeRunStatus Status)
 {
 	if (!Data.bInvestigateNoise || Status == EStateTreeRunStatus::Running || !IsValid(Data.Enemy)
-		|| !Data.Enemy->IsNoiseInvestigationCurrent(Data.CapturedNoiseSerial)) return Status;
+		|| !Data.Enemy->IsLocationInvestigationCurrent(Data.CapturedNoiseSerial)) return Status;
 	const bool bReachedOrExhausted = Data.MoveResult == EEnemyFlightMoveResult::Arrived
 		|| Data.MoveResult == EEnemyFlightMoveResult::Blocked || Data.MoveResult == EEnemyFlightMoveResult::TimedOut;
 	if (!bReachedOrExhausted) return Status;
+	const bool bGeometryFailure = Data.MoveResult != EEnemyFlightMoveResult::Arrived
+		&& (Data.PathStatus == EFlightPathStatus::NoPathWithinBounds || Data.PathStatus == EFlightPathStatus::BlockedEndpoint
+			|| Data.PathStatus == EFlightPathStatus::BlockedSegment || Data.PathStatus == EFlightPathStatus::Success);
+	// 예산 부족/사용 불가/잘못된 요청은 도달 불가의 증거가 아니다. 실제 경로 실패와 분리한다.
+	if (bGeometryFailure)
+		Data.Enemy->RecordNoiseInvestigationFailure(Data.CapturedNoiseSerial, Data.Destination, Data.NoiseInvestigationSearchBounds);
 	// 도달하지 않은 소리 좌표를 수색 중심으로 채택하지 않는다.
 	// 우회/재탐색을 소진한 경우에도 실제 이동이 끝난 안전한 위치에서 수색한다.
 	StopFlyTask(Data);
-	Data.bNoiseSearchReady = Data.Enemy->BeginNoiseInvestigationSearch(
+	Data.bNoiseSearchReady = Data.Enemy->BeginLocationInvestigationSearch(
 		Data.CapturedNoiseSerial, Data.Enemy->GetActorLocation());
 	return Status;
 }
@@ -322,10 +372,10 @@ void EndNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	if (Data.bInvestigateNoise && !Data.bNoiseSearchReady && IsValid(Data.Enemy)
 		&& Data.CapturedNoiseSerial != 0
-		&& Data.Enemy->GetNoiseInvestigationSerial() == Data.CapturedNoiseSerial)
+		&& Data.Enemy->GetLocationInvestigationSerial() == Data.CapturedNoiseSerial)
 	{
 		// 이전 회차의 Exit가 새 조사나 수색 인계를 정리하지 않도록 소유권을 확인한다.
-		Data.Enemy->EndNoiseInvestigation();
+		Data.Enemy->EndLocationInvestigation();
 	}
 }
 
@@ -622,6 +672,7 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 			Request = MakeFlightPathRequest(Data, RoomGoal);
 		}
 	}
+	if (Data.bInvestigateNoise) Data.NoiseInvestigationSearchBounds = Request.SearchBounds;
 	FFlightPathResult Result = FlightPathfinding::FindPath(*Data.Enemy->GetWorld(), *Data.CachedCapsule, Request);
 	Data.PathStatus = Result.Status;
 	Data.LastDestination = Data.Destination;
@@ -716,6 +767,13 @@ EStateTreeRunStatus StartInitialFlight(FEnemyFlyToLocationTaskInstanceData& Data
 
 EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
 {
+	// 방향 확인 구간에는 기존/새 비행이 이동과 시간 제한을 진행하지 않는다. 귀환은 원래 경로를 유지한다.
+	if (IsValid(Data.Enemy) && Data.Enemy->IsHitDirectionConfirmationActive()
+		&& Data.Enemy->GetCombatState() != EEnemyCombatState::Returning)
+	{
+		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement()) Movement->StopMovementImmediately();
+		return EStateTreeRunStatus::Running;
+	}
 	// 전체 이동 제한 -> 목적지 변경 -> 제한된 재탐색 -> 구간 검증 -> 이동 입력 순서다.
 	Data.MoveElapsed += DeltaTime;
 	Data.SegmentCheckElapsed += DeltaTime;
@@ -820,6 +878,8 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 			return EStateTreeRunStatus::Failed;
 		}
 	}
+	if (Data.bInvestigateNoise)
+		Data.Enemy->UpdateNoiseInvestigationTravelDirection(Data.CapturedNoiseSerial, NextPoint - Position, Data.RotationSpeed);
 	if (bReachedPoint && bFinalPoint)
 	{
 		if (Data.bWaitingForPath)
@@ -977,6 +1037,41 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightProgressTest,
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyAttackAimOwnershipTest,
 	"Outlier.Enemy.Combat.AttackAimOwnership", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyPassiveRotationTest,
+	"Outlier.Enemy.Rotation.PassiveInterpolation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyPassiveRotationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FRotator Start(30.0f, 179.0f, 0.0f);
+	const FRotator Desired(0.0f, -179.0f, 0.0f);
+	const FRotator First = GetPassiveRotation(Start, Desired, 120.0f, 6.0f, 1.0f, 1.0f / 60.0f);
+	TestTrue(TEXT("Pitch starts at the real direction and respects the speed cap"),
+		First.Pitch < 30.0f && First.Pitch >= 28.0f);
+	TestTrue(TEXT("Yaw crosses the wrap boundary by the short path"),
+		FMath::Abs(FMath::FindDeltaAngleDegrees(First.Yaw, Desired.Yaw)) < 2.0f);
+	const FRotator Far = GetPassiveRotation(FRotator::ZeroRotator, FRotator(0, 90, 0), 120, 6, 1, 0.01f);
+	const FRotator Near = GetPassiveRotation(FRotator::ZeroRotator, FRotator(0, 5, 0), 120, 6, 1, 0.01f);
+	TestTrue(TEXT("Near-target rotation is slower than a distant turn"), Near.Yaw > 0 && Near.Yaw < Far.Yaw);
+	for (const float Step : {1.0f / 120.0f, 1.0f / 30.0f, 0.2f})
+	{
+		FRotator Current(25, 0, 0);
+		for (int32 Index = 0; Index < 1200; ++Index)
+			Current = GetPassiveRotation(Current, FRotator(0, 180, 0), 120, 6, 1, Step);
+		TestTrue(TEXT("A 180-degree turn reaches the completion tolerance at different frame rates"),
+			FMath::Abs(FMath::FindDeltaAngleDegrees(Current.Yaw, 180.0f)) <= 1.0f && FMath::Abs(Current.Pitch) <= 1.0f);
+		TestTrue(TEXT("Completed rotation remains stable without micro oscillation"),
+			GetPassiveRotation(Current, FRotator(0, 180, 0), 120, 6, 1, Step).Equals(Current));
+	}
+	TestTrue(TEXT("Zero speed preserves an intentional stationary setting"),
+		GetPassiveRotation(Start, Desired, 0, 6, 1, 1).Equals(Start));
+	TestTrue(TEXT("Negative time cannot rewind rotation"),
+		GetPassiveRotation(Start, Desired, 120, 6, 1, -1).Equals(Start));
+	TestTrue(TEXT("A large time step stops at the target rather than overshooting"),
+		GetPassiveRotation(Start, Desired, 120, 6, 1, 10).Equals(Desired));
+	return true;
+}
+
 bool FEnemyAttackAimOwnershipTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
@@ -1024,6 +1119,31 @@ bool FEnemyAttackAimOwnershipTest::RunTest(const FString& Parameters)
 	Controller->SetAttackAimActive(true);
 	Controller->UnPossess();
 	TestFalse(TEXT("Unpossess releases attack aim"), Controller->IsAttackAimActive());
+
+	AAutoTurret* Turret = World->SpawnActor<AAutoTurret>();
+	if (!TestNotNull(TEXT("Stationary turret exists"), Turret)) return false;
+	Turret->GetOutlierAbilitySystemComponent()->InitializeForPawn(Turret);
+	Turret->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.0f);
+	FEnumProperty* Lifecycle = FindFProperty<FEnumProperty>(Turret->GetClass(), TEXT("TurretLifecycleState"));
+	if (!TestNotNull(TEXT("Turret can select the existing active lifecycle"), Lifecycle)) return false;
+	Lifecycle->GetUnderlyingProperty()->SetIntPropertyValue(Lifecycle->ContainerPtrToValuePtr<void>(Turret),
+		static_cast<int64>(EAutoTurretLifecycleState::Active));
+	Controller->Possess(Turret);
+	const FTransform Body = Turret->GetActorTransform();
+	const FVector HitLocation = Turret->GetPawnViewLocation() + FVector(0, 1000, 100);
+	FEnemyHitClue Hit;
+	if (!TestTrue(TEXT("Turret accepts a positional clue"),
+		Turret->CreateHitClue(HitLocation, World->GetTimeSeconds(), 6.0, Hit) && Turret->RecordHitClue(Hit))) return false;
+	Turret->TickHitResponse(0.0f);
+	TestTrue(TEXT("Turret starts direction confirmation"), Turret->IsHitDirectionConfirmationActive());
+	TestFalse(TEXT("Stationary turret never adopts investigation flight"), Turret->CanRunHitInvestigationMovement());
+	World->TimeSeconds += 2.1f;
+	Turret->TickHitResponse(2.1f);
+	TestFalse(TEXT("Turret confirmation finishes without location search"), Turret->HasHitResponse());
+	RotateTowardLocation(*Turret, *Controller, HitLocation, 360.0f, 3.0f, 1.0f);
+	TestTrue(TEXT("Confirmation and subsequent common alert facing keep the body fixed"),
+		Turret->GetActorTransform().Equals(Body));
+	TestTrue(TEXT("The head can turn while the body stays fixed"), FMath::Abs(Turret->GetViewRotation().Yaw) > 1.0f);
 	return true;
 }
 
@@ -1496,6 +1616,8 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 	}
 	if (InstanceData.bRotateTowardDestination)
 	{
+		if (InstanceData.bInvestigateNoise)
+			Enemy->UpdateNoiseInvestigationTravelDirection(InstanceData.CapturedNoiseSerial, ToDestination, InstanceData.RotationSpeed);
 		RotateTowardLocation(
 			*Enemy,
 			*AIController,
@@ -1552,7 +1674,8 @@ bool CanHoldStationaryFire(const FEnemyStationaryFireTaskInstanceData& Data)
 	if (Enemy->GetController() != Data.CachedController || Data.CachedController->GetPawn() != Enemy) return false;
 	if (Enemy->IsDead() || !Enemy->CanUseEnemyPerception() || Enemy->IsPossessionInProgress()
 		|| Enemy->GetCombatState() == EEnemyCombatState::Stun || !Enemy->IsPlayerCurrentlyVisible()) return false;
-	return Data.CapturedTarget.IsValid() && Data.CachedController->GetCachedVisibleTarget() == Data.CapturedTarget.Get()
+	return Data.CapturedTarget.IsValid() && !Enemy->IsTargetOutsideWeaponRange(Data.CapturedTarget.Get())
+		&& Data.CachedController->GetCachedVisibleTarget() == Data.CapturedTarget.Get()
 		&& Enemy->GetPoolGameplayGeneration() == Data.CapturedGeneration
 		&& Enemy->GetPoolLeaseSerial() == Data.CapturedLease;
 }
@@ -1572,6 +1695,7 @@ const TCHAR* GetStationaryFireReason(const FEnemyStationaryFireTaskInstanceData&
 	if (!Enemy->IsPlayerCurrentlyVisible()) return TEXT("SightLost");
 	if (!Data.CapturedTarget.IsValid()
 		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get()) return TEXT("TargetChangedOrInvalid");
+	if (Enemy->IsTargetOutsideWeaponRange(Data.CapturedTarget.Get())) return TEXT("WeaponRangeLost");
 	if (Enemy->GetPoolGameplayGeneration() != Data.CapturedGeneration
 		|| Enemy->GetPoolLeaseSerial() != Data.CapturedLease) return TEXT("PoolLifetimeChanged");
 	return TEXT("Valid");
@@ -1728,6 +1852,18 @@ EStateTreeRunStatus FEnemyMaintainFacingTask::EnterState(
 	const bool bValid = IsValid(InstanceData.Enemy)
 		&& InstanceData.Enemy->HasAuthority()
 		&& ResolveAIController(InstanceData.Enemy);
+	if (bValid && !InstanceData.Enemy->IsEnemyPossessed() && InstanceData.Enemy->GetRuntimeStat().Type == EEnemyType::Gun)
+	{
+		AAIController* Controller = ResolveAIController(InstanceData.Enemy);
+		const FVector Input = ResolveFacingLocation(InstanceData, *Controller);
+		const FVector Origin = InstanceData.Enemy->GetCombatShotOrigin();
+		// 공격 Task와 같은 좌표를 받았는지 진입 시에만 남긴다. 시선 Task의 바인딩 오류를 실제 레벨에서 확인한다.
+		if (FVector::DistSquared2D(Origin, Input) <= FMath::Square(500.0))
+			UE_LOG(LogEnemyFlight, Display, TEXT("[EnemyAimTask] Task=MaintainFacing.Enter Enemy=%s Actor=%s Preferred=%d Input=%s Origin=%s InputPitch=%.3f ControlPitch=%.3f AttackOwns=%d"),
+				*InstanceData.Enemy->GetName(), *GetNameSafe(InstanceData.TargetActor), InstanceData.bUsePreferredVisibleTarget,
+				*Input.ToCompactString(), *Origin.ToCompactString(), (Input - Origin).Rotation().Pitch,
+				Controller->GetControlRotation().Pitch, ShouldYieldRotationToAttack(*Controller));
+	}
 	if (CVarEnemyFlightDebug.GetValueOnGameThread() != 0)
 	{
 		UE_LOG(LogEnemyFlight, Log, TEXT("[Facing] Enter Enemy=%s Target=%s Valid=%d"),
@@ -1789,6 +1925,8 @@ EStateTreeRunStatus FEnemyAlertHoldTask::EnterState(
 	AIController->StopMovement();
 	InstanceData.VisibleElapsedTime = 0.0f;
 	InstanceData.LostElapsedTime = 0.0f;
+	InstanceData.bScanInitialized = false;
+	InstanceData.ScanElapsedTime = 0.0f;
 	if (!InstanceData.bOwnsTaskDrivenPitch)
 	{
 		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
@@ -1822,7 +1960,7 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	}
 	// 조사는 자체 완료 조건을 유지한다. 조사 중에도 청각 인지 시간을 누적해 Combat을 확정할 수 있다.
 	// 이 분기에서는 미발견 타이머나 Alert 회전으로 조사 이동·수색을 끊지 않는다.
-	if (Enemy->GetPerceptionGoal().Type == EEnemyPerceptionGoalType::InvestigateNoise || Enemy->IsNoiseSearchActive())
+	if (Enemy->IsLocationInvestigationGoal() || Enemy->IsLocationSearchActive())
 	{
 		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
 		{
@@ -1862,17 +2000,44 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 		}
 	}
 
-	RotateTowardLocation(
-		*Enemy,
-		*AIController,
-		FacingLocation,
-		InstanceData.RotationSpeed,
-		0.0f,
-		DeltaTime
-	);
+	const float SafeDeltaTime = FMath::IsFinite(DeltaTime) ? FMath::Max(DeltaTime, 0.0f) : 0.0f;
+	if (bPlayerVisible) InstanceData.bScanInitialized = false;
+	if (!ShouldYieldPassiveRotation(*Enemy, *AIController))
+	{
+		if (bPlayerVisible || Cast<AAutoTurret>(Enemy))
+		{
+			// 터렛은 전용 헤드 탐색/기본 방향 복귀를 유지한다. 공통 탐색으로 본체를 돌리지 않는다.
+			RotateTowardLocation(*Enemy, *AIController, FacingLocation,
+				InstanceData.RotationSpeed, 0.0f, SafeDeltaTime);
+		}
+		else
+		{
+			const double ClueAt = Enemy->GetLastAlertClueAt();
+			if (!InstanceData.bScanInitialized || InstanceData.ScanClueAt != ClueAt)
+			{
+				// 실제 새 단서만 중심을 갱신한다. 이동/중복 조회로 중심이나 경계 시계를 재시작하지 않는다.
+				InstanceData.bScanInitialized = true;
+				InstanceData.ScanClueAt = ClueAt;
+				const FVector Direction = FacingLocation - Enemy->GetActorLocation();
+				InstanceData.ScanCenterYaw = Direction.SizeSquared2D() > 1.0f && !Direction.ContainsNaN()
+					? Direction.Rotation().Yaw : AIController->GetControlRotation().Yaw;
+				InstanceData.ScanElapsedTime = 0.0f;
+			}
+			const float HalfPeriod = FMath::IsFinite(InstanceData.ScanHalfPeriod)
+				? FMath::Max(0.1f, InstanceData.ScanHalfPeriod) : 1.5f;
+			const float HalfAngle = FMath::IsFinite(InstanceData.ScanHalfAngle)
+				? FMath::Clamp(InstanceData.ScanHalfAngle, 0.0f, 180.0f) : 35.0f;
+			InstanceData.ScanElapsedTime = FMath::Fmod(InstanceData.ScanElapsedTime + SafeDeltaTime, HalfPeriod * 2.0f);
+			const float Offset = HalfAngle * FMath::Sin(PI * InstanceData.ScanElapsedTime / HalfPeriod);
+			const FRotator Desired(0.0f, InstanceData.ScanCenterYaw + Offset, 0.0f);
+			const FRotator Next = GetPassiveRotation(AIController->GetControlRotation(), Desired,
+				InstanceData.RotationSpeed, InstanceData.RotationSlowdownRate, InstanceData.AngleTolerance, SafeDeltaTime);
+			AIController->SetControlRotation(Next);
+			Enemy->SetActorRotation(FRotator(0.0f, Next.Yaw, 0.0f));
+		}
+	}
 
-	const float SafeDeltaTime = FMath::Max(DeltaTime, 0.0f);
-	// 최초 시각·청각 발견은 Controller의 대상별 누적/감소 수치로 확정한다.
+	// 최초 시각·청각 발견은 대상별 인지와 Pawn의 최소 경계 기한을 함께 판정한다.
 	// 기존 에셋에 저장된 LostCommitDuration=5는 이 경로에 적용하지 않는다.
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
 	{
@@ -2029,10 +2194,7 @@ EStateTreeRunStatus FEnemyLookAroundTask::EnterState(
 	InstanceData.BaseControlRotation = AIController->GetControlRotation().GetNormalized();
 	InstanceData.BaseControlRotation.Pitch = 0.0f;
 	InstanceData.BaseControlRotation.Roll = 0.0f;
-	if (!ShouldYieldRotationToAttack(*AIController))
-	{
-		AIController->SetControlRotation(InstanceData.BaseControlRotation);
-	}
+	// 시작 방향은 탐색 중심으로만 저장한다. 현재 Pitch는 첫 Tick부터 천천히 수평으로 돌린다.
 	if (!InstanceData.bOwnsTaskDrivenPitch)
 	{
 		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
@@ -2063,8 +2225,8 @@ EStateTreeRunStatus FEnemyLookAroundTask::Tick(
 		return EStateTreeRunStatus::Failed;
 	}
 
-	// AttackLocation과 병렬 실행돼도 사격 중에는 탐색 회전과 단계 진행을 보류한다.
-	if (ShouldYieldRotationToAttack(*AIController))
+	// 공격/피격 확인/피격 접근이 소유한 회전을 덮지 않고, 보류 중에는 두리번거리기 단계도 소비하지 않는다.
+	if (ShouldYieldPassiveRotation(*Enemy, *AIController))
 	{
 		return EStateTreeRunStatus::Running;
 	}
@@ -2078,16 +2240,13 @@ EStateTreeRunStatus FEnemyLookAroundTask::Tick(
 	// 시작 시점의 방향을 기준으로 계산해 각 단계의 회전 오차가 다음 단계에 누적되지 않게 한다.
 	FRotator DesiredRotation =
 		(InstanceData.BaseControlRotation + Step.RelativeRotation).GetNormalized();
-	// Existing StateTree steps may still contain authored pitch offsets.
+	// 기존 에셋에 상하 오프셋이 남아 있어도 일상 탐색 목표는 수평으로 제한한다.
 	DesiredRotation.Pitch = 0.0f;
 	DesiredRotation.Roll = 0.0f;
 
-	FRotator NewRotation = FMath::RInterpConstantTo(
-		AIController->GetControlRotation(),
-		DesiredRotation,
-		DeltaTime,
-		FMath::Max(InstanceData.RotationSpeed, 0.0f)).GetNormalized();
-	NewRotation.Pitch = 0.0f;
+	const float SafeDeltaTime = FMath::IsFinite(DeltaTime) ? FMath::Max(DeltaTime, 0.0f) : 0.0f;
+	const FRotator NewRotation = GetPassiveRotation(AIController->GetControlRotation(), DesiredRotation,
+		InstanceData.RotationSpeed, InstanceData.RotationSlowdownRate, InstanceData.AngleTolerance, SafeDeltaTime);
 	AIController->SetControlRotation(NewRotation);
 	Enemy->SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
 
@@ -2097,14 +2256,14 @@ EStateTreeRunStatus FEnemyLookAroundTask::Tick(
 	const float PitchError = FMath::Abs(FMath::FindDeltaAngleDegrees(
 		NewRotation.Pitch,
 		DesiredRotation.Pitch));
-	if (YawError > InstanceData.AngleTolerance
-		|| PitchError > InstanceData.AngleTolerance)
+	const float Tolerance = FMath::IsFinite(InstanceData.AngleTolerance) ? FMath::Max(0.0f, InstanceData.AngleTolerance) : 1.0f;
+	if (YawError > Tolerance || PitchError > Tolerance)
 	{
 		InstanceData.ElapsedHoldTime = 0.0f;
 		return EStateTreeRunStatus::Running;
 	}
 
-	InstanceData.ElapsedHoldTime += DeltaTime;
+	InstanceData.ElapsedHoldTime += SafeDeltaTime;
 	if (InstanceData.ElapsedHoldTime < Step.HoldDuration)
 	{
 		return EStateTreeRunStatus::Running;

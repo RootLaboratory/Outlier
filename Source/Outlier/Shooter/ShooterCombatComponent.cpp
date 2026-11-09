@@ -955,6 +955,11 @@ void UShooterCombatComponent::CancelReloadInternal()
 
 	// 애니메이션 소유 반복음만 정리한다. 이동/LowHP 등 실제 상태가 소유한 소리는 유지한다.
 	if (ShooterCharacter->MovementAudioSubsystem) ShooterCharacter->MovementAudioSubsystem->StopAnimationAudioLoops(ShooterCharacter);
+	// 잠금 해제는 전투 상태를 다시 읽는다. 무기 Reload부터 내려 취소된 상태가 되살아나지 않게 한다.
+	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		RangedWeapon->CancelReload();
+	}
 	bIsReloading = false;
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	UAnimMontage* FirstPersonMontage = ActiveFirstPersonReloadMontage.IsValid()
@@ -964,10 +969,6 @@ void UShooterCombatComponent::CancelReloadInternal()
 	UnbindReloadMontageEndedDelegates();
 
 	ShooterCharacter->StopSplitMontages(FirstPersonMontage, ThirdPersonMontage);
-	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
-	{
-		RangedWeapon->CancelReload();
-	}
 	RefreshCombatState();
 	RestoreAimIfRequested();
 	ShooterCharacter->RefreshMovementState();

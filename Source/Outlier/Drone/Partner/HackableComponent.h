@@ -2,11 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Engine/EngineTypes.h"
 #include "GameplayTagContainer.h"
 #include "HackType.h"
 #include "HackableComponent.generated.h"
 
 class UHackableComponent;
+class USceneComponent;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnHackTargetUnavailable, UHackableComponent*);
 
@@ -38,6 +40,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_HackTags, Category = "Hack")
 	FGameplayTagContainer HackTags;  // Target/State/Query
 
+	// 같은 Actor의 일반 SceneComponent를 선택한다. 미지정이면 Actor별 기존 계산을 유지한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Target",
+		meta = (UseComponentPicker, AllowedClasses = "/Script/Engine.SceneComponent"))
+	FComponentReference HackTargetPointReference;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Effect", meta = (Categories = "Hack.Effect"))
 	FGameplayTagContainer SuccessEffectTags;
 
@@ -56,8 +63,20 @@ public:
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void OnRegister() override;
+	virtual void InitializeComponent() override;
+	virtual void OnUnregister() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	// 생성/재등록 또는 명시적인 참조 변경 후 호출한다. 위치 조회 중에는 이름 검색을 하지 않는다.
+	void RefreshHackTargetPoint();
+	bool TryGetHackTargetLocation(FVector& OutLocation) const;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
+	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
+#endif
 
 	FOnHackTargetInvalidated OnHackTargetInvalidated;
 	FOnHackTargetUnavailable OnHackTargetUnavailable;
@@ -88,6 +107,10 @@ public:
 	void MarkAsHackedOnce();
 
 private:
+	bool HasHackTargetPointReference() const;
+	USceneComponent* ResolveHackTargetPoint() const;
+	TWeakObjectPtr<USceneComponent> CachedHackTargetPoint;
+
 	UFUNCTION()
 	void OnRep_HackTags();
 

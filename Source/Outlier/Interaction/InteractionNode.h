@@ -67,6 +67,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UInteractableComponent> InteractableComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
+	TObjectPtr<USceneComponent> InteractionTargetPoint;
+
 private:
 	friend class UInteractableComponent;
 	friend class FInteractionNodePresentationTest;

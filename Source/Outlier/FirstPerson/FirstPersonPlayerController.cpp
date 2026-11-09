@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Cinematic/OutlierCinematicSubsystem.h"
 #include "InputKeyEventArgs.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -1080,6 +1081,11 @@ bool AFirstPersonPlayerController::SetFirstPersonInputMode(FGameplayTag NewInput
 	Options.bIgnoreAllPressedKeysUntilRelease = true;
 	Options.bForceImmediately = true;
 
+	// 모드 변경을 검증한 뒤 Pawn의 별도 입력 캐시도 비운다. 매핑 재구성만으로는 남을 수 있다.
+	if (AFirstPersonCharacter* ControlledCharacter = Cast<AFirstPersonCharacter>(GetPawn()))
+	{
+		ControlledCharacter->ResetMovementInput();
+	}
 	InputSubsystem->SetInputMode(InputModeContainer, Options);
 	CurrentFirstPersonInputMode = NewInputMode;
 	return true;
@@ -1147,6 +1153,10 @@ bool AFirstPersonPlayerController::RestoreFirstPersonDefaultInputMode()
 	Options.bIgnoreAllPressedKeysUntilRelease = true;
 	Options.bForceImmediately = true;
 
+	if (AFirstPersonCharacter* ControlledCharacter = Cast<AFirstPersonCharacter>(GetPawn()))
+	{
+		ControlledCharacter->ResetMovementInput();
+	}
 	InputSubsystem->SetInputMode(DefaultInputMode, Options);
 	CurrentFirstPersonInputMode = DefaultInputMode.First();
 
@@ -1402,6 +1412,10 @@ void AFirstPersonPlayerController::FlushPressedKeys()
 	// Focus loss flushes PlayerInput directly, bypassing our InputKey release handling.
 	if (IsLocalController())
 	{
+		if (AFirstPersonCharacter* ControlledCharacter = Cast<AFirstPersonCharacter>(GetPawn()))
+		{
+			ControlledCharacter->ResetMovementInput();
+		}
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
 		{
 			Cinematic->ResetCompleteHold();
@@ -1417,7 +1431,7 @@ bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
 		// Pawn/입력 모드가 바뀌어도 같은 키를 사용하며, 무적 변경은 서버에서만 확정한다.
 		if (Params.Key == EKeys::F1)
 		{
-			ServerDebugTogglePairInvulnerability();
+			if (Params.Event == IE_Pressed) ServerDebugTogglePairInvulnerability();
 			return true;
 		}
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
@@ -1959,7 +1973,7 @@ void AFirstPersonPlayerController::ClearLocalElevatorFade()
 	bLocalElevatorFadeReadySent = false;
 }
 
-// 연결 흐름: 서버 단계 요청 -> 소유 클라이언트의 빈 연출 지점 -> 실제 완료 콜백 -> 서버 준비 검증.
+// 연결 흐름: 서버 단계 요청 -> 두 화면 암전 -> 서버 이동/지급 -> 복제 도착 확인 -> 화면 복귀.
 // 로컬 ID/단계는 콜백을 구분하기 위한 값일 뿐, 슈트 획득과 단계 진행의 권위는 Shooter 서버에 있다.
 void AFirstPersonPlayerController::SendSuitTransitionPhaseFromServer(
 	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing)
@@ -1969,24 +1983,27 @@ void AFirstPersonPlayerController::SendSuitTransitionPhaseFromServer(
 		return;
 	}
 	// Dedicated Server에서는 로컬 준비 응답을 만들지 않는다. Listen Host만 직접 같은 수신 경로에 진입한다.
+	const FVector PartnerDestination = IsValid(Shooter) ? Shooter->GetSuitTransitionPartnerDestination() : FVector::ZeroVector;
 	if (IsLocalController())
 	{
-		ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Timing);
+		ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Timing, PartnerDestination);
 	}
 	else
 	{
-		ClientSetSuitTransitionPhase(Shooter, TransitionId, Phase, Timing);
+		ClientSetSuitTransitionPhase(Shooter, TransitionId, Phase, Timing, PartnerDestination);
 	}
 }
 
 void AFirstPersonPlayerController::ClientSetSuitTransitionPhase_Implementation(
-	AShooterCharacter* Shooter, FGuid TransitionId, ESuitTransitionPhase Phase, FOutlierScreenTransitionTiming Timing)
+	AShooterCharacter* Shooter, FGuid TransitionId, ESuitTransitionPhase Phase, FOutlierScreenTransitionTiming Timing,
+	FVector PartnerDestination)
 {
-	ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Timing);
+	ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Timing, PartnerDestination);
 }
 
 void AFirstPersonPlayerController::ApplyLocalSuitTransitionPhase(
-	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing)
+	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing,
+	const FVector& PartnerDestination)
 {
 	const float Duration = Phase == ESuitTransitionPhase::FadingOut ? Timing.FadeOutDuration
 		: Phase == ESuitTransitionPhase::Applying ? Timing.BlackHoldDuration : Timing.FadeInDuration;
@@ -2033,6 +2050,11 @@ void AFirstPersonPlayerController::ApplyLocalSuitTransitionPhase(
 	}
 	LocalSuitTransitionPhase = Phase;
 	bLocalSuitTransitionReadySent = false;
+	if (Phase == ESuitTransitionPhase::Applying)
+	{
+		// 단계 RPC와 Pawn 이동 복제는 도착 순서가 다르다. 같은 전환의 서버 목적지를 따로 보관한다.
+		LocalSuitPartnerDestination = PartnerDestination;
+	}
 	// 일반 실행은 실제 완료 콜백을 기다린다. 미연결 연출의 PIE 테스트 응답은 아래 기본 훅에서만 생성한다.
 	switch (Phase)
 	{
@@ -2109,6 +2131,7 @@ void AFirstPersonPlayerController::ClearLocalSuitTransition()
 	LocalSuitTransitionPhase = ESuitTransitionPhase::Idle;
 	LocalSuitTransitionShooter.Reset();
 	LocalSuitTransitionPawn.Reset();
+	LocalSuitPartnerDestination = FVector::ZeroVector;
 	bLocalSuitTransitionReadySent = false;
 	RequestSuitTransitionCleanup(Id);
 }
@@ -2228,13 +2251,15 @@ void AFirstPersonPlayerController::PollSuitPresentationReady(FGuid TransitionId)
 		if (++SuitPresentationPollCount == SuitPresentationStallLogPolls)
 		{
 			const AShooterCharacter* Shooter = LocalSuitTransitionShooter.Get();
-			const APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn());
+			const APartnerCharacter* Partner = IsValid(Shooter) ? Shooter->GetPartnerCharacter() : nullptr;
 			UE_LOG(LogTemp, Warning,
-				TEXT("[SuitTransition] Presentation not ready Controller=%s ShooterSuitApplied=%d ShooterWeapon=%d PartnerWeapon=%d"),
+				TEXT("[SuitTransition] Presentation not ready Controller=%s ShooterSuitApplied=%d ShooterWeapon=%d PartnerWeapon=%d PartnerArrived=%d ArrivalDistance=%.1f"),
 				*GetName(),
 				IsValid(Shooter) && Shooter->GetAppliedPresentation() == EShooterPresentation::Suit ? 1 : 0,
 				IsValid(Shooter) && IsWeaponPresentedOn(Shooter->GetCurrentWeapon(), Shooter) ? 1 : 0,
-				!Partner ? -1 : IsWeaponPresentedOn(Partner->GetCurrentWeapon(), Partner) ? 1 : 0);
+				!Partner ? -1 : IsWeaponPresentedOn(Partner->GetCurrentWeapon(), Partner) ? 1 : 0,
+				IsSuitPartnerArrivalReady() ? 1 : 0,
+				IsValid(Partner) ? FVector::Dist(Partner->GetActorLocation(), LocalSuitPartnerDestination) : -1.0f);
 		}
 		return;
 	}
@@ -2248,12 +2273,28 @@ void AFirstPersonPlayerController::PollSuitPresentationReady(FGuid TransitionId)
 	NotifySuitPresentationReady(TransitionId);
 }
 
+bool AFirstPersonPlayerController::IsSuitPartnerArrivalReady() const
+{
+	const AShooterCharacter* Shooter = LocalSuitTransitionShooter.Get();
+	const APartnerCharacter* Partner = IsValid(Shooter) ? Shooter->GetPartnerCharacter() : nullptr;
+	// 두 화면 모두 도착을 확인한다. 소유자는 Capsule, 관찰자는 네트워크 보간 중인 표시 Mesh도 기다린다.
+	// 월드 원점은 유효한 목적지이므로 0 벡터를 미수신 표시로 사용하지 않는다.
+	constexpr float ArrivalTolerance = 5.0f;
+	if (!IsValid(Partner) || LocalSuitPartnerDestination.ContainsNaN()
+		|| !Partner->GetActorLocation().Equals(LocalSuitPartnerDestination, ArrivalTolerance))
+	{
+		return false;
+	}
+	const UCharacterMovementComponent* Movement = Partner->GetCharacterMovement();
+	return Movement && (Partner->IsLocallyControlled() || Movement->bNetworkSmoothingComplete);
+}
+
 bool AFirstPersonPlayerController::IsSuitPresentationReady() const
 {
 	// 두 화면 모두 Shooter의 새 외형(Mesh/ABP)과 Rifle 부착을 확인한다.
 	// Shooter 포인터는 서버 RPC 인자로 받았으므로 이 클라이언트에 복제되어 있다.
 	const AShooterCharacter* Shooter = LocalSuitTransitionShooter.Get();
-	if (!IsValid(Shooter) || Shooter->GetAppliedPresentation() != EShooterPresentation::Suit
+	if (!IsSuitPartnerArrivalReady() || !IsValid(Shooter) || Shooter->GetAppliedPresentation() != EShooterPresentation::Suit
 		|| !IsWeaponPresentedOn(Shooter->GetCurrentWeapon(), Shooter))
 	{
 		return false;

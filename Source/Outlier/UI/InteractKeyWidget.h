@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Blueprint/UserWidget.h"
+#include "UI/TargetPointHudWidget.h"
 #include "InteractKeyWidget.generated.h"
 
 class UBorder;
@@ -9,7 +9,7 @@ class UInputAction;
 class UInputActionKeyDisplayWidget;
 
 UCLASS()
-class OUTLIER_API UInteractKeyWidget : public UUserWidget
+class OUTLIER_API UInteractKeyWidget : public UTargetPointWidget
 {
 	GENERATED_BODY()
 

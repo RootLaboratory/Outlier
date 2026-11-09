@@ -8,6 +8,15 @@
 #include "Team/OutlierTeamIds.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Perception/AISense_Hearing.h"
+#include "Shooter/Anim/FootstepNoiseTestProbe.h"
+
+#if WITH_DEV_AUTOMATION_TESTS
+OutlierFootstepTesting::FReported& OutlierFootstepTesting::Reported()
+{
+	static FReported Delegate;
+	return Delegate;
+}
+#endif
 
 void UAnimNotify_MakeNoise::Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference)
 {
@@ -41,4 +50,7 @@ void UAnimNotify_MakeNoise::Notify(USkeletalMeshComponent* MeshComp, UAnimSequen
 		MaxRange,
 		NoiseTag
 	);
+#if WITH_DEV_AUTOMATION_TESTS
+	OutlierFootstepTesting::Reported().Broadcast(MeshComp, Source->GetActorLocation());
+#endif
 }

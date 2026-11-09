@@ -44,6 +44,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UInteractableComponent> InteractableComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
+	TObjectPtr<USceneComponent> InteractionTargetPoint;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Journal",
 		meta = (DisplayName = "Mesh", ToolTip = "지정하면 JournalMesh의 메시를 덮어씁니다. 비어 있으면 컴포넌트에 지정한 메시를 유지합니다."))
 	TObjectPtr<UStaticMesh> JournalMeshAsset;

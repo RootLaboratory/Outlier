@@ -27,6 +27,8 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
+#include "Weapon/RangedWeaponBase.h"
+#include "UObject/UnrealType.h"
 
 #include <limits>
 
@@ -120,6 +122,17 @@ struct FEnemyFlightHeightTestWorld
 		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		Enemy = World->SpawnActor<AEnemyBase>(AEnemyBase::StaticClass(), FTransform(Start), Spawn);
 		if (!Enemy) return false;
+		UClass* WeaponClass = LoadClass<ARangedWeaponBase>(nullptr,
+			TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+		ARangedWeaponBase* Weapon = WeaponClass ? World->SpawnActor<ARangedWeaponBase>(WeaponClass, Spawn) : nullptr;
+		FObjectPropertyBase* CurrentWeapon = FindFProperty<FObjectPropertyBase>(AEnemyBase::StaticClass(), TEXT("CurrentWeapon"));
+		FFloatProperty* Range = WeaponClass ? FindFProperty<FFloatProperty>(WeaponClass, TEXT("EffectiveRange")) : nullptr;
+		if (!Weapon || !CurrentWeapon || !Range) return false;
+		Weapon->OnEquipped(Enemy);
+		Weapon->SetActorEnableCollision(false);
+		CurrentWeapon->SetObjectPropertyValue_InContainer(Enemy, Weapon);
+		// 높이 테스트는 기존 후보 위치를 유지하고, 사거리 제한은 별도 회귀 테스트에서 검증한다.
+		Range->SetPropertyValue_InContainer(Weapon, 5000.0f);
 		Enemy->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
 		UCapsuleComponent* Capsule = Enemy->GetCapsuleComponent();
 		Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);

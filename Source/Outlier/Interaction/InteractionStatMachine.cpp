@@ -1,5 +1,6 @@
 #include "Interaction/InteractionStatMachine.h"
 #include "Audio/OutlierAudioFeedback.h"
+#include "Components/SceneComponent.h"
 #include "Net/UnrealNetwork.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
@@ -41,7 +42,16 @@ AInteractionStatMachine::AInteractionStatMachine()
 	RootComponent = SceneRoot;
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
+	// BP에서는 이 기준점의 상대 위치만 조절한다. 별도 UI 위치 보정은 적용하지 않는다.
+	InteractionTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("InteractionTargetPoint"));
+	InteractionTargetPoint->SetupAttachment(GetRootComponent());
+	InteractionTargetPoint->bEditableWhenInherited = true;
+	InteractableComponent->InteractionTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AInteractionStatMachine, InteractionTargetPoint);
 	HackableComponent = CreateDefaultSubobject<UHackableComponent>(TEXT("HackableComponent"));
+	HackTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("HackTargetPoint"));
+	HackTargetPoint->SetupAttachment(SceneRoot);
+	HackTargetPoint->bEditableWhenInherited = true;
+	HackableComponent->HackTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AInteractionStatMachine, HackTargetPoint);
 	RoomTagComponent = CreateDefaultSubobject<URoomTagComponent>(TEXT("RoomTagComponent"));
 }
 

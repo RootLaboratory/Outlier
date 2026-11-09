@@ -79,6 +79,7 @@ UCLASS(Abstract, ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OUTLIER_API UFlightMovementComponentBase : public UActorComponent
 {
 	GENERATED_BODY()
+	friend class FPartnerMovementRecoveryTest;
 
 public:
 	UFlightMovementComponentBase();
@@ -134,6 +135,7 @@ protected:
 	virtual USceneComponent* GetFlightViewModelRoot() const;
 	virtual bool CanRunInputMovement() const;
 	virtual bool ShouldUpdateMovementFeel() const;
+	virtual bool ShouldApplyMeshPitchTilt() const { return true; }
 	virtual EFlightInputMode GetFlightInputMode() const;
 	virtual void OnAfterInputMovement(float DeltaTime);
 
@@ -204,6 +206,9 @@ protected:
 	FVector2D CurrentMoveInput = FVector2D::ZeroVector;
 	float VerticalInput = 0.0f;
 
+protected:
+	void ApplyMeshTilt();
+
 private:
 	bool CanUpdateMovementFeel(float DeltaTime) const;
 	FFlightMovementKinematics CalculateMovementKinematics(float DeltaTime);
@@ -216,7 +221,6 @@ private:
 	void UpdateMeshInertialTilt(const FFlightMovementKinematics& Kinematics, float DeltaTime);
 	void ApplyCameraTilt();
 	void ApplyVisualTilt(float DeltaTime);
-	void ApplyMeshTilt();
 	void ApplyViewModelTilt(float DeltaTime);
 	float GetMovementMassFactor() const;
 	float ResolveInertialReboundAxis(
@@ -232,6 +236,9 @@ private:
 	) const;
 
 	uint8 bMovementFeelInitialized : 1 = false;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend struct FDroneStateLightTestAccess;
+#endif
 	uint8 bVisualTiltInitialized : 1 = false;
 	uint8 bViewModelTiltInitialized : 1 = false;
 	float CurrentInertialPitch = 0.0f;

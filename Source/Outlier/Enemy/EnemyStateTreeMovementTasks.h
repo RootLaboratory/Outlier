@@ -152,6 +152,9 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(Transient)
 	bool bOwnsMovement = false;
 	FVector LastPathPosition = FVector::ZeroVector;
+	// 조사 회전의 통과 검사와 최종 실패 문맥은 경로 배열 정리 이후에도 인계할 수 있어야 한다.
+	FVector LastNoiseProgressLocation = FVector::ZeroVector;
+	FBox NoiseInvestigationSearchBounds = FBox(ForceInit);
 	float TravelledPathLength = 0.0f;
 
 	// 채택한 소리 좌표를 추적한다. 기존 순찰/전투 이동은 이 옵션을 사용하지 않는다.
@@ -336,6 +339,18 @@ struct FEnemyAlertHoldTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 180.0f;
 
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", ClampMax = "180.0"))
+	float ScanHalfAngle = 35.0f;
+
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.1", Units = "s"))
+	float ScanHalfPeriod = 1.5f;
+
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	float AngleTolerance = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	float RotationSlowdownRate = 6.0f;
+
 	// 시각 발견은 EnemyStat의 Awareness 시간을 사용한다. 이 값들은 다른 경계 사유의 기존 대기용이다.
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float VisibleCommitDuration = 1.0f;
@@ -343,12 +358,16 @@ struct FEnemyAlertHoldTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float LostCommitDuration = 5.0f;
 
+	bool bScanInitialized = false;
+	float ScanCenterYaw = 0.0f;
+	float ScanElapsedTime = 0.0f;
+	double ScanClueAt = -1.0;
 	float VisibleElapsedTime = 0.0f;
 	float LostElapsedTime = 0.0f;
 	bool bOwnsTaskDrivenPitch = false;
 };
 
-// Alert 상태 안에서 LKP를 바라보며 최초 시각 발견 수치 또는 다른 경계 사유의 대기를 판정한다.
+// Alert에서 직접 보이는 대상을 바라보고, 미발견 대기 중에는 마지막 단서 주변을 수평 탐색한다.
 // 확정 시 EnemyBase가 보낸 이벤트가 StateTree를 Battle 또는 NonBattle로 전환한다.
 USTRUCT(meta = (DisplayName = "Enemy Resolve Alert", Category = "Enemy|State"))
 struct OUTLIER_API FEnemyAlertHoldTask : public FStateTreeTaskCommonBase
@@ -451,6 +470,9 @@ struct FEnemyLookAroundTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 120.0f;
+
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	float RotationSlowdownRate = 6.0f;
 
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float AngleTolerance = 2.0f;

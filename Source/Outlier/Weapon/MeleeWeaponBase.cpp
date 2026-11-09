@@ -1094,6 +1094,7 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 	DamageRequest.DamageOrigin = IsValid(WeaponOwner)
 		? WeaponOwner->GetActorLocation()
 		: GetActorLocation();
+	DamageRequest.bHasDamageOrigin = true;
 	DamageRequest.EventInstigator = IsValid(WeaponOwner) ? WeaponOwner->GetController() : nullptr;
 	DamageRequest.DamageCauser = this;
 	DamageRequest.StealthSession = SwingStealthSession;

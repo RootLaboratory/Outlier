@@ -1,6 +1,7 @@
 #include "Jumper/Jumper.h"
 
 #include "Components/BoxComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackableComponent.h"
@@ -27,6 +28,11 @@ AJumper::AJumper()
 	HackTargetCollision->SetGenerateOverlapEvents(false);
 
 	HackableComponent = CreateDefaultSubobject<UHackableComponent>(TEXT("HackableComponent"));
+	// 후보 수집용 충돌체와 분리해 판정과 마커의 도착 위치만 조절한다.
+	HackTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("HackTargetPoint"));
+	HackTargetPoint->SetupAttachment(RootComponent);
+	HackTargetPoint->bEditableWhenInherited = true;
+	HackableComponent->HackTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AJumper, HackTargetPoint);
 	HackableComponent->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
 	HackableComponent->HackTags.AddTag(HackGameplayTags::Info::Jump());
 	HackableComponent->SuccessEffectTags.AddTag(HackGameplayTags::Effect::Jumper());

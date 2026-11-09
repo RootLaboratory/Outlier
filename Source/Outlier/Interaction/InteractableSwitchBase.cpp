@@ -2,6 +2,7 @@
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SceneComponent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "FirstPerson/FirstPersonCharacter.h"
@@ -22,7 +23,17 @@ AInteractableSwitchBase::AInteractableSwitchBase()
 	SwitchMesh->SetupAttachment(RootComponent);
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
+	// BP에서는 이 기준점의 상대 위치만 조절한다. 별도 UI 위치 보정은 적용하지 않는다.
+	InteractionTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("InteractionTargetPoint"));
+	InteractionTargetPoint->SetupAttachment(GetRootComponent());
+	InteractionTargetPoint->bEditableWhenInherited = true;
+	InteractableComponent->InteractionTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AInteractableSwitchBase, InteractionTargetPoint);
 	HackableComponent = CreateDefaultSubobject<UHackableComponent>(TEXT("HackableComponent"));
+	// 일반 스위치에도 위치 지정 기능은 제공한다. 해킹 가능 여부는 기존 태그만 결정한다.
+	HackTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("HackTargetPoint"));
+	HackTargetPoint->SetupAttachment(RootComponent);
+	HackTargetPoint->bEditableWhenInherited = true;
+	HackableComponent->HackTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AInteractableSwitchBase, HackTargetPoint);
 
 	UnblockEffectTag = HackGameplayTags::Effect::Unblock();
 }
