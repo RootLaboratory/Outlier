@@ -119,6 +119,7 @@ public:
 	void RefreshMovementState();
 	void ApplyCameraAssist();
 	void StopAutoFollow();
+	void ResetMovementInput();
 	void ReleaseCameraAssistInput();
 	void ResetAutoFollowForOwnerChange();
 	void SetSyncMove(bool SyncMove);
@@ -229,7 +230,7 @@ private:
 	bool bOwnsFollowSpeed = false;
 
 	UFUNCTION(Server, Reliable)
-	void ServerSetAutoFollowInput(EPartnerMoveMode Mode, bool bHeld, uint32 InputSerial);
+	void ServerSetAutoFollowInput(EPartnerMoveMode Mode, bool bHeld, uint32 InputSerial, bool bPreserveVelocity = false);
 	UFUNCTION(Client, Reliable)
 	void ClientReceiveFollowPath(EPartnerMoveMode Mode, uint32 InputSerial, const TArray<FVector>& Points, bool bStopped);
 
@@ -251,6 +252,8 @@ private:
 	double FollowNextRepathAt = 0.0;
 	double FollowNextDiagnosticAt = 0.0;
 	bool bFollowWasActive = false;
+	// 입력 초기화의 중첩 경로 정리에서만 사용한다. 일반 추종 종료의 정지 정책은 유지한다.
+	bool bPreserveVelocityOnFollowStop = false;
 	bool bFollowHolding = false;
 	bool bFollowPartialRoute = false;
 	bool bFollowSearchContinuation = false;
@@ -259,6 +262,7 @@ private:
 	TArray<FVector> FollowRouteHistory;
 	friend class FPartnerAssistNavigationTest;
 	friend class FPartnerFollowLifecycleTest;
+	friend class FPartnerMovementRecoveryTest;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UCapsuleComponent> MovementCapsule;

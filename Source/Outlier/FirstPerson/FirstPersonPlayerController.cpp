@@ -1080,6 +1080,11 @@ bool AFirstPersonPlayerController::SetFirstPersonInputMode(FGameplayTag NewInput
 	Options.bIgnoreAllPressedKeysUntilRelease = true;
 	Options.bForceImmediately = true;
 
+	// 모드 변경을 검증한 뒤 Pawn의 별도 입력 캐시도 비운다. 매핑 재구성만으로는 남을 수 있다.
+	if (AFirstPersonCharacter* ControlledCharacter = Cast<AFirstPersonCharacter>(GetPawn()))
+	{
+		ControlledCharacter->ResetMovementInput();
+	}
 	InputSubsystem->SetInputMode(InputModeContainer, Options);
 	CurrentFirstPersonInputMode = NewInputMode;
 	return true;
@@ -1147,6 +1152,10 @@ bool AFirstPersonPlayerController::RestoreFirstPersonDefaultInputMode()
 	Options.bIgnoreAllPressedKeysUntilRelease = true;
 	Options.bForceImmediately = true;
 
+	if (AFirstPersonCharacter* ControlledCharacter = Cast<AFirstPersonCharacter>(GetPawn()))
+	{
+		ControlledCharacter->ResetMovementInput();
+	}
 	InputSubsystem->SetInputMode(DefaultInputMode, Options);
 	CurrentFirstPersonInputMode = DefaultInputMode.First();
 
@@ -1402,6 +1411,10 @@ void AFirstPersonPlayerController::FlushPressedKeys()
 	// Focus loss flushes PlayerInput directly, bypassing our InputKey release handling.
 	if (IsLocalController())
 	{
+		if (AFirstPersonCharacter* ControlledCharacter = Cast<AFirstPersonCharacter>(GetPawn()))
+		{
+			ControlledCharacter->ResetMovementInput();
+		}
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
 		{
 			Cinematic->ResetCompleteHold();

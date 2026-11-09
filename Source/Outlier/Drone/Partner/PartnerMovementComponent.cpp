@@ -223,6 +223,23 @@ void UPartnerMovementComponent::StopAutoFollow()
 	}
 }
 
+void UPartnerMovementComponent::ResetMovementInput()
+{
+	// Release -> 모드 변경 -> 경로 정리가 연속 호출되어도 입력 초기화는 운동량을 지우지 않는다.
+	TGuardValue<bool> PreserveVelocity(bPreserveVelocityOnFollowStop, true);
+	ReleaseAutoFollow(EPartnerMoveMode::CameraAssist);
+	ReleaseAutoFollow(EPartnerMoveMode::SyncMove);
+	StopAutoFollow();
+	if (PartnerCharacter)
+	{
+		// RepNotify는 관찰자에서도 실행된다. 소유자가 아닌 복제 Pawn은 RPC를 보내지 않는다.
+		if (PartnerCharacter->HasAuthority() || PartnerCharacter->IsLocallyControlled()) SetFreeMove(false);
+		else PartnerCharacter->ApplyMoveMode(EPartnerMoveMode::Normal);
+	}
+	ClearFlightInput();
+	if (PartnerCharacter) PartnerCharacter->ConsumeMovementInputVector();
+}
+
 void UPartnerMovementComponent::ReleaseCameraAssistInput()
 {
 	ReleaseAutoFollow(EPartnerMoveMode::CameraAssist);
@@ -242,11 +259,12 @@ void UPartnerMovementComponent::ReleaseAutoFollow(EPartnerMoveMode Mode)
 	}
 	if (PartnerCharacter && !PartnerCharacter->HasAuthority() && PartnerCharacter->IsLocallyControlled())
 	{
-		ServerSetAutoFollowInput(Mode, false, InputSerial);
+		ServerSetAutoFollowInput(Mode, false, InputSerial, bPreserveVelocityOnFollowStop);
 	}
 }
 
-void UPartnerMovementComponent::ServerSetAutoFollowInput_Implementation(EPartnerMoveMode Mode, bool bHeld, uint32 InputSerial)
+void UPartnerMovementComponent::ServerSetAutoFollowInput_Implementation(
+	EPartnerMoveMode Mode, bool bHeld, uint32 InputSerial, bool bPreserveVelocity)
 {
 	if (!PartnerCharacter || (Mode != EPartnerMoveMode::CameraAssist && Mode != EPartnerMoveMode::SyncMove))
 	{
@@ -255,6 +273,8 @@ void UPartnerMovementComponent::ServerSetAutoFollowInput_Implementation(EPartner
 	FPartnerFollowInputState& Input = GetFollowInput(Mode);
 	if (!bHeld)
 	{
+		// serial 검증은 그대로 유지한다. 이 플래그는 유효한 해제의 속도 보존에만 적용한다.
+		TGuardValue<bool> PreserveVelocity(bPreserveVelocityOnFollowStop, bPreserveVelocity);
 		if (Input.Release(InputSerial) && PartnerCharacter->MoveMode == Mode)
 		{
 			StopAutoFollow();
@@ -1128,7 +1148,7 @@ void UPartnerMovementComponent::StopFollowMovement()
 	}
 	if (CharacterMovement)
 	{
-		CharacterMovement->StopMovementImmediately();
+		if (!bPreserveVelocityOnFollowStop) CharacterMovement->StopMovementImmediately();
 		// 자동 이동이 소유한 제한만 복구한다. 수동/빙의 이동 설정은 변경하지 않는다.
 		if (bOwnsFollowSpeed && PartnerCharacter)
 		{

@@ -120,6 +120,7 @@ public:
 
 	friend class FPartnerSprintInputModeTest;
 	friend class FPartnerRebootInputTest;
+	friend class FPartnerMovementRecoveryTest;
 protected:
 	// FP 메시나 표정 Sprite가 아닌 실제 월드 메시의 본 이름을 등록한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")
@@ -473,6 +474,7 @@ protected:
 	virtual void PrepareForSuitTransition() override;
 	virtual void OnSuitTransitionBlockChanged() override;
 	virtual bool CanResumeMovementAfterSuitTransition() const override;
+	virtual bool CanRestoreFlyingAfterSuitTransition() const override { return true; }
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -603,6 +605,7 @@ protected:
 public:
 	// 입력 초기화와 일반 Release를 구분한다. 컨텍스트 복귀는 실제 새 키 Press 이후에만 허용한다.
 	void ResetAccelerateInput();
+	virtual void ResetMovementInput() override;
 	void NotifyActionKeyPressed(FKey Key);
 	/** 서버에서 판정하고 복제하는 대기 상태. AnimBP의 Active / Standby 전이에 사용한다. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Partner|Standby")

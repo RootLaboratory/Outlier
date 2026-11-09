@@ -699,10 +699,12 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	// FreeMove
 	EnhancedInputComponent->BindAction(PartnerInputConfig->FreeMoveAction,		ETriggerEvent::Triggered, this, &APartnerCharacter::FreeMove);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->FreeMoveAction,		ETriggerEvent::Completed, this, &APartnerCharacter::StopFreeMove);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->FreeMoveAction, ETriggerEvent::Canceled, this, &APartnerCharacter::StopFreeMove);
 
 	// VerticalMove
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction,	ETriggerEvent::Triggered, this, &APartnerCharacter::VerticalMove);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction, ETriggerEvent::Completed, this, &APartnerCharacter::StopVerticalMove);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction, ETriggerEvent::Canceled, this, &APartnerCharacter::StopVerticalMove);
 }
 
 void APartnerCharacter::DoMove(float Right, float Forward)
@@ -726,6 +728,15 @@ void APartnerCharacter::DoMove(float Right, float Forward)
 	{
 		MovementComponent->SetMoveInput(MoveValue);
 	}
+}
+
+void APartnerCharacter::ResetMovementInput()
+{
+	Super::ResetMovementInput();
+	if (!MovementComponent) return;
+
+	// 컴포넌트가 추종 serial 해제와 경로/자유비행 정리를 속도 보존 범위 안에서 함께 처리한다.
+	MovementComponent->ResetMovementInput();
 }
 
 void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)

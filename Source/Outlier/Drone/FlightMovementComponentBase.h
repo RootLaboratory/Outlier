@@ -79,6 +79,7 @@ UCLASS(Abstract, ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OUTLIER_API UFlightMovementComponentBase : public UActorComponent
 {
 	GENERATED_BODY()
+	friend class FPartnerMovementRecoveryTest;
 
 public:
 	UFlightMovementComponentBase();

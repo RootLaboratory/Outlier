@@ -732,7 +732,7 @@ bool FPartnerFollowLifecycleTest::RunTest(const FString& Parameters)
 		Move->ClientReceiveFollowPath_Implementation(Mode, OldSerial, OldPath, Scenario == TEXT("LateStop"));
 		TestEqual(TEXT("Late reply cannot change the active mode"), Partner->MoveMode, NewMode);
 		TestTrue(TEXT("Late reply cannot overwrite or clear the new route"), Move->FollowPath == NewPath);
-		Move->ServerSetAutoFollowInput_Implementation(Mode, false, OldSerial);
+		Move->ServerSetAutoFollowInput_Implementation(Mode, false, OldSerial, false);
 		TestEqual(TEXT("Late release cannot stop the new session"), Partner->MoveMode, NewMode);
 	}
 	else
