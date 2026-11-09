@@ -87,6 +87,7 @@ private:
 	bool BeginCinematicInput();
 	bool IsCinematicInputReady() const;
 	void FailCinematic(const TCHAR* Reason);
+	void ClearCinematicEvents();
 	void HandleWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
 	/** 같은 페어의 Pawn/부착 액터와 월드 VFX를 로컬에서만 숨긴다. */
 	void HidePairPawnVisuals();
