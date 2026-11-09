@@ -114,6 +114,9 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UInteractableComponent> InteractableComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
+	TObjectPtr<USceneComponent> InteractionTargetPoint;
+
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch")
 	FName SwitchId = NAME_None;
 

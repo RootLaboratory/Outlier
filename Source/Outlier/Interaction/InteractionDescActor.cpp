@@ -11,10 +11,12 @@
 #include "Interaction/InteractableComponent.h"
 #include "Interaction/InteractInfoSubsystem.h"
 #include "UI/InteractionDescWidget.h"
+#include "UI/TargetPointHudWidget.h"
 
 AInteractionDescActor::AInteractionDescActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	RootComponent = SceneRoot;
@@ -44,6 +46,8 @@ AInteractionDescActor::AInteractionDescActor()
 void AInteractionDescActor::BeginPlay()
 {
 	Super::BeginPlay();
+	// BP 호환용 컴포넌트는 보관하되 월드에는 렌더링하지 않는다.
+	DescWidgetComponent->SetVisibility(false);
 	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
 	{
 		Subsystem->RegisterWidgetOwner(this);
@@ -56,6 +60,8 @@ void AInteractionDescActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		Subsystem->UnregisterWidgetOwner(this);
 	}
+	DeactivateDesc();
+	if (HudLayer) { HudLayer->Release(); HudLayer = nullptr; }
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -68,7 +74,7 @@ void AInteractionDescActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	BillboardToCamera();
+	UpdateHudPresentation();
 
 }
 
@@ -77,7 +83,7 @@ void AInteractionDescActor::ActivateDesc(AFirstPersonCharacter* Interactor)
 	ActivateDescFromSource(Interactor, InteractableComponent);
 }
 
-void AInteractionDescActor::ActivateDescFromSource(AFirstPersonCharacter* Interactor, const UInteractableComponent* SourceInteractableComponent)
+void AInteractionDescActor::ActivateDescFromSource(AFirstPersonCharacter* Interactor, UInteractableComponent* SourceInteractableComponent)
 {
 	if (!Interactor || !Interactor->IsLocallyControlled() || !DescWidgetComponent)
 	{
@@ -98,23 +104,16 @@ void AInteractionDescActor::ActivateDescFromSource(AFirstPersonCharacter* Intera
 		return;
 	}
 
-	DescWidgetComponent->SetWidgetClass(InteractionDescWidgetClass);
-	DescWidgetComponent->SetDrawSize(InteractionDescWidgetDrawSize);
-
-	if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
+	// 기존 DescActor BP의 위젯 클래스와 공개 호출 경로를 그대로 재사용한다.
+	if (!HudLayer) HudLayer = UTargetPointHudWidget::CreateForPlayer(PlayerController, this);
+	if (!HudLayer) return;
+	if (!InteractionDescWidget)
 	{
-		DescWidgetComponent->SetOwnerPlayer(LocalPlayer);
+		InteractionDescWidget = CreateWidget<UInteractionDescWidget>(PlayerController, InteractionDescWidgetClass);
+		HudLayer->AddContent(InteractionDescWidget);
 	}
-
-	if (!DescWidgetComponent->GetUserWidgetObject())
-	{
-		DescWidgetComponent->InitWidget();
-	}
-
-	//Construct에서는 Uuserwidget만 만들기 때문에, Update를 해서 자식 클래스 업데이트 되는 템포를 초기화에 맞춤.
-	DescWidgetComponent->UpdateWidget();
-
-	InteractionDescWidget = Cast<UInteractionDescWidget>(DescWidgetComponent->GetUserWidgetObject());
+	if (!InteractionDescWidget) return;
+	SourceInteractable = SourceInteractableComponent;
 
 	FGameplayTag InteractTag;
 	FInteractInfoRow InteractInfo;
@@ -149,31 +148,28 @@ void AInteractionDescActor::ActivateDescFromSource(AFirstPersonCharacter* Intera
 		return;
 	}
 
-	if (InteractableComponent)
+	if (SourceInteractableComponent)
 	{
-		InteractableComponent->InteractKeyWidgetDeactivate();
+		SourceInteractableComponent->InteractKeyWidgetDeactivate();
 	}
 
-	DescWidgetComponent->SetVisibility(true);
+	bDescShown = true;
+	SetActorTickEnabled(true);
 
 	if (InteractionDescWidget)
 	{
 		InteractionDescWidget->UpdateInteractionDesc(InteractTag, InteractInfo, Progress);
 		RefreshDescWidgetDrawSize();
+		UpdateHudPresentation();
 	}
 }
 
 void AInteractionDescActor::DeactivateDesc()
 {
-	if (DescWidgetComponent)
-	{
-		DescWidgetComponent->SetVisibility(false);
-	}
-
-	if (InteractionDescWidget)
-	{
-		InteractionDescWidget->ClearInteractionDesc();
-	}
+	bDescShown = false;
+	SetActorTickEnabled(false);
+	UpdateHudPresentation();
+	if (InteractionDescWidget) InteractionDescWidget->ClearInteractionDesc();
 }
 
 void AInteractionDescActor::SetProgress(float InProgress)
@@ -197,47 +193,21 @@ void AInteractionDescActor::PopupAnimationCall(bool Flag)
 
 }
 
-void AInteractionDescActor::BillboardToCamera()
+void AInteractionDescActor::UpdateHudPresentation()
 {
-	if (!DescWidgetComponent || !GetWorld())
-	{
-		return;
-	}
-
-	const APlayerController* PlayerController = GetWorld()->GetFirstPlayerController();
-	const APlayerCameraManager* CameraManager = PlayerController ? PlayerController->PlayerCameraManager : nullptr;
-	if (!CameraManager)
-	{
-		return;
-	}
-
-	const FVector WidgetLocation = DescWidgetComponent->GetComponentLocation();
-	const FVector CameraLocation = CameraManager->GetCameraLocation();
-	const FVector ToCamera = CameraLocation - WidgetLocation;
-
-	if (ToCamera.IsNearlyZero())
-	{
-		return;
-	}
-
-	DescWidgetComponent->SetWorldRotation(ToCamera.Rotation());
+	if (!HudLayer || !InteractionDescWidget) return;
+	const UInteractableComponent* Source = SourceInteractable.Get();
+	const FVector Point = Source ? Source->GetInteractionWidgetLocation() : GetActorLocation();
+	HudLayer->UpdateContent(InteractionDescWidget, bDescShown && Source != nullptr, Point, InteractionDescWidgetDrawSize);
 }
 
 void AInteractionDescActor::RefreshDescWidgetDrawSize()
 {
-	if (!DescWidgetComponent || !InteractionDescWidget)
+	if (InteractionDescWidget)
 	{
-		return;
+		InteractionDescWidget->InvalidateLayoutAndVolatility();
+		InteractionDescWidget->ForceLayoutPrepass();
 	}
-
-	InteractionDescWidget->InvalidateLayoutAndVolatility();
-	InteractionDescWidget->ForceLayoutPrepass();
-
-	// The BP root SizeBox supplies the minimum desired size. Let the
-	// WidgetComponent follow that layout automatically so its outer render
-	// target and the nested Retainer receive the same geometry.
-	DescWidgetComponent->SetDrawAtDesiredSize(true);
-	DescWidgetComponent->RequestRedraw();
 }
 
 bool AInteractionDescActor::GetPrimaryInteractTag(const UInteractableComponent* SourceInteractableComponent, FGameplayTag& OutInteractTag) const

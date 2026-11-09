@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Blueprint/UserWidget.h"
+#include "UI/TargetPointHudWidget.h"
 #include "GameplayTagContainer.h"
 #include "Interaction/InteractInfoRow.h"
 #include "InteractionDescWidget.generated.h"
@@ -11,7 +11,7 @@ class UProgressBar;
 class UTextBlock;
 
 UCLASS()
-class OUTLIER_API UInteractionDescWidget : public UUserWidget
+class OUTLIER_API UInteractionDescWidget : public UTargetPointWidget
 {
 	GENERATED_BODY()
 

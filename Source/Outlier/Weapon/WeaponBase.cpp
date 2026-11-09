@@ -102,6 +102,11 @@ AWeaponBase::AWeaponBase()
 	InteractionCollision->SetupAttachment(SceneRoot);
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
+	// BP에서는 이 기준점의 상대 위치만 조절한다. 별도 UI 위치 보정은 적용하지 않는다.
+	InteractionTargetPoint = CreateDefaultSubobject<USceneComponent>(TEXT("InteractionTargetPoint"));
+	InteractionTargetPoint->SetupAttachment(GetRootComponent());
+	InteractionTargetPoint->bEditableWhenInherited = true;
+	InteractableComponent->InteractionTargetPointReference.ComponentProperty = GET_MEMBER_NAME_CHECKED(AWeaponBase, InteractionTargetPoint);
 	InteractionCollision->SetSphereRadius(40.0f);
 	InteractionCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	InteractionCollision->SetCollisionObjectType(ECC_WorldDynamic);

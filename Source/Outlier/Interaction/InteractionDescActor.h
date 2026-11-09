@@ -13,6 +13,7 @@ class UInteractableComponent;
 class UInteractionDescWidget;
 class USceneComponent;
 class UWidgetComponent;
+class UTargetPointHudWidget;
 
 UCLASS()
 class OUTLIER_API AInteractionDescActor : public AActor, public IActorBasedWidgetInterface
@@ -28,7 +29,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interaction|Desc")
 	void ActivateDesc(AFirstPersonCharacter* Interactor);
 
-	void ActivateDescFromSource(AFirstPersonCharacter* Interactor, const UInteractableComponent* SourceInteractableComponent);
+	void ActivateDescFromSource(AFirstPersonCharacter* Interactor, UInteractableComponent* SourceInteractableComponent);
 
 	UFUNCTION(BlueprintCallable, Category = "Interaction|Desc")
 	void DeactivateDesc();
@@ -56,7 +57,7 @@ protected:
 	TObjectPtr<UWidgetComponent> DescWidgetComponent;
 
 private:
-	void BillboardToCamera();
+	void UpdateHudPresentation();
 	void RefreshDescWidgetDrawSize();
 	bool GetPrimaryInteractTag(const UInteractableComponent* SourceInteractableComponent, FGameplayTag& OutInteractTag) const;
 
@@ -66,7 +67,8 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
 	FVector2D InteractionDescWidgetDrawSize = FVector2D(150, 450.0f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
+	// 기존 BP 직렬화 호환용이다. HUD 크기는 위젯 BP의 HudPresentation으로 결정한다.
+	UPROPERTY()
 	FVector InteractionDescWidgetScale = FVector(0.1f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|Trace", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
@@ -77,5 +79,11 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInteractionDescWidget> InteractionDescWidget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTargetPointHudWidget> HudLayer;
+	TWeakObjectPtr<UInteractableComponent> SourceInteractable;
+	bool bDescShown = false;
+
 
 };

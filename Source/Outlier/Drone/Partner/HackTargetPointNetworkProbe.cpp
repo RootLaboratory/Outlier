@@ -386,8 +386,13 @@ TSharedRef<FJsonObject> AHackTargetPointNetworkProbe::Observe()
 			{
 				FVector2D Projected;
 				APlayerController* PC = Cast<APlayerController>(Partner->GetController());
-				if (PC && PC->ProjectWorldLocationToScreen(Point, Projected, true))
-					UIError = FVector2D::Distance(Slot->GetPosition(), Projected / UWidgetLayoutLibrary::GetViewportScale(Layer));
+				float ExpectedScale;
+				// 슬롯은 이제 중심점이 아닌 좌상단을 보관한다. 거리 배율·화면 경계 보정까지 포함해 비교한다.
+				if (Layer->HudPresentation.Project(PC, Point, Layer->MarkerSize, Projected, ExpectedScale))
+				{
+					UIError = FMath::Max(FVector2D::Distance(Slot->GetPosition(), Projected),
+						double(FMath::Abs((*Marker)->GetRenderTransform().Scale.X - ExpectedScale)));
+				}
 			}
 		}
 	}

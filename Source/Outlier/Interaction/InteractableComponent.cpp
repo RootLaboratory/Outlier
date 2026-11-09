@@ -2,7 +2,7 @@
 
 #include "Interaction/InteractableComponent.h"
 
-#include "Components/WidgetComponent.h"
+#include "UI/TargetPointHudWidget.h"
 #include "Components/SceneComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -88,7 +88,7 @@ void UInteractableComponent::RefreshInteractionTargetPoint()
 	CachedInteractionTargetPoint.Reset();
 	const AActor* Owner = GetOwner();
 	const FComponentReference& Reference = InteractionTargetPointReference;
-	// 빈 참조는 엔진에서 Root로 해석되므로 제외한다. 미지정 상태는 기존 높이 보정을 유지한다.
+	// 빈 참조는 엔진에서 Root로 해석되므로 제외한다. 미지정 상태는 Actor 원점을 사용한다.
 	const bool bHasComponentSelection = !Reference.ComponentProperty.IsNone()
 		|| !Reference.PathToComponent.IsEmpty() || !Reference.OverrideComponent.IsExplicitlyNull();
 	if (!IsValid(Owner) || !bHasComponentSelection
@@ -105,16 +105,16 @@ void UInteractableComponent::RefreshInteractionTargetPoint()
 	}
 }
 
-FVector UInteractableComponent::GetInteractionWidgetLocation(float LegacyZOffset) const
+FVector UInteractableComponent::GetInteractionWidgetLocation() const
 {
 	const AActor* Owner = GetOwner();
 	const USceneComponent* TargetPoint = CachedInteractionTargetPoint.Get();
 	if (IsValid(TargetPoint) && TargetPoint->IsRegistered() && TargetPoint->GetOwner() == Owner)
 	{
-		// 명시적 기준점에는 기존 ZOffset을 더하지 않는다. BP에서 배치한 위치가 기준이다.
+		// UI 위치는 BP에서 배치한 기준점 하나로 결정한다.
 		return TargetPoint->GetComponentLocation();
 	}
-	return (Owner ? Owner->GetActorLocation() : FVector::ZeroVector) + FVector::UpVector * LegacyZOffset;
+	return (Owner ? Owner->GetActorLocation() : FVector::ZeroVector);
 }
 
 void UInteractableComponent::BeginPlay()
@@ -136,6 +136,7 @@ void UInteractableComponent::OnOutlineRangeChanged_Implementation(
 
 void UInteractableComponent::DismissActorBasedWidgets_Implementation()
 {
+	DeactivateInteractionDesc();
 	InteractInfoWidgetDeactivate();
 	InteractKeyWidgetDeactivate();
 	InteractionLockedWidgetDeactivate();
@@ -144,27 +145,22 @@ void UInteractableComponent::DismissActorBasedWidgets_Implementation()
 
 void UInteractableComponent::RefreshWidgetTick()
 {
-	const auto IsShown = [](const UWidgetComponent* Component)
-	{
-		return IsValid(Component) && Component->IsVisible();
-	};
+	// 투영 실패로 숨겨져도 표시 요청은 유지해야 카메라를 돌렸을 때 다시 나타난다.
 	SetComponentTickEnabled(!HoldSessions.IsEmpty()
 		|| (InteractionNode && InteractionNode->NeedsPresentationUpdate())
-		|| IsShown(InteractInfoWidgetComponent) || IsShown(InteractKeyWidgetComponent)
-		|| IsShown(InteractionLockedWidgetComponent) || IsShown(InteractionOutlineWidgetComponent));
+		|| bInfoShown || bKeyShown || bLockedShown || bOutlineShown);
 }
 
 void UInteractableComponent::UpdateWidgetPresentation()
 {
-	const auto Apply = [this](UWidgetComponent* Component, const FWorldWidgetPresentation& Settings, float ZOffset)
+	if (HudLayer)
 	{
-		if (!IsValid(Component) || !Component->IsVisible() || !GetOwner()) return;
-		Settings.Apply(Component, GetInteractionWidgetLocation(ZOffset));
-	};
-	Apply(InteractInfoWidgetComponent, InteractInfoWidgetPresentation, InteractInfoWidgetZOffset);
-	Apply(InteractKeyWidgetComponent, InteractKeyWidgetPresentation, InteractKeyWidgetZOffset);
-	Apply(InteractionLockedWidgetComponent, InteractionLockedWidgetPresentation, InteractionLockedWidgetZOffset);
-	Apply(InteractionOutlineWidgetComponent, InteractionOutlineWidgetPresentation, InteractionOutlineWidgetZOffset);
+		const FVector Point = GetInteractionWidgetLocation();
+		HudLayer->UpdateContent(InteractInfoWidget, bInfoShown, Point, InteractInfoWidgetDrawSize);
+		HudLayer->UpdateContent(InteractKeyWidget, bKeyShown, Point, InteractKeyWidgetDrawSize);
+		HudLayer->UpdateContent(InteractionLockedWidget, bLockedShown, Point, InteractionLockedWidgetDrawSize);
+		HudLayer->UpdateContent(InteractionOutlineWidget, bOutlineShown, Point, InteractionOutlineWidgetDrawSize);
+	}
 	RefreshWidgetTick();
 }
 
@@ -189,6 +185,7 @@ void UInteractableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	ClearInteractionDescActor();
 	InteractionLockedWidgetDeactivate();
 	InteractionOutlineWidgetDeactivate();
+	if (HudLayer) { HudLayer->Release(); HudLayer = nullptr; }
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -331,7 +328,7 @@ bool UInteractableComponent::BeginHoldInteract(AFirstPersonCharacter* Interactor
 	{
 		if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
 		{
-			DescActor->SetActorLocation(GetInteractionWidgetLocation(InteractionDescActorZOffset));
+			DescActor->SetActorLocation(GetInteractionWidgetLocation());
 			DescActor->ActivateDescFromSource(Interactor, this);
 			DescActor->SetProgress(0.0f);
 		}
@@ -511,7 +508,7 @@ void UInteractableComponent::ActivateInteractionDesc(AFirstPersonCharacter* Inte
 
 	if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
 	{
-		DescActor->SetActorLocation(GetInteractionWidgetLocation(InteractionDescActorZOffset));
+		DescActor->SetActorLocation(GetInteractionWidgetLocation());
 		DescActor->ActivateDescFromSource(Interactor, this);
 		DescActor->PopupAnimationCall(false);
 		return;
@@ -545,8 +542,8 @@ void UInteractableComponent::InteractInfoWidgetActivate(AFirstPersonCharacter* I
 		return;
 	}
 
-	UWidgetComponent* WidgetComponent = EnsureInteractInfoWidgetComponent(PlayerController);
-	if (!WidgetComponent)
+	UUserWidget* Widget = EnsureInteractInfoWidget(PlayerController);
+	if (!Widget)
 	{
 		return;
 	}
@@ -565,11 +562,11 @@ void UInteractableComponent::InteractInfoWidgetActivate(AFirstPersonCharacter* I
 	}
 
 	InteractKeyWidgetDeactivate();
-	WidgetComponent->SetVisibility(true);
+	bInfoShown = true;
 
 	if (!InteractInfoWidget)
 	{
-		InteractInfoWidget = Cast<UInteractInfoWidget>(WidgetComponent->GetUserWidgetObject());
+		InteractInfoWidget = Cast<UInteractInfoWidget>(Widget);
 	}
 
 	if (InteractInfoWidget)
@@ -581,9 +578,9 @@ void UInteractableComponent::InteractInfoWidgetActivate(AFirstPersonCharacter* I
 
 void UInteractableComponent::InteractInfoWidgetDeactivate()
 {
-	if (InteractInfoWidgetComponent)
+	if (InteractInfoHudWidget)
 	{
-		InteractInfoWidgetComponent->SetVisibility(false);
+		bInfoShown = false;
 	}
 
 	if (InteractInfoWidget)
@@ -612,17 +609,17 @@ void UInteractableComponent::InteractKeyWidgetActivate(AFirstPersonCharacter* In
 		return;
 	}
 
-	UWidgetComponent* WidgetComponent = EnsureInteractKeyWidgetComponent(PlayerController);
-	if (!WidgetComponent)
+	UUserWidget* Widget = EnsureInteractKeyWidget(PlayerController);
+	if (!Widget)
 	{
 		return;
 	}
 
-	WidgetComponent->SetVisibility(true);
+	bKeyShown = true;
 
 	if (!InteractKeyWidget)
 	{
-		InteractKeyWidget = Cast<UInteractKeyWidget>(WidgetComponent->GetUserWidgetObject());
+		InteractKeyWidget = Cast<UInteractKeyWidget>(Widget);
 	}
 
 	if (InteractKeyWidget)
@@ -634,9 +631,9 @@ void UInteractableComponent::InteractKeyWidgetActivate(AFirstPersonCharacter* In
 
 void UInteractableComponent::InteractKeyWidgetDeactivate()
 {
-	if (InteractKeyWidgetComponent)
+	if (InteractKeyHudWidget)
 	{
-		InteractKeyWidgetComponent->SetVisibility(false);
+		bKeyShown = false;
 	}
 
 	if (InteractKeyWidget)
@@ -693,29 +690,28 @@ void UInteractableComponent::InteractionLockedWidgetActivate(AFirstPersonCharact
 		InteractionLockedWidgetDeactivate();
 		return;
 	}
-	if (!InteractionLockedWidgetComponent)
+	if (!InteractionLockedHudWidget)
 	{
-		InteractionLockedWidgetComponent = CreateRangeWidgetComponent(
-			Cast<APlayerController>(Interactor->GetController()), InteractionLockedWidgetClass,
-			TEXT("InteractionLockedWidgetComponent"), InteractionLockedWidgetDrawSize, InteractionLockedWidgetZOffset);
-		if (InteractionLockedWidgetComponent)
+		InteractionLockedHudWidget = CreateHudWidget(
+			Cast<APlayerController>(Interactor->GetController()), InteractionLockedWidgetClass);
+		if (InteractionLockedHudWidget)
 		{
-			InteractionLockedWidget = Cast<UInteractionLockedWidget>(InteractionLockedWidgetComponent->GetUserWidgetObject());
+			InteractionLockedWidget = Cast<UInteractionLockedWidget>(InteractionLockedHudWidget);
 		}
 	}
-	if (InteractionLockedWidgetComponent && InteractionLockedWidget)
+	if (InteractionLockedHudWidget && InteractionLockedWidget)
 	{
 		InteractionLockedWidget->ShowLockedPrompt();
-		InteractionLockedWidgetComponent->SetVisibility(true);
+		bLockedShown = true;
 	}
 	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::InteractionLockedWidgetDeactivate()
 {
-	if (InteractionLockedWidgetComponent)
+	if (InteractionLockedHudWidget)
 	{
-		InteractionLockedWidgetComponent->SetVisibility(false);
+		bLockedShown = false;
 	}
 	if (InteractionLockedWidget)
 	{
@@ -740,29 +736,28 @@ void UInteractableComponent::InteractionOutlineWidgetActivate(AFirstPersonCharac
 	}
 	InteractKeyWidgetDeactivate();
 	InteractionLockedWidgetDeactivate();
-	if (!InteractionOutlineWidgetComponent)
+	if (!InteractionOutlineHudWidget)
 	{
-		InteractionOutlineWidgetComponent = CreateRangeWidgetComponent(
-			Cast<APlayerController>(Interactor->GetController()), InteractionOutlineWidgetClass,
-			TEXT("InteractionOutlineWidgetComponent"), InteractionOutlineWidgetDrawSize, InteractionOutlineWidgetZOffset);
-		if (InteractionOutlineWidgetComponent)
+		InteractionOutlineHudWidget = CreateHudWidget(
+			Cast<APlayerController>(Interactor->GetController()), InteractionOutlineWidgetClass);
+		if (InteractionOutlineHudWidget)
 		{
-			InteractionOutlineWidget = Cast<UInteractionOutlineWidget>(InteractionOutlineWidgetComponent->GetUserWidgetObject());
+			InteractionOutlineWidget = Cast<UInteractionOutlineWidget>(InteractionOutlineHudWidget);
 		}
 	}
-	if (InteractionOutlineWidgetComponent && InteractionOutlineWidget)
+	if (InteractionOutlineHudWidget && InteractionOutlineWidget)
 	{
 		InteractionOutlineWidget->SetLocked(bLocked);
-		InteractionOutlineWidgetComponent->SetVisibility(true);
+		bOutlineShown = true;
 	}
 	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::InteractionOutlineWidgetDeactivate()
 {
-	if (InteractionOutlineWidgetComponent)
+	if (InteractionOutlineHudWidget)
 	{
-		InteractionOutlineWidgetComponent->SetVisibility(false);
+		bOutlineShown = false;
 	}
 	if (InteractionOutlineWidget)
 	{
@@ -958,7 +953,7 @@ AInteractionDescActor* UInteractableComponent::EnsureInteractionDescActor()
 	SpawnParams.Owner = Owner;
 	InteractionDescActor = GetWorld()->SpawnActor<AInteractionDescActor>(
 		InteractionDescActorClass,
-		GetInteractionWidgetLocation(InteractionDescActorZOffset),
+		GetInteractionWidgetLocation(),
 		Owner->GetActorRotation(),
 		SpawnParams);
 
@@ -981,129 +976,34 @@ void UInteractableComponent::ClearInteractionDescActor()
 	InteractionDescActor = nullptr;
 }
 
-UWidgetComponent* UInteractableComponent::EnsureInteractInfoWidgetComponent(APlayerController* PlayerController)
+UUserWidget* UInteractableComponent::CreateHudWidget(APlayerController* PlayerController, TSubclassOf<UUserWidget> WidgetClass)
 {
-	if (InteractInfoWidgetComponent)
-	{
-		return InteractInfoWidgetComponent;
-	}
-
-	AActor* Owner = GetOwner();
-	if (!Owner || !PlayerController || !InteractInfoWidgetClass)
-	{
-		return nullptr;
-	}
-
-	UWidgetComponent* NewWidgetComponent = NewObject<UWidgetComponent>(Owner, TEXT("InteractInfoWidgetComponent"));
-	if (!NewWidgetComponent)
-	{
-		return nullptr;
-	}
-
-	NewWidgetComponent->SetWidgetClass(InteractInfoWidgetClass);
-	NewWidgetComponent->SetWidgetSpace(EWidgetSpace::Screen);
-	NewWidgetComponent->SetDrawSize(InteractInfoWidgetDrawSize);
-	NewWidgetComponent->SetDrawAtDesiredSize(false);
-	NewWidgetComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	NewWidgetComponent->SetGenerateOverlapEvents(false);
-	NewWidgetComponent->SetIsReplicated(false);
-	NewWidgetComponent->SetVisibility(false);
-
-	if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
-	{
-		NewWidgetComponent->SetOwnerPlayer(LocalPlayer);
-	}
-
-	if (USceneComponent* OwnerRootComponent = Owner->GetRootComponent())
-	{
-		NewWidgetComponent->SetupAttachment(OwnerRootComponent);
-	}
-
-	Owner->AddInstanceComponent(NewWidgetComponent);
-	NewWidgetComponent->RegisterComponent();
-	NewWidgetComponent->InitWidget();
-
-	InteractInfoWidgetComponent = NewWidgetComponent;
-	InteractInfoWidget = Cast<UInteractInfoWidget>(NewWidgetComponent->GetUserWidgetObject());
-	return InteractInfoWidgetComponent;
+	if (!PlayerController || !PlayerController->IsLocalController() || !WidgetClass) return nullptr;
+	if (!HudLayer) HudLayer = UTargetPointHudWidget::CreateForPlayer(PlayerController, this);
+	if (!HudLayer) return nullptr;
+	UUserWidget* Widget = CreateWidget<UUserWidget>(PlayerController, WidgetClass);
+	if (Widget) HudLayer->AddContent(Widget);
+	return Widget;
 }
 
-UWidgetComponent* UInteractableComponent::EnsureInteractKeyWidgetComponent(APlayerController* PlayerController)
+UUserWidget* UInteractableComponent::EnsureInteractInfoWidget(APlayerController* PlayerController)
 {
-	if (InteractKeyWidgetComponent)
+	if (!InteractInfoHudWidget)
 	{
-		return InteractKeyWidgetComponent;
+		InteractInfoHudWidget = CreateHudWidget(PlayerController, InteractInfoWidgetClass);
+		InteractInfoWidget = Cast<UInteractInfoWidget>(InteractInfoHudWidget);
 	}
-
-	AActor* Owner = GetOwner();
-	if (!Owner || !PlayerController || !InteractKeyWidgetClass)
-	{
-		return nullptr;
-	}
-
-	UWidgetComponent* NewWidgetComponent = NewObject<UWidgetComponent>(Owner, TEXT("InteractKeyWidgetComponent"));
-	if (!NewWidgetComponent)
-	{
-		return nullptr;
-	}
-
-	NewWidgetComponent->SetWidgetClass(InteractKeyWidgetClass);
-	NewWidgetComponent->SetWidgetSpace(EWidgetSpace::Screen);
-	NewWidgetComponent->SetDrawSize(InteractKeyWidgetDrawSize);
-	NewWidgetComponent->SetDrawAtDesiredSize(false);
-	NewWidgetComponent->SetRelativeLocation(FVector(0.0f, 0.0f, InteractKeyWidgetZOffset));
-	NewWidgetComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	NewWidgetComponent->SetGenerateOverlapEvents(false);
-	NewWidgetComponent->SetIsReplicated(false);
-	NewWidgetComponent->SetVisibility(false);
-
-	if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
-	{
-		NewWidgetComponent->SetOwnerPlayer(LocalPlayer);
-	}
-
-	if (USceneComponent* RootComponent = Owner->GetRootComponent())
-	{
-		NewWidgetComponent->SetupAttachment(RootComponent);
-	}
-
-	Owner->AddInstanceComponent(NewWidgetComponent);
-	NewWidgetComponent->RegisterComponent();
-	NewWidgetComponent->InitWidget();
-
-	InteractKeyWidgetComponent = NewWidgetComponent;
-	InteractKeyWidget = Cast<UInteractKeyWidget>(NewWidgetComponent->GetUserWidgetObject());
-	return InteractKeyWidgetComponent;
+	return InteractInfoHudWidget;
 }
 
-UWidgetComponent* UInteractableComponent::CreateRangeWidgetComponent(
-	APlayerController* PlayerController, TSubclassOf<UUserWidget> WidgetClass,
-	FName Name, FVector2D DrawSize, float ZOffset)
+UUserWidget* UInteractableComponent::EnsureInteractKeyWidget(APlayerController* PlayerController)
 {
-	AActor* Owner = GetOwner();
-	if (!Owner || !PlayerController || !WidgetClass)
+	if (!InteractKeyHudWidget)
 	{
-		return nullptr;
+		InteractKeyHudWidget = CreateHudWidget(PlayerController, InteractKeyWidgetClass);
+		InteractKeyWidget = Cast<UInteractKeyWidget>(InteractKeyHudWidget);
 	}
-	UWidgetComponent* Component = NewObject<UWidgetComponent>(Owner, Name);
-	Component->SetWidgetClass(WidgetClass);
-	Component->SetWidgetSpace(EWidgetSpace::Screen);
-	Component->SetDrawSize(DrawSize);
-	Component->SetDrawAtDesiredSize(false);
-	Component->SetRelativeLocation(FVector(0.0f, 0.0f, ZOffset));
-	Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	Component->SetGenerateOverlapEvents(false);
-	Component->SetIsReplicated(false);
-	Component->SetVisibility(false);
-	Component->SetOwnerPlayer(PlayerController->GetLocalPlayer());
-	if (USceneComponent* Root = Owner->GetRootComponent())
-	{
-		Component->SetupAttachment(Root);
-	}
-	Owner->AddInstanceComponent(Component);
-	Component->RegisterComponent();
-	Component->InitWidget();
-	return Component;
+	return InteractKeyHudWidget;
 }
 
 bool UInteractableComponent::GetPrimaryInteractTag(FGameplayTag& OutInteractTag) const

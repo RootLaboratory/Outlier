@@ -215,29 +215,9 @@ void UHackCandidateMarkerWidget::EnsureHackableInfoWidget()
 	}
 
 	HackableInfoWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
-	HackableInfoWidget->ForceLayoutPrepass(); //Text에 따른 desired size 계산을 강제함.
-
-	FVector2D Position = FVector2D::ZeroVector;
-	FVector2D Size = FVector2D::ZeroVector;
-	if (!CalculateInfoWidgetLayout(Position, Size))
-	{
-		HideHackableInfoWidget();
-		return;
-	}
-
-	if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(HackableInfoWidget->Slot))
-	{
-		CanvasSlot->SetAutoSize(false);
-		CanvasSlot->SetAlignment(FVector2D::ZeroVector);
-		CanvasSlot->SetPosition(Position);
-		CanvasSlot->SetSize(Size);
-		CanvasSlot->SetZOrder(10);
-	}
-
-	HackableInfoWidget->SetRenderScale(FVector2D::UnitVector);
-	HackableInfoWidget->InvalidateLayoutAndVolatility();
-	ParentCanvas->ForceLayoutPrepass();
+	HackableInfoWidget->ForceLayoutPrepass();
 	HackableInfoWidget->SetVisibility(PreviousVisibility);
+	UpdateHudLayout(CurrentHudSettings);
 }
 
 void UHackCandidateMarkerWidget::ShowHackableInfoWidget()
@@ -251,6 +231,7 @@ void UHackCandidateMarkerWidget::ShowHackableInfoWidget()
 
 	HackableInfoWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
 	HackableInfoWidget->PlayPopup();
+	UpdateHudLayout(CurrentHudSettings);
 }
 
 void UHackCandidateMarkerWidget::HideHackableInfoWidget()
@@ -262,107 +243,50 @@ void UHackCandidateMarkerWidget::HideHackableInfoWidget()
 	}
 }
 
-bool UHackCandidateMarkerWidget::CalculateInfoWidgetLayout(FVector2D& OutPosition, FVector2D& OutSize) const
+void UHackCandidateMarkerWidget::SetProjectionVisible(bool bVisible)
 {
-	if (!HackableInfoWidget || !TargetActor || !HackComponent)
+	if (!bVisible && GetVisibility() != ESlateVisibility::Collapsed)
 	{
-		return false;
+		// 투영되지 않는 마커의 설명과 마우스 선택 상태가 화면에 남지 않도록 함께 정리한다.
+		HandleUnhovered();
 	}
+	SetVisibility(bVisible ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+}
 
-	AActor* PartnerActor = HackComponent->GetOwner();
-	APlayerController* PC = GetOwningPlayer();
-	if (!PartnerActor || !PC)
+void UHackCandidateMarkerWidget::UpdateHudLayout(const FTargetPointHudSettings& Settings)
+{
+	CurrentHudSettings = Settings;
+	if (!HackableInfoWidget || !HackableInfoWidget->IsVisible()) return;
+	const UCanvasPanelSlot* MarkerSlot = Cast<UCanvasPanelSlot>(Slot);
+	UCanvasPanelSlot* InfoSlot = Cast<UCanvasPanelSlot>(HackableInfoWidget->Slot);
+	if (!MarkerSlot || !InfoSlot) return;
+	const FVector2D ViewportSize = UWidgetLayoutLibrary::GetPlayerScreenWidgetGeometry(GetOwningPlayer()).GetLocalSize();
+	if (ViewportSize.X <= 0 || ViewportSize.Y <= 0) return;
+	FVector2D Size = HackableInfoWidget->GetDesiredSize();
+	Size.X = FMath::Max(Size.X, double(HackableInfoWidget->GetWidgetWidth()));
+	Size.Y = FMath::Max(Size.Y, double(HackableInfoWidget->GetMinWidgetHeight()));
+	const float MarkerScale = GetRenderTransform().Scale.X;
+	const FVector2D MarkerPosition = MarkerSlot->GetPosition();
+	const FVector2D MarkerSize = MarkerSlot->GetSize() * MarkerScale;
+	// 거리별 위치 Offset 대신 마커 아래의 내부 여백만 둔다. 아래 공간이 부족하면 위로 배치한다.
+	const float Gap = 8.0f * MarkerScale;
+	FVector2D Center(MarkerPosition.X + MarkerSize.X * 0.5,
+		MarkerPosition.Y + MarkerSize.Y + Gap + Size.Y * MarkerScale * 0.5);
+	if (Center.Y + Size.Y * MarkerScale * 0.5 > ViewportSize.Y - Settings.ScreenPadding)
 	{
-		return false;
+		Center.Y = MarkerPosition.Y - Gap - Size.Y * MarkerScale * 0.5;
 	}
-
-	FVector2D ViewportSize = UWidgetLayoutLibrary::GetViewportSize(this);
-	const float ViewportScale = FMath::Max(UWidgetLayoutLibrary::GetViewportScale(this), KINDA_SMALL_NUMBER);
-	ViewportSize /= ViewportScale;
-
-	FVector2D TargetScreenLocation = FVector2D::ZeroVector;
-	const FVector TargetLocation = IHackableInterface::ResolveHackTargetLocation(TargetActor);
-	if (!PC->ProjectWorldLocationToScreen(TargetLocation, TargetScreenLocation, true))
-	{
-		return false;
-	}
-
-	FVector2D TargetPosition = TargetScreenLocation / ViewportScale;
-	FVector2D PartnerPosition = ViewportSize * 0.5f;
-	FVector2D PartnerScreenLocation = FVector2D::ZeroVector;
-	if (PC->ProjectWorldLocationToScreen(PartnerActor->GetActorLocation(), PartnerScreenLocation, true))
-	{
-		PartnerPosition = PartnerScreenLocation / ViewportScale;
-	}
-
-	const FVector2D ViewportPadding = HackableInfoWidget->GetViewportPadding();
-	const FVector2D InnerViewportSize(
-		FMath::Max(ViewportSize.X - ViewportPadding.X * 2.0f, 1.0f),
-		FMath::Max(ViewportSize.Y - ViewportPadding.Y * 2.0f, 1.0f));
-
-	const float ActorDistance = FVector::Distance(PartnerActor->GetActorLocation(), TargetLocation);
-	const FVector2D DesiredSize = HackableInfoWidget->GetDesiredSize();
-	const float FallbackWidth = FMath::Max(HackableInfoWidget->GetWidgetWidth(), 1.0f);
-	const float FallbackHeight = FMath::Max(HackableInfoWidget->GetMinWidgetHeight(), 1.0f);
-	const float DesiredWidth = FMath::Max(DesiredSize.X, FallbackWidth);
-	const float DesiredHeight = FMath::Max(DesiredSize.Y, FallbackHeight);
-
-	// The Retainer render target follows the widget's allotted geometry, so use
-	// the BP/dynamic desired size instead of imposing a smaller capture area.
-	OutSize.X = FMath::Min(DesiredWidth, InnerViewportSize.X);
-	OutSize.Y = FMath::Min(DesiredHeight, InnerViewportSize.Y);
-
-	const FVector2D PlacementDirection = (TargetPosition - PartnerPosition).GetSafeNormal();
-	const int32 PreferredXSign = PlacementDirection.X >= 0.0f ? -1 : 1;
-	const int32 PreferredYSign = PlacementDirection.Y >= 0.0f ? 1 : -1;
-	const FVector2D InfoOffset = HackableInfoWidget->GetOffsetForDistance(ActorDistance);
-
-	const auto BuildPosition = [&TargetPosition, &InfoOffset, &OutSize](int32 XSign, int32 YSign)
-	{
-		FVector2D CandidatePosition = TargetPosition;
-		CandidatePosition.X += XSign > 0 ? InfoOffset.X : -InfoOffset.X - OutSize.X;
-		CandidatePosition.Y += YSign > 0 ? InfoOffset.Y : -InfoOffset.Y - OutSize.Y;
-		return CandidatePosition;
-	};
-
-	const auto GetOverflow = [&ViewportSize, &ViewportPadding, &OutSize](const FVector2D& Position)
-	{
-		float Overflow = 0.0f;
-		Overflow += FMath::Max(ViewportPadding.X - Position.X, 0.0f);
-		Overflow += FMath::Max(ViewportPadding.Y - Position.Y, 0.0f);
-		Overflow += FMath::Max(Position.X + OutSize.X - (ViewportSize.X - ViewportPadding.X), 0.0f);
-		Overflow += FMath::Max(Position.Y + OutSize.Y - (ViewportSize.Y - ViewportPadding.Y), 0.0f);
-		return Overflow;
-	};
-
-	const int32 CandidateSigns[4][2] =
-	{
-		{ PreferredXSign, PreferredYSign },
-		{ PreferredXSign, -PreferredYSign },
-		{ -PreferredXSign, PreferredYSign },
-		{ -PreferredXSign, -PreferredYSign }
-	};
-
-	FVector2D BestPosition = BuildPosition(PreferredXSign, PreferredYSign);
-	float BestOverflow = GetOverflow(BestPosition);
-	for (const int32(&CandidateSign)[2] : CandidateSigns)
-	{
-		const FVector2D CandidatePosition = BuildPosition(CandidateSign[0], CandidateSign[1]);
-		const float CandidateOverflow = GetOverflow(CandidatePosition);
-		if (CandidateOverflow <= KINDA_SMALL_NUMBER)
-		{
-			OutPosition = CandidatePosition;
-			return true;
-		}
-
-		if (CandidateOverflow < BestOverflow)
-		{
-			BestOverflow = CandidateOverflow;
-			BestPosition = CandidatePosition;
-		}
-	}
-
-	OutPosition.X = FMath::Clamp(BestPosition.X, ViewportPadding.X, ViewportSize.X - ViewportPadding.X - OutSize.X);
-	OutPosition.Y = FMath::Clamp(BestPosition.Y, ViewportPadding.Y, ViewportSize.Y - ViewportPadding.Y - OutSize.Y);
-	return true;
+	FTargetPointHudSettings LayoutSettings = Settings;
+	LayoutSettings.MinScale = MarkerScale;
+	LayoutSettings.MaxScale = MarkerScale;
+	FVector2D Position;
+	float InfoScale;
+	LayoutSettings.CalculateLayout(Center, ViewportSize, Size, Settings.ReferenceDistance, Position, InfoScale);
+	InfoSlot->SetAutoSize(false);
+	InfoSlot->SetAlignment(FVector2D::ZeroVector);
+	InfoSlot->SetPosition(Position);
+	InfoSlot->SetSize(Size);
+	InfoSlot->SetZOrder(10);
+	HackableInfoWidget->SetRenderTransformPivot(FVector2D::ZeroVector);
+	HackableInfoWidget->SetRenderScale(FVector2D(InfoScale));
 }

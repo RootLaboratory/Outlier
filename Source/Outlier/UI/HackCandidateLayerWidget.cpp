@@ -82,21 +82,24 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 			continue;
 		}
 
-		FVector2D ScreenLocation = FVector2D::ZeroVector;
-		if (!PC->ProjectWorldLocationToScreen(
-			IHackableInterface::ResolveHackTargetLocation(TargetActor), ScreenLocation, true))
+		FVector2D Position;
+		float Scale;
+		if (!HudPresentation.Project(PC, IHackableInterface::ResolveHackTargetLocation(TargetActor), MarkerSize, Position, Scale))
 		{
-			Marker->SetVisibility(ESlateVisibility::Collapsed);
+			Marker->SetProjectionVisible(false);
 			continue;
 		}
-
-		Marker->SetVisibility(ESlateVisibility::Visible);
-
+		Marker->SetProjectionVisible(true);
 		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Marker->Slot))
 		{
-			const float ViewportScale = UWidgetLayoutLibrary::GetViewportScale(this);
-			CanvasSlot->SetPosition(ScreenLocation / ViewportScale);
+			CanvasSlot->SetAlignment(FVector2D::ZeroVector);
+			CanvasSlot->SetPosition(Position);
+			CanvasSlot->SetSize(MarkerSize);
 		}
+		// 마커 전체에 같은 변환을 적용하므로 버튼의 히트 영역도 표시 크기를 따른다.
+		Marker->SetRenderTransformPivot(FVector2D::ZeroVector);
+		Marker->SetRenderScale(FVector2D(Scale));
+		Marker->UpdateHudLayout(HudPresentation);
 
 	}
 }
@@ -129,7 +132,7 @@ void UHackCandidateLayerWidget::AddCandidate(AActor* TargetActor, UHackableCompo
 	{
 		CanvasSlot->SetAutoSize(false);
 		CanvasSlot->SetSize(MarkerSize);
-		CanvasSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+		CanvasSlot->SetAlignment(FVector2D::ZeroVector);
 	}
 
 	Marker->EnsureHackableInfoWidget();

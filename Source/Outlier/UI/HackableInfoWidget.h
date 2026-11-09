@@ -27,8 +27,6 @@ public:
 	float GetWidgetWidth() const { return WidgetWidth; }
 	float GetMinWidgetHeight() const { return MinWidgetHeight; }
 	float GetMaxWidgetHeight() const { return MaxWidgetHeight; }
-	FVector2D GetViewportPadding() const { return ViewportPadding; }
-	FVector2D GetOffsetForDistance(float Distance) const;
 
 protected:
 	virtual void NativeConstruct() override;
@@ -58,19 +56,20 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|InfoWidget")
 	float MaxWidgetHeight = 200.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|InfoWidget")
+	// 이전 BP의 저장값만 보존한다. HUD 배치는 공통 설정을 사용하며 거리별 Offset은 적용하지 않는다.
+	UPROPERTY()
 	FVector2D MinOffset = FVector2D(28.0f, 24.0f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|InfoWidget")
+	UPROPERTY()
 	FVector2D MaxOffset = FVector2D(92.0f, 72.0f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|InfoWidget")
+	UPROPERTY()
 	FVector2D ViewportPadding = FVector2D(16.0f, 16.0f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|InfoWidget", meta = (ClampMin = "0.01"))
+	UPROPERTY()
 	float NearDistance = 300.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|InfoWidget", meta = (ClampMin = "0.01"))
+	UPROPERTY()
 	float FarDistance = 1200.0f;
 
 private:

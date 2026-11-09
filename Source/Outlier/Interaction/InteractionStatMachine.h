@@ -58,6 +58,9 @@ protected:
 	TObjectPtr<UInteractableComponent> InteractableComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
+	TObjectPtr<USceneComponent> InteractionTargetPoint;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UHackableComponent> HackableComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")

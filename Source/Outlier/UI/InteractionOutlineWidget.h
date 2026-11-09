@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Blueprint/UserWidget.h"
+#include "UI/TargetPointHudWidget.h"
 #include "InteractionOutlineWidget.generated.h"
 
 class UImage;
@@ -9,7 +9,7 @@ class UTexture2D;
 
 /** One outer-sphere indicator whose texture reflects the lock flag. */
 UCLASS()
-class OUTLIER_API UInteractionOutlineWidget : public UUserWidget
+class OUTLIER_API UInteractionOutlineWidget : public UTargetPointWidget
 {
 	GENERATED_BODY()
 
