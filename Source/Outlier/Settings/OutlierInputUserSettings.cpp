@@ -126,9 +126,13 @@ EOutlierLinkedBindingResult UOutlierInputUserSettings::ValidateLinkedBinding(
 	}
 
 	// 2. 표시 여부와 관계없이 원본 행의 충돌 그룹을 검사한다. 비소유 보조 슬롯도 검사 대상이다.
+	// 슈터 전용과 파트너 전용처럼 같은 역할에서 함께 쓰이지 않는 행은 같은 키를 써도 충돌이 아니다.
 	for (const auto& Other : Table->GetAllRowsSorted())
 	{
-		if (!Members.ContainsByPredicate([&Other](const auto& Member) { return Member.ConflictGroup == Other.ConflictGroup; })) continue;
+		if (!Members.ContainsByPredicate([&Other](const auto& Member)
+		{
+			return Member.ConflictGroup == Other.ConflictGroup && Member.SharesAnyRoleWith(Other);
+		})) continue;
 		for (const auto& Mapping : FindMappingsInRow(Other.MappingName))
 		{
 			if (!Mapping.GetHardwareDeviceId().HardwareDeviceIdentifier.IsNone() || Mapping.GetCurrentKey().IsGamepadKey()) continue;

@@ -72,6 +72,8 @@ struct FOutlierInputBindingTableRow
 
 	int32 GetEffectiveDisplayScopes() const;
 	bool IsVisibleForRole(EOutlierPlayerRole Role) const;
+	// 같은 역할(역할 선택 전 포함)에서 함께 쓰일 수 있는 행인지 판단한다. 키 충돌 검사 범위로 사용한다.
+	bool SharesAnyRoleWith(const FOutlierInputBindingTableRow& Other) const;
 
 	// Opt in only for instantaneous actions. Hold/release-dependent actions must leave this off.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input Binding")
