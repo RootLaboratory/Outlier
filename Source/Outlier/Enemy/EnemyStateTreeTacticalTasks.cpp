@@ -1739,6 +1739,8 @@ EStateTreeRunStatus TickSearchSession(FEnemySearchSessionTaskInstanceData& Data)
 		AEnemyBase* Enemy = Data.Enemy;
 		if (!IsValid(Enemy) || !Enemy->HasAuthority() || Enemy->IsDead() || !Enemy->CanUseEnemyPerception())
 			return EStateTreeRunStatus::Failed;
+		// 같은 프레임에 소리/기한이 바뀌었으면 완료보다 새 의도를 먼저 본다. 귀환 후 재진입하는 중간 전이를 막는다.
+		Enemy->RefreshPerceptionGoal();
 		// 상위 전투 전이와 새 소리 이동 전이는 출력으로만 요청한다. 부모 완료로 덮어쓰지 않는다.
 		const bool bOwnsEpisode = Enemy->IsLocationInvestigationActive()
 			&& Data.CapturedNoiseSerial == Enemy->GetLocationInvestigationSerial();

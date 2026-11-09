@@ -172,6 +172,7 @@ void URoomCombatSubsystem::Deinitialize()
 	}
 
 	ResetRuntimeCombatState();
+	OnMovementObstacleOpened.Clear();
 	CombatDefinition = nullptr;
 	Super::Deinitialize();
 }
@@ -207,6 +208,12 @@ bool URoomCombatSubsystem::CanRunServerGameplay() const
 {
 	const UWorld* World = GetWorld();
 	return World && World->GetNetMode() != NM_Client && !bResettingRuntime;
+}
+
+void URoomCombatSubsystem::NotifyMovementObstacleOpened(const FBox& Bounds)
+{
+	if (!CanRunServerGameplay() || !Bounds.IsValid || Bounds.Min.ContainsNaN() || Bounds.Max.ContainsNaN()) return;
+	OnMovementObstacleOpened.Broadcast(Bounds);
 }
 
 bool URoomCombatSubsystem::IsRoomStartHeld(FGameplayTag RoomTag) const

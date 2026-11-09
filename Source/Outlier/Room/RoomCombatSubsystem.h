@@ -31,6 +31,9 @@ struct OUTLIER_API FEnemyMovementRoomContext
 struct FRoomCombatRoomDefinition;
 struct FRoomCombatWaveDefinition;
 
+// 문 개방 완료만 전달한다. 이동 Room 문맥의 Revision이나 기존 경로 예산은 변경하지 않는다.
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnMovementObstacleOpened, const FBox&);
+
 namespace RoomCombat
 {
 	OUTLIER_API int32 SelectWeightedSpawnPoint(
@@ -258,6 +261,8 @@ public:
 	FOnRoomCombatEvent OnCombatEvent;
 	FOnRoomCombatLifecycleEvent OnCombatLifecycleEvent;
 	FOnRoomStartReadinessChanged OnRoomStartReadinessChanged;
+	FOnMovementObstacleOpened OnMovementObstacleOpened;
+	void NotifyMovementObstacleOpened(const FBox& Bounds);
 	// 남은 적 비율이 기준 이하가 되어 후속 Wave(1 이상) 시작에 성공했을 때만 보낸다. 각 phase의 Wave 0 시작은 포함하지 않는다.
 	FOnRoomReinforcementStarted OnReinforcementStarted;
 	// Wave 0도 포함한다. 요청 생성이 아닌 첫 Pool 등록/터렛 활성화 성공 뒤 서버에서 알린다.

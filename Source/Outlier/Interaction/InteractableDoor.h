@@ -143,6 +143,7 @@ private:
 
 	UFUNCTION()
 	void OnDoorTimelineFinished();
+	void NotifyMovementObstacleOpened();
 
 	UFUNCTION()
 	void OnRep_DoorMotion();

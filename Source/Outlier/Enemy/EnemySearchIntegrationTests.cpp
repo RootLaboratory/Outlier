@@ -24,6 +24,10 @@
 #include "GameplayTags/OutlierGameplayTags.h"
 
 #include "Components/BoxComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Curves/CurveFloat.h"
+#include "Engine/StaticMesh.h"
+#include "Interaction/InteractableDoor.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/StateTreeComponent.h"
 #include "Engine/Engine.h"
@@ -548,7 +552,7 @@ bool FEnemyNoiseFlightIntegrationTest::RunTest(const FString& Parameters)
 			EnemySearchTesting::TickSession(Search);
 			TestTrue(TEXT("Completion is published before newer evidence arrives"), Search.bNoiseSearchComplete);
 			for (int32 Frame = 0; Frame < 16; ++Frame) Fixture.Tick(Step);
-			// 기존 수색 중심에서 벗어난 뒤 2m 가까운 소리를 듣는다. 먼 소리는 재지정 근거가 아니다.
+			// 위치 변경과 새 발생 시각으로 수색에서 새 이동으로 인계한다. 수색 단계에는 거리 이득을 요구하지 않는다.
 			const FVector SearchCenter = Enemy->GetSearchEpisode().Center;
 			Enemy->SetActorLocation(SearchCenter + FVector(0, 400, 0));
 			const FVector NewSound = SearchCenter + FVector(0, 200, 0);
@@ -3070,6 +3074,37 @@ bool CheckSearchSightHandoff(FEnemyRoomCombatIntegrationWorld& Fixture, bool bNo
 	return false;
 }
 
+bool CheckSavedNoiseFarRetarget(FEnemyRoomCombatIntegrationWorld& Fixture)
+{
+	if (!CheckGunMovingFire(Fixture)) return false;
+	Fixture.Rooms->RemoveRoomTargetObserver(Fixture.Observer);
+	if (!HearInvestigationNoise(Fixture, Fixture.Enemy->GetActorLocation() + FVector(0, 700, 0))
+		|| !WaitForNoiseState(Fixture, true)) return false;
+	const uint64 PreviousSerial = Fixture.Enemy->GetNoiseInvestigationSerial();
+	for (int32 Frame = 0; Frame < 60; ++Frame) if (!Fixture.Advance()) return false;
+	if (!Fixture.Test.TestTrue(TEXT("Retarget begins during the actual search"), Fixture.Enemy->IsNoiseSearchActive())) return false;
+	const FVector NewLocation = Fixture.Enemy->GetActorLocation() + FVector(0, -1200, 0);
+	UAIPerceptionComponent* Perception = Fixture.Controller->GetPerceptionComponent();
+	FAIStimulus Stimulus(*GetDefault<UAISense_Hearing>(), 1.0f, NewLocation, Fixture.Enemy->GetActorLocation());
+	Perception->RegisterStimulus(Fixture.Target, Stimulus);
+	Perception->ProcessStimuli();
+	if (!Fixture.Test.TestTrue(TEXT("Search accepts a farther new occurrence"), Fixture.Enemy->GetPerceptionGoal().Location.Equals(NewLocation))) return false;
+	// 실제 저장된 트리가 수색에서 조사 이동으로 빠져나와야 한다. BeginNoiseInvestigation을 직접 호출하지 않는다.
+	for (int32 Frame = 0; Frame < 60; ++Frame)
+	{
+		if (!Fixture.Advance()) return false;
+		const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+		if (Fly && Fly->bInvestigateNoise && Fly->Destination.Equals(NewLocation))
+		{
+			Fixture.Test.TestTrue(TEXT("New movement owns a new episode"), Fixture.Enemy->GetNoiseInvestigationSerial() != PreviousSerial);
+			return Fixture.Test.TestFalse(TEXT("Old search arrival cannot replace the new movement"),
+				Fixture.Enemy->BeginNoiseInvestigationSearch(PreviousSerial, Fixture.Enemy->GetActorLocation()));
+		}
+	}
+	Fixture.Test.AddError(TEXT("Saved StateTree did not leave search for the farther noise"));
+	return false;
+}
+
 bool CheckSavedNoiseReacquire(FEnemyRoomCombatIntegrationWorld& Fixture)
 {
 	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
@@ -3110,7 +3145,7 @@ void FEnemyNoiseStateTreeIntegrationTest::GetTests(TArray<FString>& Names, TArra
 {
 	for (const TCHAR* Scenario : {TEXT("Gun.SoundToSearch"), TEXT("Melee.SoundToSearch"), TEXT("Gun.SharedExpiry"),
 		TEXT("Gun.DirectReacquire"), TEXT("Gun.SearchSightClear"), TEXT("Gun.SearchSightBlocked"),
-		TEXT("Gun.NoiseSearchSightClear"), TEXT("Gun.NoiseSearchSightBlocked"),
+		TEXT("Gun.NoiseSearchSightClear"), TEXT("Gun.NoiseSearchSightBlocked"), TEXT("Gun.SearchFarRetarget"),
 		TEXT("Alert.SoundToReturn"), TEXT("Melee.CommittedNoise")})
 	{
 		Names.Add(Scenario);
@@ -3136,6 +3171,7 @@ bool FEnemyNoiseStateTreeIntegrationTest::RunTest(const FString& Parameters)
 		Scenario != TEXT("SoundToSearch"))) return false;
 	if (Scenario == TEXT("SoundToSearch")) return CheckSavedNoiseFlow(Fixture, false);
 	if (Scenario == TEXT("DirectReacquire")) return CheckSavedNoiseReacquire(Fixture);
+	if (Scenario == TEXT("SearchFarRetarget")) return CheckSavedNoiseFarRetarget(Fixture);
 	if (Scenario == TEXT("SearchSightClear") || Scenario == TEXT("SearchSightBlocked")
 		|| Scenario == TEXT("NoiseSearchSightClear") || Scenario == TEXT("NoiseSearchSightBlocked"))
 		return CheckSearchSightHandoff(Fixture, Scenario.StartsWith(TEXT("Noise")), Scenario.EndsWith(TEXT("Blocked")));
@@ -4365,6 +4401,248 @@ bool FEnemyGunTaskFacingDiagnostic::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("[TaskFacingSummary] Distance=%.0f LowestControlError=%.3f LowestVisualError=%.3f"), Distance, LowestControlError, LowestVisualError));
 	}
 	return !HasAnyErrors();
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseFacingIntegrationTest,
+	"Outlier.Enemy.Perception.NoiseFacingIntegration", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNoiseFacingIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("MovementControl"), TEXT("RealSightHandoff"), TEXT("PitchPresentation")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNoiseFacingIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	const auto HearSecondary = [&](FEnemyCombatIntegrationWorld& Setup, const FVector& Point)
+	{
+		FAIStimulus Stimulus(*GetDefault<UAISense_Hearing>(), 1.0f, Point, Setup.Enemy->GetActorLocation());
+		Setup.Controller->GetPerceptionComponent()->RegisterStimulus(Setup.Target, Stimulus);
+		Setup.Controller->GetPerceptionComponent()->ProcessStimuli();
+		FEnemyHeardNoise Candidate;
+		// 더 가까운 기존 이동 후보와 별개로 짧은 방향 확인 후보가 저장됐는지 검사한다.
+		return TestTrue(TEXT("Secondary hearing stores a direction candidate"), Setup.Enemy->TryGetDirectionConfirmationNoise(Candidate));
+	};
+	if (Parameters == TEXT("MovementControl"))
+	{
+		FVector Results[2];
+		for (int32 Run = 0; Run < 2; ++Run)
+		{
+			FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
+			if (!Fixture.Initialize(false, FVector(5000, 0, 0), false, false)) return false;
+			Fixture.Enemy->NoiseDestinationUpdateInterval = 10.0f;
+			Fixture.Start();
+			if (!HearInvestigationNoise(Fixture, Fixture.Enemy->GetActorLocation() + FVector(1800, 0, 0))
+				|| !Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+			for (int32 Frame = 0; Frame < 6; ++Frame) if (!Fixture.Advance()) return false;
+			const FVector Start = Fixture.Enemy->GetActorLocation();
+			const FVector Goal = Fixture.Enemy->GetActiveNoiseInvestigationClue().Location;
+			if (Run == 1 && !HearSecondary(Fixture, Start + FVector(0, 2400, 500))) return false;
+			bool bSawFacing = false;
+			for (int32 Frame = 0; Frame < 36; ++Frame)
+			{
+				if (!Fixture.Advance()) return false;
+				bSawFacing |= Fixture.Enemy->IsNoiseDirectionFacing();
+				if (!TestTrue(TEXT("Short look retains actual movement destination"), Fixture.Enemy->GetActiveNoiseInvestigationClue().Location.Equals(Goal))) return false;
+			}
+			Results[Run] = Fixture.Enemy->GetActorLocation() - Start;
+			if (Run == 1)
+			{
+				TestTrue(TEXT("Actual saved tree/controller executed facing"), bSawFacing);
+				TestTrue(TEXT("Body turns while flying forward"), Fixture.Enemy->GetActorRotation().Yaw > 10.0);
+			}
+		}
+		AddInfo(FString::Printf(TEXT("[NoiseFacingMovement] Control=%s Facing=%s"), *Results[0].ToCompactString(), *Results[1].ToCompactString()));
+		TestTrue(TEXT("Looking does not change forward progress"), FMath::Abs(Results[0].X - Results[1].X) < 5.0);
+		return TestTrue(TEXT("Looking does not steer flight sideways"), FMath::Abs(Results[1].Y - Results[0].Y) < 5.0);
+	}
+	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
+	if (!Fixture.Initialize(false, FVector(0, 1000, 0), false, true)) return false;
+	AVECDrone* Drone = Cast<AVECDrone>(Fixture.Enemy);
+	if (!TestNotNull(TEXT("Production gun drone"), Drone)) return false;
+	Fixture.Enemy->NoiseDestinationUpdateInterval = 10.0f;
+	Fixture.Start();
+	if (!HearInvestigationNoise(Fixture, Drone->GetActorLocation() + FVector(1800, 0, 0))
+		|| !Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+	for (int32 Frame = 0; Frame < 3; ++Frame) if (!Fixture.Advance()) return false;
+	if (Parameters == TEXT("RealSightHandoff"))
+	{
+		// 초기에는 시야 밖, 60도 확인 후에는 시야 안이 되도록 감지 각도만 통제한다.
+		const_cast<FEnemyStat&>(Drone->GetRuntimeStat()).BattlePeripheralVisionAngle = 45.0f;
+		Fixture.Controller->RefreshPerceptionConfigFromPawn();
+		if (!HearSecondary(Fixture, Fixture.Target->GetActorLocation())) return false;
+		Fixture.Controller->SetEnemyPerceptionEnabled(true);
+		bool bSawFacing = false;
+		for (int32 Frame = 0; Frame < 90; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			bSawFacing |= Drone->IsNoiseDirectionFacing();
+			if (Fixture.Controller->GetPreferredVisibleTarget() == Fixture.Target)
+			{
+				TestTrue(TEXT("Sound-facing happened before actual sight"), bSawFacing);
+				TestFalse(TEXT("Actual sight immediately releases sound rotation"), Drone->IsNoiseDirectionFacing());
+				TestFalse(TEXT("Actual sight immediately releases old investigation"), Drone->IsNoiseInvestigationActive());
+				for (int32 Check = 0; Check < 10; ++Check)
+				{
+					if (!Fixture.Advance()) return false;
+					TestFalse(TEXT("Old search cannot overwrite reacquired combat"), Drone->IsNoiseDirectionConfirmationActive());
+				}
+				return TestEqual(TEXT("Actual detected target enters combat tracking"), Drone->GetTrackedTarget(), static_cast<AActor*>(Fixture.Target));
+			}
+		}
+		AddError(TEXT("Sound-facing did not yield actual sight detection"));
+		return false;
+	}
+	// 렌더 조건만 열어 실제 외형 갱신을 검사한다. 조준값이나 메시 회전은 테스트에서 덮지 않는다.
+	const FBoolProperty* ShooterFlag = FindFProperty<FBoolProperty>(AEnemyBase::StaticClass(), TEXT("bAimTargetIsShooter"));
+	if (!TestNotNull(TEXT("Replicated Shooter presentation flag"), ShooterFlag)) return false;
+	ShooterFlag->SetPropertyValue_InContainer(Drone, true);
+	if (!HearSecondary(Fixture, Drone->GetActorLocation() + FVector(0, 2400, -1000))) return false;
+	bool bSawFacing = false;
+	double BestError = 180.0;
+	for (int32 Frame = 0; Frame < 48; ++Frame)
+	{
+		Drone->GetMesh()->SetLastRenderTime(Fixture.World->GetTimeSeconds());
+		if (!Fixture.Advance()) return false;
+		if (Drone->IsNoiseDirectionFacing())
+		{
+			bSawFacing = true;
+			const double Desired = Drone->GetBaseAimRotation().GetNormalized().Pitch;
+			const double Actual = Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch;
+			if (Desired < -10.0) BestError = FMath::Min(BestError, FMath::Abs(FMath::FindDeltaAngleDegrees(Desired, Actual)));
+		}
+	}
+	TestTrue(TEXT("Production presentation ran a sound confirmation"), bSawFacing);
+	AddInfo(FString::Printf(TEXT("[NoiseFacingPitch] Best full-pitch error=%.3f"), BestError));
+	return TestTrue(TEXT("Sound uses full pitch without Shooter half-angle or duplicate flight tilt"), BestError < 3.0);
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseBoundaryIntegrationTest,
+	"Outlier.Enemy.Perception.NoiseBoundaryIntegration", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNoiseBoundaryIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("FailedLoop"), TEXT("DoorRecovery"), TEXT("ExpiredActiveRetry"), TEXT("DoorEvents")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNoiseBoundaryIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
+	if (!Fixture.Initialize(false, FVector(5000, 0, 0), false, false)) return false;
+	const FVector Start = Fixture.Enemy->GetActorLocation();
+	const FVector Goal = Start + FVector(1200, 0, 0);
+	const auto SpawnDoor = [&](bool bInitiallyOpen, bool bAnimated)
+	{
+		const FTransform Transform(Start + FVector(600, 0, 0));
+		AInteractableDoor* Door = Fixture.World->SpawnActorDeferred<AInteractableDoor>(AInteractableDoor::StaticClass(), Transform);
+		if (!Door) return Door;
+		UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+		Door->DoorMeshLeft->SetStaticMesh(Cube);
+		Door->DoorMeshRight->SetStaticMesh(Cube);
+		Door->DoorMeshLeft->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Door->DoorMeshRight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Door->bInitiallyOpen = bInitiallyOpen;
+		Door->DoorId = MakeUniqueObjectName(Fixture.World, AInteractableDoor::StaticClass(), TEXT("NoiseBoundaryDoor"));
+		if (bAnimated)
+		{
+			Door->DoorCurve = NewObject<UCurveFloat>(Door);
+			Door->DoorCurve->FloatCurve.AddKey(0.0f, 0.0f);
+			Door->DoorCurve->FloatCurve.AddKey(0.25f, 1.0f);
+		}
+		Door->FinishSpawning(Transform);
+		return Door;
+	};
+	if (Parameters == TEXT("DoorEvents"))
+	{
+		URoomCombatSubsystem* Rooms = Fixture.World->GetSubsystem<URoomCombatSubsystem>();
+		if (!TestNotNull(TEXT("Existing room subsystem"), Rooms)) return false;
+		int32 OpenEvents = 0;
+		const FDelegateHandle Handle = Rooms->OnMovementObstacleOpened.AddLambda([&](const FBox& Bounds)
+		{
+			TestTrue(TEXT("Door publishes finite local bounds"), Bounds.IsValid && !Bounds.Min.ContainsNaN() && !Bounds.Max.ContainsNaN());
+			++OpenEvents;
+		});
+		ON_SCOPE_EXIT { Rooms->OnMovementObstacleOpened.Remove(Handle); };
+		AInteractableDoor* Door = SpawnDoor(true, true);
+		if (!TestNotNull(TEXT("Animated door"), Door)) return false;
+		TestEqual(TEXT("Initial open placement is not a new cue"), OpenEvents, 0);
+		Door->TrySetDoorOpen(true);
+		TestEqual(TEXT("Repeated open request is not a new cue"), OpenEvents, 0);
+		Door->TrySetDoorOpen(false);
+		for (int32 Frame = 0; Frame < 20; ++Frame) Fixture.Tick(Fixture.Step);
+		TestEqual(TEXT("Close completion is not an open cue"), OpenEvents, 0);
+		Door->TrySetDoorOpen(true);
+		for (int32 Frame = 0; Frame < 20; ++Frame) Fixture.Tick(Fixture.Step);
+		TestEqual(TEXT("Actual animated opening signals once"), OpenEvents, 1);
+		AInteractableDoor* Instant = SpawnDoor(false, false);
+		if (!TestNotNull(TEXT("Instant door"), Instant)) return false;
+		Instant->TrySetDoorOpen(true);
+		TestEqual(TEXT("Actual instant opening also signals once"), OpenEvents, 2);
+		Instant->TrySetDoorOpen(true);
+		return TestEqual(TEXT("Repeated instant opening does not signal again"), OpenEvents, 2);
+	}
+	AActor* Wall = Fixture.SpawnBlockingBox(Start + FVector(600, 0, 0), FVector(80, 6000, 2000));
+	if (!TestNotNull(TEXT("Sealed route obstacle"), Wall)) return false;
+	AInteractableDoor* Door = SpawnDoor(false, true);
+	if (!TestNotNull(TEXT("Route door"), Door)) return false;
+	// 개방 완료와 실제 통로 변경을 함께 실행한다. 이동/조사 상태는 테스트에서 강제로 바꾸지 않는다.
+	Door->OnDoorMotionFinished.AddLambda([Wall](AInteractableDoor*, bool bOpen) { if (bOpen && IsValid(Wall)) Wall->Destroy(); });
+	if (Parameters == TEXT("ExpiredActiveRetry")) Fixture.Enemy->HeardNoiseLifetime = 0.15f;
+	Fixture.Start();
+	if (!HearInvestigationNoise(Fixture, Goal) || !WaitForNoiseState(Fixture, false)) return false;
+	if (const auto* Flight = Fixture.Data<FEnemyFlyToLocationTask>())
+	{
+		// 도달 불가와 예산 부족을 분리한다. 작은 봉쇄 공간을 충분한 기존 탐색 예산으로 끝까지 검사한다.
+		auto& FlightData = const_cast<FEnemyFlyToLocationTaskInstanceData&>(*Flight);
+		FlightData.SearchPadding = 200.0f;
+		FlightData.MaxSearchNodes = 4096;
+		FlightData.MaxCollisionChecks = 32768;
+		FlightData.MaxSearchMilliseconds = 50.0f;
+	}
+	const uint64 MoveSerial = Fixture.Enemy->GetNoiseInvestigationSerial();
+	const double OriginalAt = Fixture.Enemy->GetActiveNoiseInvestigationClue().OccurredAt;
+	if (Parameters == TEXT("ExpiredActiveRetry"))
+	{
+		for (int32 Frame = 0; Frame < 12; ++Frame) if (!Fixture.Advance()) return false;
+		FEnemyHeardNoise Candidate;
+		TestFalse(TEXT("Waiting candidate expires before reopening"), Fixture.Enemy->TryGetHeardNoise(Candidate));
+		Door->TrySetDoorOpen(true);
+		if (!WaitForNoiseState(Fixture, true)) return false;
+		TestEqual(TEXT("Retry does not replace investigation episode"), Fixture.Enemy->GetNoiseInvestigationSerial(), MoveSerial);
+		TestEqual(TEXT("Retry does not renew original cue time"), Fixture.Enemy->GetActiveNoiseInvestigationClue().OccurredAt, OriginalAt);
+		return TestTrue(TEXT("Existing retry reaches original fixed point after expiry"), Fixture.Enemy->GetSearchEpisode().Center.Equals(Goal, 120.0));
+	}
+	if (!WaitForNoiseState(Fixture, true)) return false;
+	const uint64 SearchSerial = Fixture.Enemy->GetSearchEpisode().Serial;
+	TestFalse(TEXT("Failed goal was not reported as reached"), Fixture.Enemy->GetSearchEpisode().Center.Equals(Goal, 120.0));
+	if (Parameters == TEXT("FailedLoop"))
+	{
+		for (int32 Event = 0; Event < 12; ++Event)
+		{
+			for (int32 Frame = 0; Frame < 6; ++Frame) if (!Fixture.Advance()) return false;
+			if (!HearInvestigationNoise(Fixture, Goal + FVector(20, 0, 0))) return false;
+			if (!TestEqual(TEXT("Repeated sound cannot restart failed investigation"), Fixture.Enemy->GetSearchEpisode().Serial, SearchSerial)) return false;
+			TestTrue(TEXT("Repeated sound keeps safe reached-side search"), Fixture.Enemy->IsNoiseSearchActive());
+		}
+		return true;
+	}
+	Door->TrySetDoorOpen(true);
+	for (int32 Frame = 0; Frame < 20; ++Frame) if (!Fixture.Advance()) return false;
+	TestTrue(TEXT("Door-only event does not restart old investigation"), Fixture.Enemy->IsNoiseSearchActive());
+	TestEqual(TEXT("Door-only event keeps search episode"), Fixture.Enemy->GetSearchEpisode().Serial, SearchSerial);
+	if (!HearInvestigationNoise(Fixture, Goal + FVector(20, 0, 0)) || !WaitForNoiseState(Fixture, false)) return false;
+	TestTrue(TEXT("Door plus fresh cue creates a new investigation"), Fixture.Enemy->GetNoiseInvestigationSerial() != MoveSerial);
+	if (!WaitForNoiseState(Fixture, true)) return false;
+	return TestTrue(TEXT("Reopened route reaches fresh sound point"), Fixture.Enemy->GetSearchEpisode().Center.Equals(Goal + FVector(20, 0, 0), 120.0));
 }
 #endif
 

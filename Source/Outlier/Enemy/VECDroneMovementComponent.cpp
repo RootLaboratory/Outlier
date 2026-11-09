@@ -30,6 +30,8 @@ void UVECDroneMovementComponent::BeginPlay()
 	Super::BeginPlay();
 	if (const AVECDrone* Drone = GetVECDroneOwner())
 	{
+		if (const USceneComponent* TiltRoot = Drone->GetThirdPersonTiltRoot())
+			BaseNoiseFacingTiltPitch = TiltRoot->GetRelativeRotation().Pitch;
 		// 같은 프레임의 조준/사격 Phase를 읽어야 이동 중 첫 사격도 이전 비행 자세를 표시하지 않는다.
 		if (UStateTreeComponent* StateTree = Drone->GetStateTreeComponent())
 		{
@@ -240,7 +242,7 @@ void UVECDroneMovementComponent::UpdateAIFacingPitch(float DeltaTime)
 	// 슈터를 겨냥할 때만 하향 몸통 각도를 줄인다. 탄도와 다른 대상·상향 조준 자세는 유지한다.
 	// 대상 구분은 서버에서 복제하므로 AIController가 없는 클라이언트도 같은 외형을 표시한다.
 	const bool bScaleGunBodyPitch = !Drone->IsEnemyPossessed() && Drone->GetRuntimeStat().Type == EEnemyType::Gun
-		&& Drone->IsAimingAtShooter();
+		&& Drone->IsAimingAtShooter() && !Drone->IsNoiseDirectionFacing();
 	float DesiredPitch = FMath::ClampAngle(
 		Drone->GetBaseAimRotation().Pitch,
 		-89.0f,
@@ -250,6 +252,11 @@ void UVECDroneMovementComponent::UpdateAIFacingPitch(float DeltaTime)
 	{
 		DesiredPitch *= FMath::Clamp(CVarGunDroneBodyDownPitchScale.GetValueOnGameThread(), 0.0f, 1.0f);
 	}
+	// 이동 기울기를 즉시 없애면 확인 진입/종료 때 자세가 튄다. 기존 축은 유지하고 점진적으로 상쇄한다.
+	NoiseFacingTiltWeight = FMath::FInterpTo(NoiseFacingTiltWeight, Drone->IsNoiseDirectionFacing() ? 1.0f : 0.0f,
+		DeltaTime, AIFacingPitchInterpSpeed);
+	if (const USceneComponent* TiltRoot = Drone->GetThirdPersonTiltRoot())
+		DesiredPitch -= NoiseFacingTiltWeight * FRotator::NormalizeAxis(TiltRoot->GetRelativeRotation().Pitch - BaseNoiseFacingTiltPitch);
 	FRotator TargetRotation = BaseAIFacingPitchRotation;
 	TargetRotation.Pitch = FRotator::NormalizeAxis(
 		BaseAIFacingPitchRotation.Pitch + DesiredPitch

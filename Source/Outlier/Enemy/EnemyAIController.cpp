@@ -181,6 +181,8 @@ void AEnemyAIController::UpdateControlRotation(float DeltaTime, bool bUpdatePawn
 		Enemy->RefreshTargetTracking();
 		Enemy->TickHitResponse(DeltaTime);
 		if (Enemy->IsHitDirectionConfirmationActive()) return;
+		// 시야/피격/새 목적지 판단 뒤에만 청각 회전을 허용한다. 기본 Focus는 이 프레임에 양보한다.
+		if (Enemy->UpdateNoiseDirectionFacing(DeltaTime)) return;
 		if (Enemy->GetCombatState() == EEnemyCombatState::Stun)
 		{
 			// 기절 중 지난 시간을 노출 시간으로 소급하지 않는다. 복귀 후 새 관측부터 확인한다.
@@ -453,7 +455,11 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 {
 	if (Stimulus.WasSuccessfullySensed() && Enemy->GetCombatState() != EEnemyCombatState::Stun)
 	{
-		Enemy->OnDirectSightForHitResponse(Actor->GetActorLocation());
+		// 기존 조사 소유권을 해제하기 전에 시각 목표의 대상·발생 시각을 보관한다.
+		AActor* ObservationTarget = GetPreferredVisibleTarget();
+		if (!IsValid(ObservationTarget)) ObservationTarget = Actor;
+		Enemy->RecordInvestigationSight(ObservationTarget, ObservationTarget->GetActorLocation(), GetWorld()->GetTimeSeconds());
+		Enemy->OnDirectSightForHitResponse(ObservationTarget->GetActorLocation());
 		Enemy->RecordAlertClue(GetWorld()->GetTimeSeconds());
 	}
 	if (Enemy->HasAuthority() && Enemy->GetCombatState() != EEnemyCombatState::Combat)

@@ -335,6 +335,7 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, SharedTargetLocation);
 	DOREPLIFETIME(AEnemyBase, AttackPhase);
 	DOREPLIFETIME(AEnemyBase, bAimTargetIsShooter);
+	DOREPLIFETIME(AEnemyBase, bNoiseDirectionFacing);
 	DOREPLIFETIME(AEnemyBase, CurrentWeapon);
 	DOREPLIFETIME(AEnemyBase, PoolState);
 	DOREPLIFETIME(AEnemyBase, AdaptationState);
@@ -2074,6 +2075,7 @@ bool AEnemyBase::RecordHeardNoise(AActor* Source, const FVector& Location, doubl
 	if (Nearby)
 	{
 		if (OccurredAt <= Nearby->OccurredAt) return false;
+		Incoming.Serial = ++NextHeardNoiseSerial;
 		*Nearby = Incoming;
 	}
 	else
@@ -2083,7 +2085,7 @@ bool AEnemyBase::RecordHeardNoise(AActor* Source, const FVector& Location, doubl
 			// 용량이 찼을 때 과거 관측·채택 이전 후보가 새 조사 근거를 모두 밀어내지 않게 한다.
 			// 같은 관측 구간 안에서는 가까운 후보, 동거리에서는 최신 후보를 남긴다.
 			const double EvidenceAt = bNoiseInvestigationActive
-				? FMath::Max(LastPerceptionObservedAt, NoiseInvestigationAt) : LastPerceptionObservedAt;
+				? FMath::Max(LastPerceptionObservedAt, NoiseInvestigationClue.OccurredAt) : LastPerceptionObservedAt;
 			int32 Worst = 0;
 			for (int32 Index = 1; Index < HeardNoiseCandidates.Num(); ++Index)
 			{
@@ -2108,10 +2110,11 @@ bool AEnemyBase::RecordHeardNoise(AActor* Source, const FVector& Location, doubl
 				|| (bSameEvidenceGroup && bFartherOrDuplicate)) return false;
 			HeardNoiseCandidates.RemoveAtSwap(Worst);
 		}
+		Incoming.Serial = ++NextHeardNoiseSerial;
 		HeardNoiseCandidates.Add(Incoming);
 	}
-	// 소비 경계에는 선택 결과가 아니라 수신한 전체 후보의 최신 시각을 사용한다.
-	LatestHeardNoiseAt = FMath::Max(LatestHeardNoiseAt, OccurredAt);
+	bNoiseDirectionEvaluationPending = true;
+	MergePendingNoiseDirections();
 	RefreshPerceptionGoal();
 	return true;
 }
@@ -2132,6 +2135,347 @@ bool AEnemyBase::TryGetHeardNoise(FEnemyHeardNoise& OutNoise) const
 	return OutNoise.OccurredAt >= 0.0;
 }
 
+bool AEnemyBase::TryGetDirectionConfirmationNoise(FEnemyHeardNoise& OutNoise) const
+{
+	OutNoise = FEnemyHeardNoise();
+	for (const FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
+	{
+		if (Candidate.bUsedForDirectionConfirmation || !IsHeardNoiseValid(Candidate)
+			|| Candidate.Serial == NoiseInvestigationClue.Serial
+			|| Candidate.Serial == PerceptionGoal.NoiseClueSerial
+			|| Candidate.OccurredAt <= LastPerceptionObservedAt
+			|| (Candidate.Location - GetActorLocation()).IsNearlyZero()
+			|| IsNoiseDirectionMerged(Candidate)) continue;
+		const double Distance = FVector::DistSquared(GetActorLocation(), Candidate.Location);
+		const double BestDistance = FVector::DistSquared(GetActorLocation(), OutNoise.Location);
+		if (OutNoise.Serial == 0 || Distance < BestDistance
+			|| (Distance == BestDistance && Candidate.OccurredAt > OutNoise.OccurredAt)) OutNoise = Candidate;
+	}
+	return OutNoise.Serial != 0;
+}
+
+bool AEnemyBase::MarkNoiseDirectionUsed(uint64 ClueSerial)
+{
+	if (!HasAuthority() || ClueSerial == 0) return false;
+	for (FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
+	{
+		if (Candidate.Serial != ClueSerial || Candidate.bUsedForDirectionConfirmation || !IsHeardNoiseValid(Candidate)) continue;
+		// 돌아본 사건도 원래 수명 안에서는 이동 단서다. 위치 조사 소비 경계는 변경하지 않는다.
+		Candidate.bUsedForDirectionConfirmation = true;
+		return true;
+	}
+	return false;
+}
+
+bool AEnemyBase::CanRunNoiseDirectionConfirmation() const
+{
+	const AEnemyAIController* AI = Cast<AEnemyAIController>(GetController());
+	if (!HasAuthority() || !GetWorld() || !AI || !UsesHearingPerception() || !CanUseEnemyPerception()
+		|| IsDead() || (CombatState != EEnemyCombatState::Combat && CombatState != EEnemyCombatState::Alert)
+		|| AI->IsAttackAimActive() || IsHitResponseCommitted()
+		|| (HasHitResponse() && (!bInvestigatingObservedLocation || IsHitDirectionConfirmationActive())) || IsHitClueValid(PendingHitClue)
+		|| (!bNoiseInvestigationActive && VisualInvestigation.AdoptedAt < 0.0)) return false;
+	if (AI->IsTargetDirectlyVisible(AI->GetCachedVisibleTarget())
+		|| AI->IsTargetDirectlyVisible(GetTrackedTarget())) return false;
+	if (!bNoiseInvestigationActive && PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateNoise) return false;
+	// 이동 의도가 먼저 정해졌으면 별도 돌아보기를 시작하지 않는다. 실제 채택 전에도 옛 확인은 양보한다.
+	return (PerceptionGoal.Type == EEnemyPerceptionGoalType::Search
+		|| PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateNoise
+		|| (bInvestigatingObservedLocation && PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateHit))
+		&& (!bNoiseInvestigationActive || PerceptionGoal.NoiseClueSerial == NoiseInvestigationClue.Serial);
+}
+
+bool AEnemyBase::IsNoiseDirectionMerged(const FEnemyHeardNoise& Noise) const
+{
+	if (!GetWorld() || NoiseDirectionConfirmation.Serial == 0) return false;
+	const float Interval = FMath::IsFinite(NoiseDirectionConfirmationInterval)
+		? FMath::Max(0.0f, NoiseDirectionConfirmationInterval) : 1.0f;
+	const double MergeEndsAt = FMath::Max(NoiseDirectionConfirmation.EndedAt,
+		NoiseDirectionConfirmation.StartedAt + Interval);
+	// 대기 종료 뒤 늦게 전달된 옛 사건도 되살리지 않는다. 종료 후 실제 발생한 사건부터 다시 허용한다.
+	if (!IsNoiseDirectionConfirmationActive() && GetWorld()->GetTimeSeconds() >= MergeEndsAt
+		&& Noise.OccurredAt > MergeEndsAt) return false;
+	const FVector Anchor = GetActorLocation();
+	const FVector Reference = NoiseDirectionConfirmation.Clue.Location - Anchor;
+	const FVector Incoming = Noise.Location - Anchor;
+	if (Reference.IsNearlyZero() || Incoming.IsNearlyZero()) return false;
+	const bool bReferenceHasYaw = Reference.SizeSquared2D() > FMath::Square(UE_SMALL_NUMBER);
+	const bool bIncomingHasYaw = Incoming.SizeSquared2D() > FMath::Square(UE_SMALL_NUMBER);
+	if (bReferenceHasYaw != bIncomingHasYaw) return false;
+	const FRotator ReferenceRotation = Reference.Rotation();
+	const FRotator IncomingRotation = Incoming.Rotation();
+	const float PitchLimit = FMath::IsFinite(NoiseDirectionMergePitch)
+		? FMath::Clamp(NoiseDirectionMergePitch, 0.0f, 180.0f) : 20.0f;
+	// 각도 변환의 부동소수점 오차만 흡수해 정확한 경계값도 병합한다.
+	if (FMath::Abs(ReferenceRotation.Pitch - IncomingRotation.Pitch) > PitchLimit + UE_DOUBLE_SMALL_NUMBER) return false;
+	// 두 소리가 모두 수직이면 임의 Yaw를 비교하지 않는다. 위·아래는 항상 별개다.
+	if (!bReferenceHasYaw) return (Reference.Z > 0.0) == (Incoming.Z > 0.0);
+	const float YawLimit = FMath::IsFinite(NoiseDirectionMergeYaw)
+		? FMath::Clamp(NoiseDirectionMergeYaw, 0.0f, 180.0f) : 30.0f;
+	return FMath::Abs(FMath::FindDeltaAngleDegrees(ReferenceRotation.Yaw, IncomingRotation.Yaw)) <= YawLimit + UE_DOUBLE_SMALL_NUMBER;
+}
+
+void AEnemyBase::MergePendingNoiseDirections()
+{
+	for (FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
+		if (!Candidate.bUsedForDirectionConfirmation && IsHeardNoiseValid(Candidate) && IsNoiseDirectionMerged(Candidate))
+			Candidate.bUsedForDirectionConfirmation = true;
+}
+
+bool AEnemyBase::TryBeginNoiseDirectionConfirmation()
+{
+	if (!HasAuthority() || !GetWorld()) return false;
+	RefreshPerceptionGoal();
+	if (IsNoiseDirectionConfirmationActive() || !CanRunNoiseDirectionConfirmation()) return false;
+	const double Now = GetWorld()->GetTimeSeconds();
+	const float Interval = FMath::IsFinite(NoiseDirectionConfirmationInterval)
+		? FMath::Max(0.0f, NoiseDirectionConfirmationInterval) : 1.0f;
+	if (NoiseDirectionConfirmation.StartedAt >= 0.0 && Now < NoiseDirectionConfirmation.StartedAt + Interval) return false;
+	MergePendingNoiseDirections();
+	FEnemyHeardNoise Selected;
+	if (!TryGetDirectionConfirmationNoise(Selected) || !MarkNoiseDirectionUsed(Selected.Serial)) return false;
+	NoiseDirectionConfirmation = FEnemyNoiseDirectionConfirmation();
+	NoiseDirectionConfirmation.Phase = EEnemyNoiseConfirmationPhase::Rotating;
+	NoiseDirectionConfirmation.Clue = Selected;
+	NoiseDirectionConfirmation.Serial = ++NextNoiseDirectionConfirmationSerial;
+	NoiseDirectionConfirmation.StartedAt = Now;
+	NoiseDirectionConfirmation.bStartedWhileMoving = (bNoiseInvestigationActive && !bNoiseInvestigationSearching)
+		|| (bInvestigatingObservedLocation && HitResponsePhase == EHitResponsePhase::Move);
+	const FVector Direction = Selected.Location - GetActorLocation();
+	const double YawDelta = FMath::FindDeltaAngleDegrees(GetActorRotation().Yaw, Direction.Rotation().Yaw);
+	NoiseDirectionTurnSign = FMath::Abs(YawDelta) >= 179.9 || FMath::IsNearlyZero(YawDelta) ? 1.0f : FMath::Sign(YawDelta);
+	bNoiseDirectionFacing = true;
+	ForceNetUpdate();
+	const float RotationTime = FMath::IsFinite(NoiseDirectionConfirmationMaxRotationTime)
+		? FMath::Max(0.001f, NoiseDirectionConfirmationMaxRotationTime) : 1.0f;
+	NoiseDirectionConfirmation.PhaseEndsAt = Now + RotationTime;
+	MergePendingNoiseDirections();
+	ScheduleNoiseDirectionConfirmationEnd();
+	return true;
+}
+
+void AEnemyBase::ScheduleNoiseDirectionConfirmationEnd()
+{
+	const uint64 Serial = NoiseDirectionConfirmation.Serial;
+	const float Remaining = static_cast<float>(FMath::Max(0.001,
+		NoiseDirectionConfirmation.PhaseEndsAt - GetWorld()->GetTimeSeconds()));
+	GetWorldTimerManager().SetTimer(NoiseDirectionConfirmationTimer,
+		FTimerDelegate::CreateWeakLambda(this, [this, Serial] { EndNoiseDirectionConfirmation(Serial); }), Remaining, false);
+}
+
+bool AEnemyBase::NotifyNoiseDirectionReached(uint64 Serial)
+{
+	if (!HasAuthority() || !GetWorld()) return false;
+	RefreshPerceptionGoal();
+	if (NoiseDirectionConfirmation.Serial != Serial || NoiseDirectionConfirmation.Phase != EEnemyNoiseConfirmationPhase::Rotating) return false;
+	const double Now = GetWorld()->GetTimeSeconds();
+	// 제한 시간이 지난 도달 알림은 성공으로 처리하지 않고 추가 대기 없이 끝낸다.
+	if (Now >= NoiseDirectionConfirmation.PhaseEndsAt)
+	{
+		EndNoiseDirectionConfirmation(Serial);
+		return false;
+	}
+	const float Hold = FMath::IsFinite(NoiseDirectionConfirmationHold) ? FMath::Max(0.0f, NoiseDirectionConfirmationHold) : 0.3f;
+	NoiseDirectionConfirmation.Phase = EEnemyNoiseConfirmationPhase::Holding;
+	NoiseDirectionConfirmation.PhaseEndsAt = Now + Hold;
+	if (Hold <= 0.0f) EndNoiseDirectionConfirmation(Serial);
+	else ScheduleNoiseDirectionConfirmationEnd();
+	return true;
+}
+
+bool AEnemyBase::EndNoiseDirectionConfirmation(uint64 Serial)
+{
+	if (!HasAuthority() || !GetWorld() || !IsNoiseDirectionConfirmationActive() || NoiseDirectionConfirmation.Serial != Serial) return false;
+	NoiseDirectionConfirmation.Phase = EEnemyNoiseConfirmationPhase::None;
+	NoiseDirectionConfirmation.EndedAt = GetWorld()->GetTimeSeconds();
+	bNoiseDirectionFacing = false;
+	bNoiseDirectionEvaluationPending = true;
+	ForceNetUpdate();
+	GetWorldTimerManager().ClearTimer(NoiseDirectionConfirmationTimer);
+	return true;
+}
+
+void AEnemyBase::ClearNoiseDirectionConfirmation()
+{
+	if (GetWorld()) GetWorldTimerManager().ClearTimer(NoiseDirectionConfirmationTimer);
+	NoiseDirectionConfirmation = FEnemyNoiseDirectionConfirmation();
+	bNoiseDirectionFacing = false;
+	bNoiseDirectionEvaluationPending = false;
+	NoiseInvestigationTravelDirection = FVector::ZeroVector;
+	NoiseDirectionRotationSpeed = 180.0f;
+	NoiseInvestigationAcceptanceRadius = 50.0f;
+	// 번호는 되돌리지 않는다. 풀/팀/Controller 경계 이전의 지연 알림은 새 확인을 끝낼 수 없다.
+}
+
+void AEnemyBase::UpdateNoiseInvestigationTravelDirection(uint64 InvestigationSerial, const FVector& Direction, float RotationSpeed)
+{
+	if (!HasAuthority() || (!bNoiseInvestigationActive && !bInvestigatingObservedLocation) || IsLocationSearchActive()
+		|| InvestigationSerial != NoiseInvestigationSerial || Direction.ContainsNaN()) return;
+	// 경로가 요구하는 방향만 받는다. 돌아본 몸통 방향이나 도착 후 0인 속도를 기준으로 삼지 않는다.
+	if (Direction.SizeSquared2D() > UE_SMALL_NUMBER) NoiseInvestigationTravelDirection = Direction.GetSafeNormal2D();
+	NoiseDirectionRotationSpeed = FMath::IsFinite(RotationSpeed) ? FMath::Max(0.0f, RotationSpeed) : 180.0f;
+}
+
+void AEnemyBase::UpdateNoiseInvestigationProgress(uint64 InvestigationSerial, const FVector& PreviousLocation,
+	const FVector& CurrentLocation, float AcceptanceRadius)
+{
+	if (!HasAuthority() || InvestigationSerial != NoiseInvestigationSerial
+		|| (!bNoiseInvestigationActive && !bInvestigatingObservedLocation) || IsLocationSearchActive()
+		|| PreviousLocation.ContainsNaN() || CurrentLocation.ContainsNaN()
+		|| !FMath::IsFinite(AcceptanceRadius) || AcceptanceRadius < 0.0f) return;
+	NoiseInvestigationAcceptanceRadius = AcceptanceRadius;
+	if (!IsNoiseDirectionConfirmationActive() || !NoiseDirectionConfirmation.bStartedWhileMoving) return;
+	// 한 프레임에 출처를 지나쳐도 실제 이동 선분과의 거리로 잡는다. 경로 방향 변화만으로 통과를 추정하지 않는다.
+	const FVector Point = NoiseDirectionConfirmation.Clue.Location;
+	const double Distance = FMath::PointDistToSegment(Point, PreviousLocation, CurrentLocation);
+	if (Distance <= AcceptanceRadius + UE_DOUBLE_SMALL_NUMBER)
+		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+}
+
+bool AEnemyBase::IsFailedNoiseLocation(const FVector& Location) const
+{
+	if (FailedNoiseInvestigationClue.Serial == 0) return false;
+	const float Margin = FMath::IsFinite(NoiseDestinationChangeDistance) ? FMath::Max(0.0f, NoiseDestinationChangeDistance) : 100.0f;
+	return Location.Equals(FailedNoiseInvestigationClue.Location, UE_SMALL_NUMBER)
+		|| FVector::DistSquared(Location, FailedNoiseInvestigationClue.Location) < FMath::Square(Margin);
+}
+
+bool AEnemyBase::RecordNoiseInvestigationFailure(uint64 InvestigationSerial, const FVector& Destination, const FBox& SearchBounds)
+{
+	if (!IsNoiseInvestigationCurrent(InvestigationSerial) || Destination.ContainsNaN()
+		|| !Destination.Equals(NoiseInvestigationClue.Location, 1.0) || !SearchBounds.IsValid
+		|| SearchBounds.Min.ContainsNaN() || SearchBounds.Max.ContainsNaN()) return false;
+	ClearNoiseInvestigationFailure();
+	FailedNoiseInvestigationClue = NoiseInvestigationClue;
+	FailedNoiseInvestigationBounds = SearchBounds;
+	NoiseInvestigationFailedAt = GetWorld()->GetTimeSeconds();
+	// 실패 기록은 현재 조사 한 건만 소유한다. 다른 목표 채택/감지 정리 때 구독도 함께 반납한다.
+	NoiseFailureRooms = GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	if (URoomCombatSubsystem* Rooms = NoiseFailureRooms.Get())
+		NoiseFailureObstacleHandle = Rooms->OnMovementObstacleOpened.AddUObject(this, &AEnemyBase::HandleNoiseInvestigationObstacleOpened);
+	return true;
+}
+
+void AEnemyBase::HandleNoiseInvestigationObstacleOpened(const FBox& Bounds)
+{
+	if (!HasAuthority() || !CanStorePerceptionClue() || FailedNoiseInvestigationClue.Serial == 0
+		|| !FailedNoiseInvestigationBounds.Intersect(Bounds)) return;
+	// 문 열림은 재평가 자격만 준다. 실제 새 사건과 유지/거리 조건을 통과해야 이동으로 인계한다.
+	bNoiseFailureRetryAllowed = true;
+	RefreshPerceptionGoal();
+}
+
+void AEnemyBase::ClearNoiseInvestigationFailure()
+{
+	if (URoomCombatSubsystem* Rooms = NoiseFailureRooms.Get()) Rooms->OnMovementObstacleOpened.Remove(NoiseFailureObstacleHandle);
+	NoiseFailureObstacleHandle.Reset();
+	NoiseFailureRooms.Reset();
+	FailedNoiseInvestigationClue = FEnemyHeardNoise();
+	FailedNoiseInvestigationBounds = FBox(ForceInit);
+	NoiseInvestigationFailedAt = -1.0;
+	bNoiseFailureRetryAllowed = false;
+}
+
+bool AEnemyBase::UpdateNoiseDirectionFacing(float DeltaTime)
+{
+	if (!HasAuthority() || !GetWorld() || !FMath::IsFinite(DeltaTime) || DeltaTime <= 0.0f) return false;
+	if (!IsNoiseDirectionConfirmationActive())
+	{
+		if (!bNoiseDirectionEvaluationPending || !CanRunNoiseDirectionConfirmation()) return false;
+		const float Interval = FMath::IsFinite(NoiseDirectionConfirmationInterval)
+			? FMath::Max(0.0f, NoiseDirectionConfirmationInterval) : 1.0f;
+		if (NoiseDirectionConfirmation.StartedAt >= 0.0
+			&& GetWorld()->GetTimeSeconds() < NoiseDirectionConfirmation.StartedAt + Interval) return false;
+		// 후보 수신/종료/의도 변경 때만 선택한다. 비활성 프레임마다 후보를 다시 훑지 않는다.
+		bNoiseDirectionEvaluationPending = false;
+		if (!TryBeginNoiseDirectionConfirmation()) return false;
+	}
+	if (!CanRunNoiseDirectionConfirmation())
+	{
+		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+		return false;
+	}
+	AEnemyAIController* AI = CastChecked<AEnemyAIController>(GetController());
+	const FVector Direction = NoiseDirectionConfirmation.Clue.Location - GetActorLocation();
+	if (NoiseDirectionConfirmation.bStartedWhileMoving && Direction.SizeSquared() <= FMath::Square(NoiseInvestigationAcceptanceRadius))
+	{
+		// Controller가 비행 Task보다 먼저 갱신돼도 이미 가까운 단서를 한 프레임 돌아보지 않는다.
+		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+		return false;
+	}
+	if (Direction.IsNearlyZero())
+	{
+		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+		return false;
+	}
+	const FRotator Current = AI->GetControlRotation().GetNormalized();
+	FRotator Desired = Direction.Rotation();
+	Desired.Pitch = FMath::Clamp(Desired.Pitch, -89.0, 89.0);
+	Desired.Roll = 0.0;
+	if (Direction.SizeSquared2D() <= UE_SMALL_NUMBER) Desired.Yaw = Current.Yaw;
+	else if (NoiseDirectionConfirmation.bStartedWhileMoving && !NoiseInvestigationTravelDirection.IsNearlyZero())
+	{
+		const double TravelYaw = NoiseInvestigationTravelDirection.Rotation().Yaw;
+		double Delta = FMath::FindDeltaAngleDegrees(TravelYaw, Desired.Yaw);
+		if (FMath::Abs(Delta) >= 179.9) Delta = 180.0 * NoiseDirectionTurnSign;
+		const float Limit = FMath::IsFinite(NoiseDirectionMovingHalfAngle) ? FMath::Clamp(NoiseDirectionMovingHalfAngle, 0.0f, 180.0f) : 60.0f;
+		Desired.Yaw = TravelYaw + FMath::Clamp(Delta, -static_cast<double>(Limit), static_cast<double>(Limit));
+	}
+	double YawError = FMath::FindDeltaAngleDegrees(Current.Yaw, Desired.Yaw);
+	if (FMath::Abs(YawError) >= 179.9) YawError = 180.0 * NoiseDirectionTurnSign;
+	else if (FMath::Abs(YawError) > 1.0) NoiseDirectionTurnSign = FMath::Sign(YawError);
+	Desired.Yaw = Current.Yaw + YawError;
+	const double Error = FMath::Max(FMath::Abs(YawError), FMath::Abs(Desired.Pitch - Current.Pitch));
+	// 기존 수색과 같은 목표 근처 감속이다. 시간 내 도달을 위해 회전 속도를 강제로 높이지 않는다.
+	const float Speed = FMath::Min(NoiseDirectionRotationSpeed, static_cast<float>(FMath::Max(2.0, Error * 6.0)));
+	FRotator Next = FMath::RInterpConstantTo(Current, Desired, DeltaTime, Speed).GetNormalized();
+	Next.Roll = 0.0;
+	AI->SetControlRotation(Next);
+	SetActorRotation(FRotator(0.0, Next.Yaw, 0.0));
+	const double Remaining = FMath::Max(FMath::Abs(FMath::FindDeltaAngleDegrees(Next.Yaw, Desired.Yaw)), FMath::Abs(Next.Pitch - Desired.Pitch));
+	if (Remaining <= 1.0 && NoiseDirectionConfirmation.Phase == EEnemyNoiseConfirmationPhase::Rotating)
+		NotifyNoiseDirectionReached(NoiseDirectionConfirmation.Serial);
+	// 도달 직후 확인이 끝나도 이번 프레임의 회전을 기본 Focus가 덮지 않게 한다.
+	return true;
+}
+
+bool AEnemyBase::RecordInvestigationSight(AActor* Target, const FVector& Location, double ObservedAt)
+{
+	const AEnemyAIController* AI = Cast<AEnemyAIController>(GetController());
+	if (!HasAuthority() || !GetWorld() || !AI || !CanUseEnemyPerception() || IsDead()
+		|| CombatState == EEnemyCombatState::Stun || !IsValid(Target) || Target->GetWorld() != GetWorld()
+		|| !AI->IsValidTrackingTarget(Target) || Location.ContainsNaN() || !FMath::IsFinite(ObservedAt)
+		|| ObservedAt < 0.0 || ObservedAt > GetWorld()->GetTimeSeconds()
+		|| ObservedAt < VisualInvestigation.LastObservedAt) return false;
+	// 일반 전투의 추적 정보를 새 조사로 바꾸지 않는다. 조사 중 채택한 시각 정보만 별도로 보존한다.
+	if (!bNoiseInvestigationActive && VisualInvestigation.AdoptedAt < 0.0
+		&& !HasHitResponse() && !bObservedInvestigationPending) return false;
+	EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+	const float MergeDistance = FMath::IsFinite(NoiseDestinationChangeDistance)
+		? FMath::Max(0.0f, NoiseDestinationChangeDistance) : 100.0f;
+	const bool bSameGoal = VisualInvestigation.AdoptedAt >= 0.0 && VisualInvestigation.Target.Get() == Target
+		&& (Location.Equals(VisualInvestigation.Location, UE_SMALL_NUMBER)
+			|| FVector::DistSquared(Location, VisualInvestigation.Location) < FMath::Square(MergeDistance));
+	VisualInvestigation.Target = Target;
+	VisualInvestigation.LastObservedAt = ObservedAt;
+	LastPerceptionObservedAt = FMath::Max(LastPerceptionObservedAt, ObservedAt);
+	if (!bSameGoal)
+	{
+		++VisualInvestigationRevision;
+		VisualInvestigation.Location = Location;
+		VisualInvestigation.AdoptedAt = ObservedAt;
+	}
+	return true;
+}
+
+bool AEnemyBase::IsVisualInvestigationHoldActive() const
+{
+	const float Hold = FMath::IsFinite(VisualInvestigationHoldDuration)
+		? FMath::Max(0.0f, VisualInvestigationHoldDuration) : 1.0f;
+	return HasAuthority() && GetWorld() && VisualInvestigation.AdoptedAt >= 0.0
+		&& GetWorld()->GetTimeSeconds() < VisualInvestigation.AdoptedAt + Hold;
+}
+
 bool AEnemyBase::IsHeardNoiseValid(const FEnemyHeardNoise& Noise) const
 {
 	const UWorld* World = GetWorld();
@@ -2149,17 +2493,47 @@ bool AEnemyBase::IsHeardNoiseValid(const FEnemyHeardNoise& Noise) const
 
 bool AEnemyBase::CanReplaceNoiseDestination(const FEnemyHeardNoise& Noise) const
 {
-	if (!IsHeardNoiseValid(Noise) || Noise.OccurredAt <= NoiseInvestigationAt) return false;
+	if (!IsHeardNoiseValid(Noise) || IsVisualInvestigationHoldActive()) return false;
+	const bool bFailedLocation = IsFailedNoiseLocation(Noise.Location);
+	const bool bRetryFailedLocation = bFailedLocation && bNoiseFailureRetryAllowed
+		&& Noise.Serial != FailedNoiseInvestigationClue.Serial && Noise.OccurredAt > NoiseInvestigationFailedAt;
+	if (bFailedLocation && !bRetryFailedLocation) return false;
+	// 이미 그 자리에 서서 수색 중이면 새 이동/즉시 도착 회차를 만들지 않는다. 청각 인지와 방향 후보는 남긴다.
+	if (IsLocationSearchActive() && FVector::DistSquared(GetActorLocation(), Noise.Location)
+		<= FMath::Square(NoiseInvestigationAcceptanceRadius)) return false;
+	const bool bHasVisualGoal = VisualInvestigation.AdoptedAt >= 0.0;
+	if (!bNoiseInvestigationActive && !bHasVisualGoal) return true;
+	const FVector CurrentLocation = bNoiseInvestigationActive ? NoiseInvestigationLocation : VisualInvestigation.Location;
+	const double CurrentInformationAt = bNoiseInvestigationActive ? NoiseInvestigationClue.OccurredAt : VisualInvestigation.LastObservedAt;
+	if (Noise.OccurredAt <= CurrentInformationAt) return false;
 	const float Interval = FMath::IsFinite(NoiseDestinationUpdateInterval) ? FMath::Max(NoiseDestinationUpdateInterval, 0.0f) : 1.0f;
 	const float CoordinateMargin = FMath::IsFinite(NoiseDestinationChangeDistance) ? FMath::Max(NoiseDestinationChangeDistance, 0.0f) : 100.0f;
-	if (GetWorld()->GetTimeSeconds() - LastNoiseDestinationChangedAt < Interval
-		|| Noise.Location.Equals(NoiseInvestigationLocation, UE_SMALL_NUMBER)
-		|| FVector::DistSquared(Noise.Location, NoiseInvestigationLocation) < FMath::Square(CoordinateMargin)) return false;
-	const double CurrentDistance = FVector::Distance(GetActorLocation(), NoiseInvestigationLocation);
+	if ((bNoiseInvestigationActive && GetWorld()->GetTimeSeconds() - LastNoiseDestinationChangedAt < Interval)
+		|| (!bRetryFailedLocation && (Noise.Location.Equals(CurrentLocation, UE_SMALL_NUMBER)
+			|| FVector::DistSquared(Noise.Location, CurrentLocation) < FMath::Square(CoordinateMargin)))) return false;
+	// 도착 후에는 기존 지점이 가장 가까워진다. 수색 단계까지 거리 이득을 요구하면 새 단서로 떠날 수 없다.
+	if (IsNoiseSearchActive() || (bInvestigatingObservedLocation && HitResponsePhase == EHitResponsePhase::Search)) return true;
+	const double CurrentDistance = FVector::Distance(GetActorLocation(), CurrentLocation);
 	const double CandidateDistance = FVector::Distance(GetActorLocation(), Noise.Location);
 	const float Margin = FMath::IsFinite(NoiseCandidateSwitchDistance) ? FMath::Max(NoiseCandidateSwitchDistance, 0.0f) : 200.0f;
-	return FMath::IsNearlyEqual(CurrentDistance, CandidateDistance, UE_SMALL_NUMBER)
+	const float EqualTolerance = FMath::IsFinite(NoiseEqualDistanceTolerance) ? FMath::Max(NoiseEqualDistanceTolerance, 0.0f) : 10.0f;
+	return FMath::Abs(CurrentDistance - CandidateDistance) <= EqualTolerance
 		|| (CandidateDistance < CurrentDistance && CurrentDistance - CandidateDistance >= Margin);
+}
+
+bool AEnemyBase::TryGetNoiseGoalClue(FEnemyHeardNoise& OutClue) const
+{
+	OutClue = FEnemyHeardNoise();
+	if (PerceptionGoal.Type != EEnemyPerceptionGoalType::InvestigateNoise || PerceptionGoal.NoiseClueSerial == 0) return false;
+	for (const FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
+	{
+		if (Candidate.Serial == PerceptionGoal.NoiseClueSerial && IsHeardNoiseValid(Candidate))
+		{
+			OutClue = Candidate;
+			return true;
+		}
+	}
+	return false;
 }
 
 bool AEnemyBase::SelectHeardNoise(FEnemyHeardNoise& OutNoise, bool bRequireNewObservation) const
@@ -2168,8 +2542,10 @@ bool AEnemyBase::SelectHeardNoise(FEnemyHeardNoise& OutNoise, bool bRequireNewOb
 	const FEnemyHeardNoise* Best = nullptr;
 	for (const FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
 	{
-		if (!IsHeardNoiseValid(Candidate) || (bRequireNewObservation && Candidate.OccurredAt <= LastPerceptionObservedAt)
-			|| (bNoiseInvestigationActive && !CanReplaceNoiseDestination(Candidate))) continue;
+		if (!IsHeardNoiseValid(Candidate) || IsVisualInvestigationHoldActive()
+			|| (VisualInvestigation.AdoptedAt >= 0.0 && Candidate.OccurredAt <= VisualInvestigation.LastObservedAt)
+			|| (bRequireNewObservation && Candidate.OccurredAt <= LastPerceptionObservedAt)
+			|| !CanReplaceNoiseDestination(Candidate)) continue;
 		const double Distance = FVector::Distance(GetActorLocation(), Candidate.Location);
 		const double BestDistance = Best ? FVector::Distance(GetActorLocation(), Best->Location) : 0.0;
 		const bool bSameDistance = Best && FMath::IsNearlyEqual(Distance, BestDistance, UE_SMALL_NUMBER);
@@ -2243,6 +2619,7 @@ bool AEnemyBase::RecordHitClue(const FEnemyHitClue& Clue)
 {
 	if (!IsHitClueValid(Clue) || Clue.Serial > NextHitClueSerial
 		|| Clue.Serial <= LastRecordedHitClueSerial || Clue.OccurredAt < LastRecordedHitClueAt) return false;
+	EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
 	// 재조회·중복 수신은 수명을 갱신하지 않는다. 같은 프레임의 별개 명중은 사건 번호로 구분한다.
 	PendingHitClue = Clue;
 	LastRecordedHitClueSerial = Clue.Serial;
@@ -2264,6 +2641,7 @@ bool AEnemyBase::BeginHitInvestigation(uint64 ClueSerial, FEnemyHitClue& OutClue
 	OutClue = FEnemyHitClue();
 	if (CombatState == EEnemyCombatState::Stun || !CanUseEnemyPerception()
 		|| PendingHitClue.Serial != ClueSerial || !IsHitClueValid(PendingHitClue)) return false;
+	ClearNoiseInvestigationFailure();
 	// 시작 시 위치를 고정하고 대기 후보에서 제거한다. 이후 만료는 실행 중 조사를 취소하지 않는다.
 	// 새 단서로 교체되면 이전 사건 번호의 완료 콜백은 새 조사에 영향을 줄 수 없다.
 	ActiveHitClue = PendingHitClue;
@@ -2335,21 +2713,37 @@ void AEnemyBase::FinishHitResponse()
 void AEnemyBase::OnDirectSightForHitResponse(const FVector& ObservedLocation)
 {
 	if (!HasAuthority() || ObservedLocation.ContainsNaN()) return;
+	ClearNoiseInvestigationFailure();
+	EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+	// 같은 시각 조사의 재관측은 정보만 갱신한다. 경로/수색 회차와 채택 시계는 다시 만들지 않는다.
+	if (CombatState != EEnemyCombatState::Combat && !bNoiseInvestigationActive && (bInvestigatingObservedLocation || bObservedInvestigationPending)
+		&& VisualInvestigationRevision != 0 && VisualInvestigationRevision == ObservedInvestigationRevision)
+	{
+		PendingHitClue = FEnemyHitClue();
+		if (bObservedInvestigationPending) ObservedInvestigationAt = GetWorld()->GetTimeSeconds();
+		LastRecordedHitClueSerial = NextHitClueSerial;
+		LastRecordedHitClueAt = FMath::Max(LastRecordedHitClueAt, GetWorld()->GetTimeSeconds());
+		RefreshPerceptionGoal();
+		return;
+	}
 	// 실제 관측이 먼저 소유권을 회수한다. 옛 비행/수색의 완료 콜백은 회차 번호가 달라 거절된다.
-	const bool bWasInvestigating = HasHitResponse();
+	const bool bWasInvestigating = HasHitResponse() || bNoiseInvestigationActive;
+	if (bNoiseInvestigationActive) EndNoiseInvestigation();
 	FinishHitResponse();
 	PendingHitClue = FEnemyHitClue();
 	// 관측 전에 발급만 된 사건도 뒤늦게 옛 조사로 복원되지 않게 소비 경계를 올린다.
 	LastRecordedHitClueSerial = NextHitClueSerial;
 	LastRecordedHitClueAt = FMath::Max(LastRecordedHitClueAt, GetWorld()->GetTimeSeconds());
-	if (bWasInvestigating || bObservedInvestigationPending)
+	if ((bWasInvestigating || bObservedInvestigationPending) && CombatState != EEnemyCombatState::Combat)
 	{
 		// 인지 확정 전의 짧은 관측도 옛 피격 조사를 대체한다. 다시 숨으면 이 관측 위치만 조사한다.
 		bObservedInvestigationPending = true;
+		ObservedInvestigationRevision = VisualInvestigationRevision;
 		ObservedInvestigationLocation = ObservedLocation;
 		ObservedInvestigationAt = GetWorld()->GetTimeSeconds();
 		UpdateLastKnownPlayerLocation(ObservedLocation);
 	}
+	else if (CombatState == EEnemyCombatState::Combat) bObservedInvestigationPending = false;
 	RefreshPerceptionGoal();
 }
 
@@ -2370,7 +2764,11 @@ void AEnemyBase::TickHitResponse(float DeltaTime)
 	if (AI->IsValidTrackingTarget(Visible) && AI->IsTargetDirectlyVisible(Visible))
 	{
 		if (HasHitResponse() || PendingHitClue.Serial != 0 || bObservedInvestigationPending)
+		{
+			// 연속 직접 관측도 정보 시각만 갱신한다. 시야를 오래 유지한 뒤 놓쳐도 방금 본 위치가 만료되지 않는다.
+			RecordInvestigationSight(Visible, Visible->GetActorLocation(), GetWorld()->GetTimeSeconds());
 			OnDirectSightForHitResponse(Visible->GetActorLocation());
+		}
 		return;
 	}
 	if (IsHitResponseCommitted()) return;
@@ -2547,18 +2945,21 @@ bool AEnemyBase::CompleteLocationInvestigation()
 
 void AEnemyBase::ClearHeardNoise()
 {
+	ClearNoiseInvestigationFailure();
+	ClearNoiseDirectionConfirmation();
 	if (bNoiseInvestigationActive) EndSearchEpisode();
 	bNoiseInvestigationActive = false;
 	bNoiseInvestigationSearching = false;
 	++NoiseInvestigationSerial;
 	NoiseInvestigationLocation = FVector::ZeroVector;
-	NoiseInvestigationSource.Reset();
-	NoiseInvestigationAt = LastNoiseDestinationChangedAt = ConsumedNoiseAt = -1.0;
-	LatestHeardNoiseAt = -1.0;
+	NoiseInvestigationClue = FEnemyHeardNoise();
+	LastNoiseDestinationChangedAt = ConsumedNoiseAt = -1.0;
 	HeardNoiseCandidates.Reset();
 	// 재사용·빙의·사망 경계에서는 채택한 조사 의도와 관측 시각도 함께 폐기한다.
 	PerceptionGoal = FEnemyPerceptionGoal();
 	LastPerceptionObservedAt = -1.0;
+	VisualInvestigation = FEnemyVisualInvestigation();
+	// 사건 번호는 되돌리지 않는다. 이전 대여/팀의 확인 콜백이 새 후보를 사용 처리하지 못하게 한다.
 	if (GetWorld()) GetWorldTimerManager().ClearTimer(PerceptionGoalTimer);
 }
 
@@ -2580,12 +2981,18 @@ void AEnemyBase::RefreshPerceptionGoal()
 	{
 		if (!IsHeardNoiseValid(Candidate)) continue;
 		NextEvaluationAt = FMath::Min(NextEvaluationAt, Candidate.OccurredAt + HeardNoiseLifetime);
+		if (IsVisualInvestigationHoldActive())
+		{
+			const float VisualHold = FMath::IsFinite(VisualInvestigationHoldDuration)
+				? FMath::Max(0.0f, VisualInvestigationHoldDuration) : 1.0f;
+			NextEvaluationAt = FMath::Min(NextEvaluationAt, VisualInvestigation.AdoptedAt + VisualHold);
+		}
 		// 이동하면서 거리 우위가 달라질 수 있으므로, 지금 먼 후보도 유지 종료 때 다시 비교한다.
-		if (bNoiseInvestigationActive && Candidate.OccurredAt > NoiseInvestigationAt && LastNoiseDestinationChangedAt + Hold > Now)
+		if (bNoiseInvestigationActive && Candidate.OccurredAt > NoiseInvestigationClue.OccurredAt && LastNoiseDestinationChangedAt + Hold > Now)
 			NextEvaluationAt = FMath::Min(NextEvaluationAt, LastNoiseDestinationChangedAt + Hold);
 	}
-	if (bNoiseInvestigationActive && NoiseInvestigationAt + HeardNoiseLifetime > Now)
-		NextEvaluationAt = FMath::Min(NextEvaluationAt, NoiseInvestigationAt + HeardNoiseLifetime);
+	if (bNoiseInvestigationActive && NoiseInvestigationClue.OccurredAt + HeardNoiseLifetime > Now)
+		NextEvaluationAt = FMath::Min(NextEvaluationAt, NoiseInvestigationClue.OccurredAt + HeardNoiseLifetime);
 	if (bCanDecide && NextEvaluationAt < TNumericLimits<double>::Max())
 	{
 		const float Remaining = static_cast<float>(FMath::Max(NextEvaluationAt - Now, 0.001));
@@ -2604,12 +3011,24 @@ void AEnemyBase::RefreshPerceptionGoal()
 		// 피격 조사는 추적 지식을 지우지 않고 행동 목표만 선점한다. 청각/공유 후보의 시계는 계속 흐른다.
 		if (HasHitResponse() && !bHitReturnDirectionOnly && !Visible && !IsHitResponseCommitted())
 		{
+			// 부분 관측 위치는 실제 피격 조사와 구분한다. 유지 조건을 통과한 새 소리만 시각 조사를 대체한다.
+			FEnemyHeardNoise Replacement;
+			if (bInvestigatingObservedLocation && SelectHeardNoise(Replacement, true))
+			{
+				EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+				FinishHitResponse();
+			}
+		}
+		if (HasHitResponse() && !bHitReturnDirectionOnly && !Visible && !IsHitResponseCommitted())
+		{
+			if (!bInvestigatingObservedLocation) EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
 			Next.Type = HitResponsePhase == EHitResponsePhase::Search
 				? EEnemyPerceptionGoalType::Search : EEnemyPerceptionGoalType::InvestigateHit;
 			Next.Location = HitResponsePhase == EHitResponsePhase::Search ? HitSearchCenter : ActiveHitClue.Location;
 			Next.InformationAt = ActiveHitClue.OccurredAt;
 			const bool bChanged = Next.Type != PerceptionGoal.Type || Next.Location != PerceptionGoal.Location;
 			PerceptionGoal = Next;
+			if (bChanged) bNoiseDirectionEvaluationPending = true;
 			if (bChanged) SendEnemyStateTreeEvent(TAG_EnemyTrackingChanged);
 			return;
 		}
@@ -2634,9 +3053,8 @@ void AEnemyBase::RefreshPerceptionGoal()
 		bFreshNoise = SelectHeardNoise(Noise, !bLiveShared);
 		if (bNoiseInvestigationActive && !bFreshNoise)
 		{
-			Noise.Source = NoiseInvestigationSource;
+			Noise = NoiseInvestigationClue;
 			Noise.Location = NoiseInvestigationLocation;
-			Noise.OccurredAt = NoiseInvestigationAt;
 			bFreshNoise = IsHeardNoiseValid(Noise);
 		}
 		const bool bInvestigating = PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateNoise || IsNoiseSearchActive();
@@ -2667,19 +3085,22 @@ void AEnemyBase::RefreshPerceptionGoal()
 			if (bNoiseInvestigationActive)
 			{
 				Next.Location = NoiseInvestigationLocation;
-				Next.InformationAt = NoiseInvestigationAt;
+				Next.InformationAt = NoiseInvestigationClue.OccurredAt;
+				Next.NoiseClueSerial = NoiseInvestigationClue.Serial;
 			}
 			if (bFreshNoise && (!bNoiseInvestigationActive || Noise.OccurredAt > Next.InformationAt))
 			{
 				Next.Location = Noise.Location;
 				Next.InformationAt = Noise.OccurredAt;
+				Next.NoiseClueSerial = Noise.Serial;
 			}
 			// 도착한 회차는 고정 중심에서 수색한다. 더 새로운 소리만 이동 단계로 되돌린다.
-			if (IsNoiseSearchActive() && !IsNoiseDestinationChangeReady(Next.Location, Next.InformationAt))
+			if (IsNoiseSearchActive() && !IsNoiseDestinationChangeReady(Next.NoiseClueSerial))
 			{
 				Next.Type = EEnemyPerceptionGoalType::Search;
 				Next.Location = NoiseInvestigationLocation;
-				Next.InformationAt = NoiseInvestigationAt;
+				Next.InformationAt = NoiseInvestigationClue.OccurredAt;
+				Next.NoiseClueSerial = NoiseInvestigationClue.Serial;
 			}
 		}
 		else if (AActor* Target = Visible ? Visible : (bLiveShared ? Shared.TargetActor.Get() : Tracked))
@@ -2701,7 +3122,7 @@ void AEnemyBase::RefreshPerceptionGoal()
 		|| Next.Type == EEnemyPerceptionGoalType::CommittedAction || Next.Type == EEnemyPerceptionGoalType::None))
 	{
 		// 재발견은 조사 소유권부터 해제한다. 기존 전투 추적·쿨다운은 그대로 이어간다.
-		ConsumedNoiseAt = FMath::Max(ConsumedNoiseAt, LatestHeardNoiseAt);
+		ConsumedNoiseAt = FMath::Max(ConsumedNoiseAt, LastNoiseDestinationChangedAt);
 		bResumeTargetAttackPreparation = Next.Type == EEnemyPerceptionGoalType::Combat
 			&& PreparedAttackTarget.Get() == Next.Target.Get() && PreparedAttackWeapon.Get() == CurrentWeapon
 			&& PreparedAttackController.Get() == GetController();
@@ -2710,11 +3131,15 @@ void AEnemyBase::RefreshPerceptionGoal()
 		EndSearchEpisode();
 	}
 	const bool bChanged = Next.Type != PerceptionGoal.Type || Next.Target != PerceptionGoal.Target
+		|| (Next.Type == EEnemyPerceptionGoalType::InvestigateNoise && Next.NoiseClueSerial != PerceptionGoal.NoiseClueSerial)
 		|| ((Next.Type == EEnemyPerceptionGoalType::InvestigateNoise || Next.Type == EEnemyPerceptionGoalType::Search)
 			&& Next.Location != PerceptionGoal.Location);
 	// 후보 수신과 목표 채택을 구분한다. 선택된 소리의 원래 시각만 반영하며 조회로 연장하지 않는다.
 	if (Next.Type == EEnemyPerceptionGoalType::InvestigateNoise) RecordAlertClue(Next.InformationAt);
 	PerceptionGoal = Next;
+	if (bChanged) bNoiseDirectionEvaluationPending = true;
+	if (IsNoiseDirectionConfirmationActive() && !CanRunNoiseDirectionConfirmation())
+		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
 	// 의도 변경만 알린다. 기존 전투 대상·이동·공격 상태는 이 단계에서 변경하지 않는다.
 	if (bChanged) SendEnemyStateTreeEvent(TAG_EnemyTrackingChanged);
 }
@@ -2727,14 +3152,27 @@ bool AEnemyBase::BeginNoiseInvestigation(FVector& OutDestination)
 		|| IsPossessedActionCommitted()) return false;
 	RefreshPerceptionGoal();
 	if (PerceptionGoal.Type != EEnemyPerceptionGoalType::InvestigateNoise) return false;
+	// 같은 Task의 재진입은 새 채택이 아니다. 만료된 후보라도 이미 시작한 이동 스냅샷은 유지한다.
+	if (bNoiseInvestigationActive && !bNoiseInvestigationSearching
+		&& PerceptionGoal.NoiseClueSerial == NoiseInvestigationClue.Serial)
+	{
+		OutDestination = NoiseInvestigationLocation;
+		return true;
+	}
+	FEnemyHeardNoise Selected;
+	if (!TryGetNoiseGoalClue(Selected) || !CanReplaceNoiseDestination(Selected)) return false;
+	ClearNoiseInvestigationFailure();
+	// 이동으로 채택한 사건을 나중에 옛 돌아보기로 재생하지 않는다. 위치 후보의 수명은 그대로 둔다.
+	MarkNoiseDirectionUsed(Selected.Serial);
+	EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
 	EndSearchEpisode();
 	bNoiseInvestigationActive = true;
 	bNoiseInvestigationSearching = false;
 	++NoiseInvestigationSerial;
-	NoiseInvestigationLocation = PerceptionGoal.Location;
-	NoiseInvestigationAt = PerceptionGoal.InformationAt;
-	for (const FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
-		if (Candidate.OccurredAt == NoiseInvestigationAt && Candidate.Location == NoiseInvestigationLocation) NoiseInvestigationSource = Candidate.Source;
+	NoiseInvestigationLocation = Selected.Location;
+	NoiseInvestigationClue = Selected;
+	NoiseInvestigationTravelDirection = (Selected.Location - GetActorLocation()).GetSafeNormal2D();
+	VisualInvestigation = FEnemyVisualInvestigation();
 	LastNoiseDestinationChangedAt = GetWorld()->GetTimeSeconds();
 	OutDestination = NoiseInvestigationLocation;
 	if (!HasTrackableTarget()) UpdateLastKnownPlayerLocation(NoiseInvestigationLocation);
@@ -2755,12 +3193,15 @@ bool AEnemyBase::IsNoiseInvestigationCurrent(uint64 Serial) const
 bool AEnemyBase::TryUpdateNoiseInvestigationDestination(FVector& OutDestination)
 {
 	OutDestination = NoiseInvestigationLocation;
-	if (!IsNoiseInvestigationCurrent(NoiseInvestigationSerial) || bNoiseInvestigationSearching
-		|| !IsNoiseDestinationChangeReady(PerceptionGoal.Location, PerceptionGoal.InformationAt)) return false;
-	NoiseInvestigationLocation = PerceptionGoal.Location;
-	NoiseInvestigationAt = PerceptionGoal.InformationAt;
-	for (const FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
-		if (Candidate.OccurredAt == NoiseInvestigationAt && Candidate.Location == NoiseInvestigationLocation) NoiseInvestigationSource = Candidate.Source;
+	if (!IsNoiseInvestigationCurrent(NoiseInvestigationSerial) || bNoiseInvestigationSearching) return false;
+	FEnemyHeardNoise Selected;
+	if (!TryGetNoiseGoalClue(Selected) || !CanReplaceNoiseDestination(Selected)) return false;
+	ClearNoiseInvestigationFailure();
+	MarkNoiseDirectionUsed(Selected.Serial);
+	EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+	NoiseInvestigationLocation = Selected.Location;
+	NoiseInvestigationClue = Selected;
+	NoiseInvestigationTravelDirection = (Selected.Location - GetActorLocation()).GetSafeNormal2D();
 	LastNoiseDestinationChangedAt = GetWorld()->GetTimeSeconds();
 	OutDestination = NoiseInvestigationLocation;
 	if (!HasTrackableTarget()) UpdateLastKnownPlayerLocation(NoiseInvestigationLocation);
@@ -2768,10 +3209,10 @@ bool AEnemyBase::TryUpdateNoiseInvestigationDestination(FVector& OutDestination)
 	return true;
 }
 
-bool AEnemyBase::IsNoiseDestinationChangeReady(const FVector& Location, double InformationAt) const
+bool AEnemyBase::IsNoiseDestinationChangeReady(uint64 ClueSerial) const
 {
 	for (const FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
-		if (Candidate.OccurredAt == InformationAt && Candidate.Location == Location)
+		if (Candidate.Serial == ClueSerial)
 			return CanReplaceNoiseDestination(Candidate);
 	return false;
 }
@@ -2796,9 +3237,11 @@ bool AEnemyBase::BeginNoiseInvestigationSearch(uint64 Serial, const FVector& Rea
 void AEnemyBase::EndNoiseInvestigation(bool bConsumeNoise)
 {
 	if (!HasAuthority() || !bNoiseInvestigationActive) return;
+	EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
 	bResumeTargetAttackPreparation = PreparedAttackTarget.IsValid() && PreparedAttackTarget.Get() == GetTrackedTarget()
 		&& PreparedAttackWeapon.Get() == CurrentWeapon && PreparedAttackController.Get() == GetController();
-	if (bConsumeNoise) ConsumedNoiseAt = FMath::Max(ConsumedNoiseAt, LatestHeardNoiseAt);
+	// 목표 채택 때 이미 알려진 사건까지 정리한다. 채택 이후 새로 발생한 단서는 별도로 재평가한다.
+	if (bConsumeNoise) ConsumedNoiseAt = FMath::Max(ConsumedNoiseAt, LastNoiseDestinationChangedAt);
 	bNoiseInvestigationActive = bNoiseInvestigationSearching = false;
 	++NoiseInvestigationSerial;
 	EndSearchEpisode();
@@ -2813,7 +3256,7 @@ bool AEnemyBase::CompleteNoiseInvestigation()
 	RefreshTargetTracking();
 	if (!IsNoiseSearchActive() || PerceptionGoal.Type != EEnemyPerceptionGoalType::Search) return false;
 	EndNoiseInvestigation();
-	if (PerceptionGoal.Type == EEnemyPerceptionGoalType::Combat) return true;
+	if (PerceptionGoal.Type == EEnemyPerceptionGoalType::Combat || IsLocationInvestigationGoal()) return true;
 	const UEnemyRoomSubsystem* Rooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
 	// 개인 조사가 끝나도 진행 중인 Room 전투를 종료하지 않는다. 기존 전투 수색·경계로 돌아간다.
 	if (CombatState == EEnemyCombatState::Combat && Rooms && Rooms->IsRoomInCombat(GetDefaultRoomTag())) return true;
@@ -3046,9 +3489,16 @@ bool AEnemyBase::CommitAlertToCombatFromHearing(AActor* Source, const FVector& H
 	bNoiseInvestigationActive = true;
 	bNoiseInvestigationSearching = false;
 	++NoiseInvestigationSerial;
-	NoiseInvestigationSource = Source;
+	NoiseInvestigationClue = FEnemyHeardNoise();
+	NoiseInvestigationClue.Source = Source;
+	NoiseInvestigationClue.Location = HeardLocation;
 	NoiseInvestigationLocation = HeardLocation;
-	NoiseInvestigationAt = OccurredAt;
+	NoiseInvestigationClue.OccurredAt = OccurredAt;
+	for (const FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
+		if (Candidate.Source.Get() == Source && Candidate.Location == HeardLocation && Candidate.OccurredAt == OccurredAt)
+			NoiseInvestigationClue = Candidate;
+	if (NoiseInvestigationClue.Serial == 0) NoiseInvestigationClue.Serial = ++NextHeardNoiseSerial;
+	VisualInvestigation = FEnemyVisualInvestigation();
 	LastNoiseDestinationChangedAt = GetWorld()->GetTimeSeconds();
 	UpdateLastKnownPlayerLocation(HeardLocation);
 	PauseTargetAttack();
@@ -4994,6 +5444,7 @@ bool AEnemyBase::BeginSearchEpisode()
 void AEnemyBase::EndSearchEpisode()
 {
 	if (!HasAuthority()) return;
+	if (SearchEpisode.bActive) EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
 	ReleaseSearchDestinations();
 	SearchEpisode = FEnemySearchEpisode();
 }

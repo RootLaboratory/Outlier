@@ -152,6 +152,9 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(Transient)
 	bool bOwnsMovement = false;
 	FVector LastPathPosition = FVector::ZeroVector;
+	// 조사 회전의 통과 검사와 최종 실패 문맥은 경로 배열 정리 이후에도 인계할 수 있어야 한다.
+	FVector LastNoiseProgressLocation = FVector::ZeroVector;
+	FBox NoiseInvestigationSearchBounds = FBox(ForceInit);
 	float TravelledPathLength = 0.0f;
 
 	// 채택한 소리 좌표를 추적한다. 기존 순찰/전투 이동은 이 옵션을 사용하지 않는다.

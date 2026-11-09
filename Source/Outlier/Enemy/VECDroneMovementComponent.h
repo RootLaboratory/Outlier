@@ -51,5 +51,7 @@ private:
 	uint8 LastDiagnosticPhase = MAX_uint8;
 
 	bool bAIFacingPitchInitialized = false;
+	float NoiseFacingTiltWeight = 0.0f;
+	float BaseNoiseFacingTiltPitch = 0.0f;
 	FRotator BaseAIFacingPitchRotation = FRotator::ZeroRotator;
 };

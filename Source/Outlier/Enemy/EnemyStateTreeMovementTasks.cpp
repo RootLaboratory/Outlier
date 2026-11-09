@@ -130,7 +130,7 @@ bool ShouldYieldRotationToAttack(const AAIController& AIController)
 	const AEnemyAIController* EnemyController = Cast<AEnemyAIController>(&AIController);
 	const AEnemyBase* Enemy = Cast<AEnemyBase>(AIController.GetPawn());
 	return (EnemyController && EnemyController->IsAttackAimActive())
-		|| (Enemy && Enemy->IsHitDirectionConfirmationActive());
+		|| (Enemy && (Enemy->IsHitDirectionConfirmationActive() || Enemy->IsNoiseDirectionConfirmationActive()));
 }
 
 bool ShouldYieldPassiveRotation(const AEnemyBase& Enemy, const AAIController& AIController)
@@ -322,6 +322,10 @@ bool BeginNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
 	if (!Data.bInvestigateNoise) return true;
 	if (!Data.Enemy->BeginLocationInvestigation(Data.Destination)) return false;
 	Data.CapturedNoiseSerial = Data.Enemy->GetLocationInvestigationSerial();
+	Data.LastNoiseProgressLocation = Data.Enemy->GetActorLocation();
+	Data.NoiseInvestigationSearchBounds = FBox(ForceInit);
+	Data.Enemy->UpdateNoiseInvestigationProgress(Data.CapturedNoiseSerial,
+		Data.LastNoiseProgressLocation, Data.LastNoiseProgressLocation, Data.AcceptanceRadius);
 	return true;
 }
 
@@ -334,6 +338,10 @@ bool UpdateNoiseFlightDestination(FEnemyFlyToLocationTaskInstanceData& Data)
 		StopFlyTask(Data);
 		return false;
 	}
+	const FVector CurrentLocation = Data.Enemy->GetActorLocation();
+	Data.Enemy->UpdateNoiseInvestigationProgress(Data.CapturedNoiseSerial,
+		Data.LastNoiseProgressLocation, CurrentLocation, Data.AcceptanceRadius);
+	Data.LastNoiseProgressLocation = CurrentLocation;
 	// 소리 기록은 매번 받아도 실제 이동 경로는 Pawn의 갱신 간격/거리 제한을 따른다.
 	Data.Enemy->TryUpdateLocationInvestigationDestination(Data.Destination);
 	return true;
@@ -346,6 +354,12 @@ EStateTreeRunStatus FinishNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data,
 	const bool bReachedOrExhausted = Data.MoveResult == EEnemyFlightMoveResult::Arrived
 		|| Data.MoveResult == EEnemyFlightMoveResult::Blocked || Data.MoveResult == EEnemyFlightMoveResult::TimedOut;
 	if (!bReachedOrExhausted) return Status;
+	const bool bGeometryFailure = Data.MoveResult != EEnemyFlightMoveResult::Arrived
+		&& (Data.PathStatus == EFlightPathStatus::NoPathWithinBounds || Data.PathStatus == EFlightPathStatus::BlockedEndpoint
+			|| Data.PathStatus == EFlightPathStatus::BlockedSegment || Data.PathStatus == EFlightPathStatus::Success);
+	// 예산 부족/사용 불가/잘못된 요청은 도달 불가의 증거가 아니다. 실제 경로 실패와 분리한다.
+	if (bGeometryFailure)
+		Data.Enemy->RecordNoiseInvestigationFailure(Data.CapturedNoiseSerial, Data.Destination, Data.NoiseInvestigationSearchBounds);
 	// 도달하지 않은 소리 좌표를 수색 중심으로 채택하지 않는다.
 	// 우회/재탐색을 소진한 경우에도 실제 이동이 끝난 안전한 위치에서 수색한다.
 	StopFlyTask(Data);
@@ -658,6 +672,7 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 			Request = MakeFlightPathRequest(Data, RoomGoal);
 		}
 	}
+	if (Data.bInvestigateNoise) Data.NoiseInvestigationSearchBounds = Request.SearchBounds;
 	FFlightPathResult Result = FlightPathfinding::FindPath(*Data.Enemy->GetWorld(), *Data.CachedCapsule, Request);
 	Data.PathStatus = Result.Status;
 	Data.LastDestination = Data.Destination;
@@ -863,6 +878,8 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 			return EStateTreeRunStatus::Failed;
 		}
 	}
+	if (Data.bInvestigateNoise)
+		Data.Enemy->UpdateNoiseInvestigationTravelDirection(Data.CapturedNoiseSerial, NextPoint - Position, Data.RotationSpeed);
 	if (bReachedPoint && bFinalPoint)
 	{
 		if (Data.bWaitingForPath)
@@ -1599,6 +1616,8 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 	}
 	if (InstanceData.bRotateTowardDestination)
 	{
+		if (InstanceData.bInvestigateNoise)
+			Enemy->UpdateNoiseInvestigationTravelDirection(InstanceData.CapturedNoiseSerial, ToDestination, InstanceData.RotationSpeed);
 		RotateTowardLocation(
 			*Enemy,
 			*AIController,
