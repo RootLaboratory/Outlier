@@ -31,6 +31,7 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformTime.h"
 #include "Weapon/WeaponBase.h"
+#include <limits>
 
 namespace OutlierBoneSightTests
 {
@@ -297,6 +298,117 @@ bool FOutlierBoneSightPerceptionTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyAlertHoldClockTest,
+	"Outlier.Enemy.AlertHold.EventClockAndGates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyAlertHoldClockTest::RunTest(const FString& Parameters)
+{
+	OutlierBoneSightTests::FWorld Fixture;
+	AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>();
+	if (!TestNotNull(TEXT("Enemy"), Enemy)) return false;
+	Fixture.World->TimeSeconds = 10.0f;
+	TestFalse(TEXT("No clue means no artificial hold"), Enemy->IsAlertHoldActive());
+	TestTrue(TEXT("New event starts hold"), Enemy->RecordAlertClue(10.0));
+	Enemy->EnterAlertFromPerception(FVector::ZeroVector);
+	TestFalse(TEXT("Alert clear API cannot bypass minimum hold"), Enemy->CommitAlertToNonCombat());
+	Fixture.World->TimeSeconds = 12.0f;
+	TestFalse(TEXT("Duplicate cannot restart hold at reception time"), Enemy->RecordAlertClue(10.0));
+	TestFalse(TEXT("Older event cannot move clock backward"), Enemy->RecordAlertClue(9.0));
+	TestFalse(TEXT("Future event is invalid"), Enemy->RecordAlertClue(13.0));
+	TestFalse(TEXT("Negative event is invalid"), Enemy->RecordAlertClue(-1.0));
+	TestFalse(TEXT("Nonfinite event is invalid"), Enemy->RecordAlertClue(std::numeric_limits<double>::quiet_NaN()));
+	TestTrue(TEXT("A new event updates hold"), Enemy->RecordAlertClue(12.0));
+	Fixture.World->TimeSeconds = 15.99f;
+	TestTrue(TEXT("New event holds until its original deadline"), Enemy->IsAlertHoldActive());
+	Fixture.World->TimeSeconds = 16.0f;
+	TestFalse(TEXT("Hold expires exactly at deadline"), Enemy->IsAlertHoldActive());
+	TestTrue(TEXT("Expired hold allows existing clear path"), Enemy->CommitAlertToNonCombat());
+	TestFalse(TEXT("Clear transition consumes clock"), Enemy->HasAlertClue());
+
+	// 설정값과 사건 시각만 바꿔 경계값을 검사한다. 인지/피격 TTL을 대신하는 테스트가 아니다.
+	FEnemyStat& Stat = const_cast<FEnemyStat&>(Enemy->GetRuntimeStat());
+	for (float Invalid : { 0.0f, -1.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() })
+	{
+		Stat.MinAlertHoldAfterClue = Invalid;
+		Enemy->ClearAlertClue();
+		Fixture.World->TimeSeconds = 20.0f;
+		Enemy->RecordAlertClue(20.0);
+		Fixture.World->TimeSeconds = 23.99f;
+		TestTrue(TEXT("Invalid duration safely falls back to four seconds"), Enemy->IsAlertHoldActive());
+		Fixture.World->TimeSeconds = 24.0f;
+		TestFalse(TEXT("Fallback duration remains finite"), Enemy->IsAlertHoldActive());
+	}
+	Stat.MinAlertHoldAfterClue = 2.0f;
+	Enemy->ClearAlertClue();
+	Fixture.World->TimeSeconds = 30.0f;
+	Enemy->RecordAlertClue(29.0);
+	TestTrue(TEXT("Delayed event retains only remaining configured duration"), Enemy->IsAlertHoldActive());
+	Fixture.World->TimeSeconds = 31.0f;
+	TestFalse(TEXT("Delivery does not add a fresh duration"), Enemy->IsAlertHoldActive());
+	Fixture.World->TimeSeconds = 40.0f;
+	Enemy->RecordAlertClue(40.0);
+	Enemy->EnterAlertFromPerception(FVector::ZeroVector);
+	Enemy->EnterStun();
+	Fixture.World->TimeSeconds = 41.0f;
+	Enemy->RestoreStateAfterStun();
+	TestTrue(TEXT("Short stun recovery retains the original remaining hold"), Enemy->IsAlertHoldActive());
+	Fixture.World->TimeSeconds = 42.0f;
+	TestFalse(TEXT("Recovery cannot restart hold"), Enemy->IsAlertHoldActive());
+	Enemy->RecordAlertClue(42.0);
+	Enemy->EnterStun();
+	Fixture.World->TimeSeconds = 45.0f;
+	Enemy->RestoreStateAfterStun();
+	TestFalse(TEXT("Long stun does not pause the clue clock"), Enemy->IsAlertHoldActive());
+	Enemy->EnterCombatFromRoom(FVector::ZeroVector, false);
+	TestTrue(TEXT("Expired hold does not force Combat to end"), Enemy->GetCombatState() == EEnemyCombatState::Combat);
+	Enemy->ClearAlertClue();
+	Enemy->SetRole(ROLE_SimulatedProxy);
+	TestFalse(TEXT("Client cannot advance server event clock"), Enemy->RecordAlertClue(45.0));
+	Enemy->SetRole(ROLE_Authority);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyAlertHoldHearingTest,
+	"Outlier.Enemy.AlertHold.HearingAdoptionAndInvestigation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyAlertHoldHearingTest::RunTest(const FString& Parameters)
+{
+	OutlierBoneSightTests::FWorld Fixture;
+	AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>();
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!Enemy || !Controller || !ShooterClass) return false;
+	AShooterCharacter* Shooter = Fixture.World->SpawnActor<AShooterCharacter>(ShooterClass, FVector(500, 0, 0), FRotator::ZeroRotator);
+	if (!TestNotNull(TEXT("Sound source"), Shooter)) return false;
+	Controller->Possess(Enemy);
+	FEnemyStat& Stat = const_cast<FEnemyStat&>(Enemy->GetRuntimeStat());
+	Stat.MinAlertHoldAfterClue = 0.5f;
+	Fixture.World->TimeSeconds = 10.0f;
+	Enemy->EnterAlertFromPerception(FVector::ZeroVector);
+	TestTrue(TEXT("Initial sound enters candidate storage"), Enemy->RecordHeardNoise(Shooter, FVector(100, 0, 0), 10.0));
+	TestTrue(TEXT("Selected sound starts minimum hold"), Enemy->IsAlertHoldActive());
+	Fixture.World->TimeSeconds = 11.0f;
+	TestTrue(TEXT("Farther sound can be stored"), Enemy->RecordHeardNoise(Shooter, FVector(1000, 0, 0), 11.0));
+	TestFalse(TEXT("Buffered unselected sound cannot extend hold"), Enemy->IsAlertHoldActive());
+	Fixture.World->TimeSeconds = 12.0f;
+	TestTrue(TEXT("Closer sound is accepted"), Enemy->RecordHeardNoise(Shooter, FVector(10, 0, 0), 12.0));
+	TestTrue(TEXT("Newly adopted sound updates hold"), Enemy->IsAlertHoldActive());
+	Fixture.World->TimeSeconds = 12.5f;
+	Enemy->RefreshPerceptionGoal();
+	TestFalse(TEXT("Goal reevaluation cannot restart hold"), Enemy->IsAlertHoldActive());
+	FVector Destination;
+	TestTrue(TEXT("Valid sound can start existing investigation"), Enemy->BeginNoiseInvestigation(Destination));
+	Fixture.World->TimeSeconds = 20.0f;
+	Controller->ResolveInitialAwarenessAlert();
+	TestTrue(TEXT("Active investigation survives minimum hold expiry"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
+	Enemy->EndNoiseInvestigation();
+	Controller->ResolveInitialAwarenessAlert();
+	TestTrue(TEXT("Finished investigation allows expired Alert to clear"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySightAlertIntegrationTest,
 	"Outlier.Enemy.SightRuntime.AlertAccumulationAndLifetime",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -341,6 +453,19 @@ bool FEnemySightAlertIntegrationTest::RunTest(const FString& Parameters)
 		const auto* State = Controller->AwarenessTargets.Find(Target);
 		return State ? State->Progress.GetAwareness() : 0.0;
 	};
+	// 짧은 발견의 인지 감소와 최소 경계가 병렬로 흐르는지 실제 Controller 경로로 확인한다.
+	Stimulate(Shooter, true);
+	Advance(0.25f);
+	Stimulate(Shooter, false);
+	Advance(0.51f);
+	TestEqual(TEXT("Quarter exposure decays to zero after half a second"), Progress(Shooter), 0.0);
+	TestTrue(TEXT("Zero awareness still retains Alert"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
+	Advance(3.4f);
+	for (int32 Index = 0; Index < 100; ++Index) Controller->ResolveInitialAwarenessAlert();
+	TestTrue(TEXT("Minimum hold remains active just before four seconds"), Enemy->IsAlertHoldActive());
+	Advance(0.15f);
+	TestTrue(TEXT("Repeated evaluation cannot postpone the original deadline"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+
 	Stimulate(Shooter, true);
 	Advance(0.6f);
 	TestTrue(TEXT("Controller integrates 60% from world time"), FMath::IsNearlyEqual(Progress(Shooter), 0.6, 0.00001));
@@ -357,7 +482,9 @@ bool FEnemySightAlertIntegrationTest::RunTest(const FString& Parameters)
 	Controller->ForgetDetectionTarget(Partner);
 	TestEqual(TEXT("Forgetting a target removes its progress"), Progress(Partner), 0.0);
 	Advance(0.61f);
-	TestTrue(TEXT("Zero awareness clears initial Alert before the old five-second wait"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+	TestTrue(TEXT("Zero awareness retains initial Alert until the clue deadline"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
+	Advance(4.0f);
+	TestTrue(TEXT("Expired hold clears Alert when no awareness remains"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
 	TestFalse(TEXT("Cleared lifetime cannot issue another transition"), Controller->ResolveInitialAwarenessAlert());
 
 	FEnemyStat& Stat = const_cast<FEnemyStat&>(Enemy->GetRuntimeStat());
@@ -369,7 +496,9 @@ bool FEnemySightAlertIntegrationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Runtime stat changes the linear decay rate"), FMath::IsNearlyEqual(Progress(Shooter), 0.3, 0.00001));
 	Controller->ForgetDetectionTarget(Shooter);
 	Controller->ResolveInitialAwarenessAlert();
-	TestTrue(TEXT("Removed last target cannot retain Alert"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+	TestTrue(TEXT("Removed target does not erase the recent location clue"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
+	Advance(4.0f);
+	TestTrue(TEXT("Removed target cannot retain Alert after its original deadline"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
 	Stat.AwarenessDecayDuration = 2.0f;
 
 	Stimulate(Shooter, true);
@@ -380,12 +509,28 @@ bool FEnemySightAlertIntegrationTest::RunTest(const FString& Parameters)
 	Advance(0.4f);
 	Enemy->RestoreStateAfterStun();
 	Controller->ResolveInitialAwarenessAlert();
-	TestTrue(TEXT("Hidden stun recovery cannot reuse old exposure or add a five-second hold"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+	TestTrue(TEXT("Hidden stun recovery retains the original minimum hold without old exposure"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
+	Advance(4.0f);
+	TestTrue(TEXT("Stun recovery does not restart the minimum hold"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
 	Stimulate(Partner, true);
 	Advance(0.2f);
 	Partner->Destroy();
 	Controller->ResolveInitialAwarenessAlert();
-	TestTrue(TEXT("Destroyed target cannot retain initial Alert"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+	TestTrue(TEXT("Unobserved target death preserves the recent location clue"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
+	Advance(4.0f);
+	TestTrue(TEXT("Destroyed target cannot retain Alert beyond the clue deadline"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+
+	Stat.AwarenessDecayDuration = 20.0f;
+	Stimulate(Shooter, true);
+	Advance(0.4f);
+	Stimulate(Shooter, false);
+	Advance(4.1f);
+	TestFalse(TEXT("Minimum hold has expired while slow decay continues"), Enemy->IsAlertHoldActive());
+	TestTrue(TEXT("Hold expiry does not discard remaining awareness"), Progress(Shooter) > 0.0
+		&& Enemy->GetCombatState() == EEnemyCombatState::Alert);
+	Advance(4.0f);
+	TestTrue(TEXT("Slow decay eventually clears Alert"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+	Stat.AwarenessDecayDuration = 2.0f;
 
 	Stimulate(Shooter, true);
 	Advance(0.6f);
@@ -627,8 +772,16 @@ bool FEnemySightStateTreeTest::RunTest(const FString& Parameters)
 		Box->RegisterComponent();
 		for (int32 Index = 0; Index < 72; ++Index) Step();
 		TestFalse(TEXT("Real obstruction removes direct visibility"), Enemy->IsPlayerCurrentlyVisible());
-		TestTrue(TEXT("Awareness decay exits Alert without waiting five seconds"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+		TestTrue(TEXT("Zero awareness retains Alert before minimum deadline"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
+		TestTrue(TEXT("Production tree retains Alert while minimum hold is active"), Tree->GetActiveStateNames().Contains(TEXT("Alert")));
+		for (int32 Index = 0; Index < 120 && Enemy->GetCombatState() == EEnemyCombatState::Alert; ++Index) Step();
+		TestTrue(TEXT("Original clue deadline permits Alert clear"), Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+		Step(); Step();
 		TestFalse(TEXT("Deferred clear event leaves production Alert state"), Tree->GetActiveStateNames().Contains(TEXT("Alert")));
+		// 경계 탐색으로 실제 시야가 바뀌었으므로 현재 전방에 다시 노출한다.
+		// 옛 위치가 시야 밖인 상태에서 벽만 없애면 재발견 입력이 되지 않는다.
+		Target->SetActorLocation(Enemy->GetActorLocation()
+			+ FRotator(0.0f, Enemy->GetViewRotation().Yaw, 0.0f).Vector() * 500.0f);
 		Box->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		for (int32 Index = 0; Index < 80 && !Enemy->IsInCombat(); ++Index) Step();
 		TestTrue(TEXT("Real rediscovery fills awareness and enters Combat"), Enemy->IsInCombat());

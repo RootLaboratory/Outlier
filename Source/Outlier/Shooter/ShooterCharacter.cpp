@@ -3323,6 +3323,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 		ReflectedRequest.AdaptationDamageCategory = EOutlierAdaptationDamageCategory::Gun;
 		ReflectedRequest.HitResult = ReflectedHit;
 		ReflectedRequest.DamageOrigin = ReflectionStart;
+		ReflectedRequest.bHasDamageOrigin = true;
 		ReflectedRequest.bReflectedDamage = true;
 		ReflectedRequest.EventInstigator = GetController();
 		ReflectedRequest.DamageCauser = CurrentWeapon ? static_cast<AActor*>(CurrentWeapon) : this;

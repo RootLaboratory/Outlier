@@ -79,6 +79,9 @@ EStateTreeRunStatus FEnemyRotateTurretHeadTask::Tick(FStateTreeExecutionContext&
 	{
 		return EStateTreeRunStatus::Failed;
 	}
+	if (Data.Turret->IsHitDirectionConfirmationActive() || Data.Turret->IsTurretGuardRotationActive()) return EStateTreeRunStatus::Running;
+	// 경계가 해제된 뒤에는 이전 바인딩 목표로 다시 돌리지 않는다. 기본 방향 복귀는 터렛이 소유한다.
+	if (Data.Turret->GetCombatState() == EEnemyCombatState::NonCombat) return EStateTreeRunStatus::Succeeded;
 	if (Data.bUseTargetActor && !IsValid(Data.TargetActor))
 	{
 		if (AAutoTurret::IsTurretDiagnosticsEnabled())
@@ -126,6 +129,9 @@ EStateTreeRunStatus FEnemyTurretSearchTask::Tick(FStateTreeExecutionContext& Con
 	{
 		return EStateTreeRunStatus::Failed;
 	}
+	if (Data.Turret->IsHitDirectionConfirmationActive() || Data.Turret->IsTurretGuardRotationActive()) return EStateTreeRunStatus::Running;
+	// 완료 직후에도 옛 탐색 중심이 기본 방향을 덮지 않도록 NonCombat에서는 탐색을 끝낸다.
+	if (Data.Turret->GetCombatState() == EEnemyCombatState::NonCombat) return EStateTreeRunStatus::Succeeded;
 	Data.ElapsedTime += FMath::Max(DeltaTime, 0.0f);
 	const FAutoTurretBehaviorRow& Behavior = Data.Turret->GetTurretBehavior();
 	const float HalfCycle = FMath::Max(Behavior.SearchHalfCycleDuration, KINDA_SMALL_NUMBER);
@@ -179,8 +185,11 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::Tick(FStateTreeExecutionContext& 
 	}
 
 	const bool bCanUpdateTrackedAim =
+		// 피격 확인은 비커밋 연사 조준보다 우선한다. 레이저 커밋 Task는 별도로 유지한다.
+		!Turret->HasHitResponse() && (
 		Data.Phase == EEnemyTurretBurstTaskPhase::TelegraphAndTracking
-		|| Data.Phase == EEnemyTurretBurstTaskPhase::BurstFiring;
+		|| Data.Phase == EEnemyTurretBurstTaskPhase::BurstFiring);
+	if (Turret->HasHitResponse()) return EStateTreeRunStatus::Running;
 	if (bCanUpdateTrackedAim
 		&& ResolveTrackedTarget(Turret, Data.TargetActor) == Data.TargetActor)
 	{

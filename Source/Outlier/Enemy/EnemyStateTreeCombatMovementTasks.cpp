@@ -376,6 +376,13 @@ void ApplyFlightMovement(
 		Movement->StopMovementImmediately();
 		return;
 	}
+	// 기존 전투 이동은 새 위치 조사에 입력과 회전을 양보한다. 조사 비행은 별도 공통 Task가 수행한다.
+	if (Enemy.IsLocationInvestigationActive())
+	{
+		Enemy.ConsumeMovementInputVector();
+		Movement->StopMovementImmediately();
+		return;
+	}
 
 	if (Movement->MovementMode != MOVE_Flying)
 	{

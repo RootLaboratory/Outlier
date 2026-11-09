@@ -821,6 +821,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			DamageRequest.StunDurationSeconds = ProjectileStunTime;
 			DamageRequest.HitResult = ResolvedDamageHit;
 			DamageRequest.DamageOrigin = Start;
+			DamageRequest.bHasDamageOrigin = true;
 			DamageRequest.EventInstigator = OwnerCharacter->GetController();
 			DamageRequest.DamageCauser = this;
 			DamageRequest.StealthSession = StealthSession;

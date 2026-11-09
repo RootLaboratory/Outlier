@@ -51,6 +51,7 @@
 #include "Drone/FlightPathfinding.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/LaserWeapon.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterPlayerController.h"
 #include "Outlier.h"
@@ -652,6 +653,8 @@ bool AEnemyBase::BeginPoolLease(
 
 void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
 {
+	ClearAlertClue();
+	ClearHitClues();
 	ClearHeardNoise();
 	ResetTargetAttackContinuity();
 	ClearTargetTracking();
@@ -780,6 +783,8 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 		return;
 	}
 
+	ClearAlertClue();
+	ClearHitClues();
 	ResetHackEffectForPool();
 
 	// 생존 상태의 전투 이탈도 원래 위치에 파편을 남긴다. 사망 경로의 요청은 중복하지 않는다.
@@ -828,6 +833,8 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 
 void AEnemyBase::InvalidatePoolLease()
 {
+	ClearAlertClue();
+	ClearHitClues();
 	ResetHackEffectForPool();
 	PoolGameplayGeneration = 0;
 	PoolLeaseSerial = 0;
@@ -1195,6 +1202,8 @@ void AEnemyBase::ReturnToOwningPool()
 void AEnemyBase::ResetPoolRuntimeState()
 {
 	BoneSight.Shutdown();
+	ClearAlertClue();
+	ClearHitClues();
 	ClearHeardNoise();
 	ResetTargetAttackContinuity();
 	ClearTargetTracking();
@@ -1247,6 +1256,8 @@ void AEnemyBase::PrepareForPoolIdle()
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	BoneSight.Shutdown();
+	ClearAlertClue();
+	ClearHitClues();
 	ClearHeardNoise();
 	ResetTargetAttackContinuity();
 	ClearTargetTracking();
@@ -1323,6 +1334,8 @@ void AEnemyBase::PossessedBy(AController* NewController)
 
 void AEnemyBase::UnPossessed()
 {
+	ClearAlertClue();
+	ClearHitClues();
 	ClearHeardNoise();
 	ResetTargetAttackContinuity();
 	StopCurrentAttack();
@@ -1592,6 +1605,8 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 		return;
 	}
 
+	ClearAlertClue();
+	ClearHitClues();
 	InterruptDamagePresentation(0.05f);
 	bPossessedAttackHeld = false;
 	EndPossessedImpactInputLock();
@@ -1993,7 +2008,7 @@ void AEnemyBase::RefreshTargetTracking()
 		bResumeTargetAttackPreparation = bSamePreparedTarget;
 		if (!bSamePreparedTarget) ResetTargetAttackContinuity();
 		ConsumedSharedTargetRevision = SharedTargetRevision;
-		if (!IsNoiseInvestigationActive()) EndSearchEpisode();
+		if (!IsLocationInvestigationActive()) EndSearchEpisode();
 	}
 	bTrackingAnnounced = true;
 	if (bNewTarget || bWasDirect != bDirect)
@@ -2155,6 +2170,367 @@ bool AEnemyBase::SelectHeardNoise(FEnemyHeardNoise& OutNoise, bool bRequireNewOb
 	return true;
 }
 
+bool AEnemyBase::RecordAlertClue(double OccurredAt)
+{
+	if (!CanStorePerceptionClue() || !FMath::IsFinite(OccurredAt) || OccurredAt < 0.0
+		|| OccurredAt > GetWorld()->GetTimeSeconds() || OccurredAt <= LastAlertClueAt) return false;
+	// 수신·재평가 시각이 아니라 원래 발생 시각으로 비교해 중복·역순 입력의 기한 연장을 막는다.
+	LastAlertClueAt = OccurredAt;
+	return true;
+}
+
+bool AEnemyBase::IsAlertHoldActive() const
+{
+	if (!CanStorePerceptionClue() || !HasAlertClue()) return false;
+	const float Duration = FMath::IsFinite(RuntimeStat.MinAlertHoldAfterClue) && RuntimeStat.MinAlertHoldAfterClue > 0.0f
+		? RuntimeStat.MinAlertHoldAfterClue : 4.0f;
+	return GetWorld()->GetTimeSeconds() < LastAlertClueAt + Duration;
+}
+
+void AEnemyBase::ClearAlertClue()
+{
+	if (HasAuthority()) LastAlertClueAt = -1.0;
+}
+
+bool AEnemyBase::CanStorePerceptionClue() const
+{
+	// 스턴·일시적인 감지 억제는 지연 단서를 버릴 이유가 아니다. 생명·제어권·대여 상태만 검사한다.
+	return HasAuthority() && GetWorld() && !IsDead() && !bDeathCleanupPerformed && !bIsPossessed
+		&& (!IsPoolManaged() || PoolState == EEnemyPoolState::CombatActive);
+}
+
+bool AEnemyBase::IsHitClueValid(const FEnemyHitClue& Clue) const
+{
+	const UWorld* World = GetWorld();
+	return CanStorePerceptionClue() && Clue.Receiver.Get() == this && Clue.Serial != 0
+		&& !Clue.Location.ContainsNaN() && FMath::IsFinite(Clue.OccurredAt) && FMath::IsFinite(Clue.ExpiresAt)
+		&& Clue.OccurredAt >= 0.0 && Clue.OccurredAt <= World->GetTimeSeconds()
+		&& Clue.ExpiresAt > Clue.OccurredAt && World->GetTimeSeconds() < Clue.ExpiresAt;
+}
+
+bool AEnemyBase::CreateHitClue(const FVector& Location, double OccurredAt, double LifetimeSeconds, FEnemyHitClue& OutClue)
+{
+	OutClue = FEnemyHitClue();
+	if (!CanStorePerceptionClue() || Location.ContainsNaN() || !FMath::IsFinite(OccurredAt)
+		|| OccurredAt < 0.0 || OccurredAt > GetWorld()->GetTimeSeconds()
+		|| !FMath::IsFinite(LifetimeSeconds) || LifetimeSeconds <= 0.0
+		|| NextHitClueSerial == MAX_uint64) return false;
+	const double ExpiresAt = OccurredAt + LifetimeSeconds;
+	if (!FMath::IsFinite(ExpiresAt) || ExpiresAt <= GetWorld()->GetTimeSeconds()) return false;
+	OutClue.Receiver = this;
+	OutClue.Location = Location;
+	OutClue.OccurredAt = OccurredAt;
+	OutClue.ExpiresAt = ExpiresAt;
+	OutClue.Serial = ++NextHitClueSerial;
+	return true;
+}
+
+bool AEnemyBase::RecordHitClue(const FEnemyHitClue& Clue)
+{
+	if (!IsHitClueValid(Clue) || Clue.Serial > NextHitClueSerial
+		|| Clue.Serial <= LastRecordedHitClueSerial || Clue.OccurredAt < LastRecordedHitClueAt) return false;
+	// 재조회·중복 수신은 수명을 갱신하지 않는다. 같은 프레임의 별개 명중은 사건 번호로 구분한다.
+	PendingHitClue = Clue;
+	LastRecordedHitClueSerial = Clue.Serial;
+	LastRecordedHitClueAt = Clue.OccurredAt;
+	RecordAlertClue(Clue.OccurredAt);
+	return true;
+}
+
+bool AEnemyBase::TryGetPendingHitClue(FEnemyHitClue& OutClue) const
+{
+	OutClue = FEnemyHitClue();
+	if (!IsHitClueValid(PendingHitClue)) return false;
+	OutClue = PendingHitClue;
+	return true;
+}
+
+bool AEnemyBase::BeginHitInvestigation(uint64 ClueSerial, FEnemyHitClue& OutClue)
+{
+	OutClue = FEnemyHitClue();
+	if (CombatState == EEnemyCombatState::Stun || !CanUseEnemyPerception()
+		|| PendingHitClue.Serial != ClueSerial || !IsHitClueValid(PendingHitClue)) return false;
+	// 시작 시 위치를 고정하고 대기 후보에서 제거한다. 이후 만료는 실행 중 조사를 취소하지 않는다.
+	// 새 단서로 교체되면 이전 사건 번호의 완료 콜백은 새 조사에 영향을 줄 수 없다.
+	ActiveHitClue = PendingHitClue;
+	PendingHitClue = FEnemyHitClue();
+	OutClue = ActiveHitClue;
+	return true;
+}
+
+bool AEnemyBase::IsHitInvestigationCurrent(uint64 ClueSerial) const
+{
+	// 회차 소유 여부만 판정한다. 실제 회전·이동의 스턴/상위 행동 허용 여부는 행동 쪽에서 검사한다.
+	return CanStorePerceptionClue() && ClueSerial != 0 && ActiveHitClue.Serial == ClueSerial;
+}
+
+bool AEnemyBase::EndHitInvestigation(uint64 ClueSerial)
+{
+	if (!IsHitInvestigationCurrent(ClueSerial)) return false;
+	if (HasHitResponse()) FinishHitResponse();
+	ActiveHitClue = FEnemyHitClue();
+	return true;
+}
+
+bool AEnemyBase::ConsumeHitClue(uint64 ClueSerial)
+{
+	if (!HasAuthority() || ClueSerial == 0 || PendingHitClue.Serial != ClueSerial) return false;
+	// 직접 시야 전투 등으로 채택하지 않은 사건도 소비한다. 실행 중인 다른 회차는 건드리지 않는다.
+	PendingHitClue = FEnemyHitClue();
+	return true;
+}
+
+void AEnemyBase::ClearHitClues()
+{
+	if (!HasAuthority()) return;
+	if (HasHitResponse()) FinishHitResponse();
+	HitConfirmationStartedAt = HitResponseLastEndedAt = -1.0;
+	bObservedInvestigationPending = bInvestigatingObservedLocation = false;
+	ObservedInvestigationAt = -1.0;
+	PendingHitClue = FEnemyHitClue();
+	ActiveHitClue = FEnemyHitClue();
+	// 번호를 되돌리지 않아 생성만 된 옛 단서와 지연 콜백도 새 생명/팀/대여에 재진입하지 못한다.
+	LastRecordedHitClueSerial = NextHitClueSerial;
+	LastRecordedHitClueAt = -1.0;
+}
+
+bool AEnemyBase::IsHitResponseCommitted() const
+{
+	// 레이저는 Task가 차징~후딜의 AttackPhase를 소유한다. 일반 연사까지 커밋으로 확대하지 않는다.
+	const AAutoTurret* Turret = Cast<AAutoTurret>(this);
+	return IsPossessedActionCommitted() || (Turret && Cast<ALaserWeapon>(CurrentWeapon)
+		&& GetAttackPhase() != EEnemyAttackPhase::Idle);
+}
+
+void AEnemyBase::FinishHitResponse()
+{
+	if (!HasHitResponse()) return;
+	bResumeTargetAttackPreparation = PreparedAttackTarget.IsValid() && PreparedAttackTarget.Get() == GetTrackedTarget()
+		&& PreparedAttackWeapon.Get() == CurrentWeapon && PreparedAttackController.Get() == GetController();
+	HitResponsePhase = EHitResponsePhase::None;
+	ActiveHitClue = FEnemyHitClue();
+	bHitReturnDirectionOnly = false;
+	bHitMovementAdopted = false;
+	bInvestigatingObservedLocation = false;
+	HitResponseLastEndedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : -1.0;
+	++NoiseInvestigationSerial;
+	EndSearchEpisode();
+	PerceptionGoal = FEnemyPerceptionGoal();
+}
+
+void AEnemyBase::OnDirectSightForHitResponse(const FVector& ObservedLocation)
+{
+	if (!HasAuthority() || ObservedLocation.ContainsNaN()) return;
+	// 실제 관측이 먼저 소유권을 회수한다. 옛 비행/수색의 완료 콜백은 회차 번호가 달라 거절된다.
+	const bool bWasInvestigating = HasHitResponse();
+	FinishHitResponse();
+	PendingHitClue = FEnemyHitClue();
+	// 관측 전에 발급만 된 사건도 뒤늦게 옛 조사로 복원되지 않게 소비 경계를 올린다.
+	LastRecordedHitClueSerial = NextHitClueSerial;
+	LastRecordedHitClueAt = FMath::Max(LastRecordedHitClueAt, GetWorld()->GetTimeSeconds());
+	if (bWasInvestigating || bObservedInvestigationPending)
+	{
+		// 인지 확정 전의 짧은 관측도 옛 피격 조사를 대체한다. 다시 숨으면 이 관측 위치만 조사한다.
+		bObservedInvestigationPending = true;
+		ObservedInvestigationLocation = ObservedLocation;
+		ObservedInvestigationAt = GetWorld()->GetTimeSeconds();
+		UpdateLastKnownPlayerLocation(ObservedLocation);
+	}
+	RefreshPerceptionGoal();
+}
+
+void AEnemyBase::TickHitResponse(float DeltaTime)
+{
+	if (!HasAuthority() || !GetWorld() || bProcessingDamageHitResponse) return;
+	if (PendingHitClue.Serial != 0 && !IsHitClueValid(PendingHitClue)) PendingHitClue = FEnemyHitClue();
+	if (!HasHitResponse() && PendingHitClue.Serial == 0 && !bObservedInvestigationPending) return;
+	AEnemyAIController* AI = Cast<AEnemyAIController>(GetController());
+	if (!CanStorePerceptionClue() || !AI) return;
+	if (CombatState == EEnemyCombatState::Stun || HasActiveStunTag() || !CanUseEnemyPerception())
+	{
+		// 기절 중에는 대기 단서를 소비하지 않는다. 실제 복귀 시점의 시야로 선택해야 한다.
+		FinishHitResponse();
+		return;
+	}
+	AActor* Visible = AI->GetCachedVisibleTarget();
+	if (AI->IsValidTrackingTarget(Visible) && AI->IsTargetDirectlyVisible(Visible))
+	{
+		if (HasHitResponse() || PendingHitClue.Serial != 0 || bObservedInvestigationPending)
+			OnDirectSightForHitResponse(Visible->GetActorLocation());
+		return;
+	}
+	if (IsHitResponseCommitted()) return;
+	const double Now = GetWorld()->GetTimeSeconds();
+	const auto Positive = [](float Value, float Fallback) { return FMath::IsFinite(Value) && Value > 0.0f ? Value : Fallback; };
+	const float MinConfirm = Positive(RuntimeStat.HitDirectionMinDuration, 0.4f);
+	if (bObservedInvestigationPending)
+	{
+		bObservedInvestigationPending = false;
+		// 관측 완료로 이미 전투 추적이 생겼다면 기존 전투가 이어진다. 부분 관측만 별도 위치 조사로 인계한다.
+		if (CombatState != EEnemyCombatState::Combat && !HasHitResponse() && PendingHitClue.Serial == 0)
+		{
+			FEnemyHitClue Observed;
+			if (CreateHitClue(ObservedInvestigationLocation, ObservedInvestigationAt,
+				Positive(RuntimeStat.HitClueLifetime, 6.0f), Observed))
+			{
+				PendingHitClue = Observed;
+				bInvestigatingObservedLocation = true;
+			}
+		}
+	}
+	FEnemyHitClue Pending;
+	if (TryGetPendingHitClue(Pending))
+	{
+		const bool bReturningCooldown = CombatState == EEnemyCombatState::Returning
+			&& HitResponseLastEndedAt >= 0.0 && Now - HitResponseLastEndedAt < Positive(RuntimeStat.HitReturnReactionInterval, 2.0f);
+		if (bReturningCooldown) ConsumeHitClue(Pending.Serial);
+		else if (!HasHitResponse() || Now - HitConfirmationStartedAt >= MinConfirm)
+		{
+			const FVector OldDirection = (ActiveHitClue.Location - GetActorLocation()).GetSafeNormal();
+			const FVector NewDirection = (Pending.Location - GetActorLocation()).GetSafeNormal();
+			const float MergeAngle = FMath::Clamp(Positive(RuntimeStat.HitDirectionMergeAngle, 20.0f), 0.1f, 180.0f);
+			const bool bSameDirection = HasHitResponse() && !OldDirection.IsNearlyZero() && !NewDirection.IsNearlyZero()
+				&& FVector::DotProduct(OldDirection, NewDirection) >= FMath::Cos(FMath::DegreesToRadians(MergeAngle));
+			if (bSameDirection) ConsumeHitClue(Pending.Serial);
+			else
+			{
+				const bool bObservedLocation = bInvestigatingObservedLocation && !HasHitResponse();
+				FinishHitResponse();
+				bInvestigatingObservedLocation = bObservedLocation;
+				if (bNoiseInvestigationActive) EndNoiseInvestigation(false);
+				if (BeginHitInvestigation(Pending.Serial, Pending))
+				{
+					HitResponsePhase = EHitResponsePhase::Confirm;
+					HitConfirmationStartedAt = Now;
+					bHitReturnDirectionOnly = CombatState == EEnemyCombatState::Returning;
+					++NoiseInvestigationSerial;
+					PauseTargetAttack();
+					if (!bHitReturnDirectionOnly)
+					{
+						AI->StopMovement();
+						if (UCharacterMovementComponent* Movement = GetCharacterMovement()) Movement->StopMovementImmediately();
+						if (CombatState == EEnemyCombatState::NonCombat) EnterAlertFromPerception(ActiveHitClue.Location);
+					}
+					RefreshPerceptionGoal();
+					SendEnemyStateTreeEvent(TAG_EnemyTrackingChanged);
+				}
+			}
+		}
+	}
+	if (!IsHitDirectionConfirmationActive()) return;
+	bool bReached = false;
+	if (AAutoTurret* Turret = Cast<AAutoTurret>(this))
+		bReached = Turret->UpdateTurretAimAtLocation(ActiveHitClue.Location, DeltaTime, false);
+	else
+	{
+		const FVector Direction = ActiveHitClue.Location - GetPawnViewLocation();
+		FRotator Desired = Direction.IsNearlyZero() ? AI->GetControlRotation() : Direction.Rotation();
+		Desired.Roll = 0.0f;
+		const FRotator Current = AI->GetControlRotation();
+		const float Error = FMath::Max(FMath::Abs(FMath::FindDeltaAngleDegrees(Current.Yaw, Desired.Yaw)),
+			FMath::Abs(FMath::FindDeltaAngleDegrees(Current.Pitch, Desired.Pitch)));
+		const float Speed = FMath::Min(Positive(RuntimeStat.HitRotationSpeed, 240.0f), FMath::Max(20.0f, Error * 6.0f));
+		const FRotator Next = FMath::RInterpConstantTo(Current, Desired, FMath::Max(0.0f, DeltaTime), Speed);
+		AI->SetControlRotation(Next);
+		SetActorRotation(FRotator(0.0f, Next.Yaw, 0.0f));
+		bReached = Error <= 3.0f;
+	}
+	const double Elapsed = Now - HitConfirmationStartedAt;
+	const double MaxConfirm = FMath::Max(MinConfirm, Positive(RuntimeStat.HitDirectionMaxDuration, 2.0f));
+	if (Elapsed < MinConfirm || (!bReached && Elapsed < MaxConfirm)) return;
+	if (bHitReturnDirectionOnly || Cast<AAutoTurret>(this))
+	{
+		FinishHitResponse();
+		RefreshPerceptionGoal();
+	}
+	else
+	{
+		HitResponsePhase = EHitResponsePhase::Move;
+		RefreshPerceptionGoal();
+	}
+	SendEnemyStateTreeEvent(TAG_EnemyTrackingChanged);
+}
+
+bool AEnemyBase::IsLocationInvestigationGoal() const
+{
+	return PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateNoise
+		|| PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateHit;
+}
+
+float AEnemyBase::GetLocationSearchDuration(float DefaultDuration) const
+{
+	return HasHitResponse() && FMath::IsFinite(RuntimeStat.HitSearchDuration) && RuntimeStat.HitSearchDuration > 0.0f
+		? RuntimeStat.HitSearchDuration : DefaultDuration;
+}
+
+bool AEnemyBase::IsLocationInvestigationActive() const { return HasHitResponse() || IsNoiseInvestigationActive(); }
+bool AEnemyBase::IsLocationSearchActive() const { return HitResponsePhase == EHitResponsePhase::Search || IsNoiseSearchActive(); }
+
+bool AEnemyBase::CanRunHitInvestigationMovement() const
+{
+	return HasHitResponse() && !bHitReturnDirectionOnly && !Cast<AAutoTurret>(this);
+}
+
+bool AEnemyBase::IsLocationInvestigationAdopted() const
+{
+	return IsNoiseInvestigationActive() || (CanRunHitInvestigationMovement() && bHitMovementAdopted);
+}
+
+bool AEnemyBase::BeginLocationInvestigation(FVector& OutDestination)
+{
+	if (!HasHitResponse()) return BeginNoiseInvestigation(OutDestination);
+	if (!CanRunHitInvestigationMovement() || !IsLocationInvestigationCurrent(NoiseInvestigationSerial)) return false;
+	bHitMovementAdopted = true;
+	OutDestination = ActiveHitClue.Location;
+	return true;
+}
+
+bool AEnemyBase::TryUpdateLocationInvestigationDestination(FVector& OutDestination)
+{
+	if (!HasHitResponse()) return TryUpdateNoiseInvestigationDestination(OutDestination);
+	OutDestination = ActiveHitClue.Location;
+	return IsLocationInvestigationCurrent(NoiseInvestigationSerial);
+}
+
+bool AEnemyBase::IsLocationInvestigationCurrent(uint64 Serial) const
+{
+	if (!HasHitResponse()) return IsNoiseInvestigationCurrent(Serial);
+	return Serial == NoiseInvestigationSerial && CanStorePerceptionClue() && CanUseEnemyPerception()
+		&& CombatState != EEnemyCombatState::Stun && !IsHitResponseCommitted()
+		&& HitResponsePhase != EHitResponsePhase::Search;
+}
+
+bool AEnemyBase::BeginLocationInvestigationSearch(uint64 Serial, const FVector& ReachableCenter)
+{
+	if (!HasHitResponse()) return BeginNoiseInvestigationSearch(Serial, ReachableCenter);
+	if (!IsLocationInvestigationCurrent(Serial) || IsHitDirectionConfirmationActive()
+		|| ReachableCenter.ContainsNaN() || !ReachableCenter.Equals(GetActorLocation(), 1.0)) return false;
+	HitSearchCenter = ReachableCenter;
+	HitResponsePhase = EHitResponsePhase::Search;
+	RefreshPerceptionGoal();
+	return BeginSearchEpisode();
+}
+
+void AEnemyBase::EndLocationInvestigation()
+{
+	if (!HasHitResponse()) { EndNoiseInvestigation(); return; }
+	FinishHitResponse();
+	RefreshPerceptionGoal();
+}
+
+bool AEnemyBase::CompleteLocationInvestigation()
+{
+	if (!HasHitResponse()) return CompleteNoiseInvestigation();
+	if (!HasAuthority() || !IsLocationSearchActive() || !CanContinueSearchEpisode()) return false;
+	FinishHitResponse();
+	RefreshTargetTracking();
+	RefreshPerceptionGoal();
+	const UEnemyRoomSubsystem* Rooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+	if (CombatState == EEnemyCombatState::Combat && Rooms && Rooms->IsRoomInCombat(GetDefaultRoomTag())) return true;
+	if (PerceptionGoal.Type != EEnemyPerceptionGoalType::Combat && !IsLocationInvestigationGoal()) CommitToNonCombatAfterSearch();
+	return true;
+}
+
 void AEnemyBase::ClearHeardNoise()
 {
 	if (bNoiseInvestigationActive) EndSearchEpisode();
@@ -2211,6 +2587,18 @@ void AEnemyBase::RefreshPerceptionGoal()
 		AActor* Visible = bPlayerCurrentlyVisible ? AI->GetCachedVisibleTarget() : nullptr;
 		if (bPlayerCurrentlyVisible && AI->IsTargetDirectlyVisible(Tracked)) Visible = Tracked;
 		if (!AI->IsValidTrackingTarget(Visible) || !AI->IsTargetDirectlyVisible(Visible)) Visible = nullptr;
+		// 피격 조사는 추적 지식을 지우지 않고 행동 목표만 선점한다. 청각/공유 후보의 시계는 계속 흐른다.
+		if (HasHitResponse() && !bHitReturnDirectionOnly && !Visible && !IsHitResponseCommitted())
+		{
+			Next.Type = HitResponsePhase == EHitResponsePhase::Search
+				? EEnemyPerceptionGoalType::Search : EEnemyPerceptionGoalType::InvestigateHit;
+			Next.Location = HitResponsePhase == EHitResponsePhase::Search ? HitSearchCenter : ActiveHitClue.Location;
+			Next.InformationAt = ActiveHitClue.OccurredAt;
+			const bool bChanged = Next.Type != PerceptionGoal.Type || Next.Location != PerceptionGoal.Location;
+			PerceptionGoal = Next;
+			if (bChanged) SendEnemyStateTreeEvent(TAG_EnemyTrackingChanged);
+			return;
+		}
 		if (Visible) LastPerceptionObservedAt = Now;
 
 		FEnemyRoomTargetObservationSnapshot Shared;
@@ -2310,6 +2698,8 @@ void AEnemyBase::RefreshPerceptionGoal()
 	const bool bChanged = Next.Type != PerceptionGoal.Type || Next.Target != PerceptionGoal.Target
 		|| ((Next.Type == EEnemyPerceptionGoalType::InvestigateNoise || Next.Type == EEnemyPerceptionGoalType::Search)
 			&& Next.Location != PerceptionGoal.Location);
+	// 후보 수신과 목표 채택을 구분한다. 선택된 소리의 원래 시각만 반영하며 조회로 연장하지 않는다.
+	if (Next.Type == EEnemyPerceptionGoalType::InvestigateNoise) RecordAlertClue(Next.InformationAt);
 	PerceptionGoal = Next;
 	// 의도 변경만 알린다. 기존 전투 대상·이동·공격 상태는 이 단계에서 변경하지 않는다.
 	if (bChanged) SendEnemyStateTreeEvent(TAG_EnemyTrackingChanged);
@@ -2476,8 +2866,8 @@ void AEnemyBase::ApplySharedTargetContact(
 	SharedTargetLocation = TargetLocation;
 	if (!bPlayerCurrentlyVisible && !HasTrackableTarget() && !bTrackingAnnounced && !bTrackingExpiredForSearch)
 		UpdateLastKnownPlayerLocation(TargetLocation);
-	if (bContactChanged) ReleaseSearchDestinations();
-	if (IsNoiseInvestigationActive()) RefreshPerceptionGoal();
+	if (bContactChanged && !HasHitResponse()) ReleaseSearchDestinations();
+	if (IsLocationInvestigationActive()) RefreshPerceptionGoal();
 
 	if (bContactChanged)
 	{
@@ -2664,6 +3054,9 @@ bool AEnemyBase::CommitToNonCombatAfterSearch()
 {
 	if (!HasAuthority() || IsDead() || !CanUseEnemyPerception()
 		|| (CombatState != EEnemyCombatState::Alert && CombatState != EEnemyCombatState::Combat)) return false;
+	// 최초 경계의 모든 해제 경로가 같은 기한을 따른다. Combat 수색/Returning의 종료 시간은 바꾸지 않는다.
+	if (CombatState == EEnemyCombatState::Alert
+		&& (IsAlertHoldActive() || IsHitInvestigationCurrent(ActiveHitClue.Serial))) return false;
 	if (IsPoolManaged())
 	{
 		if (const UEnemyRoomSubsystem* RoomSubsystem =
@@ -2687,6 +3080,7 @@ bool AEnemyBase::CommitToNonCombatAfterSearch()
 	const bool bAwayFromHome = Home ? !IsInsideDefaultRoom()
 		: URoomTagComponent::IsValidChildRoomTag(HomeTag);
 	CombatState = bAwayFromHome ? EEnemyCombatState::Returning : EEnemyCombatState::NonCombat;
+	ClearAlertClue();
 	bInCombat = false;
 	RefreshCombatStatePresentation();
 	RefreshPerceptionConfigForCurrentState();
@@ -2869,6 +3263,8 @@ void AEnemyBase::RestoreStateAfterStun()
 	bInCombat = CombatState == EEnemyCombatState::Combat;
 	RefreshCombatStatePresentation();
 	RefreshPerceptionConfigForCurrentState();
+	// 스턴 진입 시 지운 추적을 현재 감지로 먼저 복구해야 StateTree가 전투 대신 수색을 고르지 않는다.
+	RefreshTargetTracking();
 
 	// StunEnded의 AI 복귀 전이 대신 빙의 상태를 다시 선택한다. 빙의 후 신규 스턴 만료도 동일하다.
 	SendEnemyStateTreeEvent(
@@ -2876,6 +3272,8 @@ void AEnemyBase::RestoreStateAfterStun()
 			bIsPossessed
 				? TEXT("Enemy.Event.Possession.Started")
 				: TEXT("Enemy.Event.Status.StunEnded")));
+	// 복귀 상태를 먼저 확정한 뒤 원래 사건을 평가한다. 해제 시각으로 단서/경계 수명을 다시 시작하지 않는다.
+	TickHitResponse(0.0f);
 }
 
 bool AEnemyBase::ApplyDamageInternal(
@@ -2910,6 +3308,10 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	{
 		return 0.0f;
 	}
+	const double HitOccurredAt = GetWorld()->GetTimeSeconds();
+	ON_SCOPE_EXIT { TickHitResponse(0.0f); };
+	// 피해·내성 부가 효과는 GAS 콜백을 동기 호출할 수 있다. 전체 처리가 끝나기 전에는 조사를 시작하지 않는다.
+	TGuardValue<bool> DamageResponseGuard(bProcessingDamageHitResponse, true);
 
 	float HitMultiplier = 1.0f;
 	float AdaptationMultiplier = 1.0f;
@@ -3006,19 +3408,42 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 			LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
 		}
 	}
+	float AppliedHitStunDuration = 0.0f;
 	if (AppliedDamage > 0.0f
 		&& !IsDead()
 		&& Request.StunDurationSeconds > 0.0f
 		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
-		const bool bStunApplied = OutlierAbilitySystemComponent->ApplyStunStateToSelf(
+		const FActiveGameplayEffectHandle StunHandle = OutlierAbilitySystemComponent->ApplyStunStateToSelf(
 			Request.StunDurationSeconds,
-			Request.DamageCauser).IsValid();
+			Request.DamageCauser);
+		const bool bStunApplied = StunHandle.IsValid();
+		// 요청 기본값 대신 이번 명중으로 실제 적용된 효과의 최종 시간을 사용한다.
+		// 다른 원인의 기존 스턴/이후 연장은 이 사건의 수명에 합산하지 않는다.
+		if (const FActiveGameplayEffect* StunEffect = OutlierAbilitySystemComponent->GetActiveGameplayEffect(StunHandle))
+		{
+			const float Duration = StunEffect->Spec.GetDuration();
+			if (FMath::IsFinite(Duration) && Duration > 0.0f) AppliedHitStunDuration = Duration;
+		}
 		// 위 내성 파괴가 LastAccepted 카테고리를 소비할 수 있으므로 원인은 요청 기준으로 판정한다.
 		if (bStunApplied && Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol)
 		{
 			UOutlierEventSubsystem::EventCallOnce(this, StunEventTag);
 		}
+	}
+	// 권총도 같은 사건 저장소를 사용한다. 스턴 중에는 저장만 하고 복귀 후 한 번 확인한다.
+	if (AppliedDamage > 0.0f && !IsDead() && GetCurrentHealth() > 0.0f && Request.bHasDamageOrigin)
+	{
+		FEnemyHitClue Clue;
+		float Lifetime = FMath::IsFinite(RuntimeStat.HitClueLifetime) && RuntimeStat.HitClueLifetime > 0.0f
+			? RuntimeStat.HitClueLifetime : 6.0f;
+		if (Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol)
+		{
+			const float Grace = FMath::IsFinite(RuntimeStat.PistolHitClueGraceSeconds) && RuntimeStat.PistolHitClueGraceSeconds > 0.0f
+				? RuntimeStat.PistolHitClueGraceSeconds : 1.0f;
+			Lifetime = AppliedHitStunDuration + Grace;
+		}
+		if (CreateHitClue(Request.DamageOrigin, HitOccurredAt, Lifetime, Clue)) RecordHitClue(Clue);
 	}
 	if (bCoreWeakPointHit)
 	{
@@ -4269,7 +4694,7 @@ bool AEnemyBase::StartAttackTarget(AActor* TargetActor)
 bool AEnemyBase::CanAttackTrackedTarget(const AActor* TargetActor) const
 {
 	return HasAuthority() && CombatState == EEnemyCombatState::Combat
-		&& !IsAIControlSuppressed() && !IsDead() && !IsNoiseInvestigationActive() && TargetActor
+		&& !IsAIControlSuppressed() && !IsDead() && !IsLocationInvestigationActive() && TargetActor
 		&& TargetActor == GetTrackedTarget() && IsValid(CurrentWeapon)
 		&& CurrentWeapon->HasClearTargetAttackPath(TargetActor, GetCombatAimPoint(TargetActor));
 }
@@ -4336,7 +4761,7 @@ void AEnemyBase::ResetTargetAttackContinuity()
 
 bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
 {
-	if (IsNoiseInvestigationActive()) return false;
+	if (IsLocationInvestigationActive()) return false;
 	// 수색 중 병렬 공격 Task가 잘못 연결되어도 숨은 플레이어에게 사격하지 않는다.
 	if (SearchEpisode.bActive && !bPlayerCurrentlyVisible && !bIsPossessed) return false;
 	// 방 합류 준비 중에는 StateTree가 Combat으로 전환돼도 실제 발사를 시작하지 않는다.
@@ -4517,7 +4942,7 @@ void AEnemyBase::ReleaseSearchDestinations()
 
 bool AEnemyBase::CanContinueSearchEpisode() const
 {
-	const bool bNoiseSearch = IsNoiseSearchActive();
+	const bool bNoiseSearch = IsLocationSearchActive();
 	return HasAuthority() && !IsDead() && CanUseEnemyPerception() && !bPlayerCurrentlyVisible
 		&& (CombatState == EEnemyCombatState::Combat || (bNoiseSearch && CombatState == EEnemyCombatState::Alert))
 		&& (bNoiseSearch ? PerceptionGoal.Type == EEnemyPerceptionGoalType::Search : !HasTrackableTarget());
@@ -4525,7 +4950,7 @@ bool AEnemyBase::CanContinueSearchEpisode() const
 
 bool AEnemyBase::BeginSearchEpisode()
 {
-	const bool bNoiseSearch = IsNoiseSearchActive();
+	const bool bNoiseSearch = IsLocationSearchActive();
 	if ((!bNoiseSearch && !CanContinueSearchEpisode())
 		|| (bNoiseSearch && (!HasAuthority() || IsDead() || !CanUseEnemyPerception() || bPlayerCurrentlyVisible
 			|| (CombatState != EEnemyCombatState::Combat && CombatState != EEnemyCombatState::Alert)))
@@ -4536,7 +4961,7 @@ bool AEnemyBase::BeginSearchEpisode()
 	SearchEpisode.bActive = true;
 	SearchEpisode.Serial = ++NextSearchEpisodeSerial;
 	SearchEpisode.SharedRevision = SharedTargetRevision;
-	SearchEpisode.Center = bNoiseSearch ? NoiseInvestigationLocation
+	SearchEpisode.Center = HitResponsePhase == EHitResponsePhase::Search ? HitSearchCenter : bNoiseSearch ? NoiseInvestigationLocation
 		: (!bTrackingExpiredForSearch && HasFreshSharedTargetLocation() ? SharedTargetLocation : LastKnownPlayerLocation);
 	bTrackingExpiredForSearch = false;
 	if (bNoiseSearch) PauseTargetAttack();
@@ -4801,6 +5226,8 @@ void AEnemyBase::SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot)
 
 void AEnemyBase::PerformDeathCleanup()
 {
+	ClearAlertClue();
+	ClearHitClues();
 	ClearHeardNoise();
 	ResetTargetAttackContinuity();
 	ClearTargetTracking();

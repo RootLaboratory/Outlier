@@ -70,10 +70,22 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 	InstanceData.bHasTrackableTarget = IsValid(InstanceData.TargetActor);
 	const FEnemyPerceptionGoal& Goal = InstanceData.Enemy->GetPerceptionGoal();
 	InstanceData.PerceptionGoalType = Goal.Type;
+	// 저장된 트리의 위치 조사 분기/바인딩을 공유한다. 런타임 근거는 InvestigateHit로 남고 청각 사건은 만들지 않는다.
+	if (Goal.Type == EEnemyPerceptionGoalType::InvestigateHit)
+		InstanceData.PerceptionGoalType = InstanceData.Enemy->CanRunHitInvestigationMovement()
+			? EEnemyPerceptionGoalType::InvestigateNoise : EEnemyPerceptionGoalType::None;
 	InstanceData.PerceptionGoalLocation = Goal.Location;
 	InstanceData.PerceptionGoalTarget = Goal.Target.Get();
-	InstanceData.bNoiseInvestigationActive = InstanceData.Enemy->IsNoiseInvestigationActive();
-	InstanceData.bNoiseSearchActive = InstanceData.Enemy->IsNoiseSearchActive();
+	// 채택 전에는 false여야 저장된 트리의 '새 조사 진입' 전이를 통과한다. 회전 소유권과 이동 채택은 별개다.
+	InstanceData.bNoiseInvestigationActive = InstanceData.Enemy->IsLocationInvestigationAdopted();
+	InstanceData.bNoiseSearchActive = InstanceData.Enemy->IsLocationSearchActive();
+	if (InstanceData.Enemy->HasHitResponse() && InstanceData.CombatState != EEnemyCombatState::Returning)
+	{
+		// 이전 추적 정보는 Pawn에 유지하되, 조사 중 트리의 공격/공유 분기를 선택할 권한은 주지 않는다.
+		InstanceData.TargetActor = nullptr;
+		InstanceData.bHasTrackableTarget = false;
+		InstanceData.bHasSharedTargetContact = InstanceData.bHasFreshSharedTargetLocation = false;
+	}
 	// 다른 플레이어가 보여도 현재 전투 대상이 공유로만 추적된다면 직접 시야로 표시하지 않는다.
 	const AEnemyAIController* PerceptionController = Cast<AEnemyAIController>(InstanceData.AIController);
 	InstanceData.bPlayerCurrentlyVisible = InstanceData.Enemy->IsPlayerCurrentlyVisible()

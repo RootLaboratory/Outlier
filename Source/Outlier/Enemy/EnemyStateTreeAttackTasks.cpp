@@ -190,7 +190,7 @@ void FEnemyAttackTargetTask::ExitState(
 	if (InstanceData.Enemy && InstanceData.bAttackStarted)
 	{
 		// 조사 상태 진입보다 이전에 Exit가 호출되어도 남은 발사 간격을 보존한다.
-		if (InstanceData.Enemy->IsNoiseInvestigationActive()
+		if (InstanceData.Enemy->IsLocationInvestigationActive()
 			|| InstanceData.Enemy->GetPerceptionGoal().Type == EEnemyPerceptionGoalType::InvestigateNoise)
 			InstanceData.Enemy->PauseTargetAttack();
 		else InstanceData.Enemy->StopCurrentWeaponAttack();

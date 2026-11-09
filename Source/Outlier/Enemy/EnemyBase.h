@@ -79,6 +79,16 @@ struct FEnemyHeardNoise
 	double OccurredAt = -1.0;
 };
 
+// 피격 당시의 위치만 보관한다. 공격자 참조가 없어 사망·팀 변경·풀 재사용 뒤에도 좌표가 바뀌지 않는다.
+struct FEnemyHitClue
+{
+	TWeakObjectPtr<AEnemyBase> Receiver;
+	FVector Location = FVector::ZeroVector;
+	double OccurredAt = -1.0;
+	double ExpiresAt = -1.0;
+	uint64 Serial = 0;
+};
+
 UENUM(BlueprintType)
 enum class EEnemyPerceptionGoalType : uint8
 {
@@ -86,7 +96,8 @@ enum class EEnemyPerceptionGoalType : uint8
 	Combat,
 	InvestigateNoise,
 	Search,
-	CommittedAction
+	CommittedAction,
+	InvestigateHit
 };
 
 // 행동 의도와 추적 지식은 분리한다. 소리 조사에는 공격용 Target을 제공하지 않는다.
@@ -138,6 +149,9 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 	GENERATED_BODY()
 	friend class FOutlierSightBoneTargetsTest;
 	friend class FEnemyAdaptationCombatPresentationTest;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FEnemyHitClueLifecycleTest;
+#endif
 
 public:
 	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
@@ -719,6 +733,43 @@ public:
 	bool TryGetHeardNoise(FEnemyHeardNoise& OutNoise) const;
 	void ClearHeardNoise();
 
+	// 실제 관측·채택 지점에서만 발생 시각을 전달한다. 상태/Task 재진입은 새 단서가 아니다.
+	bool RecordAlertClue(double OccurredAt);
+	bool HasAlertClue() const { return LastAlertClueAt >= 0.0; }
+	double GetLastAlertClueAt() const { return LastAlertClueAt; }
+	bool IsAlertHoldActive() const;
+	void ClearAlertClue();
+
+	// 피해 수락 지점에서 한 번 생성하고 같은 사건의 후속 처리에는 원래 단서를 전달한다.
+	// 생성은 사건 번호만 발급한다. 저장·행동 시작·소비는 각 단계가 명시적으로 요청한다.
+	bool CreateHitClue(const FVector& Location, double OccurredAt, double LifetimeSeconds, FEnemyHitClue& OutClue);
+	bool RecordHitClue(const FEnemyHitClue& Clue);
+	bool TryGetPendingHitClue(FEnemyHitClue& OutClue) const;
+	bool BeginHitInvestigation(uint64 ClueSerial, FEnemyHitClue& OutClue);
+	bool IsHitInvestigationCurrent(uint64 ClueSerial) const;
+	bool EndHitInvestigation(uint64 ClueSerial);
+	bool ConsumeHitClue(uint64 ClueSerial);
+	virtual void ClearHitClues();
+
+	// 공통 위치 조사는 출처를 구분한 채 기존 이동/수색 Task를 재사용한다.
+	virtual void TickHitResponse(float DeltaTime);
+	virtual void OnDirectSightForHitResponse(const FVector& ObservedLocation);
+	bool HasHitResponse() const { return HitResponsePhase != EHitResponsePhase::None; }
+	bool IsHitDirectionConfirmationActive() const { return HitResponsePhase == EHitResponsePhase::Confirm; }
+	bool IsLocationInvestigationGoal() const;
+	float GetLocationSearchDuration(float DefaultDuration) const;
+	bool BeginLocationInvestigation(FVector& OutDestination);
+	bool TryUpdateLocationInvestigationDestination(FVector& OutDestination);
+	bool IsLocationInvestigationActive() const;
+	bool CanRunHitInvestigationMovement() const;
+	bool IsLocationInvestigationAdopted() const;
+	bool IsLocationSearchActive() const;
+	uint64 GetLocationInvestigationSerial() const { return NoiseInvestigationSerial; }
+	bool IsLocationInvestigationCurrent(uint64 Serial) const;
+	bool BeginLocationInvestigationSearch(uint64 Serial, const FVector& ReachableCenter);
+	void EndLocationInvestigation();
+	bool CompleteLocationInvestigation();
+
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "cm"))
 	float NoiseGoalSwitchDistance = 200.0f;
 
@@ -897,6 +948,30 @@ protected:
 	uint64 NextSearchEpisodeSerial = 0;
 	bool bHasLastKnownPlayerLocation = false;
 	FEnemySearchEpisode SearchEpisode;
+	// 대기 후보는 최신 하나만 보관한다. 실행 중 위치는 새 피격이나 원래 단서 만료로 덮어쓰지 않는다.
+	FEnemyHitClue PendingHitClue;
+	// 인지 누적, 추적 유예, 피격 단서 TTL과 분리한다. 스턴 중에도 원래 기한이 흐른다.
+	double LastAlertClueAt = -1.0;
+	FEnemyHitClue ActiveHitClue;
+	bool bProcessingDamageHitResponse = false;
+	enum class EHitResponsePhase : uint8 { None, Confirm, Move, Search };
+	EHitResponsePhase HitResponsePhase = EHitResponsePhase::None;
+	double HitConfirmationStartedAt = -1.0;
+	double HitResponseLastEndedAt = -1.0;
+	bool bHitReturnDirectionOnly = false;
+	bool bHitMovementAdopted = false;
+	FVector HitSearchCenter = FVector::ZeroVector;
+	bool bObservedInvestigationPending = false;
+	bool bInvestigatingObservedLocation = false;
+	FVector ObservedInvestigationLocation = FVector::ZeroVector;
+	double ObservedInvestigationAt = -1.0;
+	void FinishHitResponse();
+	bool IsHitResponseCommitted() const;
+	uint64 NextHitClueSerial = 0;
+	uint64 LastRecordedHitClueSerial = 0;
+	double LastRecordedHitClueAt = -1.0;
+	bool CanStorePerceptionClue() const;
+	bool IsHitClueValid(const FEnemyHitClue& Clue) const;
 	double LatestHeardNoiseAt = -1.0;
 	static constexpr int32 MaxHeardNoiseCandidates = 8;
 	TArray<FEnemyHeardNoise, TInlineAllocator<MaxHeardNoiseCandidates>> HeardNoiseCandidates;

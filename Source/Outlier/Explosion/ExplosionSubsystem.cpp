@@ -180,6 +180,7 @@ void UExplosionSubsystem::ProcessExplosion(const FPendingExplosion& Request)
 				DamageRequest.DamageTag = OutlierGameplayTags::Damage::Explosion();
 				DamageRequest.AdaptationDamageCategory = Request.AdaptationDamageCategory;
 				DamageRequest.DamageOrigin = Request.Location;
+				DamageRequest.bHasDamageOrigin = true;
 				DamageRequest.EventInstigator = Request.EventInstigator.Get();
 				DamageRequest.DamageCauser = SourceActor;
 				DamageRequest.bAllowFriendlyFire = Request.bAllowFriendlyFire;

@@ -37,6 +37,8 @@ struct OUTLIER_API FOutlierDamageRequest
 	float StunDurationSeconds = 0.0f;
 	FHitResult HitResult;
 	FVector DamageOrigin = FVector::ZeroVector;
+	// 월드 원점도 유효한 출처다. 좌표 값과 출처 지정 여부를 분리한다.
+	bool bHasDamageOrigin = false;
 	bool bReflectedDamage = false;
 	// 서버가 생성한 폭발 요청에서만 지정한다. 대상의 무적/피해 수신 검사는 그대로 거친다.
 	bool bAllowFriendlyFire = false;

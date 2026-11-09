@@ -158,6 +158,8 @@ void AEnemyAIController::OnUnPossess()
 	ResetInitialAwareness();
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn()))
 	{
+		Enemy->ClearAlertClue();
+		Enemy->ClearHitClues();
 		Enemy->ResetTargetAttackContinuity();
 		Enemy->ClearTargetTracking();
 		Enemy->ClearHeardNoise();
@@ -177,6 +179,8 @@ void AEnemyAIController::UpdateControlRotation(float DeltaTime, bool bUpdatePawn
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn()))
 	{
 		Enemy->RefreshTargetTracking();
+		Enemy->TickHitResponse(DeltaTime);
+		if (Enemy->IsHitDirectionConfirmationActive()) return;
 		if (Enemy->GetCombatState() == EEnemyCombatState::Stun)
 		{
 			// 기절 중 지난 시간을 노출 시간으로 소급하지 않는다. 복귀 후 새 관측부터 확인한다.
@@ -277,6 +281,8 @@ void AEnemyAIController::RefreshTeamAndPerceptionFromPawn()
 	}
 
 	SetGenericTeamId(Enemy->GetGenericTeamId());
+	Enemy->ClearAlertClue();
+	Enemy->ClearHitClues();
 	Enemy->ResetTargetAttackContinuity();
 	Enemy->ClearTargetTracking();
 	Enemy->ClearHeardNoise();
@@ -445,6 +451,11 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 
 void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus)
 {
+	if (Stimulus.WasSuccessfullySensed() && Enemy->GetCombatState() != EEnemyCombatState::Stun)
+	{
+		Enemy->OnDirectSightForHitResponse(Actor->GetActorLocation());
+		Enemy->RecordAlertClue(GetWorld()->GetTimeSeconds());
+	}
 	if (Enemy->HasAuthority() && Enemy->GetCombatState() != EEnemyCombatState::Combat)
 	{
 		// 시야 변경 시각을 먼저 기록하여 Task 갱신 사이의 노출/은폐 구간도 보존한다.
@@ -519,6 +530,7 @@ void AEnemyAIController::ObserveInitialSight(AEnemyBase& Enemy, AActor& Target, 
 	{
 		State->LastSeenLocation = Target.GetActorLocation();
 		State->LastSeenAt = GetWorld()->GetTimeSeconds();
+		Enemy.RecordAlertClue(State->LastSeenAt);
 	}
 }
 
@@ -551,7 +563,8 @@ void AEnemyAIController::ObserveInitialHearing(AEnemyBase& Enemy, AActor& Target
 bool AEnemyAIController::ResolveInitialAwarenessAlert()
 {
 	AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn());
-	if (!HasAuthority() || !Enemy || !bInitialAwarenessAlert
+	// 일시 감지 억제/스턴으로 인지 캐시가 비어도 원래 단서의 최소 기한은 유지한다.
+	if (!HasAuthority() || !Enemy || (!bInitialAwarenessAlert && !Enemy->HasAlertClue())
 		|| Enemy->GetCombatState() != EEnemyCombatState::Alert) return false;
 
 	// 같은 대상의 수치는 Task 재선택이나 다른 대상의 우선순위 변경으로 초기화하지 않는다.
@@ -580,6 +593,8 @@ bool AEnemyAIController::ResolveInitialAwarenessAlert()
 			bool bCommitted = false;
 			if (bHeardCompletion)
 			{
+				// 피격 조사 중 청각 수치는 계속 누적하되, 소리만으로 현재 조사/회전을 교체하지 않는다.
+				if (Enemy->HasHitResponse()) return true;
 				bCommitted = Enemy->CommitAlertToCombatFromHearing(Pair.Key.Get(), State.LastHeardLocation, State.LastHeardAt);
 			}
 			else
@@ -594,7 +609,7 @@ bool AEnemyAIController::ResolveInitialAwarenessAlert()
 			|| State.Progress.GetAwareness() > 0.0;
 	}
 	// 수치는 조사 이동·수색 중에도 진행하되, 0이 됐다는 이유로 진행 중인 조사를 취소하지 않는다.
-	const bool bInvestigating = Enemy->IsNoiseInvestigationActive()
+	const bool bInvestigating = Enemy->IsLocationInvestigationActive()
 		|| Enemy->GetPerceptionGoal().Type == EEnemyPerceptionGoalType::InvestigateNoise;
 	if (!bHasPendingAwareness && !bInvestigating && Enemy->CommitAlertToNonCombat()) ResetInitialAwareness();
 	return true;
@@ -636,7 +651,7 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	// 후보 수신과 목적지 채택은 다르다. 보류된 소리로 경계 방향이나 수색 중심을 덮어쓰지 않는다.
 	const FEnemyPerceptionGoal& Goal = Enemy->GetPerceptionGoal();
 	const EEnemyCombatState State = Enemy->GetCombatState();
-	if (Enemy->IsNoiseInvestigationActive()) return;
+	if (Enemy->IsLocationInvestigationActive()) return;
 	FVector SelectedLocation = Goal.Location;
 	if (State == EEnemyCombatState::Stun)
 	{

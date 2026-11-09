@@ -43,12 +43,34 @@ struct OUTLIER_API FEnemyStat : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float BattlePeripheralVisionAngle = 0.0f;
 
-	// 최초 발견의 시각 0→100%, 미인지 100→0%에 걸리는 시간이다. 고정 대기 시간은 두지 않는다.
+	// 최초 발견의 시각 0→100%, 미인지 100→0%에 걸리는 시간이다. 최소 경계 시간과 독립적으로 계산한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.01", Units = "s"))
 	float AwarenessFillDuration = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.01", Units = "s"))
 	float AwarenessDecayDuration = 2.0f;
+
+	// 마지막 유효 단서 이후의 최소 경계 시간이다. 인지 0 이후에 추가로 기다리는 시간이 아니다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.01", Units = "s"))
+	float MinAlertHoldAfterClue = 4.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception|Hit", meta = (ClampMin = "0.01", Units = "s"))
+	float HitClueLifetime = 6.0f;
+	// 해당 명중의 실제 스턴 시간에 더한다. 스턴 해제 후 첫 AI 평가까지의 여유이며 경계 4초와 독립적이다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception|Hit", meta = (ClampMin = "0.01", Units = "s"))
+	float PistolHitClueGraceSeconds = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception|Hit", meta = (ClampMin = "0.01", Units = "s"))
+	float HitDirectionMinDuration = 0.4f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception|Hit", meta = (ClampMin = "0.01", Units = "s"))
+	float HitDirectionMaxDuration = 2.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception|Hit", meta = (ClampMin = "0.01", Units = "s"))
+	float HitReturnReactionInterval = 2.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception|Hit", meta = (ClampMin = "0.01", Units = "s"))
+	float HitSearchDuration = 5.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception|Hit", meta = (ClampMin = "1.0", Units = "deg/s"))
+	float HitRotationSpeed = 240.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception|Hit", meta = (ClampMin = "0.1", Units = "deg"))
+	float HitDirectionMergeAngle = 20.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.01", ClampMax = "1.0"))
 	float HearingAwarenessRatio = 0.25f;
