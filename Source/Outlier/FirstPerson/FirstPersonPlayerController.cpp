@@ -1430,7 +1430,7 @@ bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
 		// Pawn/입력 모드가 바뀌어도 같은 키를 사용하며, 무적 변경은 서버에서만 확정한다.
 		if (Params.Key == EKeys::F1)
 		{
-			ServerDebugTogglePairInvulnerability();
+			if (Params.Event == IE_Pressed) ServerDebugTogglePairInvulnerability();
 			return true;
 		}
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)

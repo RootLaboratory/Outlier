@@ -424,6 +424,18 @@ bool FPairInvulnerabilityDebugKeyTest::RunTest(const FString& Parameters)
 	Key.Event = IE_Repeat;
 	static_cast<APlayerController*>(Controller)->InputKey(Key);
 	TestTrue(TEXT("Holding F1 does not repeatedly toggle protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	Key.Event = IE_Released;
+	TestTrue(TEXT("F1 release is consumed"), static_cast<APlayerController*>(Controller)->InputKey(Key));
+	TestTrue(TEXT("Releasing F1 preserves protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	Key.Event = IE_Pressed;
+	static_cast<APlayerController*>(Controller)->InputKey(Key);
+	TestFalse(TEXT("The next F1 press disables protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	Key.Event = IE_Released;
+	static_cast<APlayerController*>(Controller)->InputKey(Key);
+	TestFalse(TEXT("Release cannot re-enable protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	Key.Event = IE_Pressed;
+	static_cast<APlayerController*>(Controller)->InputKey(Key);
+	TestTrue(TEXT("Another press restores protection for damage checks"), Fixture.ShooterState->IsDebugPairInvulnerable());
 	TestFalse(TEXT("Shooter damage is rejected"), Fixture.Shooter->GetOutlierAbilitySystemComponent()
 		->ApplyDamageToSelf(10.0f, nullptr, nullptr, OutlierDamage::InstantKillTag()));
 	TestFalse(TEXT("Partner damage is rejected"), Fixture.Partner->GetOutlierAbilitySystemComponent()
