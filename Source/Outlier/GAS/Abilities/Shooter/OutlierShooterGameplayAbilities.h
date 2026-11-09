@@ -108,6 +108,8 @@ private:
 	FDelegateHandle EffectRemovedDelegateHandle;
 	bool bEndingReflection = false;
 	bool bCommitCooldownOnEnd = false;
+	// On 사운드를 낸 활성화에서만 Off 사운드를 낸다.
+	bool bPlayedActivationAudio = false;
 };
 
 UCLASS()
@@ -147,6 +149,8 @@ private:
 	FDelegateHandle EffectRemovedDelegateHandle;
 	FTimerHandle ShieldDrainTimerHandle;
 	bool bEndingOvercharge = false;
+	// On 사운드를 낸 활성화에서만 Off 사운드를 낸다.
+	bool bPlayedActivationAudio = false;
 	bool bCommitCooldownOnEnd = false;
 };
 

@@ -69,6 +69,7 @@ AVECDrone::AVECDrone()
 	DetectAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Detect"));
 	HoverAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.Hovering.Loop"));
 	AppearAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Appear"));
+	CombatLoopAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Combat.Loop"));
 
 	bUseControllerRotationPitch = false;
 

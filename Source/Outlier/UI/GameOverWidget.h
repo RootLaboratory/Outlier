@@ -34,6 +34,7 @@ public:
 protected:
 	virtual void NativeOnInitialized() override;
 	virtual void NativeConstruct() override;
+	virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual bool HandleUILayerConfirmed_Implementation() override;
 	virtual bool HandleUILayerEscape_Implementation() override;
 	virtual bool HandleUILayerUp_Implementation() override;
@@ -107,6 +108,7 @@ private:
 	void HandlePresetStageHoverChanged(EOutlierStage Stage, bool bHovered);
 	void ShowStagePreview(EOutlierStage Stage);
 	void HideStagePreview();
+	void HandlePresetMouseLeft();
 	void ClosePresetLoad();
 	void SubmitSelection(EGameOverPendingChoice Choice, int32 LevelIndex = 0);
 

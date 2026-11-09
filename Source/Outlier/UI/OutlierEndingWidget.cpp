@@ -34,6 +34,7 @@ void UOutlierEndingWidget::NativeConstruct()
 void UOutlierEndingWidget::SetEndingSelected(bool bSelected)
 {
 	if (!EndingButton) return;
+	bEndingSelected = bSelected;
 	FButtonStyle Style = OriginalEndingStyle;
 	if (bSelected) Style.SetNormal(Style.Hovered);
 	EndingButton->SetStyle(Style);
@@ -52,9 +53,10 @@ void UOutlierEndingWidget::HandleEndingUnhovered()
 
 bool UOutlierEndingWidget::SelectEndingFromKeyboard()
 {
+	const bool bWasSelected = bEndingSelected;
 	SetEndingSelected(true);
 	if (GetOwningPlayer()) SetUserFocus(GetOwningPlayer());
-	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Hover"));
+	if (!bWasSelected && bEndingSelected) OutlierAudioFeedback::MenuNavigate(this);
 	return true;
 }
 

@@ -1,0 +1,18 @@
+// M_DamageFeedbackHUD의 Custom 노드 본문. UDamageFeedbackLayer 가 매 Tick 파라미터를 넣는다.
+//
+// 머티리얼 설정: Material Domain = User Interface, Blend Mode = Translucent
+// Custom 노드: Output Type = CMOT Float 4
+//   입력 핀 (이름 그대로)
+//     Tex1, Tex2        : TextureSampleParameter2D (Level1Tex / Level2Tex)의 RGBA
+//     CurrentLevel      : ScalarParameter "CurrentLevel" (0~2, 0 = 표시 안 함)
+//     NextLevel         : ScalarParameter "NextLevel"
+//     Blend             : ScalarParameter "Blend"   (Current → Next 진행도 0~1)
+//     Opacity           : ScalarParameter "Opacity" (페이드 아웃 1 → 0)
+//   출력 연결: RGB → Final Color, A → Opacity
+//
+float4 Cur = saturate(1.0 - abs(CurrentLevel - 1.0)) * Tex1
+	+ saturate(1.0 - abs(CurrentLevel - 2.0)) * Tex2;
+float4 Nxt = saturate(1.0 - abs(NextLevel - 1.0)) * Tex1
+	+ saturate(1.0 - abs(NextLevel - 2.0)) * Tex2;
+float4 Final = lerp(Cur, Nxt, saturate(Blend));
+return float4(Final.rgb, Final.a * saturate(Opacity));

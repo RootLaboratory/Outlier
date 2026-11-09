@@ -1,7 +1,9 @@
 #include "Interaction/PanelMover.h"
 
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/StaticMeshComponent.h"
 #include "Curves/CurveFloat.h"
+#include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
 #include "Save/OutlierSaveSubSystem.h"
 
@@ -48,6 +50,8 @@ void APanelMover::BeginPlay()
 
 void APanelMover::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	SetMovingAudio(false);
+
 	if (bProgressIdRegistered)
 	{
 		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
@@ -130,6 +134,8 @@ void APanelMover::StartMove()
 		FinishMove();
 		return;
 	}
+	ApplyMovingMaterials();
+	SetMovingAudio(true);
 	SetActorTickEnabled(true);
 }
 
@@ -154,6 +160,72 @@ void APanelMover::FinishMove()
 	// 커브 끝값과 상관없이 마지막은 도착 위치로 맞춘다.
 	SetActorLocation(TargetLocation);
 	SetActorTickEnabled(false);
+	SetMovingAudio(false);
+	RestoreOriginalMaterials();
+}
+
+void APanelMover::ApplyMovingMaterials()
+{
+	CachedMaterials.Reset();
+
+	auto Apply = [this](UStaticMeshComponent* Mesh, const FPanelMoverMovingMaterial& Setting)
+	{
+		if (!Mesh || !Setting.MovingMaterial
+			|| Setting.MaterialIndex < 0
+			|| Setting.MaterialIndex >= Mesh->GetNumMaterials())
+		{
+			return;
+		}
+
+		FPanelMoverCachedMaterial& Cached = CachedMaterials.AddDefaulted_GetRef();
+		Cached.Mesh = Mesh;
+		Cached.MaterialIndex = Setting.MaterialIndex;
+		Cached.OriginalMaterial = Mesh->GetMaterial(Setting.MaterialIndex);
+		Mesh->SetMaterial(Setting.MaterialIndex, Setting.MovingMaterial);
+	};
+
+	Apply(Supporter, SupporterMovingMaterial);
+	Apply(PanelMesh, LiftPlatformMovingMaterial);
+}
+
+void APanelMover::RestoreOriginalMaterials()
+{
+	// 체크포인트 스냅처럼 이동을 거치지 않은 도착은 캐시가 비어 있어 아무것도 바꾸지 않는다.
+	for (const FPanelMoverCachedMaterial& Cached : CachedMaterials)
+	{
+		if (UStaticMeshComponent* Mesh = Cached.Mesh.Get())
+		{
+			Mesh->SetMaterial(Cached.MaterialIndex, Cached.OriginalMaterial.Get());
+		}
+	}
+	CachedMaterials.Reset();
+}
+
+void APanelMover::SetMovingAudio(bool bEnabled)
+{
+	if (bMovingAudioActive == bEnabled)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	UOutlierAudioSubsystem* Audio = World && World->GetGameInstance()
+		? World->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (!Audio)
+	{
+		return;
+	}
+
+	const FGameplayTag TypeTag = MovingAudioTypeTag.IsValid()
+		? MovingAudioTypeTag
+		: FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Environment"));
+	const FGameplayTag ContextTag = MovingAudioContextTag.IsValid()
+		? MovingAudioContextTag
+		: FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Ambience.Panel.Moving"));
+
+	bMovingAudioActive = bEnabled;
+	Audio->SetLocalEmitterLoop(this, TypeTag, ContextTag, bEnabled);
 }
 
 void APanelMover::SnapToTarget()

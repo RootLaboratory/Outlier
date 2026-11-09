@@ -3,6 +3,12 @@
 bool FOutlierPartnerAbilityConfig::IsValid(FString& OutError) const
 {
 	OutError.Reset();
+	if (!FMath::IsFinite(HackCancelCooldownRefundRate)
+		|| HackCancelCooldownRefundRate < 0.0f || HackCancelCooldownRefundRate > 1.0f)
+	{
+		OutError = TEXT("Hack cancellation cooldown refund rate must be finite and between 0 and 1");
+		return false;
+	}
 	if (!FMath::IsFinite(ShieldHealthRegenRate) || ShieldHealthRegenRate < 0.0f)
 	{
 		OutError = TEXT("Shield health regeneration rate must be finite and non-negative");
@@ -59,6 +65,7 @@ bool FOutlierPartnerAbilityConfig::Equals(const FOutlierPartnerAbilityConfig& Ot
 	return FMath::IsNearlyEqual(EMPCooldown, Other.EMPCooldown)
 		&& FMath::IsNearlyEqual(ShieldCooldown, Other.ShieldCooldown)
 		&& FMath::IsNearlyEqual(HackCooldown, Other.HackCooldown)
+		&& FMath::IsNearlyEqual(HackCancelCooldownRefundRate, Other.HackCancelCooldownRefundRate)
 		&& FMath::IsNearlyEqual(ScanCooldown, Other.ScanCooldown)
 		&& FMath::IsNearlyEqual(ScanDuration, Other.ScanDuration)
 		&& FMath::IsNearlyEqual(ScanRange, Other.ScanRange)

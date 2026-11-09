@@ -142,6 +142,24 @@ AInteractableDoor* AElevatorShaftController::FindSwitchDoor(bool bArrival, FStri
 	return Door;
 }
 
+namespace
+{
+	// 문 이동음은 서버에서만 재생되므로 서버가 가진 엘리베이터 문에 전용 컨텍스트를 지정한다.
+	// 레벨에서 따로 지정한 컨텍스트가 있으면 그대로 둔다.
+	void ApplyElevatorDoorAudioContext(AInteractableDoor* Door)
+	{
+		// 에디터 OnConstruction에서도 Resolve가 불리므로 게임 월드에서만 적용해 레벨 저장값을 건드리지 않는다.
+		if (!Door || !Door->HasAuthority() || !Door->GetWorld() || !Door->GetWorld()->IsGameWorld()
+			|| !Door->DoorMovementAudioContextTags.IsEmpty()) return;
+		const FGameplayTag ElevatorDoorTag = FGameplayTag::RequestGameplayTag(
+			TEXT("Audio.Context.Object.Elevator.door"), false);
+		if (ElevatorDoorTag.IsValid())
+		{
+			Door->DoorMovementAudioContextTags.AddTag(ElevatorDoorTag);
+		}
+	}
+}
+
 void AElevatorShaftController::ResolveEntranceActors()
 {
 	EntranceSection = FindEntranceSection();
@@ -159,6 +177,7 @@ void AElevatorShaftController::ResolveEntranceActors()
 			EntranceDoor = Door;
 		}
 	}
+	ApplyElevatorDoorAudioContext(EntranceDoor);
 }
 
 void AElevatorShaftController::ResolveArrivalActors()
@@ -171,6 +190,7 @@ void AElevatorShaftController::ResolveArrivalActors()
 		ArrivalSection->RefreshChildActors();
 		ArrivalDoor = ArrivalSection->GetEntranceDoor();
 	}
+	ApplyElevatorDoorAudioContext(ArrivalDoor);
 }
 
 void AElevatorShaftController::BeginPlay()

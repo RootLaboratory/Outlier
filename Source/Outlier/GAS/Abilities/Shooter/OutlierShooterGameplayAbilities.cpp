@@ -446,6 +446,7 @@ void UOutlierShooterBulletReflectionAbility::ActivateAbility(
 	const UOutlierAbilityAudioSettings* AudioSettings = GetDefault<UOutlierAbilityAudioSettings>();
 	PlayShooterAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterReflectionOn);
 	PlayShooterAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterReflectionLoop);
+	bPlayedActivationAudio = true;
 }
 
 bool UOutlierShooterBulletReflectionAbility::EndBulletReflection(bool bCommitCooldown)
@@ -488,9 +489,14 @@ void UOutlierShooterBulletReflectionAbility::EndAbility(
 	}
 
 	ShooterAbilitySystem.Reset();
-	PlayShooterAbilityAudioAtLocationFromServer(
-		GetShooterCharacter(),
-		GetDefault<UOutlierAbilityAudioSettings>()->ShooterReflectionOff);
+	// 발동 도중 실패로 끝난 경우 On 없이 Off만 들리지 않도록 막는다.
+	if (bPlayedActivationAudio)
+	{
+		PlayShooterAbilityAudioAtLocationFromServer(
+			GetShooterCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->ShooterReflectionOff);
+	}
+	bPlayedActivationAudio = false;
 	bCommitCooldownOnEnd = false;
 	bEndingReflection = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
@@ -588,6 +594,7 @@ void UOutlierShooterWeaponOverchargeAbility::ActivateAbility(
 	const UOutlierAbilityAudioSettings* AudioSettings = GetDefault<UOutlierAbilityAudioSettings>();
 	PlayShooterAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterOverchargeOn);
 	PlayShooterAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterOverchargeLoop);
+	bPlayedActivationAudio = true;
 
 	constexpr float DrainInterval = 0.05f;
 	Shooter->GetWorldTimerManager().SetTimer(
@@ -648,9 +655,14 @@ void UOutlierShooterWeaponOverchargeAbility::EndAbility(
 	}
 
 	ShooterAbilitySystem.Reset();
-	PlayShooterAbilityAudioAtLocationFromServer(
-		Shooter,
-		GetDefault<UOutlierAbilityAudioSettings>()->ShooterOverchargeOff);
+	// 발동 도중 실패로 끝난 경우 On 없이 Off만 들리지 않도록 막는다.
+	if (bPlayedActivationAudio)
+	{
+		PlayShooterAbilityAudioAtLocationFromServer(
+			Shooter,
+			GetDefault<UOutlierAbilityAudioSettings>()->ShooterOverchargeOff);
+	}
+	bPlayedActivationAudio = false;
 	bCommitCooldownOnEnd = false;
 	bEndingOvercharge = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);

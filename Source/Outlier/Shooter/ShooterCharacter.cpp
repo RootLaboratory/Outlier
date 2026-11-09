@@ -3238,7 +3238,10 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		{
 			OutlierAbilitySystemComponent->NotifyShooterStealthDamage();
 		}
-		ClientShowDamageFeedback(Request.DamageOrigin);
+		const UOutlierVitalAttributeSet* VitalSet = OutlierAbilitySystemComponent
+			? OutlierAbilitySystemComponent->GetSet<UOutlierVitalAttributeSet>()
+			: nullptr;
+		ClientShowDamageFeedback(Request.DamageOrigin, VitalSet ? VitalSet->GetLastHealthDamage() : 0.0f);
 	}
 
 	return bApplied ? DamageAmount : 0.0f;

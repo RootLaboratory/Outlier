@@ -35,6 +35,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Event|TTS")
 	bool SendTTS(FGameplayTag TTSTag);
 
+	/** 현재 로컬 플레이어의 TTS 음성/자막, Input/Goal, GIF와 대기 요청을 모두 취소한다. 체인은 실행하지 않는다. */
+	UFUNCTION(BlueprintCallable, Category = "Event")
+	void ClearPresentation();
+
 	bool TryGetEventData(FGameplayTag EventTag, FOutlierEventDataRow& OutData);
 
 	/** 이벤트 태그가 아닌 오디오 컨텍스트 태그로 TTS 행을 찾는다. */
@@ -80,7 +84,6 @@ public:
 private:
 	void LoadConfiguredTables();
 	bool ApplyDataAsset(UOutlierEventDataAsset* DataAsset);
-	void ClearPresentation();
 	void HandlePlayerRoleChanged(AOutlierPlayerState* PlayerState);
 	FGameplayTag ResolveUpperTag(const FOutlierEventDataRow& Event) const;
 	bool SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, FGameplayTag OriginEventTag = FGameplayTag());

@@ -35,10 +35,17 @@ public:
 	FGameplayAttributeData IncomingDamage;
 	OUTLIER_ATTRIBUTE_ACCESSORS(UOutlierVitalAttributeSet, IncomingDamage)
 
+	// 서버 전용. 마지막 IncomingDamage 처리에서 실드를 거친 뒤 Health 에 실제로 들어간 피해량.
+	// IncomingDamage 실행마다 0 으로 초기화되므로, 호출자는 ApplyDamageToSelf 성공 직후 읽는다. 복제하지 않는다.
+	float GetLastHealthDamage() const { return LastHealthDamage; }
+
 protected:
 	UFUNCTION()
 	void OnRep_Health(const FGameplayAttributeData& OldHealth);
 
 	UFUNCTION()
 	void OnRep_MaxHealth(const FGameplayAttributeData& OldMaxHealth);
+
+private:
+	float LastHealthDamage = 0.0f;
 };
