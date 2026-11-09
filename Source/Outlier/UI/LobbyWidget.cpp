@@ -423,22 +423,23 @@ void ULobbyWidget::MoveLocalGuestPreview(int32 Direction)
 		return;
 	}
 
+	const ELobbyGuestWidgetState PreviousState = LocalGuestPreviewState;
 	if (Direction < 0)
 	{
 		SetLocalGuestPreviewState(
 			LocalGuestPreviewState == ELobbyGuestWidgetState::Shooter
 				? ELobbyGuestWidgetState::Default
 				: ELobbyGuestWidgetState::Shooter);
-		return;
 	}
-
-	if (Direction > 0)
+	else if (Direction > 0)
 	{
 		SetLocalGuestPreviewState(
 			LocalGuestPreviewState == ELobbyGuestWidgetState::Partner
 				? ELobbyGuestWidgetState::Default
 				: ELobbyGuestWidgetState::Partner);
 	}
+
+	if (LocalGuestPreviewState != PreviousState) OutlierAudioFeedback::MenuNavigate(this);
 }
 
 bool ULobbyWidget::TryConfirmLocalGuestPreview()

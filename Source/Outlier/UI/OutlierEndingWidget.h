@@ -59,4 +59,5 @@ private:
 	bool SelectEndingFromKeyboard();
 	void SetEndingSelected(bool bSelected);
 	FButtonStyle OriginalEndingStyle;
+	bool bEndingSelected = false;
 };
