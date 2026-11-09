@@ -138,19 +138,32 @@ bool UOutlierAudioSubsystem::PlayLocalVoice(FGameplayTag SoundTag, int32 Priorit
 	{
 		return true;
 	}
-	FVoiceRequest& Request = VoiceQueue.AddDefaulted_GetRef();
+	FVoiceRequest Request;
 	Request.Id = NextVoiceRequestId++;
 	Request.SoundTag = SoundTag;
 	Request.RequestTag = RequestTag;
 	Request.Listener = Listener;
 	Request.World = World;
 	Request.Priority = Priority;
-	if (ActiveVoice.Id != 0 && Priority < ActiveVoice.Priority)
+	AdmitVoiceRequest(Request);
+	StartNextVoice();
+	return true;
+}
+
+void UOutlierAudioSubsystem::AdmitVoiceRequest(const FVoiceRequest& Request)
+{
+	// 새 요청보다 우선순위가 같거나 낮은 대기 항목은 버린다.
+	// 재생된 적이 없으므로 완료 알림도 체인도 발생하지 않는다.
+	VoiceQueue.RemoveAll([Priority = Request.Priority](const FVoiceRequest& Queued)
+	{
+		return Queued.Priority >= Priority;
+	});
+	VoiceQueue.Add(Request);
+	// 같거나 높은 우선순위면 재생 중인 음성을 중단한다(bCompleted=false라 체인이 이어지지 않는다).
+	if (ActiveVoice.Id != 0 && Request.Priority <= ActiveVoice.Priority)
 	{
 		FinishActiveVoice(false);
 	}
-	StartNextVoice();
-	return true;
 }
 
 void UOutlierAudioSubsystem::StartNextVoice()
