@@ -265,6 +265,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FOutlierShooterPresentationAnimationTest;
 	friend class FOutlierProceduralEquipReferenceOrderTest;
 	friend class FOutlierSuitTransitionTest;
+	friend class FOutlierSuitTeleportPlacementTest;
 	friend class FOutlierSlideSuitRecoveryTest;
 	friend class FOutlierTransitionRecoveryTest;
 	friend class FOutlierMeleeAttackLifecycleTest;

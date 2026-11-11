@@ -196,38 +196,61 @@ bool AShooterCharacter::TeleportSuitTransitionPartner()
 		return false;
 	}
 
-	// 1. 화면이 가려진 시점의 Shooter 위치/Yaw로 목적지를 정한다. Pitch/Roll은 높이에 영향을 주지 않는다.
+	// 1. 암전 시점의 Shooter를 기준으로 설정 위치 -> 왼쪽 -> 뒤쪽 -> 앞쪽 순서로 후보를 정한다.
+	// 대체 위치도 설정된 수평 거리/높이를 유지한다. Pitch/Roll은 높이에 영향을 주지 않는다.
 	const FRotator ShooterYaw(0.0f, GetActorRotation().Yaw, 0.0f);
-	const FVector Destination = GetActorLocation() + ShooterYaw.RotateVector(Interaction->PartnerTeleportOffset);
+	const FVector Origin = GetActorLocation();
+	const FVector Offset = Interaction->PartnerTeleportOffset;
+	const double Distance = Offset.Size2D();
+	const FVector CandidateOffsets[] = {
+		Offset, FVector(0.0f, -Distance, Offset.Z),
+		FVector(-Distance, 0.0f, Offset.Z), FVector(Distance, 0.0f, Offset.Z)
+	};
 	const FRotator PartnerRotation = Partner->GetActorRotation();
-	// 2. Pawn끼리 충돌을 무시하는 설정에서도 두 캡슐이 겹친 위치는 사용하지 않는다.
 	const UCapsuleComponent* ShooterCapsule = GetCapsuleComponent();
 	const UCapsuleComponent* PartnerCapsule = Partner->GetCapsuleComponent();
 	const float CombinedRadius = ShooterCapsule->GetScaledCapsuleRadius() + PartnerCapsule->GetScaledCapsuleRadius();
 	const float CombinedHalfHeight = ShooterCapsule->GetScaledCapsuleHalfHeight() + PartnerCapsule->GetScaledCapsuleHalfHeight();
-	if (FVector::DistSquared2D(Destination, GetActorLocation()) < FMath::Square(CombinedRadius)
-		&& FMath::Abs(Destination.Z - GetActorLocation().Z) < CombinedHalfHeight)
-	{
-		return false;
-	}
-	// 3. 실제 캡슐/충돌 응답으로 목적지를 검사한다. 막힌 곳을 엔진이 멀리 보정하면 '옆으로 합류'가 아니므로 취소한다.
-	const FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SuitPartnerTeleport), false, Partner);
+	const FCollisionShape Shape = PartnerCapsule->GetCollisionShape();
+	const ECollisionChannel Channel = PartnerCapsule->GetCollisionObjectType();
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SuitPartnerTeleport), false, Partner);
+	QueryParams.AddIgnoredActor(this);
 	const FCollisionResponseParams ResponseParams(PartnerCapsule->GetCollisionResponseToChannels());
-	if (GetWorld()->OverlapBlockingTestByChannel(Destination, PartnerRotation.Quaternion(),
-		PartnerCapsule->GetCollisionObjectType(), PartnerCapsule->GetCollisionShape(), QueryParams, ResponseParams))
+	// 2. 실제 Partner 캡슐이 시작부터 벽 안에 있으면 경로를 검증할 수 없으므로 취소한다.
+	// 두 Pawn은 검사에서 제외한다. Partner의 이전 위치와 무관하게 Shooter 옆 공간만 검증한다.
+	if (GetWorld()->OverlapBlockingTestByChannel(Origin, PartnerRotation.Quaternion(), Channel, Shape, QueryParams, ResponseParams))
 	{
 		return false;
 	}
-	// 4. 검증한 좌표로만 이동한다. 공통 TeleportTo 경로가 이동 정지와 최초 Flying 복원 정보를 유지한다.
-	if (!Partner->TeleportTo(Destination, PartnerRotation, false, true))
+	for (const FVector& CandidateOffset : CandidateOffsets)
 	{
-		return false;
+		const FVector Destination = Origin + ShooterYaw.RotateVector(CandidateOffset);
+		// 3. Pawn 충돌 무시 설정에서도 서로 겹치는 후보는 제외한다.
+		if (FVector::DistSquared2D(Destination, Origin) < FMath::Square(CombinedRadius)
+			&& FMath::Abs(Destination.Z - Origin.Z) < CombinedHalfHeight)
+		{
+			continue;
+		}
+		// 목적지가 비어 있어도 사이에 벽이 있으면 제외한다. 중심선 대신 캡슐 전체 폭으로 검사한다.
+		if (GetWorld()->OverlapBlockingTestByChannel(Destination, PartnerRotation.Quaternion(), Channel, Shape, QueryParams, ResponseParams)
+			|| GetWorld()->SweepTestByChannel(Origin, Destination, PartnerRotation.Quaternion(), Channel, Shape, QueryParams, ResponseParams))
+		{
+			continue;
+		}
+		// 4. 검증한 첫 좌표로만 이동한다. 엔진의 목적지 보정으로 벽 너머에 배치되지 않게 한다.
+		// 공통 TeleportTo 경로가 이동 정지와 최초 Flying 복원 정보를 유지한다.
+		if (!Partner->TeleportTo(Destination, PartnerRotation, false, true))
+		{
+			return false;
+		}
+		Partner->SetBase(nullptr);
+		Partner->GetCharacterMovement()->StopMovementImmediately();
+		SuitTransitionPartnerDestination = Partner->GetActorLocation();
+		Partner->ForceNetUpdate();
+		return true;
 	}
-	Partner->SetBase(nullptr);
-	Partner->GetCharacterMovement()->StopMovementImmediately();
-	SuitTransitionPartnerDestination = Partner->GetActorLocation();
-	Partner->ForceNetUpdate();
-	return true;
+	// 어느 쪽도 안전하지 않으면 호출 측에서 지급/소비 없이 전환을 취소하고 예약을 해제한다.
+	return false;
 }
 
 float AShooterCharacter::GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase) const

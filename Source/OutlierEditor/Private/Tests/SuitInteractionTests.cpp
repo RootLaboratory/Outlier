@@ -1441,6 +1441,111 @@ bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierSuitTeleportPlacementTest,
+	"Outlier.Interaction.Suit.TeleportPlacement", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierSuitTeleportPlacementTest::RunTest(const FString& Parameters)
+{
+	FScopedSuitInteractionTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) { return false; }
+	UWorld* World = TestWorld.World;
+	const FVector Origin(0.0f, 0.0f, 1000.0f);
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	if (!TestNotNull(TEXT("Placement Shooter class"), ShooterClass)
+		|| !TestNotNull(TEXT("Placement Partner class"), PartnerClass)) { return false; }
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AShooterCharacter* Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass, Origin, FRotator::ZeroRotator, SpawnParameters);
+	APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>(PartnerClass, Origin + FVector(1000.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParameters);
+	ASuitInteractionTestActor* Suit = World->SpawnActor<ASuitInteractionTestActor>();
+	if (!TestNotNull(TEXT("Placement Shooter"), Shooter)
+		|| !TestNotNull(TEXT("Placement Partner"), Partner) || !TestNotNull(TEXT("Placement Suit"), Suit)) { return false; }
+	Shooter->SuitTransitionPartner = Partner;
+	Shooter->SuitTransitionInteraction = Suit;
+	Suit->SetPartnerTeleportOffset(FVector(0.0f, 200.0f, 0.0f));
+
+	// 최종 좌표는 비어 있지만 중간에 얇은 벽이 있는 배치를 만든다. 반대편으로 관통하면 실패해야 한다.
+	auto AddWall = [World, Origin](const FVector& Offset, const FVector& Extent)
+	{
+		AActor* Wall = World->SpawnActor<AActor>();
+		UBoxComponent* Box = NewObject<UBoxComponent>(Wall);
+		Wall->SetRootComponent(Box);
+		Box->SetBoxExtent(Extent);
+		Box->SetCollisionProfileName(TEXT("BlockAll"));
+		Box->SetMobility(EComponentMobility::Movable);
+		Box->RegisterComponent();
+		Wall->SetActorLocation(Origin + Offset);
+		return Wall;
+	};
+	auto ExpectPlacement = [this, Shooter, Partner, Origin](const TCHAR* Label, const FVector& Offset)
+	{
+		TestTrue(Label, Shooter->TeleportSuitTransitionPartner());
+		TestTrue(FString(Label) + TEXT(" selects the expected side"), Partner->GetActorLocation().Equals(Origin + Offset, 0.1f));
+	};
+	ExpectPlacement(TEXT("Open space uses preferred right side"), FVector(0.0f, 200.0f, 0.0f));
+	AActor* RightWall = AddWall(FVector(0.0f, 100.0f, 0.0f), FVector(75.0f, 3.0f, 500.0f));
+	const UCapsuleComponent* Capsule = Partner->GetCapsuleComponent();
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SuitTeleportPlacementTest), false, Partner);
+	QueryParams.AddIgnoredActor(Shooter);
+	const FCollisionResponseParams ResponseParams(Capsule->GetCollisionResponseToChannels());
+	TestFalse(TEXT("Thin wall leaves preferred destination itself empty"), World->OverlapBlockingTestByChannel(
+		Origin + FVector(0.0f, 200.0f, 0.0f), FQuat::Identity, Capsule->GetCollisionObjectType(),
+		Capsule->GetCollisionShape(), QueryParams, ResponseParams));
+	ExpectPlacement(TEXT("Thin right wall falls back to left"), FVector(0.0f, -200.0f, 0.0f));
+	AActor* LeftWall = AddWall(FVector(0.0f, -100.0f, 0.0f), FVector(75.0f, 3.0f, 500.0f));
+	ExpectPlacement(TEXT("Both sides blocked falls back behind"), FVector(-200.0f, 0.0f, 0.0f));
+	AActor* BackWall = AddWall(FVector(-100.0f, 0.0f, 0.0f), FVector(3.0f, 75.0f, 500.0f));
+	ExpectPlacement(TEXT("Three sides blocked falls back in front"), FVector(200.0f, 0.0f, 0.0f));
+	AActor* FrontWall = AddWall(FVector(100.0f, 0.0f, 0.0f), FVector(3.0f, 75.0f, 500.0f));
+	const FVector BeforeRejectedMove = Partner->GetActorLocation();
+	TestFalse(TEXT("Four walls reject every candidate"), Shooter->TeleportSuitTransitionPartner());
+	TestEqual(TEXT("Rejected placement preserves Partner position"), Partner->GetActorLocation(), BeforeRejectedMove);
+	for (AActor* Wall : { RightWall, LeftWall, BackWall, FrontWall }) { Wall->Destroy(); }
+
+	// 중심선만 통과해도 캡슐 가장자리가 걸리는 기둥은 거부한다. 실제 이동 충돌 폭을 검사한다.
+	AActor* EdgeObstacle = AddWall(FVector(Capsule->GetScaledCapsuleRadius() * 0.75f, 100.0f, 0.0f), FVector(2.0f, 3.0f, 500.0f));
+	FHitResult Hit;
+	TestFalse(TEXT("Edge obstacle does not block center ray"), World->LineTraceSingleByChannel(
+		Hit, Origin, Origin + FVector(0.0f, 200.0f, 0.0f), Capsule->GetCollisionObjectType(), QueryParams, ResponseParams));
+	ExpectPlacement(TEXT("Capsule edge obstacle falls back to left"), FVector(0.0f, -200.0f, 0.0f));
+	EdgeObstacle->Destroy();
+
+	AActor* InitialOverlap = AddWall(FVector::ZeroVector, FVector(3.0f, 3.0f, 500.0f));
+	const FVector BeforeInitialOverlap = Partner->GetActorLocation();
+	TestFalse(TEXT("Initial world penetration rejects placement"), Shooter->TeleportSuitTransitionPartner());
+	TestEqual(TEXT("Initial penetration preserves Partner"), Partner->GetActorLocation(), BeforeInitialOverlap);
+	InitialOverlap->Destroy();
+
+	// 호출 기준은 Shooter다. 멀리 있던 Partner와 Shooter 사이의 벽은 합류를 막지 않는다.
+	AActor* DistantWall = AddWall(FVector(500.0f, 0.0f, 0.0f), FVector(3.0f, 500.0f, 500.0f));
+	Partner->TeleportTo(Origin + FVector(1000.0f, 0.0f, 0.0f), FRotator::ZeroRotator, false, true);
+	ExpectPlacement(TEXT("Wall at old Partner location does not block summon"), FVector(0.0f, 200.0f, 0.0f));
+	DistantWall->Destroy();
+	Shooter->SetActorRotation(FRotator(0.0f, 90.0f, 0.0f));
+	ExpectPlacement(TEXT("Shooter yaw rotates preferred offset"), FVector(-200.0f, 0.0f, 0.0f));
+	RightWall = AddWall(FVector(-100.0f, 0.0f, 0.0f), FVector(3.0f, 75.0f, 500.0f));
+	ExpectPlacement(TEXT("Shooter yaw also rotates fallback"), FVector(200.0f, 0.0f, 0.0f));
+	RightWall->Destroy();
+	// CharacterMovement가 유지하는 실제 바닥 간격에서 합류를 검증한다. 높이 오프셋도 대체 위치에 유지한다.
+	Shooter->SetActorRotation(FRotator::ZeroRotator);
+	const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+	const float FloorDistance = (UCharacterMovementComponent::MIN_FLOOR_DIST + UCharacterMovementComponent::MAX_FLOOR_DIST) * 0.5f;
+	AActor* Floor = AddWall(FVector(0.0f, 0.0f, -HalfHeight - FloorDistance - 10.0f), FVector(1000.0f, 1000.0f, 10.0f));
+	ExpectPlacement(TEXT("Normal grounded floor clearance permits summon"), FVector(0.0f, 200.0f, 0.0f));
+	Suit->SetPartnerTeleportOffset(FVector(0.0f, 250.0f, 40.0f));
+	RightWall = AddWall(FVector(0.0f, 125.0f, 0.0f), FVector(75.0f, 3.0f, 500.0f));
+	ExpectPlacement(TEXT("Fallback preserves configured distance and height"), FVector(0.0f, -250.0f, 40.0f));
+	RightWall->Destroy();
+	Floor->Destroy();
+	Suit->SetPartnerTeleportOffset(FVector::ZeroVector);
+	TestFalse(TEXT("Zero offset cannot overlap Shooter"), Shooter->TeleportSuitTransitionPartner());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierSuitTransitionTest,
 	"Outlier.Interaction.Suit.Transition",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
