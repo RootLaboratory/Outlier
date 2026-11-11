@@ -10,6 +10,72 @@ class AActor;
 class ULevel;
 class AController;
 
+// 경로 전체가 아니라 두 개체가 비켜 갈 여유가 없는 구간만 독점한다. 좌표는 캡슐 중심이다.
+struct FEnemyCombatCorridor
+{
+	FVector Start = FVector::ZeroVector;
+	FVector End = FVector::ZeroVector;
+	bool bEntered = false;
+};
+
+struct FEnemyCombatReservation
+{
+	TWeakObjectPtr<AController> Controller;
+	int32 Generation = 0;
+	int32 Lease = 0;
+	uint64 Episode = 0;
+	uint64 Request = 0;
+	FVector Destination = FVector::ZeroVector;
+	FVector Extent = FVector::ZeroVector;
+	FVector ProgressLocation = FVector::ZeroVector;
+	FVector ObservationCenter = FVector::ZeroVector;
+	TArray<FEnemyCombatCorridor> Corridors;
+	TArray<FVector> Route;
+	double FurthestRouteProgress = 0.0;
+	double ExpiresAt = 0.0;
+};
+
+// 같은 목표 회차에서는 재요청해도 순번을 유지한다. 성공/실패 결과의 소유권은 Request로 따로 구분한다.
+struct FEnemyCombatReservationRequest
+{
+	FEnemyCombatReservation Demand;
+	uint64 Ticket = 0;
+	double WaitingSince = -1.0;
+	double PriorityUntil = 0.0;
+	double NextReadinessCheckAt = 0.0;
+	bool bAttackReady = false;
+	bool bWaiting = false;
+	bool bActive = false;
+};
+
+// 이동 허가가 아니라 비켜 줄 경로를 평가하라는 요청이다. 실제 예약과 충돌 검사는 별도로 통과해야 한다.
+struct FEnemyCombatYieldContext
+{
+	TWeakObjectPtr<AEnemyBase> Requester;
+	FVector Start = FVector::ZeroVector;
+	FVector End = FVector::ZeroVector;
+	uint64 Serial = 0;
+};
+
+struct FEnemyCombatYieldRequest
+{
+	FEnemyCombatYieldContext Context;
+	TWeakObjectPtr<AController> RequesterController;
+	TWeakObjectPtr<AController> BlockerController;
+	TWeakObjectPtr<AActor> RequesterTarget;
+	TWeakObjectPtr<AActor> BlockerTarget;
+	int32 RequesterGeneration = 0;
+	int32 RequesterLease = 0;
+	int32 BlockerGeneration = 0;
+	int32 BlockerLease = 0;
+	uint64 RequesterEpisode = 0;
+	double WaitingSince = -1.0;
+	double BlockerPriorityUntil = 0.0;
+	double RequesterPriorityUntil = 0.0;
+	bool bApproved = false;
+	double ExpiresAt = 0.0;
+};
+
 // 순찰 예약은 수색 회차와 분리한다. 같은 Actor의 새 대여나 Controller 교체도 이전 예약과 구분한다.
 struct FEnemyPatrolDestination
 {
@@ -82,6 +148,7 @@ public:
 	void NotifyRoomCombatEnded(FGameplayTag RoomTag);
 	bool IsRoomInCombat(FGameplayTag RoomTag) const;
 	bool HasActiveCombat() const;
+	void GetActiveCombatEnemies(TArray<AEnemyBase*>& OutEnemies) const;
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void SetActiveRoomTargetForTesting(FGameplayTag RoomTag, const FVector& TargetLocation,
@@ -122,7 +189,24 @@ public:
 	// 이전 부모 Task의 Exit가 새 풀 대여의 예약을 지우지 않도록 수명을 확인한다.
 	void ReleasePatrolDestination(AEnemyBase* Enemy, int32 Generation, int32 Lease, AController* Controller);
 
+	uint64 BeginCombatReservationRequest(AEnemyBase* Enemy, uint64 Episode);
+	bool IsCombatReservationRequestCurrent(const AEnemyBase* Enemy, uint64 Request) const;
+	bool TryReserveCombatDestination(AEnemyBase* Enemy, uint64 Request, const FVector& Destination,
+		const TArray<FEnemyCombatCorridor>& Corridors, const TArray<FVector>& Route, float Clearance);
+	bool IsCombatSegmentReserved(const AEnemyBase* Enemy, uint64 Request, const FVector& Start, const FVector& End) const;
+	bool RefreshCombatReservation(AEnemyBase* Enemy, uint64 Request);
+	bool IsCombatReservationCurrent(const AEnemyBase* Enemy, uint64 Request) const;
+	// 0은 Pawn의 명시적 수명 종료에만 사용한다. Task/콜백은 반드시 자신이 받은 Request를 전달한다.
+	void ReleaseCombatReservation(AEnemyBase* Enemy, uint64 Request = 0);
+	bool RequestCombatYield(AEnemyBase* Requester, AEnemyBase* Blocker, const FVector& Start, const FVector& End);
+	bool GetCombatYieldContext(const AEnemyBase* Enemy, FEnemyCombatYieldContext& Out) const;
+	void FinishCombatYield(const AEnemyBase* Enemy, uint64 Serial);
+	double GetCombatObservationCrowding(const AEnemyBase* Enemy, const FVector& Center, const FVector& Candidate) const;
+
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FEnemyF4ReservationTest;
+#endif
 	void BroadcastSharedTargetContact(FGameplayTag RoomTag, const FVector& TargetLocation, bool bNewInformation = true);
 	void BroadcastSharedTargetLost(FGameplayTag RoomTag);
 	void CompactTargetContactState(FGameplayTag RoomTag, FEnemyRoomTargetContactState& ContactState);
@@ -134,6 +218,12 @@ private:
 	void CompactRegisteredEnemies(FGameplayTag RoomTag);
 	void CompactAllRegisteredEnemies();
 	void HandleArenaReleased();
+	void CompactCombatReservations();
+	bool IsCombatReservationOwnerCurrent(const AEnemyBase* Enemy, const FEnemyCombatReservation& Reservation) const;
+	bool IsCombatYieldCurrent(const AEnemyBase* Blocker, const FEnemyCombatYieldRequest& Request) const;
+	void RefreshCombatReadiness(AEnemyBase* Enemy, FEnemyCombatReservationRequest& Request);
+	bool HasCombatContenderPriority(const AEnemyBase* AOwner, const FEnemyCombatReservationRequest& A,
+		const AEnemyBase* BOwner, const FEnemyCombatReservationRequest& B) const;
 
 	TSet<FGameplayTag> CombatRooms;
 	// 직접 시야가 끊겨도 새 증원이 Combat에 합류할 수 있도록 마지막 전투 위치를 보존한다.
@@ -146,6 +236,12 @@ private:
 	// 한 회차에서 사전 선정한 두 지점만 보관한다. 풀 반환/수색 종료 시 해제한다.
 	TMap<TWeakObjectPtr<AEnemyBase>, TArray<FVector>> SearchDestinations;
 	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyPatrolDestination> PatrolDestinations;
+	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyCombatReservation> CombatDestinations;
+	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyCombatReservationRequest> CombatReservationRequests;
+	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyCombatYieldRequest> CombatYieldRequests;
+	uint64 NextCombatYieldSerial = 0;
+	uint64 NextCombatReservationRequest = 0;
+	uint64 NextCombatReservationTicket = 0;
 	uint64 NextSharedRevision = 0;
 
 	// 방의 모든 직접 시야가 끊긴 뒤 이 시간이 지나면 마지막 타겟의 현재 위치를 한 번 공유한다.

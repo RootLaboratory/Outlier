@@ -33,6 +33,7 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/AutoTurret.h"
+#include "GenericTeamAgentInterface.h"
 #include "OutlierNetUtils.h"
 #include "Net/UnrealNetwork.h"
 #include "Weapon/WeaponCoreRow.h"
@@ -254,6 +255,20 @@ void ARangedWeaponBase::ForcePostBurstCooldown()
 	}
 	StopAttack();
 	StartPostBurstCooldown();
+}
+
+void ARangedWeaponBase::ForceTargetAttackPostBurstCooldown()
+{
+	if (!HasAuthority() || !GetWorld() || IsOnPostBurstCooldown())
+	{
+		return;
+	}
+	const FTimerManager& Timers = GetWorld()->GetTimerManager();
+	const double ReadyAt = FMath::Max(FMath::Max(PreservedAttackReadyAt, LastAttackGroupReadyAt),
+		GetWorld()->GetTimeSeconds() + FMath::Max(0.0f, Timers.GetTimerRemaining(AttackCooldownTimerHandle)));
+	// 기존 강제 종료는 탄환 간격도 지운다. 회복을 시작한 뒤 원래 발사 기한만 복원한다.
+	ForcePostBurstCooldown();
+	PreservedAttackReadyAt = ReadyAt;
 }
 
 bool ARangedWeaponBase::CanReload() const
@@ -625,6 +640,17 @@ bool ARangedWeaponBase::ResolveShotTransform(FName FiredMuzzleSocketName, FTrans
 	FVector ViewLocation;
 	FRotator ViewRotation;
 	WeaponOwner->GetController()->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	if (const AAutoTurret* Turret = Cast<AAutoTurret>(WeaponOwner);
+		Turret && !Turret->IsEnemyPossessed() && !FiredMuzzleSocketName.IsNone())
+	{
+		// 일반 터렛도 각 탄의 원점은 실제 총구다. 조준 방향은 기존 헤드 회전 결과를 유지한다.
+		const IWeaponMuzzleProvider* Provider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
+		const USkeletalMeshComponent* Mesh = Provider ? Provider->GetWeaponMuzzleComponent(false) : nullptr;
+		if (!Mesh || !Mesh->DoesSocketExist(FiredMuzzleSocketName)) return false;
+		ViewLocation = Mesh->GetSocketLocation(FiredMuzzleSocketName);
+		OutTransform = FTransform(ViewRotation, ViewLocation);
+		return !OutTransform.ContainsNaN();
+	}
 	if (const AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner))
 	{
 		// 사거리/사선 검사와 실제 발사는 이 경로를 공유한다. AI 조준이 고른 원점을 그대로 사용한다.
@@ -725,6 +751,38 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		bHit = bShooterWallShot ? TraceShooterShot(Start, End, Params, Hit)
 			: GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_PhysicsBody, Params);
 	}
+	const AEnemyBase* AttackingEnemy = Cast<AEnemyBase>(WeaponOwner);
+	const bool bTargetAttemptShot = AttackingEnemy && AttackingEnemy->IsTargetAttemptActive();
+	if (bTargetAttemptShot)
+	{
+		// 자격 검사에서 환경을 건너뛴 것과 실제 탄환을 분리한다.
+		// 실제 산포 방향에서 Visibility 전용 벽도 가장 가까운 충돌로 종료한다.
+		FCollisionQueryParams EnvironmentParams = Params;
+		bool bEnvironmentResolved = false;
+		for (int32 Check = 0; Check < 16; ++Check)
+		{
+			FHitResult EnvironmentHit;
+			if (!GetWorld()->LineTraceSingleByChannel(EnvironmentHit, Start, bHit ? Hit.ImpactPoint : End,
+				ECC_Visibility, EnvironmentParams))
+			{
+				bEnvironmentResolved = true;
+				break;
+			}
+			if (!Cast<ACharacter>(EnvironmentHit.GetActor()))
+			{
+				Hit = EnvironmentHit;
+				bHit = true;
+				bEnvironmentResolved = true;
+				break;
+			}
+			EnvironmentParams.AddIgnoredActor(EnvironmentHit.GetActor());
+		}
+		if (!bEnvironmentResolved)
+		{
+			// 산포 후 경로를 끝까지 확인하지 못하면 장애물을 관통하는 피해를 만들지 않는다.
+			return;
+		}
+	}
 
 	FHitResult SpreadVisibilityHit;
 	const bool bSpreadPathBlocked = AutoAimTarget && bHit && Hit.GetActor() == AutoAimTarget
@@ -813,7 +871,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 
 		// Visibility만 막는 환경은 표면 효과만 낸다. 피해 채널이 Ignore인 약점/폭발물에
 		// 환경 보완 검사로 새 피해 경로를 열지 않는다.
-		const bool bDamageChannelBlocked = !bShooterWallShot || (Hit.GetComponent()
+		const bool bDamageChannelBlocked = (!bShooterWallShot && !bTargetAttemptShot) || (Hit.GetComponent()
 			&& Hit.GetComponent()->GetCollisionResponseToChannel(ECC_PhysicsBody) == ECR_Block);
 		if (HitActor && bDamageChannelBlocked)
 		{
@@ -2796,18 +2854,224 @@ bool ARangedWeaponBase::IsOutsideEffectiveRange(const FVector& AimPoint) const
 
 bool ARangedWeaponBase::HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint) const
 {
+	int32 Checks = 16;
+	return HasClearTargetAttackPath(Target, AimPoint, Checks);
+}
+
+bool ARangedWeaponBase::HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint, int32& RemainingChecks) const
+{
+	const IWeaponMuzzleProvider* Provider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
+	const AAutoTurret* Turret = Cast<AAutoTurret>(WeaponOwner);
+	if (Turret && !Turret->IsEnemyPossessed() && Provider && Provider->UsesIndependentMuzzleShots())
+	{
+		TArray<FName> Sockets;
+		Provider->GetWeaponMuzzleSocketNames(false, Sockets);
+		for (FName Socket : Sockets)
+		{
+			FTransform Shot;
+			if (RemainingChecks < 2) return false;
+			if (ResolveShotTransform(Socket, Shot)
+				&& HasClearTargetAttackPathFrom(Target, AimPoint, Shot.GetLocation(), RemainingChecks)) return true;
+		}
+		return false;
+	}
 	FTransform Shot;
+	return ResolveShotTransform(NAME_None, Shot)
+		&& HasClearTargetAttackPathFrom(Target, AimPoint, Shot.GetLocation(), RemainingChecks);
+}
+
+bool ARangedWeaponBase::HasClearTargetAttackPathFrom(const AActor* Target, const FVector& AimPoint,
+	const FVector& ShotOrigin, int32& RemainingChecks) const
+{
 	if (!HasAuthority() || !IsValid(Target) || !GetWorld() || !FMath::IsFinite(EffectiveRange)
-		|| EffectiveRange <= 0.0f || AimPoint.ContainsNaN() || !ResolveShotTransform(NAME_None, Shot)
-		|| FVector::DistSquared(Shot.GetLocation(), AimPoint) > FMath::Square(EffectiveRange)) return false;
+		|| EffectiveRange <= 0.0f || AimPoint.ContainsNaN() || ShotOrigin.ContainsNaN()
+		|| FVector::DistSquared(ShotOrigin, AimPoint) > FMath::Square(EffectiveRange)) return false;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyTargetAttackPath), false);
 	AddWeaponTraceIgnoredActors(Params);
 	// 실제 탄환 채널과 시야 차단을 함께 검사한다. 타깃 자신에게 닿는 것은 열린 사선이다.
 	for (const ECollisionChannel Channel : {ECC_PhysicsBody, ECC_Visibility})
 	{
+		if (RemainingChecks <= 0) return false;
+		--RemainingChecks;
 		FHitResult Hit;
-		if (GetWorld()->LineTraceSingleByChannel(Hit, Shot.GetLocation(), AimPoint, Channel, Params)
+		if (GetWorld()->LineTraceSingleByChannel(Hit, ShotOrigin, AimPoint, Channel, Params)
 			&& Hit.GetActor() != Target) return false;
+	}
+	return true;
+}
+
+AEnemyBase* ARangedWeaponBase::FindTargetAttackBlockingAlly(const AActor* Target, const FVector& AimPoint,
+	int32& RemainingChecks, FVector& OutOrigin) const
+{
+	OutOrigin = FVector::ZeroVector;
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner);
+	if (!HasAuthority() || !Enemy || !IsValid(Target) || !GetWorld() || AimPoint.ContainsNaN()
+		|| !FMath::IsFinite(EffectiveRange) || EffectiveRange <= 0.0f)
+	{
+		return nullptr;
+	}
+	TArray<FName, TInlineAllocator<4>> Sockets;
+	const IWeaponMuzzleProvider* Provider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
+	if (Provider && Provider->UsesIndependentMuzzleShots())
+	{
+		TArray<FName> Names;
+		Provider->GetWeaponMuzzleSocketNames(false, Names);
+		Sockets.Append(Names);
+	}
+	else
+	{
+		Sockets.Add(NAME_None);
+	}
+	for (const FName Socket : Sockets)
+	{
+		FTransform Shot;
+		if (!ResolveShotTransform(Socket, Shot)
+			|| FVector::DistSquared(Shot.GetLocation(), AimPoint) > FMath::Square(EffectiveRange))
+		{
+			continue;
+		}
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyCombatYieldBlocker), false);
+		AddWeaponTraceIgnoredActors(Params);
+		AEnemyBase* Ally = nullptr;
+		bool bEnvironmentBlocked = false;
+		// 실제 총구에서 먼저 만난 차단만 보고한다. 벽 뒤 동료를 비키게 하거나 환경을 무시하지 않는다.
+		for (const ECollisionChannel Channel : {ECC_PhysicsBody, ECC_Visibility})
+		{
+			if (RemainingChecks <= 0)
+			{
+				return nullptr;
+			}
+			--RemainingChecks;
+			FHitResult Hit;
+			if (GetWorld()->LineTraceSingleByChannel(Hit, Shot.GetLocation(), AimPoint, Channel, Params)
+				&& Hit.GetActor() != Target)
+			{
+				AEnemyBase* Other = Cast<AEnemyBase>(Hit.GetActor());
+				if (Other && Other != Enemy && Other->GetGenericTeamId() == Enemy->GetGenericTeamId())
+				{
+					Ally = Other;
+				}
+				else
+				{
+					bEnvironmentBlocked = true;
+				}
+			}
+		}
+		if (Ally && !bEnvironmentBlocked)
+		{
+			OutOrigin = Shot.GetLocation();
+			return Ally;
+		}
+	}
+	return nullptr;
+}
+
+float ARangedWeaponBase::GetTargetBurstRemainingSeconds() const
+{
+	if (BurstShotCount <= 0)
+	{
+		return 0.5f;
+	}
+	// 독립 총구 그룹의 다음 간격도 실제 발사 수 × 단일 연사 간격이다.
+	// 남은 탄 수를 사용하여 새 시도 구간이 이미 소비한 버스트를 다시 채우지 않게 한다.
+	const float Interval = GetEffectiveAttackInterval();
+	return FMath::IsFinite(Interval)
+		? FMath::Max(0, BurstShotCount - CurrentBurstShotCount) * FMath::Max(Interval, KINDA_SMALL_NUMBER)
+		: 0.0f;
+}
+
+bool ARangedWeaponBase::HasTargetAttemptPath(const AActor* Target, const FVector& AimPoint,
+	FTargetAttemptPathEvidence* Evidence) const
+{
+	if (Evidence)
+	{
+		*Evidence = {};
+	}
+	const IWeaponMuzzleProvider* Provider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
+	TArray<FName> Sockets;
+	if (Provider && Provider->UsesIndependentMuzzleShots())
+	{
+		Provider->GetWeaponMuzzleSocketNames(false, Sockets);
+		if (Sockets.IsEmpty())
+		{
+			return false;
+		}
+	}
+	else
+	{
+		Sockets.Add(NAME_None);
+	}
+	for (const FName Socket : Sockets)
+	{
+		FTransform Shot;
+		int32 Checks = 16;
+		FTargetAttemptPathEvidence MuzzleEvidence;
+		if (ResolveShotTransform(Socket, Shot)
+			&& HasTargetAttemptPathFrom(Target, AimPoint, Shot.GetLocation(), Checks, &MuzzleEvidence))
+		{
+			if (Evidence)
+			{
+				*Evidence = MuzzleEvidence;
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ARangedWeaponBase::HasTargetAttemptPathFrom(const AActor* Target, const FVector& AimPoint,
+	const FVector& ShotOrigin, int32& RemainingChecks, FTargetAttemptPathEvidence* Evidence) const
+{
+	if (Evidence)
+	{
+		*Evidence = {};
+	}
+	FTargetAttemptPathEvidence FirstEnvironment;
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner);
+	if (!HasAuthority() || !Enemy || Enemy->IsEnemyPossessed() || !IsValid(Target) || !GetWorld()
+		|| !FMath::IsFinite(EffectiveRange) || EffectiveRange <= 0.0f || AimPoint.ContainsNaN()
+		|| ShotOrigin.ContainsNaN() || FVector::DistSquared(ShotOrigin, AimPoint) > FMath::Square(EffectiveRange))
+	{
+		return false;
+	}
+	RemainingChecks = FMath::Min(RemainingChecks, 16);
+	// 채널별로 환경 컴포넌트만 건너뛰어 그 뒤의 동료도 검사한다.
+	// 이 무시는 자격 검사에만 적용하며 실제 탄환의 충돌 Params에는 전달하지 않는다.
+	for (const ECollisionChannel Channel : {ECC_PhysicsBody, ECC_Visibility})
+	{
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyTargetAttemptPath), false);
+		AddWeaponTraceIgnoredActors(Params);
+		// 목표 캡슐이 관측 부위보다 앞에 있어도 그 사이의 벽/동료 검사를 생략하지 않는다.
+		Params.AddIgnoredActor(Target);
+		while (true)
+		{
+			if (RemainingChecks <= 0)
+			{
+				return false;
+			}
+			--RemainingChecks;
+			FHitResult Hit;
+			if (!GetWorld()->LineTraceSingleByChannel(Hit, ShotOrigin, AimPoint, Channel, Params))
+			{
+				break;
+			}
+			// 환경 이외의 개체 차단에는 예외를 주지 않는다. 적대 개체도 벽으로 취급하지 않는다.
+			if (!Hit.GetActor() || Cast<APawn>(Hit.GetActor())
+				|| Cast<IGenericTeamAgentInterface>(Hit.GetActor()) || !Hit.GetComponent())
+			{
+				return false;
+			}
+			if (!FirstEnvironment.Blocker.IsValid())
+			{
+				FirstEnvironment.Blocker = Hit.GetComponent();
+				FirstEnvironment.ImpactPoint = Hit.ImpactPoint;
+			}
+			Params.AddIgnoredComponent(Hit.GetComponent());
+		}
+	}
+	if (Evidence)
+	{
+		*Evidence = FirstEnvironment;
 	}
 	return true;
 }
@@ -2820,7 +3084,10 @@ void ARangedWeaponBase::PerformAttack()
 	}
 	// 자동 연사 Timer는 StateTree Tick 사이에도 실행된다. 실제 소비/발사 직전에 다시 검증한다.
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner);
-		Enemy && Enemy->HasActiveTargetAttack() && !Enemy->RefreshTargetAttackForShot()) return;
+		Enemy && Enemy->HasActiveTargetAttack() && !Enemy->RefreshTargetAttackForShot())
+	{
+		return;
+	}
 
 	if (!Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || !HasUsableAmmo())
 	{
@@ -2869,12 +3136,46 @@ void ARangedWeaponBase::PerformAttack()
 		{
 			break;
 		}
+		// 독립 총구는 그룹 대표점으로 승인하지 않는다. 가려진 총구는 탄약/총구 순서를 소비하지 않는다.
+		if (const AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner);
+			Enemy && Enemy->HasActiveTargetAttack() && bIndependentMuzzleShots)
+		{
+			FTransform Shot;
+			int32 Checks = 2;
+			if (!ResolveShotTransform(MuzzleSocket, Shot))
+			{
+				continue;
+			}
+			// 시도 사격도 총구별로 승인한다. 정상 검사와 중복 실행하지 않아 16회 상한을 지킨다.
+			const bool bPathAllowed = Enemy->IsTargetAttemptActive()
+				? Enemy->CanUseTargetAttemptPathFrom(Enemy->GetTrackedTarget(), Shot.GetLocation())
+				: HasClearTargetAttackPathFrom(Enemy->GetTrackedTarget(), Enemy->GetCombatAimPoint(Enemy->GetTrackedTarget()),
+					Shot.GetLocation(), Checks);
+			if (!bPathAllowed)
+			{
+				continue;
+			}
+			if (const AAutoTurret* Turret = Cast<AAutoTurret>(Enemy))
+			{
+				const FVector Direction = Enemy->GetCombatAimPoint(Enemy->GetTrackedTarget()) - Shot.GetLocation();
+				const float Tolerance = FMath::Max(0.01f, Turret->GetTurretBehavior().AimToleranceDegrees);
+				if (Direction.IsNearlyZero() || FVector::DotProduct(Direction.GetSafeNormal(), Shot.GetUnitAxis(EAxis::X))
+					< FMath::Cos(FMath::DegreesToRadians(Tolerance)))
+				{
+					continue;
+				}
+			}
+		}
 
 		if (LastAttackMuzzleShotCount == 0)
 		{
 			StealthSession = BeginStealthAttack();
 		}
 		ConsumeAmmo();
+		if (AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner))
+		{
+			Enemy->NotifyTargetAttackShotConsumed();
+		}
 		FireShotFromMuzzle(MuzzleSocket, LastAttackMuzzleShotCount == 0, StealthSession);
 		++CurrentBurstShotCount;
 		++LastAttackMuzzleShotCount;

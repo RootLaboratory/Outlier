@@ -16,8 +16,9 @@ struct FEnemySelectReturnHomeTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = Output)
 	FVector Destination = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bGuarding = false;
 
-	float RetryElapsed = 0.0f;
 };
 
 // 실패한 이동도 이 상태로 돌아와 기존 경로 탐색 예산을 매 프레임 소모하지 않는다.
@@ -52,4 +53,16 @@ struct OUTLIER_API FEnemyCompleteReturnHomeTask : public FStateTreeTaskCommonBas
 	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
 	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
+};
+
+USTRUCT(meta = (DisplayName = "Enemy Return Home Guard", Category = "Enemy|Movement"))
+struct OUTLIER_API FEnemyReturnHomeGuardTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemyCompleteReturnHomeTaskInstanceData;
+	FEnemyReturnHomeGuardTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
 };

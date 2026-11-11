@@ -38,6 +38,10 @@ public:
 	// 같은 우선순위 안에서는 가장 가까운 대상을 반환한다.
 	// StateTree AttackTarget에 명시적 TargetActor 바인딩이 없을 때 사용하는 서버용 폴백이다.
 	AActor* GetPreferredVisibleTarget() const;
+	// 이미 직접 관측한 소수 후보만 비교한다. 전투 재평가에서 Perception 조회/Trace를 반복하지 않는다.
+	AActor* GetPreferredKnownVisibleTarget() const;
+	// 고정 탄환 터렛만 실제 공격 가능한 직접 시야 후보를 우선한다.
+	AActor* GetPreferredAttackableTurretTarget(const AActor* CurrentTarget) const;
 	// Perception 이벤트/공유 갱신이 선택한 타깃이다. EQS 대기 중에는 감지 목록을 매 프레임 재검색하지 않는다.
 	AActor* GetCachedVisibleTarget() const { return LastVisibleTarget.Get(); }
 	bool IsTargetDirectlyVisible(const AActor* Target) const;
@@ -47,6 +51,10 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void SetCachedVisibleTargetForTesting(AActor* TargetActor) { LastVisibleTarget = TargetActor; }
+	void SetVisibleTargetsForTesting(const TArray<AActor*>& Targets)
+	{
+		LastVisibleTarget = SelectPreferredVisibleTarget(Targets);
+	}
 
 	friend class FEnemyHearingCombatJoinTest;
 	friend class FEnemyHearingMemoryTest;
@@ -57,6 +65,7 @@ public:
 	friend class FEnemySearchWorldLifecycleTest;
 	friend class FEnemySightAlertIntegrationTest;
 	friend class FEnemyHearingAwarenessIntegrationTest;
+	friend class FEnemyDistanceAwarenessIntegrationTest;
 #endif
 
 protected:
@@ -86,7 +95,7 @@ protected:
 	void ConfigureHearingFromEnemy(AEnemyBase* Enemy);
 	bool IsValidDetectionTarget(const AActor* TargetActor) const;
 	bool IsStealthedDetectionTarget(const AActor* TargetActor) const;
-	void ObserveInitialSight(AEnemyBase& Enemy, AActor& Target, bool bVisible);
+	void ObserveInitialSight(AEnemyBase& Enemy, AActor& Target, bool bVisible, const FVector* ReceiverLocation = nullptr);
 	void ObserveInitialHearing(AEnemyBase& Enemy, AActor& Target, const FVector& Location, double OccurredAt);
 	void ResetInitialAwareness();
 
@@ -97,6 +106,7 @@ protected:
 		FVector LastHeardLocation = FVector::ZeroVector;
 		double LastSeenAt = -1.0;
 		double LastHeardAt = -1.0;
+		double SightFillDuration = OutlierEnemySight::DefaultAwarenessFillDuration;
 		bool bVisible = false;
 	};
 	void AdvanceInitialAwareness(AEnemyBase& Enemy, FAwarenessTarget& State);
@@ -114,4 +124,5 @@ protected:
 	mutable TArray<AActor*> PerceivedActorScratch;
 	int32 TaskDrivenControlPitchCount = 0;
 	bool bAttackAimActive = false;
+	bool bTargetAttackAimOwned = false;
 };

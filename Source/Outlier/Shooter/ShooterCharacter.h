@@ -275,6 +275,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 public:
 	// 조회 시 현재 TP 메시로 재검증한다. 반환 캐시의 인덱스는 다음 재검증 전까지만 유효하다.
 	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
+	bool GetObservedAimPoints(const AActor* Observer, FOutlierSightObservation& Out) const;
 
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")

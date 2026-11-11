@@ -33,6 +33,9 @@ struct FEnemyCombatDestinationGuardTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bShouldReselect = false;
 	bool bStartedOutsideWeaponRange = false;
+	// 같은 lease라도 종료된 전술 회차의 목적지를 계속 따라가지 않는다.
+	uint64 CapturedTacticalSerial = 0;
+	bool bStartedForSightReposition = false;
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AEnemyAIController> CachedController;
 };
@@ -73,6 +76,12 @@ struct FEnemyCombatAssessmentTaskInstanceData
 	bool bHasValidTarget = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bTargetOutsideWeaponRange = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNeedsReposition = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bCombatObservationWaiting = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bRepositionResolved = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	float HorizontalDistance = 0.0f;
 	UPROPERTY(EditAnywhere, Category = Output)

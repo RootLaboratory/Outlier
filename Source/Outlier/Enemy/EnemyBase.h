@@ -25,6 +25,7 @@
 #include "PostProcess/OutlierReadabilityTarget.h"
 #include "Enemy/OutlierSightBoneCache.h"
 #include "Enemy/OutlierBoneSight.h"
+#include "Enemy/EnemyCombatTacticalEpisode.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -35,6 +36,8 @@ class USphereComponent;
 struct FInputActionValue;
 class URoomTagComponent;
 class UEnemyRoomSubsystem;
+class URoomCombatSubsystem;
+class ARoomVolume;
 class ARangedWeaponBase;
 class APartnerCharacter;
 class UGeometryCollection;
@@ -44,6 +47,7 @@ class UEnemyAdaptationSubsystem;
 class UEnemyAdaptationShieldComponent;
 class UNiagaraSystem;
 class UEnemyHudWidget;
+struct FEnemyFlyToLocationTaskInstanceData;
 class AEnemyBase;
 class AEnemyAIController;
 class UEnemyPoolSubsystem;
@@ -61,6 +65,15 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEnemyHackEffectEnded,
 struct FEnemySearchEpisode
 {
 	FVector Center = FVector::ZeroVector;
+	FVector LookLocation = FVector::ZeroVector;
+	double StartedAt = -1.0;
+	double EndsAt = -1.0;
+	double GuardEndsAt = -1.0;
+	int32 MaxPoints = 4;
+	uint64 InvestigationSerial = 0;
+	TWeakObjectPtr<AController> Controller;
+	int32 Generation = 0;
+	int32 Lease = 0;
 	uint64 SharedRevision = 0;
 	uint64 Serial = 0;
 	TArray<FVector> Points;
@@ -98,6 +111,8 @@ struct FEnemyNoiseDirectionConfirmation
 	double PhaseEndsAt = -1.0;
 	double EndedAt = -1.0;
 	bool bStartedWhileMoving = false;
+	bool bReachedSourceDirection = false;
+	bool bLimitedByMovingAngle = false;
 };
 
 // 마지막 실제 관측과 이동 목표 채택은 다른 시계다. 같은 위치 재관측은 채택 시간을 늘리지 않는다.
@@ -322,6 +337,15 @@ protected:
 
 	mutable FOutlierSightBoneCache SightBoneCache;
 	FOutlierBoneSight BoneSight;
+	TWeakObjectPtr<const AActor> SelectedCombatAimTarget;
+	FVector SelectedCombatAimPoint = FVector::ZeroVector;
+	double NextCombatAimRefreshAt = -1.0;
+	int32 SelectedCombatAimRank = 0;
+	int32 SelectedCombatAimIndex = INDEX_NONE;
+	uint32 CombatAimObservationEpoch = 0;
+	uint32 CombatAimObservationSerial = 0;
+	UPROPERTY(Replicated)
+	bool bCombatAimPresentationOwned = false;
 
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
@@ -504,6 +528,15 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Enemy|Combat")
 	bool bPrefersCombatLeft = false;
+	TWeakObjectPtr<AActor> CombatOrbitTarget;
+	TWeakObjectPtr<AController> CombatOrbitController;
+	bool bLastCombatOrbitLeft = false;
+	// Select가 잠시 빌려 쓰는 검증된 이동이다. 새 Move가 인계받거나 취소하면 즉시 반환한다.
+	TSharedPtr<FEnemyFlyToLocationTaskInstanceData> CombatFlightHandoff;
+	TWeakObjectPtr<AActor> CombatFlightHandoffTarget;
+	FVector CombatFlightHandoffStart = FVector::ZeroVector;
+	double CombatFlightHandoffDeadline = -1.0;
+	FTimerHandle CombatFlightHandoffTimer;
 	// 전투 진입 시 정하고 해당 전투 동안 유지한다. -1/0/1은 Left/Center/Right다.
 	int32 CombatChaseLane = 0;
 
@@ -573,6 +606,22 @@ public:
 	virtual bool UsesHearingPerception() const { return true; }
 	virtual bool CanUseRoomTargetSharing() const { return !bIsPossessed; }
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const;
+	// 선정은 기존 서버 갱신에서만 수행한다. Getter/회전/무기는 같은 결과를 읽는다.
+	void RefreshCombatAimPoint();
+	bool HasCombatAttackPathFrom(const AActor* TargetActor, const FVector& CandidateLocation, int32& RemainingChecks) const;
+	bool IsCombatAimPresentationOwned() const { return bCombatAimPresentationOwned; }
+	void SetCombatAimPresentationOwned(bool bOwned);
+	uint32 GetCombatAimObservationSerial() const { return CombatAimObservationSerial; }
+#if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
+	// 관측 좌표는 조준 갱신 사이에도 바뀐다. 진단은 현재 본 좌표 대신 선택한 표본의 출처를 확인한다.
+	bool GetCombatAimSelectionForTesting(const AActor* Target, uint32& Epoch, int32& BoneIndex, FVector& Point) const
+	{
+		Epoch = CombatAimObservationEpoch;
+		BoneIndex = SelectedCombatAimIndex;
+		Point = SelectedCombatAimPoint;
+		return SelectedCombatAimTarget.Get() == Target && Epoch != 0 && BoneIndex != INDEX_NONE;
+	}
+#endif
 	virtual FVector GetCombatShotOrigin() const;
 
 	virtual FGameplayTag GetCurrentRoomTag() const override;
@@ -582,6 +631,44 @@ public:
 	// StateTree Task가 재생성/재진입되어도 동일 Pawn의 경로 탐색 간격은 유지한다.
 	double GetNextFlightPathRequestTime() const { return NextFlightPathRequestTime; }
 	double GetNextEnvQueryRequestTime() const { return NextEnvQueryRequestTime; }
+	uint64 EnsureCombatTacticalEpisode(AActor* Target, const FVector& Goal, float ChangeDistance = 200.0f);
+	uint64 GetCombatTacticalEpisodeSerial() const { return CombatTacticalEpisode.GetSerial(); }
+	bool IsCombatTacticalEpisodeCurrent(uint64 Serial) const;
+	bool TryBeginCombatTacticalRequest();
+	bool CanContinueCombatTacticalRequest();
+	bool IsCombatObservationWaiting() const { return CombatTacticalEpisode.IsObserving(); }
+	void EnterCombatObservationWait(bool bBudgetShortage = false);
+	void NoteCombatTacticalBudgetShortage();
+	bool CanResumeCombatTacticalBudget() const { return CombatTacticalEpisode.CanResumeBudget(); }
+	bool TryResumeCombatTacticalBudget(bool bActualExecutionGranted);
+	void CompleteCombatTacticalSelectionSuccess(bool bInvalidatePendingRequests = true);
+	void BeginCombatTacticalMovement(bool bSightReposition);
+	void EndCombatTacticalMovement();
+	uint64 BeginCombatReservationRequest();
+	bool IsCombatReservationRequestCurrent(uint64 Request) const;
+	uint64 GetCombatReservationRequest() const { return CombatReservationRequest; }
+	bool AdoptCombatReservation(uint64 Request);
+	bool RefreshCombatReservation(uint64 Request);
+	bool IsCombatSegmentReserved(uint64 Request, const FVector& Start, const FVector& End) const;
+	void ReleaseCombatReservation(uint64 Request = 0);
+	void RememberCombatNavigationPath(uint64 Reservation, const FVector& Destination, const TArray<FVector>& Waypoints, bool bProgressOnly = false);
+	bool GetCombatNavigationPath(uint64 Reservation, const FVector& Destination, TArray<FVector>& OutWaypoints, bool* OutProgressOnly = nullptr) const;
+	bool GetCombatNavigationHandoff(TArray<FVector>& OutWaypoints, FVector& OutDestination, bool* OutProgressOnly = nullptr, bool bCaptureRetarget = false) const;
+	bool IsCombatNavigationRetargetPending() const { return bCombatNavigationRetargetPending; }
+	bool ConsumeCombatNavigationRetargetVelocity(const FVector& Destination, FVector& OutVelocity);
+	// AI Gun의 은폐 추적은 마지막 직접 관측 좌표를 사용하며 숨은 대상의 현재 좌표를 읽지 않는다.
+	FVector GetCombatNavigationTargetLocation(const AActor* Target) const;
+	bool IsCombatTacticalCandidateFailure(FName Intent, const FVector& Candidate) const;
+	void RecordCombatTacticalCandidateFailure(FName Intent, const FVector& Candidate, const FBox& Bounds);
+	bool WasCombatTacticalCandidateChecked(FName Intent, const FVector& Candidate) const;
+	void MarkCombatTacticalCandidateChecked(FName Intent, const FVector& Candidate);
+	void ResetCombatTacticalEpisode(bool bClearFailureCache = true);
+	void UpdateCombatTacticalSightBlock();
+	bool NeedsCombatTacticalReposition() const;
+	// 양보는 별도 이동 시스템이 아니라 기존 사선 재배치 선택/예약 경로로 인계한다.
+	bool IsReadyForCombatYieldPriority() const;
+	bool GetCombatYieldContext(FVector& Start, FVector& End, uint64& Serial) const;
+	void BeginCombatYieldMovement(uint64 Reservation, uint64 YieldSerial);
 	void SetNextEnvQueryRequestTime(double Time)
 	{
 		if (HasAuthority())
@@ -650,6 +737,13 @@ public:
 	void RemoveEnemyTraitForTesting(FGameplayTag TraitTag) { EnemyTraits.RemoveTag(TraitTag); }
 #endif
 	bool PrefersCombatLeft() const { return bPrefersCombatLeft; }
+	bool PrefersCombatOrbitLeft() const;
+	void RememberCombatOrbitDirection(AActor* Target, bool bLeft);
+	bool OfferCombatFlightHandoff(FEnemyFlyToLocationTaskInstanceData& Data);
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	void TickCombatFlightHandoff(float DeltaTime);
+	void ResumeCombatFlightHandoff(FEnemyFlyToLocationTaskInstanceData& Data);
+	void ClearCombatFlightHandoff(bool bStopMovement = true);
 	int32 GetCombatChaseLane() const { return CombatChaseLane; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Flight Height")
@@ -702,12 +796,32 @@ public:
 	// Target 버전은 Actor의 현재 위치를 사용하고 Location 버전은 LKP 위협 사격처럼 좌표만 조준한다.
 	bool StartAttackTarget(AActor* TargetActor);
 	bool CanAttackTrackedTarget(const AActor* TargetActor) const;
+	// 물리적 대안 소진과 시도 사격 사용 기록은 전조/전술 캐시의 수명과 분리한다.
+	void NoteTargetAttackAlternativesExhausted();
+	void ClearTargetAttackAlternativesExhausted();
+	bool HasTargetAttackAlternativesExhausted() const;
+	bool PrepareTargetAttackAttempt(float RemainingBurstSeconds);
+	bool IsTargetAttemptActive() const;
+	bool HasTargetAttackAttemptExpired() const;
+	bool CanUseTargetAttemptPathFrom(const AActor* Target, const FVector& Origin) const;
+	void FinishTargetAttackAttempt();
 	// 이동 판단에는 거리만 사용한다. 벽 차단/쿨다운을 사거리 이탈로 취급하지 않는다.
 	bool IsTargetOutsideWeaponRange(const AActor* TargetActor) const;
 	bool HasActiveTargetAttack() const { return bTargetAttackActive; }
 	bool RefreshTargetAttackForShot();
 	void PauseTargetAttack();
-	void ResetTargetAttackContinuity();
+	// 전체 수명주기 정리와 대상 교체를 구분한다. 대상 교체(false)는 무기 회복·연사 기한을 보존한다.
+	void ResetTargetAttackContinuity(bool bResetRecovery = true);
+	bool UsesTargetAttackPreparation() const;
+	// Tree가 최초 전조 시간을 제공하고, 전조/공격/회복 Task가 현재 대상의 잔여분만 진행한다.
+	void BeginTargetAttackPreparation(float Duration);
+	bool AdvanceTargetAttackPreparation(float DeltaTime);
+	bool IsTargetAttackPreparationComplete() const;
+	float GetTargetAttackPreparationRemaining() const { return TargetAttackPreparationRemaining; }
+	// 회전은 기존 Controller 갱신 한 곳에서만 수행한다. 발사 콜백은 준비 여부만 검사한다.
+	bool UpdateTargetAttackAim(float DeltaTime);
+	bool IsTargetAttackAimReady() const;
+	void NotifyTargetAttackShotConsumed();
 	bool ConsumeTargetAttackResume();
 	void RememberTargetAttackPreparation();
 	void RememberTargetAttackRecovery(float Duration);
@@ -765,6 +879,9 @@ public:
 	bool ShouldSkipTrackingLossWait() const { return bTrackingExpiredForSearch; }
 	void ObserveTrackedTarget(AActor* Target);
 	void RefreshTargetTracking();
+	void RefreshTargetTrackingAtSelectionBoundary();
+	// 실제 탄을 시작한 버스트만 보호한다. 보류가 길어지면 비커밋 재평가를 다시 허용한다.
+	void EndTargetSelectionBurst(AActor* BurstTarget);
 	void ClearTargetTracking();
 
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
@@ -780,6 +897,7 @@ public:
 	bool NotifyNoiseDirectionReached(uint64 Serial);
 	bool EndNoiseDirectionConfirmation(uint64 Serial);
 	bool UpdateNoiseDirectionFacing(float DeltaTime);
+	void NotifyNoiseInvestigationNaturalBoundary(uint64 InvestigationSerial, bool bStationary);
 	void UpdateNoiseInvestigationTravelDirection(uint64 InvestigationSerial, const FVector& Direction, float RotationSpeed);
 	void UpdateNoiseInvestigationProgress(uint64 InvestigationSerial, const FVector& PreviousLocation, const FVector& CurrentLocation, float AcceptanceRadius);
 	bool RecordNoiseInvestigationFailure(uint64 InvestigationSerial, const FVector& Destination, const FBox& SearchBounds);
@@ -888,6 +1006,12 @@ public:
 	uint64 GetSharedTargetRevision() const { return SharedTargetRevision; }
 	const FEnemySearchEpisode& GetSearchEpisode() const { return SearchEpisode; }
 	bool BeginSearchEpisode();
+	int32 GetSearchPointLimit() const;
+	bool RefreshSearchEpisodeLimit();
+	bool CanCompleteGeneralSearch(uint64 Serial) const;
+	bool TryCompleteGeneralSearch(uint64 Serial);
+	bool HasMeaningfulSearchHint() const;
+	bool GetSearchLookPitch(float& OutPitch) const;
 	bool CanContinueSearchEpisode() const;
 	void EndSearchEpisode();
 	void CompleteSearchAnchor();
@@ -908,6 +1032,14 @@ public:
 	bool CommitAlertToCombatFromHearing(AActor* Source, const FVector& HeardLocation, double OccurredAt);
 	bool CommitAlertToNonCombat();
 	bool GetReturnHomeDestination(FVector& OutDestination) const;
+	bool GetSelectedReturnHomeDestination(FVector& OutDestination) const;
+	bool IsReturnHomeGuarding() const { return bReturnHomeGuarding; }
+	int32 GetReturnHomeCandidateChecks() const { return ReturnHomeCandidateChecks; }
+	bool TrySelectReturnHomeDestination(FVector& OutDestination);
+	uint64 GetReturnHomeRequestSerial() const;
+	bool IsReturnHomeRequestCurrent(uint64 Serial) const;
+	void ResetReturnHomeRecovery();
+	int32 GetReturnHomeRequestCount() const { return ReturnHomeRequests; }
 	bool CompleteReturnHome();
 	bool IsInsideDefaultRoom() const;
 
@@ -1019,11 +1151,70 @@ protected:
 
 	double NextFlightPathRequestTime = 0.0;
 	double NextEnvQueryRequestTime = 0.0;
+	mutable FEnemyCombatTacticalEpisode CombatTacticalEpisode;
+	uint64 CombatReservationRequest = 0;
+	uint64 CombatYieldMovementReservation = 0;
+	uint64 CombatYieldMovementSerial = 0;
+	FVector CombatYieldProtectedStart = FVector::ZeroVector;
+	FVector CombatYieldProtectedEnd = FVector::ZeroVector;
+	TWeakObjectPtr<AController> CombatYieldController;
+	TWeakObjectPtr<AActor> CombatYieldTarget;
+	int32 CombatYieldGeneration = INDEX_NONE;
+	int32 CombatYieldLease = INDEX_NONE;
+	mutable double NextCombatYieldPriorityCheckAt = -1.0;
+	mutable bool bCombatYieldPriorityReady = false;
+	double NextCombatAllyBlockCheckAt = -1.0;
+	uint64 CombatNavigationPathReservation = 0;
+	uint64 CombatNavigationPathSerial = 0;
+	FVector CombatNavigationPathDestination = FVector::ZeroVector;
+	TArray<FVector> CombatNavigationPath;
+	bool bCombatNavigationProgressOnly = false;
+	// 대상 교체로 남겨 둔 경로 형상이다. 새 대상 검사와 예약을 통과하기 전에는 이동 권한이 없다.
+	bool bCombatNavigationRetargetPending = false;
+	FVector CombatNavigationRetargetVelocity = FVector::ZeroVector;
+	FVector CombatNavigationRetargetVelocityDestination = FVector::ZeroVector;
+	double CombatNavigationRetargetVelocityExpiresAt = -1.0;
+	TWeakObjectPtr<AActor> CombatNavigationPathTarget;
+	TWeakObjectPtr<AController> CombatNavigationPathController;
+	int32 CombatNavigationPathGeneration = INDEX_NONE;
+	int32 CombatNavigationPathLease = INDEX_NONE;
+	TWeakObjectPtr<URoomCombatSubsystem> TacticalFailureRooms;
+	FDelegateHandle TacticalObstacleHandle;
+	TWeakObjectPtr<AActor> TacticalSightTarget;
+	double TacticalSightBlockedAt = -1.0;
+	void HandleCombatTacticalObstacleOpened(const FBox& Bounds);
 	uint64 SharedTargetRevision = 0;
 	uint64 ConsumedSharedTargetRevision = 0;
 	uint64 NextSearchEpisodeSerial = 0;
 	bool bHasLastKnownPlayerLocation = false;
 	FEnemySearchEpisode SearchEpisode;
+
+	// Task 재진입과 실제 이동 시간을 분리하여 실패 복구 예산만 Pawn에 보존한다.
+	bool bReturnHomeRecoveryActive = false;
+	bool bReturnHomeGuarding = false;
+	bool bReturnHomeFallback = false;
+	int32 ReturnHomeCandidateChecks = 0;
+	FVector SelectedReturnHomeDestination = FVector::ZeroVector;
+	bool bReturnHomeFlightActive = false;
+	bool bReturnHomeRecoveryExhausted = false;
+	bool bReturnHomeRecoverySuspended = false;
+	int32 ReturnHomeRequests = 0;
+	int32 ReturnHomeGeneration = INDEX_NONE;
+	int32 ReturnHomeLease = INDEX_NONE;
+	uint64 ReturnHomeRequestSerial = 0;
+	double ReturnHomeWaitingSince = -1.0;
+	double ReturnHomeRecoveryElapsed = 0.0;
+	double ReturnHomeNextAttemptAt = 0.0;
+	TWeakObjectPtr<AController> ReturnHomeController;
+	TWeakObjectPtr<URoomCombatSubsystem> ReturnHomeRooms;
+	TWeakObjectPtr<ARoomVolume> ReturnHomeSnapshot;
+	FBox ReturnHomeSnapshotBounds = FBox(ForceInit);
+	FBox ReturnHomeFailureBounds = FBox(ForceInit);
+	TArray<FBox> ReturnHomeRecoveryChanges;
+	FDelegateHandle ReturnHomeObstacleHandle;
+	FDelegateHandle ReturnHomeReadinessHandle;
+	void RestartReturnHomeRecovery();
+	void SuspendReturnHomeRecovery();
 	// 대기 후보는 최신 하나만 보관한다. 실행 중 위치는 새 피격이나 원래 단서 만료로 덮어쓰지 않는다.
 	FEnemyHitClue PendingHitClue;
 	// 인지 누적, 추적 유예, 피격 단서 TTL과 분리한다. 스턴 중에도 원래 기한이 흐른다.
@@ -1059,6 +1250,10 @@ protected:
 	uint64 NextNoiseDirectionConfirmationSerial = 0;
 	FTimerHandle NoiseDirectionConfirmationTimer;
 	bool bNoiseDirectionEvaluationPending = false;
+	FEnemyHeardNoise DeferredNoiseDirectionClue;
+	uint64 DeferredNoiseInvestigationSerial = 0;
+	bool bDeferredNoiseDirectionReady = false;
+	bool bDeferredNoiseDirectionStationary = false;
 	FVector NoiseInvestigationTravelDirection = FVector::ZeroVector;
 	float NoiseDirectionRotationSpeed = 180.0f;
 	float NoiseDirectionTurnSign = 1.0f;
@@ -1092,13 +1287,22 @@ protected:
 	bool SelectHeardNoise(FEnemyHeardNoise& OutNoise, bool bRequireNewObservation) const;
 	bool CanReplaceNoiseDestination(const FEnemyHeardNoise& Noise) const;
 	bool TryGetNoiseGoalClue(FEnemyHeardNoise& OutClue) const;
+	void LogNoiseInvestigationDiagnostic(const TCHAR* Stage, const FEnemyHeardNoise& Clue, const TCHAR* Reason) const;
 	bool CommitToNonCombatAfterSearch();
 	TWeakObjectPtr<AActor> TrackedTarget;
+	bool UsesCombatNavigationObservation() const;
+	TWeakObjectPtr<AActor> CombatNavigationObservedTarget;
+	FVector CombatNavigationObservedLocation = FVector::ZeroVector;
 	TWeakObjectPtr<AEnemyAIController> TrackingController;
 	TWeakObjectPtr<UEnemyRoomSubsystem> TrackingRooms;
 	FGameplayTag TrackingRoomTag;
 	FTimerHandle TargetTrackingTimer;
 	double TargetTrackingExpiresAt = 0.0;
+	double NextTargetReevaluationAt = 0.0;
+	double TargetSelectedAt = -1.0;
+	double TargetSelectionBlockedAt = -1.0;
+	bool bTargetSelectionBoundaryPending = false;
+	TWeakObjectPtr<AActor> TargetSelectionBurstTarget;
 	bool bTrackingFromRoom = false;
 	bool bTrackingAnnounced = false;
 	bool bTrackingWasDirectlyVisible = false;
@@ -1107,8 +1311,68 @@ protected:
 	TWeakObjectPtr<AActor> PreparedAttackTarget;
 	TWeakObjectPtr<ARangedWeaponBase> PreparedAttackWeapon;
 	TWeakObjectPtr<AEnemyAIController> PreparedAttackController;
+	struct FTargetAttackPreparationHistory
+	{
+		TWeakObjectPtr<AActor> Target;
+		TWeakObjectPtr<ARangedWeaponBase> Weapon;
+		TWeakObjectPtr<AEnemyAIController> Controller;
+		double ExpiresAt = 0.0;
+		float Remaining = 0.0f;
+		float Duration = 0.0f;
+		int32 Generation = 0;
+		int32 Lease = 0;
+		int32 TargetGeneration = 0;
+		int32 TargetLease = 0;
+		uint32 TargetHackRevision = 0;
+		bool bComplete = false;
+	};
+	// 선택 중인 대상 하나와 보관 이력을 합해 최대 네 대상만 유지한다.
+	TArray<FTargetAttackPreparationHistory> TargetAttackPreparationHistory;
+	struct FTargetAttackAttemptRecord
+	{
+		TWeakObjectPtr<AActor> Target;
+		TWeakObjectPtr<UPrimitiveComponent> Blocker;
+		FVector Origin = FVector::ZeroVector;
+		FVector Aim = FVector::ZeroVector;
+		FVector Impact = FVector::ZeroVector;
+		FBox FailureBounds = FBox(ForceInit);
+		int32 TargetGeneration = 0;
+		int32 TargetLease = 0;
+		uint32 TargetHackRevision = 0;
+		bool bUsed = false;
+		bool bAlternativesExhausted = false;
+	};
+	TArray<FTargetAttackAttemptRecord> TargetAttackAttemptRecords;
+	TWeakObjectPtr<ARangedWeaponBase> AttemptWeapon;
+	TWeakObjectPtr<AController> AttemptController;
+	int32 AttemptGeneration = INDEX_NONE;
+	int32 AttemptLease = INDEX_NONE;
+	int32 ActiveAttemptIndex = INDEX_NONE;
+	double TargetAttackAttemptEndsAt = -1.0;
+	float TargetAttackAttemptDuration = 0.0f;
+	bool bTargetAttackAttemptArmed = false;
+	bool IsTargetAttackAttemptContractCurrent() const;
+	bool HasCurrentTargetAttemptObservation() const;
+	void RefreshTargetAttackAttemptContract();
+	FTargetAttackAttemptRecord* FindTargetAttackAttemptRecord();
+	int32 PreparedAttackGeneration = 0;
+	int32 PreparedAttackLease = 0;
+	int32 PreparedAttackTargetGeneration = 0;
+	int32 PreparedAttackTargetLease = 0;
+	uint32 PreparedAttackTargetHackRevision = 0;
+	void PruneTargetAttackPreparationHistory();
+	void StoreTargetAttackPreparation();
+	bool RestoreTargetAttackPreparation();
 	bool bResumeTargetAttackPreparation = false;
 	bool bTargetAttackActive = false;
+	bool bTargetAttackPreparationComplete = false;
+	float TargetAttackPreparationRemaining = 0.0f;
+	float TargetAttackPreparationDuration = 0.0f;
+	bool bHasTargetAttackPreparationDuration = false;
+	bool bTargetAttackAimWasReady = false;
+	bool bTargetAttackFirstShotConsumed = false;
+	mutable uint8 LastTargetAttackWaitReason = 255;
+	void LogTargetAttackReadiness(const TCHAR* Stage) const;
 	double TargetAttackRecoveryEndsAt = 0.0;
 	void FinishTargetTracking();
 

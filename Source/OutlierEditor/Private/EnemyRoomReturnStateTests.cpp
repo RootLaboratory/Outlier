@@ -228,15 +228,22 @@ bool FEnemyRoomReturnCommonTreeTest::RunTest(const FString& Parameters)
 					&& Transition.State.ID == Existing.State.ID && Transition.Priority == Existing.Priority;
 			}));
 	}
-	if (!TestEqual(TEXT("Returning has select/move/complete sequence"), Returning->Children.Num(), 3)) return false;
+	if (!TestEqual(TEXT("Returning has select/move/complete and finite failure guard"), Returning->Children.Num(), 4))
+	{
+		return false;
+	}
 	const UStateTreeState& Select = *Returning->Children[0];
 	const UStateTreeState& Move = *Returning->Children[1];
 	const UStateTreeState& Complete = *Returning->Children[2];
+	const UStateTreeState& Guard = *Returning->Children[3];
 	TestTrue(TEXT("Select advances to actual movement"), HasTransition(Select, Move, EStateTreeTransitionTrigger::OnStateSucceeded));
 	TestTrue(TEXT("Movement success checks actual home containment"), HasTransition(Move, Complete, EStateTreeTransitionTrigger::OnStateSucceeded));
 	TestTrue(TEXT("Blocked movement retries after select delay"), HasTransition(Move, Select, EStateTreeTransitionTrigger::OnStateFailed));
 	TestTrue(TEXT("Incomplete arrival retries"), HasTransition(Complete, Select, EStateTreeTransitionTrigger::OnStateFailed));
 	TestTrue(TEXT("Complete return selects normal state"), HasTransition(Complete, *Selection, EStateTreeTransitionTrigger::OnStateSucceeded));
+	TestEqual(TEXT("Finite failure uses explicit return guard"), Guard.Name, FName(TEXT("ReturnGuard")));
+	TestTrue(TEXT("Exhausted selection enters guard"), HasTransition(Select, Guard, EStateTreeTransitionTrigger::OnStateFailed));
+	TestTrue(TEXT("Meaningful recovery re-enters selection"), HasTransition(Guard, Select, EStateTreeTransitionTrigger::OnStateSucceeded));
 	TestEqual(TEXT("Existing Fly task is reused"), Move.Tasks.Num(), 1);
 	if (Move.Tasks.Num() == 1)
 	{
@@ -332,9 +339,10 @@ bool FEnemyRoomReturnExecutionTest::RunTest(const FString& Parameters)
 		}
 	}
 	TestTrue(TEXT("Actual common tree starts Returning"), Context.Start() == EStateTreeRunStatus::Running);
-	TestTrue(TEXT("Actual common tree selects home retry gate"), Context.GetActiveStateNames().Contains(TEXT("SelectHome")));
-	Context.Tick(1.1f);
-	TestTrue(TEXT("Retry gate enters existing Fly task"), Context.GetActiveStateNames().Contains(TEXT("FlyHome")));
+	TestEqual(TEXT("First selection uses one persistent request"), Enemy->GetReturnHomeRequestCount(), 1);
+	// EnterState의 즉시 성공 전이는 다음 StateTree 평가에서 처리한다. 별도 1초 대기는 없다.
+	Context.Tick(0.0f);
+	TestTrue(TEXT("First selection enters Fly without elapsed delay"), Context.GetActiveStateNames().Contains(TEXT("FlyHome")));
 	TestTrue(TEXT("Movement cannot finish outside home"), Enemy->GetCombatState() == EEnemyCombatState::Returning);
 	Enemy->EnterAlertFromPerception(FVector(800, 0, 0));
 	Context.SendEvent(FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Combat.Alerted")));

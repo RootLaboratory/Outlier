@@ -2,6 +2,7 @@
 
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyAIController.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -179,7 +180,8 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FAutoTurretAimPolicyTest,
 void FAutoTurretAimPolicyTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
 	for (const TCHAR* Scenario : { TEXT("YawRangesAndBoundary"), TEXT("VerticalLimitsAndDegeneracy"), TEXT("PerceptionHeadDirection"),
-		TEXT("GuardRecoveryAndHandoff"), TEXT("LaserDeferredClue"), TEXT("RealSightConeAndOcclusion") })
+		TEXT("GuardRecoveryAndHandoff"), TEXT("LaserDeferredClue"), TEXT("RealSightConeAndOcclusion"),
+		TEXT("AttackReachabilityAndAlignment") })
 	{
 		Names.Add(Scenario);
 		Commands.Add(Scenario);
@@ -250,6 +252,40 @@ bool FAutoTurretAimPolicyTest::RunTest(const FString& Parameters)
 				Turret->UpdateTurretAimAtLocation(Turret->GetPawnViewLocation(), 0.1f, bAttack));
 			TestTrue(TEXT("Coincident source keeps the current orientation"), Turret->CurrentAimOffset.Equals(Before, 0.01f));
 		}
+	}
+	else if (Parameters == TEXT("AttackReachabilityAndAlignment"))
+	{
+		TestTrue(TEXT("Attack candidates can be behind the turret"), Turret->IsTurretAimLocationReachable(LocationAt(0, 180)));
+		TestTrue(TEXT("Attack candidates can be directly above"), Turret->IsTurretAimLocationReachable(LocationAt(90, 0)));
+		TestTrue(TEXT("The configured downward boundary is reachable"), Turret->IsTurretAimLocationReachable(LocationAt(-23, 0)));
+		TestFalse(TEXT("Clamping a deeper target does not make it attackable"), Turret->IsTurretAimLocationReachable(LocationAt(-30, 0)));
+		TestFalse(TEXT("A coincident point has no valid firing direction"), Turret->IsTurretAimLocationReachable(Turret->GetPawnViewLocation()));
+		Fixture.World->CreateAISystem();
+		AEnemyAIController* AI = Fixture.World->SpawnActor<AEnemyAIController>();
+		APartnerCharacter* Target = Fixture.World->SpawnActor<APartnerCharacter>();
+		if (!TestNotNull(TEXT("Alignment controller"), AI) || !TestNotNull(TEXT("Alignment target"), Target))
+		{
+			return false;
+		}
+		AI->Possess(Turret);
+		Target->SetActorLocation(LocationAt(0, 120));
+		AI->SetVisibleTargetsForTesting({Target});
+		Turret->SetPlayerCurrentlyVisible(true);
+		Turret->ObserveTrackedTarget(Target);
+		if (!TestEqual(TEXT("Alignment uses the actual tracked target"), Turret->GetTrackedTarget(), static_cast<AActor*>(Target)))
+		{
+			return false;
+		}
+		Turret->CurrentAimOffset = FRotator::ZeroRotator;
+		Turret->ApplyHeadRotation();
+		TestFalse(TEXT("Selecting a target does not immediately grant alignment"), Turret->IsTurretAttackAimReady(Target));
+		Turret->UpdateTurretAimAtLocation(Turret->GetCombatAimPoint(Target), 0.01f, true);
+		TestFalse(TEXT("A bounded rotation step still holds fire"), Turret->IsTurretAttackAimReady(Target));
+		Turret->UpdateTurretAimAtLocation(Turret->GetCombatAimPoint(Target), 10.0f, true);
+		TestTrue(TEXT("The actual head direction permits an aligned shot"), Turret->IsTurretAttackAimReady(Target));
+		Target->SetActorLocation(LocationAt(-70, 0));
+		Turret->UpdateTurretAimAtLocation(Turret->GetCombatAimPoint(Target), 10.0f, true);
+		TestFalse(TEXT("Reaching the clamped tracking limit cannot approve an unreachable shot"), Turret->IsTurretAttackAimReady(Target));
 	}
 	else if (Parameters == TEXT("RealSightConeAndOcclusion"))
 	{

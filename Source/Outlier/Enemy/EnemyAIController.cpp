@@ -60,6 +60,17 @@ namespace
 			return;
 		}
 
+		if (Stimulus.Type == UAISense::GetSenseID<UAISense_Hearing>())
+		{
+			// 청각 진단은 사건 스냅샷만 기록한다. 숨은 출처의 현재 위치 조회나 시야 Trace를 추가하지 않는다.
+			const double Now = Enemy.GetWorld()->GetTimeSeconds();
+			UE_LOG(LogOutlier, Log,
+				TEXT("[EnemyHearingDiag] Stage=Receive Enemy=%s Source=%s OccurredAt=%.3f ReceivedAt=%.3f Sensed=%d Location=%s Tag=%s"),
+				*Enemy.GetName(), *Target.GetName(), Now - Stimulus.GetAge(), Now,
+				Stimulus.WasSuccessfullySensed(), *Stimulus.StimulusLocation.ToCompactString(), *Stimulus.Tag.ToString());
+			return;
+		}
+
 		const FVector SightOrigin = Stimulus.ReceiverLocation.IsNearlyZero()
 			? Enemy.GetPawnViewLocation()
 			: Stimulus.ReceiverLocation;
@@ -170,6 +181,7 @@ void AEnemyAIController::OnUnPossess()
 	DirectlyVisibleTargets.Reset();
 	TaskDrivenControlPitchCount = 0;
 	bAttackAimActive = false;
+	bTargetAttackAimOwned = false;
 	Super::OnUnPossess();
 }
 
@@ -180,9 +192,27 @@ void AEnemyAIController::UpdateControlRotation(float DeltaTime, bool bUpdatePawn
 	{
 		Enemy->RefreshTargetTracking();
 		Enemy->TickHitResponse(DeltaTime);
-		if (Enemy->IsHitDirectionConfirmationActive()) return;
+		Enemy->RefreshCombatAimPoint();
+		if (Enemy->IsHitDirectionConfirmationActive())
+		{
+			Enemy->SetCombatAimPresentationOwned(false);
+			return;
+		}
 		// 시야/피격/새 목적지 판단 뒤에만 청각 회전을 허용한다. 기본 Focus는 이 프레임에 양보한다.
-		if (Enemy->UpdateNoiseDirectionFacing(DeltaTime)) return;
+		if (Enemy->UpdateNoiseDirectionFacing(DeltaTime))
+		{
+			Enemy->SetCombatAimPresentationOwned(false);
+			return;
+		}
+		// 최초 전조·회복·연사 보류에서도 같은 회전 경로를 사용한다. 무기 타이머는 이 방향을 검사만 한다.
+		if (Enemy->UpdateTargetAttackAim(DeltaTime))
+		{
+			bTargetAttackAimOwned = true;
+			return;
+		}
+		Enemy->SetCombatAimPresentationOwned(false);
+		// 대상 조준이 빌린 소유권만 반환한다. 고정 좌표/터렛 Task가 설정한 조준은 유지한다.
+		if (bTargetAttackAimOwned) SetAttackAimActive(false);
 		if (Enemy->GetCombatState() == EEnemyCombatState::Stun)
 		{
 			// 기절 중 지난 시간을 노출 시간으로 소급하지 않는다. 복귀 후 새 관측부터 확인한다.
@@ -226,6 +256,7 @@ void AEnemyAIController::EndTaskDrivenControlPitch()
 void AEnemyAIController::SetAttackAimActive(bool bActive)
 {
 	bAttackAimActive = bActive;
+	if (!bActive) bTargetAttackAimOwned = false;
 }
 
 void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)
@@ -391,6 +422,66 @@ AActor* AEnemyAIController::SelectPreferredVisibleTarget(
 	return BestTarget;
 }
 
+AActor* AEnemyAIController::GetPreferredKnownVisibleTarget() const
+{
+	const APawn* ControlledPawn = GetPawn();
+	AActor* Best = IsValidDetectionTarget(LastVisibleTarget.Get()) ? LastVisibleTarget.Get() : nullptr;
+	for (const TWeakObjectPtr<AActor>& Entry : DirectlyVisibleTargets)
+	{
+		AActor* Candidate = Entry.Get();
+		if (!IsValidDetectionTarget(Candidate))
+		{
+			continue;
+		}
+		const auto Priority = OutlierEnemyTargetRules::GetPriority(Candidate);
+		const auto BestPriority = OutlierEnemyTargetRules::GetPriority(Best);
+		if (Priority != OutlierEnemyTargetRules::ETargetPriority::Invalid && (!Best || Priority < BestPriority
+			|| (Priority == BestPriority && ControlledPawn && FVector::DistSquared(ControlledPawn->GetActorLocation(), Candidate->GetActorLocation())
+				< FVector::DistSquared(ControlledPawn->GetActorLocation(), Best->GetActorLocation()))))
+		{
+			Best = Candidate;
+		}
+	}
+	return Best;
+}
+
+AActor* AEnemyAIController::GetPreferredAttackableTurretTarget(const AActor* CurrentTarget) const
+{
+	const AAutoTurret* Turret = Cast<AAutoTurret>(GetPawn());
+	if (!Turret || !Turret->UsesNormalTurretAttackPolicy())
+	{
+		return nullptr;
+	}
+	FVector AimPoint;
+	// 종류 순위보다 현재의 실제 공격 가능성을 먼저 본다. 쿨다운은 물리적 사선과 별개다.
+	if (Turret->TryGetAttackableVisibleTargetAim(CurrentTarget, AimPoint))
+	{
+		return const_cast<AActor*>(CurrentTarget);
+	}
+	AActor* Best = nullptr;
+	const auto Consider = [&](AActor* Candidate)
+	{
+		if (!Turret->TryGetAttackableVisibleTargetAim(Candidate, AimPoint))
+		{
+			return;
+		}
+		const auto Priority = OutlierEnemyTargetRules::GetPriority(Candidate);
+		const auto BestPriority = OutlierEnemyTargetRules::GetPriority(Best);
+		if (!Best || Priority < BestPriority
+			|| (Priority == BestPriority && FVector::DistSquared(Turret->GetActorLocation(), Candidate->GetActorLocation())
+				< FVector::DistSquared(Turret->GetActorLocation(), Best->GetActorLocation())))
+		{
+			Best = Candidate;
+		}
+	};
+	Consider(LastVisibleTarget.Get());
+	for (const TWeakObjectPtr<AActor>& Entry : DirectlyVisibleTargets)
+	{
+		Consider(Entry.Get());
+	}
+	return Best;
+}
+
 bool AEnemyAIController::IsTargetDirectlyVisible(const AActor* Target) const
 {
 	return IsValidTrackingTarget(Target)
@@ -446,8 +537,8 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 	}
 	else if (Stimulus.Type == UAISense::GetSenseID<UAISense_Hearing>())
 	{
-		HandleHearingStimulus(Enemy, Actor, Stimulus);
 		LogPerceptionDiagnostic(*Enemy, *Actor, Stimulus);
+		HandleHearingStimulus(Enemy, Actor, Stimulus);
 	}
 }
 
@@ -467,7 +558,7 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 		// 시야 변경 시각을 먼저 기록하여 Task 갱신 사이의 노출/은폐 구간도 보존한다.
 		if (Enemy->GetCombatState() != EEnemyCombatState::Stun)
 		{
-			ObserveInitialSight(*Enemy, *Actor, Stimulus.WasSuccessfullySensed());
+			ObserveInitialSight(*Enemy, *Actor, Stimulus.WasSuccessfullySensed(), &Stimulus.ReceiverLocation);
 		}
 		if (Stimulus.WasSuccessfullySensed()) bInitialAwarenessAlert = true;
 	}
@@ -525,19 +616,25 @@ void AEnemyAIController::ResetInitialAwareness()
 	bInitialAwarenessAlert = false;
 }
 
-void AEnemyAIController::ObserveInitialSight(AEnemyBase& Enemy, AActor& Target, bool bVisible)
+void AEnemyAIController::ObserveInitialSight(AEnemyBase& Enemy, AActor& Target, bool bVisible, const FVector* ReceiverLocation)
 {
 	FAwarenessTarget* State = AwarenessTargets.Find(&Target);
 	if (!State && !bVisible) return;
 	if (!State) State = &AwarenessTargets.Add(&Target);
 	State->bVisible = bVisible;
-	AdvanceInitialAwareness(Enemy, *State);
 	if (bVisible)
 	{
+		// 실제 시각 관측에서만 거리를 읽는다. 은폐 중 청각 갱신은 마지막 시각 속도와 소리 좌표만 사용한다.
+		const FEnemyStat& Stat = Enemy.GetRuntimeStat();
 		State->LastSeenLocation = Target.GetActorLocation();
+		const FVector Origin = ReceiverLocation ? *ReceiverLocation : Enemy.GetPawnViewLocation();
+		State->SightFillDuration = OutlierEnemySight::ResolveSightFillDuration(
+			FVector::Distance(Origin, State->LastSeenLocation), Stat.AwarenessNearFillDuration,
+			Stat.AwarenessFillDuration, Stat.AwarenessNearDistance, Stat.AwarenessFarDistance);
 		State->LastSeenAt = GetWorld()->GetTimeSeconds();
 		Enemy.RecordAlertClue(State->LastSeenAt);
 	}
+	AdvanceInitialAwareness(Enemy, *State);
 }
 
 void AEnemyAIController::AdvanceInitialAwareness(AEnemyBase& Enemy, FAwarenessTarget& State)
@@ -546,7 +643,8 @@ void AEnemyAIController::AdvanceInitialAwareness(AEnemyBase& Enemy, FAwarenessTa
 	const double HearingExpiresAt = State.LastHeardAt < 0.0 ? -1.0 : State.LastHeardAt
 		+ OutlierEnemySight::ResolveHearingAwarenessHoldDuration(Stat.HearingAwarenessHoldDuration);
 	State.Progress.Observe(GetWorld()->GetTimeSeconds(), State.bVisible,
-		Stat.AwarenessFillDuration, Stat.AwarenessDecayDuration, HearingExpiresAt, Stat.HearingAwarenessRatio);
+		Stat.AwarenessFillDuration, Stat.AwarenessDecayDuration, HearingExpiresAt, Stat.HearingAwarenessRatio,
+		State.SightFillDuration);
 }
 
 void AEnemyAIController::ObserveInitialHearing(AEnemyBase& Enemy, AActor& Target,

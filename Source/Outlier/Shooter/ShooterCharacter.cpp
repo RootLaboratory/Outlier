@@ -2587,9 +2587,19 @@ UAISense_Sight::EVisibilityResult AShooterCharacter::CanBeSeenFrom(
 	int32* UserData,
 	const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
 {
+	// Shooter의 실제 등록 본에만 머리 예외와 조준 역할을 부여한다. 다른 플레이어 모델은 기존 판정을 유지한다.
+	static const FName BodyBones[] = { TEXT("spine_03"), TEXT("pelvis"), TEXT("clavicle_l"), TEXT("clavicle_r") };
+	const FOutlierSightBoneRoles Roles{ TEXT("head"), MakeArrayView(BodyBones) };
 	return BoneSight.Query(*this, GetMesh(), ResolveSightBoneRegistration(), Context,
 		OutSeenLocation, OutNumberOfLoSChecksPerformed, OutNumberOfAsyncLosCheckRequested,
-		OutSightStrength, [this] { RefreshFirstPersonShadowPolicy(); });
+		OutSightStrength, [this] { RefreshFirstPersonShadowPolicy(); }, &Roles);
+}
+
+bool AShooterCharacter::GetObservedAimPoints(const AActor* Observer, FOutlierSightObservation& Out) const
+{
+	if (HasAuthority()) return BoneSight.GetObservation(Observer, GetMesh(), ResolveSightBoneRegistration(), Out);
+	Out = FOutlierSightObservation();
+	return false;
 }
 
 FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const

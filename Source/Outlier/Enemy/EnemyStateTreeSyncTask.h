@@ -124,4 +124,7 @@ struct OUTLIER_API FEnemyStateTreeSyncTask
 
 private:
 	void SyncFromEnemy(FInstanceDataType& InstanceData) const;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FEnemyCombatTargetSelectionTest;
+#endif
 };

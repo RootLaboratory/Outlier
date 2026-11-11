@@ -40,9 +40,12 @@ bool IsCombatDestinationCurrent(const FEnemyCombatDestinationGuardTaskInstanceDa
 		return false;
 	}
 	const bool bGun = Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
+	if (bGun && Data.CapturedTacticalSerial != 0
+		&& !Enemy->IsCombatTacticalEpisodeCurrent(Data.CapturedTacticalSerial)) return false;
+	if (Data.bStartedForSightReposition && !Enemy->NeedsCombatTacticalReposition()) return false;
 	// 사거리 밖에서 시작한 접근은 도착까지 진행한다. 매 Tick 재선정하면 접근 자체가 시작되지 않는다.
 	if (bGun && !Data.bStartedOutsideWeaponRange && Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor)) return false;
-	return !HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(),
+	return !HasCombatTargetMoved(Data.SelectedTargetLocation, Enemy->GetCombatNavigationTargetLocation(Data.SelectedTargetActor),
 		Data.TargetChangeDistance, bGun);
 }
 
@@ -65,7 +68,7 @@ const TCHAR* GetCombatDestinationGuardReason(const FEnemyCombatDestinationGuardT
 	const bool bGun = Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
 	if (bGun && !Data.bStartedOutsideWeaponRange && Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor))
 		return TEXT("WeaponRangeLost");
-	if (HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(), Data.TargetChangeDistance, bGun))
+	if (HasCombatTargetMoved(Data.SelectedTargetLocation, Enemy->GetCombatNavigationTargetLocation(Data.SelectedTargetActor), Data.TargetChangeDistance, bGun))
 		return TEXT("TargetMoved");
 	return Data.bShouldReselect ? TEXT("ReselectLatched") : TEXT("Current");
 }
@@ -79,7 +82,7 @@ void LogCombatDestinationGuard(const TCHAR* Phase, const FEnemyCombatDestination
 	const AEnemyBase* Enemy = IsValid(Data.Enemy) ? Data.Enemy.Get() : nullptr;
 	const bool bGun = Enemy && Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
 	const AActor* Target = IsValid(Data.SelectedTargetActor) ? Data.SelectedTargetActor.Get() : nullptr;
-	const FVector CurrentLocation = Target ? Target->GetActorLocation() : FVector::ZeroVector;
+	const FVector CurrentLocation = Enemy && Target ? Enemy->GetCombatNavigationTargetLocation(Target) : FVector::ZeroVector;
 	UE_LOG(LogEnemyCombatNavigation, Log,
 		TEXT("[CombatDestinationGuard] %s Enemy=%s ShouldReselect=%d Reason=%s SelectedTarget=%s CurrentTarget=%s SelectedLocation=%s CurrentLocation=%s Moved=%.1f Spatial=%d Threshold=%.1f CurrentState=%s TargetState=%s"),
 		Phase, *GetNameSafe(Data.Enemy), Data.bShouldReselect, GetCombatDestinationGuardReason(Data),
@@ -96,6 +99,9 @@ void ResetAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 {
 	Data.bHasValidTarget = false;
 	Data.bTargetOutsideWeaponRange = false;
+	Data.bNeedsReposition = false;
+	Data.bCombatObservationWaiting = false;
+	Data.bRepositionResolved = false;
 	Data.HorizontalDistance = 0.0f;
 	Data.bLeftBlocked = false;
 	Data.bRightBlocked = false;
@@ -113,6 +119,7 @@ AActor* GetAssessmentTarget(const FEnemyCombatAssessmentTaskInstanceData& Data)
 
 void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 {
+	const bool bWasRepositionRequired = Data.bNeedsReposition;
 	ResetAssessment(Data);
 	AEnemyBase* Enemy = Data.Enemy;
 	AActor* Target = GetAssessmentTarget(Data);
@@ -127,10 +134,18 @@ void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 	Data.bHasValidTarget = true;
 	Data.bTargetOutsideWeaponRange = Enemy->GetRuntimeStat().Type == EEnemyType::Gun
 		&& Enemy->IsTargetOutsideWeaponRange(Target);
+	// 공격 준비·회복·회전과 무관하게 실제 무기 사선만 누적한다.
+	// 노출 부위 선택은 Pawn의 Slice 3 판정을 공유하며 추가 EQS를 매 Tick 만들지 않는다.
+	Enemy->UpdateCombatTacticalSightBlock();
+	Data.bNeedsReposition = Enemy->NeedsCombatTacticalReposition();
+	Data.bCombatObservationWaiting = Enemy->IsCombatObservationWaiting();
+	// 사선 확보용 접근만 즉시 공통 판단으로 돌린다. 정상 장거리 접근을 거리 구간만으로 취소하지 않는다.
+	Data.bRepositionResolved = bWasRepositionRequired && !Data.bNeedsReposition
+		&& !Data.bTargetOutsideWeaponRange;
 	Data.bPrefersLeft = Enemy->PrefersCombatLeft();
 	const FVector Origin = Enemy->GetActorLocation();
-	Data.HorizontalDistance = CalculateTacticalDistance(Origin, Target->GetActorLocation(), EEnemyTacticalDistanceMode::Horizontal2D);
-	FVector Forward = (Target->GetActorLocation() - Origin).GetSafeNormal2D();
+	Data.HorizontalDistance = CalculateTacticalDistance(Origin, Enemy->GetCombatNavigationTargetLocation(Target), EEnemyTacticalDistanceMode::Horizontal2D);
+	FVector Forward = (Enemy->GetCombatNavigationTargetLocation(Target) - Origin).GetSafeNormal2D();
 	if (Forward.IsNearlyZero()) Forward = Enemy->GetActorForwardVector().GetSafeNormal2D();
 	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward);
 	const FVector Start = Origin + FVector::UpVector * Data.WallCheckHeightOffset;
@@ -603,6 +618,9 @@ EStateTreeRunStatus FEnemyCombatDestinationGuardTask::EnterState(FStateTreeExecu
 	Data.CachedController = IsValid(Data.Enemy) ? Cast<AEnemyAIController>(Data.Enemy->GetController()) : nullptr;
 	Data.bStartedOutsideWeaponRange = IsValid(Data.Enemy)
 		&& Data.Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor);
+	Data.CapturedTacticalSerial = IsValid(Data.Enemy)
+		? Data.Enemy->GetCombatTacticalEpisodeSerial() : 0;
+	Data.bStartedForSightReposition = IsValid(Data.Enemy) && Data.Enemy->NeedsCombatTacticalReposition();
 	Data.bShouldReselect = !FMath::IsFinite(Data.TargetChangeDistance) || Data.TargetChangeDistance < 1.0f
 		|| Data.SelectedTargetLocation.ContainsNaN() || !IsCombatDestinationCurrent(Data);
 	LogCombatDestinationGuard(TEXT("Enter"), Data, &Transition);
@@ -745,7 +763,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 	}
 
 	const FVector EnemyLocation = Enemy->GetActorLocation();
-	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector TargetLocation = Enemy->GetCombatNavigationTargetLocation(Target);
 	InstanceData.TargetDistance = CalculateTacticalDistance(
 		EnemyLocation,
 		TargetLocation,
@@ -905,7 +923,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::EnterState(
 
 	ResolveOrbitDirectionSign(
 		*InstanceData.Enemy,
-		Target->GetActorLocation(),
+		InstanceData.Enemy->GetCombatNavigationTargetLocation(Target),
 		InstanceData.ActiveOrbitDirection);
 	// 여러 드론이 같은 프레임에 같은 점을 고르는 현상을 줄이는 가벼운 위상 오프셋이다.
 	InstanceData.PhaseOffsetDegrees = FMath::FRandRange(-5.0f, 5.0f);
@@ -950,7 +968,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 	}
 
 	const FVector EnemyLocation = Enemy->GetActorLocation();
-	const FVector OrbitCenter = Target->GetActorLocation();
+	const FVector OrbitCenter = Enemy->GetCombatNavigationTargetLocation(Target);
 	InstanceData.TargetDistance = CalculateTacticalDistance(
 		EnemyLocation,
 		OrbitCenter,

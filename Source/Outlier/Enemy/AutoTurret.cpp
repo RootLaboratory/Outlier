@@ -1,4 +1,5 @@
 #include "Enemy/AutoTurret.h"
+#include "Weapon/LaserWeapon.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "Drone/Partner/PartnerShieldRecipientComponent.h"
 #include "Audio/OutlierAudioFeedback.h"
@@ -29,6 +30,7 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomTagComponent.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
@@ -328,6 +330,8 @@ FVector AAutoTurret::GetHackTargetLocation() const
 
 FVector AAutoTurret::GetCombatAimPoint(const AActor* TargetActor) const
 {
+	// 커밋 레이저는 기존 중앙/잠금 좌표를 유지한다. 일반 원거리는 공통 노출 조준 결과를 사용한다.
+	if (!Cast<ALaserWeapon>(GetCurrentWeapon())) return Super::GetCombatAimPoint(TargetActor);
 	if (const ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
 	{
 		// ACharacter의 ActorLocation은 보통 Capsule 중심이지만, 상대 위치가 조정된 BP도 정확히 처리하도록
@@ -1344,6 +1348,107 @@ bool AAutoTurret::UpdateTurretAimAtActor(AActor* TargetActor, float DeltaTime, b
 {
 	return IsValid(TargetActor)
 		&& UpdateTurretAimAtLocation(GetCombatAimPoint(TargetActor), DeltaTime, bAttackRotation);
+}
+
+bool AAutoTurret::UsesNormalTurretAttackPolicy() const
+{
+	return !IsEnemyPossessed() && IsValid(GetCurrentWeapon()) && !Cast<ALaserWeapon>(GetCurrentWeapon());
+}
+
+bool AAutoTurret::IsTurretAimLocationReachable(const FVector& Location) const
+{
+	const FVector Direction = GetActorQuat().UnrotateVector(Location - GetPawnViewLocation());
+	if (Direction.ContainsNaN() || Direction.IsNearlyZero())
+	{
+		return false;
+	}
+	const float DownLimit = FMath::IsFinite(RuntimeTurretBehavior.MaxPitchDegrees)
+		? FMath::Clamp(RuntimeTurretBehavior.MaxPitchDegrees, 0.0f, 90.0f) : 60.0f;
+	const double Pitch = FMath::RadiansToDegrees(FMath::Atan2(Direction.Z, FVector2D(Direction.X, Direction.Y).Size()));
+	// 회전 함수는 불가능한 각도도 한계까지 추적한다. 공격 후보는 clamp 이전 방향으로 판정한다.
+	return Pitch >= -DownLimit - KINDA_SMALL_NUMBER;
+}
+
+bool AAutoTurret::TryGetAttackableVisibleTargetAim(const AActor* Target, FVector& OutAimPoint) const
+{
+	const AEnemyAIController* AI = Cast<AEnemyAIController>(GetController());
+	if (!HasAuthority() || !UsesNormalTurretAttackPolicy() || IsDead() || IsAIControlSuppressed()
+		|| !AI || !AI->IsTargetDirectlyVisible(Target))
+	{
+		return false;
+	}
+
+	TArray<FVector, TInlineAllocator<16>> Points;
+	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(Target))
+	{
+		FOutlierSightObservation Observation;
+		if (!Shooter->GetObservedAimPoints(this, Observation))
+		{
+			return false;
+		}
+		int32 SeenIndex = INDEX_NONE;
+		auto Append = [&](const auto& Source, const auto& Indices)
+		{
+			for (int32 Index = 0; Index < Source.Num(); ++Index)
+			{
+				if (Indices[Index] == Observation.SeenBoneIndex)
+				{
+					SeenIndex = Points.Num();
+				}
+				Points.Add(Source[Index]);
+			}
+		};
+		Append(Observation.BodyPoints, Observation.BodyBoneIndices);
+		Append(Observation.HeadPoints, Observation.HeadBoneIndices);
+		Append(Observation.OtherPoints, Observation.OtherBoneIndices);
+		if (SeenIndex > 0)
+		{
+			Points.Swap(0, SeenIndex);
+		}
+		// 현재 조준 부위도 최신 자기 관측에 남아 있을 때만 후보 우선권을 유지한다.
+		if (Target == GetTrackedTarget())
+		{
+			const FVector CurrentAim = GetCombatAimPoint(Target);
+			const int32 Current = Points.IndexOfByPredicate([&](const FVector& Point) { return Point.Equals(CurrentAim, 1.0); });
+			if (Current > 0)
+			{
+				Points.Swap(0, Current);
+			}
+		}
+	}
+	else
+	{
+		// Partner 등은 기존 조준 계약을 사용한다. 새로운 노출 본 정책을 확대하지 않는다.
+		Points.Add(GetCombatAimPoint(Target));
+	}
+
+	int32 Checks = 16;
+	for (const FVector& Point : Points)
+	{
+		if (IsTurretAimLocationReachable(Point) && GetCurrentWeapon()->HasClearTargetAttackPath(Target, Point, Checks))
+		{
+			OutAimPoint = Point;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool AAutoTurret::IsTurretAttackAimReady(const AActor* Target) const
+{
+	if (!Target || Target != GetTrackedTarget())
+	{
+		return false;
+	}
+	const FVector AimPoint = GetCombatAimPoint(Target);
+	if (!IsTurretAimLocationReachable(AimPoint))
+	{
+		return false;
+	}
+	const FVector Direction = (AimPoint - GetPawnViewLocation()).GetSafeNormal();
+	const float Tolerance = FMath::IsFinite(RuntimeTurretBehavior.AimToleranceDegrees)
+		? FMath::Clamp(RuntimeTurretBehavior.AimToleranceDegrees, 0.01f, 45.0f) : 2.0f;
+	return FVector::DotProduct(GetViewRotation().Vector(), Direction) >= FMath::Cos(FMath::DegreesToRadians(Tolerance));
 }
 
 bool AAutoTurret::UpdateTurretAimAtLocation(

@@ -14,6 +14,7 @@ struct OUTLIER_API FOutlierSightBoneCache
 	bool IsValid() const { return bResolved && CachedMesh.IsValid() && Error.IsEmpty(); }
 	TConstArrayView<int32> GetBoneIndices() const { return BoneIndices; }
 	const FString& GetError() const { return Error; }
+	uint32 GetRevision() const { return Revision; }
 
 private:
 	TWeakObjectPtr<USkeletalMesh> CachedMesh;
@@ -21,4 +22,5 @@ private:
 	TArray<int32> BoneIndices;
 	FString Error;
 	bool bResolved = false;
+	uint32 Revision = 0;
 };

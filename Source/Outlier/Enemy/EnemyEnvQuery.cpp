@@ -1,4 +1,5 @@
 #include "Enemy/EnemyEnvQuery.h"
+#include "Shooter/ShooterCharacter.h"
 
 #include "Components/CapsuleComponent.h"
 #include "Drone/FlightPathfinding.h"
@@ -718,6 +719,75 @@ EFlightPathStatus ResolveCandidateHeight(const AEnemyBase& Enemy, const UCapsule
 }
 }
 
+EFlightPathStatus EnemyFlightHeight::PrepareCombatCandidates(const AEnemyBase& Enemy, const TArray<FVector>& Locations,
+	const FVector& Start, const FVector& Target, float Clearance, int32 MaxChecks,
+	double MaxMilliseconds, FEnemyFlightHeightSnapshot& OutSnapshot)
+{
+	OutSnapshot = FEnemyFlightHeightSnapshot();
+	OutSnapshot.bEnabled = Enemy.FlightHeightSettings.bEnabled;
+	OutSnapshot.Settings = Enemy.FlightHeightSettings;
+	OutSnapshot.Preference = Enemy.GetCombatHeightPreference();
+	const UCapsuleComponent* Capsule = Enemy.GetCapsuleComponent();
+	if (!Enemy.HasAuthority() || !Enemy.GetWorld() || !Capsule || Start.ContainsNaN() || Target.ContainsNaN()
+		|| !FMath::IsFinite(Clearance) || Clearance < 0.0f || MaxChecks <= 0
+		|| !FMath::IsFinite(MaxMilliseconds) || MaxMilliseconds <= 0.0
+		|| (OutSnapshot.bEnabled && !OutSnapshot.Settings.IsValid()))
+	{
+		return EFlightPathStatus::InvalidRequest;
+	}
+	FEnemyMovementRoomContext MovementRooms;
+	if (OutSnapshot.bEnabled)
+	{
+		const URoomCombatSubsystem* Rooms = Enemy.GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+		if (!Rooms || !Rooms->BuildEnemyMovementRoomContext(&Enemy, MovementRooms))
+		{
+			return EFlightPathStatus::Unavailable;
+		}
+	}
+
+	const double Started = FPlatformTime::Seconds();
+	EFlightPathStatus Result = EFlightPathStatus::Success;
+	OutSnapshot.Candidates.Reserve(Locations.Num());
+	for (const FVector& Location : Locations)
+	{
+		FEnemyFlightHeightCandidate& Candidate = OutSnapshot.Candidates.AddDefaulted_GetRef();
+		Candidate.Location = Location;
+		if (Location.ContainsNaN())
+		{
+			Candidate.Status = EFlightPathStatus::InvalidRequest;
+			Candidate.Reason = TEXT("InvalidCombatCandidate");
+			Result = EFlightPathStatus::InvalidRequest;
+		}
+		else if (!OutSnapshot.bEnabled)
+		{
+			// 높이 기능이 꺼진 기존 적은 입력 위치를 유지한다. 경로/점유 검증은 후속 선택기가 맡는다.
+			Candidate.Status = EFlightPathStatus::Success;
+			Candidate.Reason = TEXT("HeightDisabled");
+		}
+		else if (Result == EFlightPathStatus::BudgetExceeded || Result == EFlightPathStatus::InvalidRequest)
+		{
+			// 배열 인덱스를 유지해야 후보의 공격/이동 용도가 뒤섞이지 않는다. 남은 후보는 검사하지 않는다.
+			Candidate.Status = Result;
+			Candidate.Reason = TEXT("CombatHeightSelectionStopped");
+		}
+		else
+		{
+			Candidate.Status = ResolveCandidateHeight(Enemy, *Capsule, MovementRooms, Start, Target,
+				false, Clearance, MaxChecks, Started, MaxMilliseconds, OutSnapshot, Candidate);
+			if (Candidate.Status == EFlightPathStatus::BudgetExceeded || Candidate.Status == EFlightPathStatus::InvalidRequest)
+			{
+				Result = Candidate.Status;
+			}
+		}
+	}
+	OutSnapshot.Milliseconds = (FPlatformTime::Seconds() - Started) * 1000.0;
+	if (OutSnapshot.bEnabled && OutSnapshot.Milliseconds >= MaxMilliseconds && Result != EFlightPathStatus::InvalidRequest)
+	{
+		Result = EFlightPathStatus::BudgetExceeded;
+	}
+	return Result;
+}
+
 EFlightPathStatus EnemyFlightHeight::PrepareQuery(const AEnemyBase& Enemy, const UEnvQueryGenerator& Generator,
 	const FVector& Start, const FVector& Target, float PreferredOrbitLength, bool bLeft, int32 Lane,
 	float Clearance, int32 MaxChecks, double MaxMilliseconds, FEnemyFlightHeightSnapshot& OutSnapshot)
@@ -992,6 +1062,20 @@ UEnemyEnvQueryTest_FlightDestination::UEnemyEnvQueryTest_FlightDestination()
 	SetWorkOnFloatValues(false);
 	TestPurpose = EEnvTestPurpose::Filter;
 	BoolValue.DefaultValue = true;
+}
+
+void UEnemyEnvQueryTest_CombatSight::RunTest(FEnvQueryInstance& QueryInstance) const
+{
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
+	if (!Enemy || !Cast<AShooterCharacter>(Enemy->GetTrackedTarget()))
+	{
+		Super::RunTest(QueryInstance);
+		return;
+	}
+	// EQS에서는 후보를 남긴다. 완료 callback의 접근/후퇴 검증이 실제 무기 원점·노출 후보를
+	// 경로 탐색과 같은 횟수/시간 예산으로 검사한다. 여기서 중앙 Trace를 중복하면 먼저 탈락한다.
+	for (FEnvQueryInstance::ItemIterator It(this, QueryInstance); It; ++It)
+		It.SetScore(EEnvTestPurpose::Filter, EEnvTestFilterType::Match, true, true);
 }
 
 void UEnemyEnvQueryTest_FlightDestination::RunTest(FEnvQueryInstance& QueryInstance) const

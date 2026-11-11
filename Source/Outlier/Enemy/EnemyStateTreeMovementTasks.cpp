@@ -32,7 +32,10 @@ void LogFlight(
 	const FEnemyFlyToLocationTaskInstanceData& Data,
 	const FStateTreeTransitionResult* Transition = nullptr)
 {
-	if (CVarEnemyFlightDebug.GetValueOnGameThread() == 0) return;
+	if (CVarEnemyFlightDebug.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
 	const AEnemyBase* Enemy = IsValid(Data.Enemy) ? Data.Enemy.Get() : nullptr;
 	const FVector Location = Enemy ? Enemy->GetActorLocation() : FVector::ZeroVector;
 	const FString ChangeType = Transition
@@ -53,12 +56,12 @@ void LogFlight(
 		Data.bRotateTowardDestination, *GetNameSafe(Enemy ? Enemy->GetController() : nullptr),
 		*GetNameSafe(Data.CachedController), Enemy && Enemy->HasAuthority(),
 		*ChangeType, *CurrentState, *TargetState, *RunStatus, *Priority);
-	if (Data.bUsePathfinding || Data.bUsePlannedPath)
+	if (Data.bUsePathfinding || (Data.bUsePlannedPath && !Data.bCombatNavigationPath))
 	{
 		UE_LOG(LogEnemyFlight, Log,
 			TEXT("[FlightPath] %s Enemy=%s Time=%.3f Room=%s Planned=%d AStar=%d Status=%s Waypoint=%d/%d TravelledCm=%.1f Speed=%.1f Retry=%d RetryElapsed=%.2f Waiting=%d"),
 			Phase, *GetNameSafe(Enemy), Enemy && Enemy->GetWorld() ? Enemy->GetWorld()->GetTimeSeconds() : 0.0,
-			*Data.PathRoomTag.ToString(), Data.bUsePlannedPath, Data.bUsePathfinding,
+			*Data.PathRoomTag.ToString(), (Data.bUsePlannedPath && !Data.bCombatNavigationPath), Data.bUsePathfinding,
 			*UEnum::GetValueAsString(Data.PathStatus), Data.WaypointIndex,
 			Data.PathWaypoints.Num(), Data.TravelledPathLength, Enemy ? Enemy->GetVelocity().Size() : 0.0,
 			Data.RepathAttempts, Data.RetryElapsed, Data.bWaitingForPath);
@@ -154,7 +157,10 @@ FRotator GetPassiveRotation(const FRotator& Current, const FRotator& Desired,
 	const float Error = FMath::Max(
 		FMath::Abs(FMath::FindDeltaAngleDegrees(Current.Yaw, Desired.Yaw)),
 		FMath::Abs(FMath::FindDeltaAngleDegrees(Current.Pitch, Desired.Pitch)));
-	if (Error <= Tolerance || SafeSpeed == 0.0f || SafeTime == 0.0f) return Current;
+	if (Error <= Tolerance || SafeSpeed == 0.0f || SafeTime == 0.0f)
+	{
+		return Current;
+	}
 	// 오차가 작아져도 완료 허용 범위에는 도달한다. 속도 0은 의도된 정지 설정이다.
 	const float Speed = FMath::Min(SafeSpeed, FMath::Max(FMath::Max(1.0f, Tolerance * 2.0f), Error * Rate));
 	FRotator Next = FMath::RInterpConstantTo(Current, Desired, SafeTime, Speed).GetNormalized();
@@ -181,7 +187,9 @@ bool RotateTowardLocation(
 	}
 	// 공통 Alert에서도 고정형 본체를 돌리지 않는다. 헤드의 기존 각도 제한과 도달 판정을 사용한다.
 	if (AAutoTurret* Turret = Cast<AAutoTurret>(&Enemy))
+	{
 		return Turret->UpdateTurretAimAtLocation(TargetLocation, DeltaTime, false);
+	}
 
 	const FVector Direction = TargetLocation - Enemy.GetActorLocation();
 	if (Direction.IsNearlyZero())
@@ -264,6 +272,45 @@ EEnemyFlightMoveResult UpdateFlightProgress(FEnemyFlyToLocationTaskInstanceData&
 
 void StopFlyTask(FEnemyFlyToLocationTaskInstanceData& Data)
 {
+	const bool bReplacedCombatMove = Data.CapturedCombatReservationRequest != 0 && IsValid(Data.Enemy)
+		&& Data.Enemy->GetCombatReservationRequest() != 0
+		&& Data.Enemy->GetCombatReservationRequest() != Data.CapturedCombatReservationRequest;
+	const bool bReplacedLifetime = IsValid(Data.Enemy)
+		&& (Data.CapturedMovementGeneration != Data.Enemy->GetPoolGameplayGeneration()
+			|| Data.CapturedMovementLease != Data.Enemy->GetPoolLeaseSerial());
+	if (bReplacedCombatMove || bReplacedLifetime)
+	{
+		// 같은 Controller/전술 회차라도 새 요청이 이동을 인수했으면 옛 Exit는 물리 이동을 멈추지 않는다.
+		Data.bOwnsMovement = false;
+	}
+	if (Data.bOwnsMovement && Data.MoveResult == EEnemyFlightMoveResult::Arrived && Data.CapturedCombatTacticalSerial != 0
+		&& IsValid(Data.Enemy) && Data.Enemy->IsCombatTacticalEpisodeCurrent(Data.CapturedCombatTacticalSerial))
+	{
+		AActor* Target = Data.Enemy->GetTrackedTarget();
+		int32 SightChecks = 16;
+		// 후보 선정 성공만으로 실패 예산을 돌려주지 않는다. 실제 도착과 발사 경로까지 확인한다.
+		if (Target && !Data.Enemy->IsTargetOutsideWeaponRange(Target)
+			&& Data.Enemy->HasCombatAttackPathFrom(Target, Data.Enemy->GetActorLocation(), SightChecks))
+		{
+			// 정상 도착은 같은 회차의 Guard를 유지해 다음 정지 대기로 인계한다.
+			// 사선 조기 복구와 달리 여기에는 취소할 미완료 후보 요청이 없다.
+			Data.Enemy->CompleteCombatTacticalSelectionSuccess(false);
+		}
+	}
+	// 인계 뒤 늦게 종료되는 원래 Task는 새 Move의 전술 상태까지 종료하지 않는다.
+	if (Data.bOwnsMovement && Data.CapturedCombatTacticalSerial != 0 && IsValid(Data.Enemy)
+		&& Data.CapturedCombatTacticalSerial == Data.Enemy->GetCombatTacticalEpisodeSerial())
+	{
+		Data.Enemy->EndCombatTacticalMovement();
+	}
+	if (Data.bOwnsMovement && IsValid(Data.Enemy))
+	{
+		Data.Enemy->ClearCombatFlightHandoff(false);
+	}
+	if (Data.bOwnsMovement && Data.CapturedCombatReservationRequest != 0 && IsValid(Data.Enemy))
+	{
+		Data.Enemy->ReleaseCombatReservation(Data.CapturedCombatReservationRequest);
+	}
 	Data.SpeedProfileState.Reset();
 	LogFlight(TEXT("Stop"), Data);
 	Data.PathWaypoints.Reset();
@@ -273,7 +320,10 @@ void StopFlyTask(FEnemyFlyToLocationTaskInstanceData& Data)
 	Data.CachedRoom.Reset();
 	Data.bWaitingForPath = false;
 	Data.bRepathEpisode = false;
-	if (!Data.bOwnsMovement || !IsValid(Data.Enemy) || !Data.Enemy->HasAuthority()) return;
+	if (!Data.bOwnsMovement || !IsValid(Data.Enemy) || !Data.Enemy->HasAuthority())
+	{
+		return;
+	}
 	// 빙의/재점유 또는 조사 회차 종료 뒤의 새 이동은 이전 Task가 정리하지 않는다.
 	// 회차를 얻기 전 진입 실패(CapturedNoiseSerial == 0)는 자신의 초기화만 정리한다.
 	const bool bReplacedNoiseMove = Data.bInvestigateNoise && Data.CapturedNoiseSerial != 0
@@ -302,25 +352,46 @@ void PauseFlyMovement(AEnemyBase& Enemy)
 bool IsNoiseFlightConfigurationValid(const FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	return !Data.bInvestigateNoise || (Data.bUsePathfinding && !Data.bReturnHome
-		&& !Data.bUsePlannedPath && !Data.bUseInitialPath && !Data.bConstrainRetreatPath);
+		&& !(Data.bUsePlannedPath && !Data.bCombatNavigationPath) && !Data.bUseInitialPath && !Data.bConstrainRetreatPath);
 }
 
 bool PrepareNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
 {
-	if (!IsNoiseFlightConfigurationValid(Data)) return false;
-	if (!Data.bInvestigateNoise) return true;
-	if (!IsValid(Data.Enemy)) return false;
+	if (!IsNoiseFlightConfigurationValid(Data))
+	{
+		return false;
+	}
+	if (!Data.bInvestigateNoise)
+	{
+		return true;
+	}
+	if (!IsValid(Data.Enemy))
+	{
+		return false;
+	}
 	Data.Destination = Data.Enemy->GetPerceptionGoal().Location;
 	// 조사 이동은 목적지가 계속 바뀌어도 무한히 지속되지 않게 제한한다.
-	if (!FMath::IsFinite(Data.MoveTimeout) || Data.MoveTimeout <= 0.0f) Data.MoveTimeout = 30.0f;
-	if (!FMath::IsFinite(Data.NoProgressTimeout) || Data.NoProgressTimeout <= 0.0f) Data.NoProgressTimeout = 3.0f;
+	if (!FMath::IsFinite(Data.MoveTimeout) || Data.MoveTimeout <= 0.0f)
+	{
+		Data.MoveTimeout = 30.0f;
+	}
+	if (!FMath::IsFinite(Data.NoProgressTimeout) || Data.NoProgressTimeout <= 0.0f)
+	{
+		Data.NoProgressTimeout = 3.0f;
+	}
 	return true;
 }
 
 bool BeginNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
 {
-	if (!Data.bInvestigateNoise) return true;
-	if (!Data.Enemy->BeginLocationInvestigation(Data.Destination)) return false;
+	if (!Data.bInvestigateNoise)
+	{
+		return true;
+	}
+	if (!Data.Enemy->BeginLocationInvestigation(Data.Destination))
+	{
+		return false;
+	}
 	Data.CapturedNoiseSerial = Data.Enemy->GetLocationInvestigationSerial();
 	Data.LastNoiseProgressLocation = Data.Enemy->GetActorLocation();
 	Data.NoiseInvestigationSearchBounds = FBox(ForceInit);
@@ -331,7 +402,10 @@ bool BeginNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data)
 
 bool UpdateNoiseFlightDestination(FEnemyFlyToLocationTaskInstanceData& Data)
 {
-	if (!Data.bInvestigateNoise) return true;
+	if (!Data.bInvestigateNoise)
+	{
+		return true;
+	}
 	if (!Data.Enemy->IsLocationInvestigationCurrent(Data.CapturedNoiseSerial))
 	{
 		Data.MoveResult = EEnemyFlightMoveResult::Interrupted;
@@ -350,16 +424,24 @@ bool UpdateNoiseFlightDestination(FEnemyFlyToLocationTaskInstanceData& Data)
 EStateTreeRunStatus FinishNoiseFlight(FEnemyFlyToLocationTaskInstanceData& Data, EStateTreeRunStatus Status)
 {
 	if (!Data.bInvestigateNoise || Status == EStateTreeRunStatus::Running || !IsValid(Data.Enemy)
-		|| !Data.Enemy->IsLocationInvestigationCurrent(Data.CapturedNoiseSerial)) return Status;
+		|| !Data.Enemy->IsLocationInvestigationCurrent(Data.CapturedNoiseSerial))
+	{
+		return Status;
+	}
 	const bool bReachedOrExhausted = Data.MoveResult == EEnemyFlightMoveResult::Arrived
 		|| Data.MoveResult == EEnemyFlightMoveResult::Blocked || Data.MoveResult == EEnemyFlightMoveResult::TimedOut;
-	if (!bReachedOrExhausted) return Status;
+	if (!bReachedOrExhausted)
+	{
+		return Status;
+	}
 	const bool bGeometryFailure = Data.MoveResult != EEnemyFlightMoveResult::Arrived
 		&& (Data.PathStatus == EFlightPathStatus::NoPathWithinBounds || Data.PathStatus == EFlightPathStatus::BlockedEndpoint
 			|| Data.PathStatus == EFlightPathStatus::BlockedSegment || Data.PathStatus == EFlightPathStatus::Success);
 	// 예산 부족/사용 불가/잘못된 요청은 도달 불가의 증거가 아니다. 실제 경로 실패와 분리한다.
 	if (bGeometryFailure)
+	{
 		Data.Enemy->RecordNoiseInvestigationFailure(Data.CapturedNoiseSerial, Data.Destination, Data.NoiseInvestigationSearchBounds);
+	}
 	// 도달하지 않은 소리 좌표를 수색 중심으로 채택하지 않는다.
 	// 우회/재탐색을 소진한 경우에도 실제 이동이 끝난 안전한 위치에서 수색한다.
 	StopFlyTask(Data);
@@ -389,9 +471,15 @@ float GetFlightBrakingDeceleration(const UCharacterMovementComponent& Movement)
 
 float GetCornerSpeedLimit(const FVector& Incoming, const FVector& Outgoing, float Acceleration, float Clearance)
 {
-	if (Incoming.IsNearlyZero() || Outgoing.IsNearlyZero()) return 0.0f;
+	if (Incoming.IsNearlyZero() || Outgoing.IsNearlyZero())
+	{
+		return 0.0f;
+	}
 	const double Dot = FMath::Clamp(FVector::DotProduct(Incoming.GetSafeNormal(), Outgoing.GetSafeNormal()), -1.0, 1.0);
-	if (Dot > 0.9999) return TNumericLimits<float>::Max();
+	if (Dot > 0.9999)
+	{
+		return TNumericLimits<float>::Max();
+	}
 	// 방향 변경량이 클수록 관성을 줄인다. 180도 반전은 코너까지 감속한 뒤 새 방향으로 출발한다.
 	const double SinHalf = FMath::Sqrt((1.0 - Dot) * 0.5);
 	const double CosHalf = FMath::Sqrt((1.0 + Dot) * 0.5);
@@ -400,16 +488,24 @@ float GetCornerSpeedLimit(const FVector& Incoming, const FVector& Outgoing, floa
 
 float GetFlightWaypointRadius(const FEnemyFlyToLocationTaskInstanceData& Data, bool bFinalPoint)
 {
-	if (Data.bUsePlannedPath) return FMath::Min(10.0f, FMath::Max(Data.AcceptanceRadius, 1.0f));
+	if (Data.bUsePlannedPath && !Data.bCombatNavigationPath)
+	{
+		return FMath::Min(10.0f, FMath::Max(Data.AcceptanceRadius, 1.0f));
+	}
 	return bFinalPoint ? FMath::Max(Data.AcceptanceRadius, 0.0f) : FMath::Min(10.0f, Data.PathCellSize * 0.1f);
 }
 
 void PrepareFlightSpeedLimits(FEnemyFlyToLocationTaskInstanceData& Data)
 {
+	// 새 경로의 모든 구간 검증이 끝난 뒤에만 이전 Move의 가감속 상태를 인계한다.
+	Data.Enemy->ResumeCombatFlightHandoff(Data);
 	Data.SpeedProfileState.SetPath(Data.PathWaypoints);
 	Data.WaypointSpeedLimits.SetNumZeroed(Data.PathWaypoints.Num());
-	const UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement();
-	if (!Movement) return;
+	UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement();
+	if (!Movement)
+	{
+		return;
+	}
 	const float Braking = GetFlightBrakingDeceleration(*Movement);
 	// 뒤에서 앞으로 정리하여 짧은 구간 다음의 급회전도 현재 구간부터 감속한다.
 	for (int32 Index = Data.PathWaypoints.Num() - 2; Index > 0; --Index)
@@ -422,6 +518,20 @@ void PrepareFlightSpeedLimits(FEnemyFlyToLocationTaskInstanceData& Data)
 		const float BrakingDistance = FMath::Max(Outgoing.Size() - GetFlightWaypointRadius(Data, false) - NextRadius, 0.0);
 		const float ReachableSpeed = FMath::Sqrt(NextSpeed * NextSpeed + 2.0f * Braking * BrakingDistance);
 		Data.WaypointSpeedLimits[Index] = FMath::Min(Corner, ReachableSpeed);
+	}
+	FVector PreviousVelocity;
+	if (Data.bCombatNavigationPath && Data.PathWaypoints.Num() >= 2
+		&& Data.Enemy->ConsumeCombatNavigationRetargetVelocity(Data.Destination, PreviousVelocity))
+	{
+		// 새 대상의 경로·예약 검증이 끝난 뒤에만 관성을 복원한다. 역방향 성분과 새 코너의 과속은 버린다.
+		const FVector Direction = (Data.PathWaypoints[1] - Data.PathWaypoints[0]).GetSafeNormal();
+		const float Distance = FMath::Max(FVector::Distance(Data.PathWaypoints[0], Data.PathWaypoints[1])
+			- GetFlightWaypointRadius(Data, Data.PathWaypoints.Num() == 2), 0.0);
+		const float CornerLimit = FMath::Sqrt(FMath::Square(Data.WaypointSpeedLimits[1]) + 2.0f * Braking * Distance);
+		const float Speed = FMath::Clamp(static_cast<float>(FVector::DotProduct(PreviousVelocity, Direction)),
+			0.0f, FMath::Min(Movement->MaxFlySpeed, CornerLimit));
+		Movement->Velocity = Direction * Speed;
+		Data.SpeedProfileState.TargetSpeed = Speed;
 	}
 }
 
@@ -447,7 +557,7 @@ FFlightPathRequest MakeFlightPathRequest(
 	Request.bRequireRoom = true;
 	Request.Room = Data.CachedRoom;
 	Request.AllowedRooms = Data.MovementRooms.Rooms;
-	Request.bRequireAwayHalfSpace = Data.bConstrainRetreatPath;
+	Request.bRequireAwayHalfSpace = Data.bConstrainRetreatPath && !Data.bCombatNavigationPath;
 	Request.AwayOrigin = Data.RetreatOrigin + Request.Start - Data.Enemy->GetActorLocation();
 	Request.AwayDirection = Data.RetreatDirection;
 	return Request;
@@ -455,9 +565,12 @@ FFlightPathRequest MakeFlightPathRequest(
 
 bool IsRetreatFlightConfigurationValid(const FEnemyFlyToLocationTaskInstanceData& Data)
 {
-	if (!Data.bConstrainRetreatPath) return true;
+	if (!Data.bConstrainRetreatPath || Data.bCombatNavigationPath)
+	{
+		return true;
+	}
 	const double Distance = FVector::Dist2D(Data.Destination, Data.RetreatOrigin);
-	return Data.bUsePathfinding && !Data.bUsePlannedPath && Data.GoalSearchRadius == 0.0f
+	return Data.bUsePathfinding && !(Data.bUsePlannedPath && !Data.bCombatNavigationPath) && Data.GoalSearchRadius == 0.0f
 		&& !Data.RetreatOrigin.ContainsNaN() && !Data.RetreatDirection.ContainsNaN()
 		&& FMath::IsNearlyZero(Data.RetreatDirection.Z)
 		&& FMath::IsNearlyEqual(Data.RetreatDirection.SizeSquared2D(), 1.0, 0.001)
@@ -468,6 +581,12 @@ bool IsRetreatFlightConfigurationValid(const FEnemyFlyToLocationTaskInstanceData
 bool HasCurrentFlightRoom(const FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	return IsValid(Data.Enemy) && !Data.Enemy->IsDead() && !Data.Enemy->IsEnemyPossessed()
+		&& (!Data.bReturnHome || Data.Enemy->IsReturnHomeRequestCurrent(Data.CapturedReturnHomeSerial))
+		&& (Data.CapturedSearchSerial == 0
+			|| (Data.Enemy->GetSearchEpisode().Serial == Data.CapturedSearchSerial
+				&& Data.Enemy->RefreshSearchEpisodeLimit()))
+		&& (Data.CapturedCombatTacticalSerial == 0
+			|| Data.Enemy->IsCombatTacticalEpisodeCurrent(Data.CapturedCombatTacticalSerial))
 		&& IsValid(Data.CachedCapsule) && IsValid(Data.CachedRoomSubsystem)
 		&& Data.CachedRoom.IsValid() && Data.PathRoomTag == Data.Enemy->GetDefaultRoomTag()
 		&& Data.CapturedMovementState == Data.Enemy->GetCombatState()
@@ -478,9 +597,15 @@ bool HasCurrentFlightRoom(const FEnemyFlyToLocationTaskInstanceData& Data)
 
 bool IsFlightStepInsideMovementRooms(const FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
 {
-	if (!HasCurrentFlightRoom(Data)) return false;
+	if (!HasCurrentFlightRoom(Data))
+	{
+		return false;
+	}
 	const UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement();
-	if (!Movement) return false;
+	if (!Movement)
+	{
+		return false;
+	}
 	const float Step = FMath::Max(DeltaTime, 0.0f);
 	const FVector Center = Data.CachedCapsule->GetComponentLocation();
 	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(
@@ -494,7 +619,10 @@ bool IsFlightStepInsideMovementRooms(const FEnemyFlyToLocationTaskInstanceData& 
 
 bool CheckDirectFlightBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
 {
-	if (!IsFlightStepInsideMovementRooms(Data, DeltaTime)) return false;
+	if (!IsFlightStepInsideMovementRooms(Data, DeltaTime))
+	{
+		return false;
+	}
 	Data.SegmentCheckElapsed += DeltaTime;
 	const bool bDestinationChanged = !Data.LastDestination.Equals(Data.Destination, 0.01);
 	if (bDestinationChanged || Data.SegmentCheckElapsed >= FMath::Max(Data.PathCheckInterval, 0.01f))
@@ -524,7 +652,10 @@ bool RecordFlightPathProgress(FEnemyFlyToLocationTaskInstanceData& Data, float D
 	Data.BestDistance = Distance;
 	Data.NoProgressElapsed = 0.0f;
 	// 이전 경로를 따라 전진한 것은 새 목적지 탐색 성공이 아니다. 재시도 시간/횟수는 유지한다.
-	if (Data.bWaitingForPath) return true;
+	if (Data.bWaitingForPath)
+	{
+		return true;
+	}
 	// 경로 계산 성공이 아니라 실제 경유점 접근/통과가 재시도 한도를 복구한다.
 	Data.bRepathEpisode = false;
 	Data.RepathAttempts = 0;
@@ -535,6 +666,11 @@ bool RecordFlightPathProgress(FEnemyFlyToLocationTaskInstanceData& Data, float D
 
 bool HasFlightRepathLimitExpired(const FEnemyFlyToLocationTaskInstanceData& Data)
 {
+	// 귀환 실패는 SelectHome의 영속 예산으로 모은다. Fly 내부 재시도가 별도 횟수를 만들지 않는다.
+	if (Data.bReturnHome && Data.bWaitingForPath)
+	{
+		return true;
+	}
 	// 마지막 허용 탐색이 성공했다면 이동할 수 있다. 횟수 제한은 다음 시도가 필요할 때 적용한다.
 	return Data.bRepathEpisode && (Data.RetryElapsed >= Data.RepathTimeout
 		|| (Data.bWaitingForPath && Data.RepathAttempts >= Data.MaxRepathAttempts));
@@ -542,6 +678,11 @@ bool HasFlightRepathLimitExpired(const FEnemyFlyToLocationTaskInstanceData& Data
 
 void WaitForFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, bool bKeepValidatedPath = false)
 {
+	if (Data.CapturedCombatTacticalSerial != 0 && Data.Enemy
+		&& Data.CapturedCombatTacticalSerial == Data.Enemy->GetCombatTacticalEpisodeSerial())
+	{
+		Data.Enemy->EndCombatTacticalMovement();
+	}
 	// 첫 실패부터 시간을 유지한다. 재탐색 성공만으로 한도를 초기화하지 않는다.
 	if (!Data.bRepathEpisode)
 	{
@@ -563,16 +704,28 @@ void WaitForFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, bool bKeepVali
 
 bool IsPlannedPathGeometryValid(const TArray<FVector>& Points, const FVector& Start, const FVector& Destination)
 {
-	if (Points.Num() < 2 || Points.Num() > 11 || Start.ContainsNaN() || Destination.ContainsNaN()) return false;
+	if (Points.Num() < 2 || Points.Num() > 11 || Start.ContainsNaN() || Destination.ContainsNaN())
+	{
+		return false;
+	}
 	if (Points[0].ContainsNaN() || !Points[0].Equals(Start, 25.0)
-		|| !Points.Last().Equals(Destination, 1.0)) return false;
+		|| !Points.Last().Equals(Destination, 1.0))
+	{
+		return false;
+	}
 	double Length = 0.0;
 	FVector Previous = Start;
 	for (int32 Index = 1; Index < Points.Num(); ++Index)
 	{
-		if (Points[Index].ContainsNaN()) return false;
+		if (Points[Index].ContainsNaN())
+		{
+			return false;
+		}
 		const double SegmentLength = FVector::Distance(Previous, Points[Index]);
-		if (SegmentLength <= 0.0 || SegmentLength > 75.0) return false;
+		if (SegmentLength <= 0.0 || SegmentLength > 75.0)
+		{
+			return false;
+		}
 		Length += SegmentLength;
 		Previous = Points[Index];
 	}
@@ -620,7 +773,10 @@ EStateTreeRunStatus StartPlannedFlight(FEnemyFlyToLocationTaskInstanceData& Data
 				*GetNameSafe(Data.Enemy), Index, *Request.Start.ToCompactString(), *Request.Goal.ToCompactString(),
 				*UEnum::GetValueAsString(Data.PathStatus), (FPlatformTime::Seconds() - Started) * 1000.0);
 		}
-		if (Data.PathStatus != EFlightPathStatus::Success) return FailPlannedFlight(Data, TEXT("PlannedPathRejected: segment validation"));
+		if (Data.PathStatus != EFlightPathStatus::Success)
+		{
+			return FailPlannedFlight(Data, TEXT("PlannedPathRejected: segment validation"));
+		}
 		Data.PathWaypoints.Add(Request.Goal);
 	}
 	Data.WaypointIndex = 1;
@@ -630,6 +786,10 @@ EStateTreeRunStatus StartPlannedFlight(FEnemyFlyToLocationTaskInstanceData& Data
 	Data.TravelledPathLength = 0.0f;
 	Data.SegmentCheckElapsed = 0.0f;
 	Data.MoveResult = EEnemyFlightMoveResult::Moving;
+	if (Data.CapturedCombatTacticalSerial != 0)
+	{
+		Data.Enemy->BeginCombatTacticalMovement(Data.bTacticalSightReposition);
+	}
 	LogFlight(TEXT("PlannedPathStarted"), Data);
 	return EStateTreeRunStatus::Running;
 }
@@ -672,7 +832,10 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 			Request = MakeFlightPathRequest(Data, RoomGoal);
 		}
 	}
-	if (Data.bInvestigateNoise) Data.NoiseInvestigationSearchBounds = Request.SearchBounds;
+	if (Data.bInvestigateNoise)
+	{
+		Data.NoiseInvestigationSearchBounds = Request.SearchBounds;
+	}
 	FFlightPathResult Result = FlightPathfinding::FindPath(*Data.Enemy->GetWorld(), *Data.CachedCapsule, Request);
 	Data.PathStatus = Result.Status;
 	Data.LastDestination = Data.Destination;
@@ -694,6 +857,10 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 		Data.bWaitingForPath = false;
 		Data.NoProgressElapsed = 0.0f;
 		Data.BestDistance = FVector::Distance(Request.Start, Data.PathWaypoints[Data.WaypointIndex]);
+		if (Data.CapturedCombatTacticalSerial != 0)
+		{
+			Data.Enemy->BeginCombatTacticalMovement(Data.bTacticalSightReposition);
+		}
 		return EStateTreeRunStatus::Running;
 	}
 	if (IsRetryableFlightFailure(Result.Status))
@@ -711,10 +878,16 @@ bool IsInitialFlightGeometryValid(const TArray<FVector>& Points, const FVector& 
 {
 	if (Points.Num() < 2 || static_cast<int64>(Points.Num()) > static_cast<int64>(MaxSearchNodes) + 2
 		|| Start.ContainsNaN() || Destination.ContainsNaN()
-		|| !Points[0].Equals(Start, 25.0f) || !Points.Last().Equals(Destination, 1.0f)) return false;
+		|| !Points[0].Equals(Start, 25.0f) || !Points.Last().Equals(Destination, 1.0f))
+	{
+		return false;
+	}
 	for (const FVector& Point : Points)
 	{
-		if (Point.ContainsNaN()) return false;
+		if (Point.ContainsNaN())
+		{
+			return false;
+		}
 	}
 	return true;
 }
@@ -761,17 +934,31 @@ EStateTreeRunStatus StartInitialFlight(FEnemyFlyToLocationTaskInstanceData& Data
 	Data.SegmentCheckElapsed = 0.0f;
 	Data.bWaitingForPath = false;
 	LogFlight(TEXT("InitialPathStarted"), Data);
+	if (Data.CapturedCombatTacticalSerial != 0)
+	{
+		Data.Enemy->BeginCombatTacticalMovement(Data.bTacticalSightReposition);
+	}
 	PrepareFlightSpeedLimits(Data);
 	return EStateTreeRunStatus::Running;
 }
 
 EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
 {
+	if (Data.CapturedCombatReservationRequest != 0
+		&& !Data.Enemy->RefreshCombatReservation(Data.CapturedCombatReservationRequest))
+	{
+		Data.MoveResult = EEnemyFlightMoveResult::Interrupted;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
 	// 방향 확인 구간에는 기존/새 비행이 이동과 시간 제한을 진행하지 않는다. 귀환은 원래 경로를 유지한다.
 	if (IsValid(Data.Enemy) && Data.Enemy->IsHitDirectionConfirmationActive()
 		&& Data.Enemy->GetCombatState() != EEnemyCombatState::Returning)
 	{
-		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement()) Movement->StopMovementImmediately();
+		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
+		{
+			Movement->StopMovementImmediately();
+		}
 		return EStateTreeRunStatus::Running;
 	}
 	// 전체 이동 제한 -> 목적지 변경 -> 제한된 재탐색 -> 구간 검증 -> 이동 입력 순서다.
@@ -802,9 +989,15 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 	if (!Data.bWaitingForPath && !Data.LastDestination.Equals(Data.Destination, FMath::Max(Data.DestinationChangeDistance, 0.0f)))
 	{
-		if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: destination changed"));
+		if (Data.bUsePlannedPath && !Data.bCombatNavigationPath)
+		{
+			return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: destination changed"));
+		}
 		const EStateTreeRunStatus Status = RequestFlightPath(Data);
-		if (Status != EStateTreeRunStatus::Running) return Status;
+		if (Status != EStateTreeRunStatus::Running)
+		{
+			return Status;
+		}
 	}
 	if (Data.bWaitingForPath)
 	{
@@ -820,14 +1013,20 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 			Data.RetryDelay = 0.0f;
 			++Data.RepathAttempts;
 			const EStateTreeRunStatus Status = RequestFlightPath(Data);
-			if (Status != EStateTreeRunStatus::Running) return Status;
+			if (Status != EStateTreeRunStatus::Running)
+			{
+				return Status;
+			}
 		}
 		// 새 경로를 기다려도 유효한 이전 구간은 추종한다. 경로가 없으면 정지 상태로 대기한다.
-		if (!Data.PathWaypoints.IsValidIndex(Data.WaypointIndex)) return EStateTreeRunStatus::Running;
+		if (!Data.PathWaypoints.IsValidIndex(Data.WaypointIndex))
+		{
+			return EStateTreeRunStatus::Running;
+		}
 	}
 
 	const FVector Position = Data.CachedCapsule->GetComponentLocation();
-	if (Data.bConstrainRetreatPath && FVector::DotProduct(
+	if (Data.bConstrainRetreatPath && !Data.bCombatNavigationPath && FVector::DotProduct(
 		Data.Enemy->GetActorLocation() - Data.RetreatOrigin, Data.RetreatDirection) < 0.0)
 	{
 		Data.PathStatus = EFlightPathStatus::BlockedSegment;
@@ -846,12 +1045,14 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	const bool bFinalPoint = Data.WaypointIndex == Data.PathWaypoints.Num() - 1;
 	const float Radius = GetFlightWaypointRadius(Data, bFinalPoint);
 	const bool bReachedPoint = FVector::DistSquared(Position, NextPoint) <= FMath::Square(Radius);
-	if (Data.bUsePlannedPath)
+	if (Data.bUsePlannedPath && !Data.bCombatNavigationPath)
 	{
 		Data.TravelledPathLength += FVector::Distance(Data.LastPathPosition, Position);
 		Data.LastPathPosition = Position;
 		if (Data.TravelledPathLength >= 500.0f && !(bReachedPoint && bFinalPoint))
+		{
 			return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: 500cm travel limit"));
+		}
 	}
 
 	// 중간점 허용 반경 때문에 모서리를 가로지르지 않도록 다음 구간을 먼저 검사한다.
@@ -861,6 +1062,14 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 	if (bReachedPoint || Data.SegmentCheckElapsed >= Data.PathCheckInterval)
 	{
+		if (Data.CapturedCombatReservationRequest != 0
+			&& !Data.Enemy->IsCombatSegmentReserved(Data.CapturedCombatReservationRequest, Position, NextPoint))
+		{
+			// 경로 재탐색은 예약을 자동 확장하지 않는다. 새 통로가 필요하면 Select로 돌려 원자적으로 확보한다.
+			Data.MoveResult = EEnemyFlightMoveResult::Interrupted;
+			StopFlyTask(Data);
+			return EStateTreeRunStatus::Failed;
+		}
 		Data.SegmentCheckElapsed = 0.0f;
 		Data.PathStatus = HasCurrentFlightRoom(Data)
 			? FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Data.CachedCapsule,
@@ -869,7 +1078,10 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		{
 			if (IsRetryableFlightFailure(Data.PathStatus))
 			{
-				if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: segment blocked or budget exceeded"));
+				if (Data.bUsePlannedPath && !Data.bCombatNavigationPath)
+				{
+					return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: segment blocked or budget exceeded"));
+				}
 				WaitForFlightPath(Data);
 				return EStateTreeRunStatus::Running;
 			}
@@ -879,7 +1091,9 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		}
 	}
 	if (Data.bInvestigateNoise)
+	{
 		Data.Enemy->UpdateNoiseInvestigationTravelDirection(Data.CapturedNoiseSerial, NextPoint - Position, Data.RotationSpeed);
+	}
 	if (bReachedPoint && bFinalPoint)
 	{
 		if (Data.bWaitingForPath)
@@ -896,8 +1110,17 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	if (bReachedPoint)
 	{
 		// 경유점 통과 시에만 출력한다. 매 프레임 로그가 이동 성능을 가리지 않게 한다.
-		if (CVarEnemyFlightDebug.GetValueOnGameThread() >= 2) LogFlight(TEXT("WaypointReached"), Data);
+		if (CVarEnemyFlightDebug.GetValueOnGameThread() >= 2)
+		{
+			LogFlight(TEXT("WaypointReached"), Data);
+		}
 		++Data.WaypointIndex;
+		if (Data.bInvestigateNoise && Data.PathWaypoints.IsValidIndex(Data.WaypointIndex))
+		{
+			Data.Enemy->UpdateNoiseInvestigationTravelDirection(Data.CapturedNoiseSerial,
+				Data.PathWaypoints[Data.WaypointIndex] - Position, Data.RotationSpeed);
+			Data.Enemy->NotifyNoiseInvestigationNaturalBoundary(Data.CapturedNoiseSerial, false);
+		}
 		// 코너 진입 전에 감속했으므로 정상 통과에서는 속도와 커브 진행도를 초기화하지 않는다.
 	}
 
@@ -910,10 +1133,13 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 	Data.NoProgressElapsed += DeltaTime;
 	RecordFlightPathProgress(Data, Distance, bReachedPoint);
-	const float NoProgressLimit = Data.bUsePlannedPath && Data.NoProgressTimeout <= 0.0f ? 2.0f : Data.NoProgressTimeout;
+	const float NoProgressLimit = (Data.bUsePlannedPath && !Data.bCombatNavigationPath) && Data.NoProgressTimeout <= 0.0f ? 2.0f : Data.NoProgressTimeout;
 	if (NoProgressLimit > 0.0f && Data.NoProgressElapsed >= NoProgressLimit)
 	{
-		if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: no progress"));
+		if (Data.bUsePlannedPath && !Data.bCombatNavigationPath)
+		{
+			return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: no progress"));
+		}
 		WaitForFlightPath(Data);
 		return EStateTreeRunStatus::Running;
 	}
@@ -928,7 +1154,7 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
 		{
 			// 가까운 경유점이 아닌 최종 도착까지의 경로 길이로 감속한다.
-			const float ArrivalRadius = Data.bUsePlannedPath ? FMath::Min(10.0f, FMath::Max(Data.AcceptanceRadius, 0.0f))
+			const float ArrivalRadius = (Data.bUsePlannedPath && !Data.bCombatNavigationPath) ? FMath::Min(10.0f, FMath::Max(Data.AcceptanceRadius, 0.0f))
 				: FMath::Max(Data.AcceptanceRadius, 0.0f);
 			const float Remaining = FMath::Max(Data.SpeedProfileState.GetRemainingDistance(
 				Position, Data.PathWaypoints, Data.WaypointIndex) - ArrivalRadius, 0.0f);
@@ -953,7 +1179,7 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		Movement->MaxFlySpeed = FMath::FInterpConstantTo(ActualSpeed, DesiredSpeed, Step, Rate);
 
 		// 정상 감속과 별개의 최종 안전 제한이다. 낮은 FPS에서도 미검증 다음 구간을 넘지 않는다.
-		const float TravelLimit = Data.bUsePlannedPath ? FMath::Min(Distance, FMath::Max(500.0f - Data.TravelledPathLength, 0.0f)) : Distance;
+		const float TravelLimit = (Data.bUsePlannedPath && !Data.bCombatNavigationPath) ? FMath::Min(Distance, FMath::Max(500.0f - Data.TravelledPathLength, 0.0f)) : Distance;
 		Movement->MaxFlySpeed = FMath::Min(Movement->MaxFlySpeed, TravelLimit / Step);
 		Movement->Velocity = Movement->Velocity.GetClampedToMaxSize(Movement->MaxFlySpeed);
 
@@ -969,7 +1195,10 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 			Data.PathStatus = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Data.CachedCapsule, Request);
 			if (Data.PathStatus != EFlightPathStatus::Success)
 			{
-				if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: turn clearance"));
+				if (Data.bUsePlannedPath && !Data.bCombatNavigationPath)
+				{
+					return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: turn clearance"));
+				}
 				WaitForFlightPath(Data);
 				return EStateTreeRunStatus::Running;
 			}
@@ -986,6 +1215,249 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 }
 }
 
+void AEnemyBase::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	AEnemyBase* Enemy = CastChecked<AEnemyBase>(InThis);
+	// Task 인스턴스 밖으로 인계한 짧은 구간도 커브/컴포넌트 참조를 GC에 알린다.
+	if (Enemy->CombatFlightHandoff)
+	{
+		Collector.AddPropertyReferences(FEnemyFlyToLocationTaskInstanceData::StaticStruct(), Enemy->CombatFlightHandoff.Get(), Enemy);
+	}
+	Super::AddReferencedObjects(InThis, Collector);
+}
+
+bool AEnemyBase::OfferCombatFlightHandoff(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!HasAuthority() || !GetWorld() || !Data.bOwnsMovement || Data.Enemy != this
+		|| Data.MoveResult != EEnemyFlightMoveResult::Moving || Data.bWaitingForPath
+		|| Data.CapturedCombatTacticalSerial == 0 || !HasCurrentFlightRoom(Data)
+		|| IsAIControlSuppressed() || IsLocationInvestigationActive() || !GetTrackedTarget()
+		|| Data.CachedController != GetController() || !Data.PathWaypoints.IsValidIndex(Data.WaypointIndex)
+		|| !FMath::IsFinite(Data.RepathInterval) || Data.RepathInterval <= 0.0f)
+	{
+		return false;
+	}
+	if (Data.CapturedCombatReservationRequest != 0 && !RefreshCombatReservation(Data.CapturedCombatReservationRequest))
+	{
+		return false;
+	}
+	ClearCombatFlightHandoff(false);
+	CombatFlightHandoff = MakeShared<FEnemyFlyToLocationTaskInstanceData>(Data);
+	CombatFlightHandoffTarget = GetTrackedTarget();
+	CombatFlightHandoffStart = GetActorLocation();
+	// 혼합 경로는 Query 제한 안에서 기존 안전 구간을 이어간다. 전용 선회/후퇴는 짧은 인계만 허용한다.
+	const float HandoffSeconds = Data.bCombatNavigationPath ? FMath::Max(Data.RepathInterval, 2.0f) : Data.RepathInterval;
+	CombatFlightHandoffDeadline = GetWorld()->GetTimeSeconds() + HandoffSeconds;
+	const TWeakPtr<FEnemyFlyToLocationTaskInstanceData> Offered = CombatFlightHandoff;
+	GetWorldTimerManager().SetTimer(CombatFlightHandoffTimer, FTimerDelegate::CreateWeakLambda(this, [this, Offered]
+	{
+		if (CombatFlightHandoff == Offered.Pin())
+		{
+			ClearCombatFlightHandoff();
+		}
+	}), HandoffSeconds, false);
+	Data.bOwnsMovement = false;
+	ConsumeMovementInputVector();
+	// Select 동안의 짧은 관성 계승은 정상 Move가 아니다. 기존 실패/재요청 예산의 시계는 계속 흐른다.
+	EndCombatTacticalMovement();
+	LogFlight(TEXT("HandoffOffered"), *CombatFlightHandoff);
+	// Exit 다음 물리 갱신부터 제한한다. Select의 첫 Tick까지 이전 속도가 그대로 남지 않게 한다.
+	if (GetWorld()->GetDeltaSeconds() > 0.0f)
+	{
+		TickCombatFlightHandoff(GetWorld()->GetDeltaSeconds());
+	}
+	return true;
+}
+
+bool AEnemyBase::GetCombatNavigationHandoff(TArray<FVector>& OutWaypoints, FVector& OutDestination,
+	bool* OutProgressOnly, bool bCaptureRetarget) const
+{
+	// 시야 집합이 먼저 B로 바뀌면 A의 추적 유예를 설정하기 전 GetTrackedTarget은 비어 있을 수 있다.
+	// 유효한 B를 채택하는 직전 캡처만 저장된 A의 형상을 읽고, 일반 조회는 현재 추적 유효성을 지킨다.
+	const AActor* ExpectedTarget = bCaptureRetarget ? TrackedTarget.Get() : GetTrackedTarget();
+	const AEnemyAIController* TrackingAI = TrackingController.Get();
+	if (!ExpectedTarget || !TrackingAI || TrackingAI != GetController() || TrackingAI->GetPawn() != this
+		|| !TrackingAI->IsValidTrackingTarget(ExpectedTarget))
+	{
+		return false;
+	}
+	const auto Previous = CombatFlightHandoff;
+	if (!Previous || !Previous->bCombatNavigationPath || !GetWorld()
+		|| GetWorld()->GetTimeSeconds() >= CombatFlightHandoffDeadline || !HasCurrentFlightRoom(*Previous)
+		|| Previous->CachedController != GetController() || CombatFlightHandoffTarget.Get() != ExpectedTarget
+		|| !Previous->PathWaypoints.IsValidIndex(Previous->WaypointIndex))
+	{
+		// 같은 대상의 새 관측으로 회차만 바뀌어도 경로 형태는 비교 후보로 보존한다.
+		// 이동 권한은 인계하지 않는다. 새 회차의 사선/경로/점유 검증을 통과한 뒤에만 다시 움직인다.
+		if (!HasAuthority() || IsDead() || IsEnemyPossessed() || IsAIControlSuppressed()
+			|| CombatNavigationPath.Num() < 2 || !CombatNavigationPathTarget.IsValid()
+			|| FVector::DistSquared(GetActorLocation(), CombatNavigationPathDestination) < FMath::Square(60.0)
+			|| CombatNavigationPathTarget.Get() != ExpectedTarget || CombatNavigationPathController.Get() != GetController()
+			|| CombatNavigationPathGeneration != GetPoolGameplayGeneration() || CombatNavigationPathLease != GetPoolLeaseSerial())
+		{
+			return false;
+		}
+		int32 Nearest = 1;
+		for (int32 Index = 2; Index < CombatNavigationPath.Num(); ++Index)
+		{
+			if (FVector::DistSquared(GetActorLocation(), CombatNavigationPath[Index])
+				< FVector::DistSquared(GetActorLocation(), CombatNavigationPath[Nearest]))
+			{
+				Nearest = Index;
+			}
+		}
+		OutWaypoints = {GetActorLocation()};
+		for (int32 Index = Nearest; Index < CombatNavigationPath.Num(); ++Index)
+		{
+			OutWaypoints.Add(CombatNavigationPath[Index]);
+		}
+		OutDestination = CombatNavigationPathDestination;
+		if (OutProgressOnly)
+		{
+			*OutProgressOnly = bCombatNavigationProgressOnly;
+		}
+		return true;
+	}
+	const FVector Offset = Previous->CachedCapsule->GetComponentLocation() - GetActorLocation();
+	OutWaypoints = {GetActorLocation()};
+	for (int32 Index = Previous->WaypointIndex; Index < Previous->PathWaypoints.Num(); ++Index)
+	{
+		OutWaypoints.Add(Previous->PathWaypoints[Index] - Offset);
+	}
+	OutDestination = Previous->Destination;
+	if (OutProgressOnly)
+	{
+		*OutProgressOnly = Previous->bCombatNavigationProgressOnly;
+	}
+	return OutWaypoints.Num() >= 2;
+}
+
+bool AEnemyBase::ConsumeCombatNavigationRetargetVelocity(const FVector& Destination, FVector& OutVelocity)
+{
+	const double ExpiresAt = CombatNavigationRetargetVelocityExpiresAt;
+	CombatNavigationRetargetVelocityExpiresAt = -1.0;
+	OutVelocity = FVector::ZeroVector;
+	// 형상만 남아 있는 동안은 이동 권한이 없다. 새 요청으로 같은 목적지를 재승인한 경우에만 한 번 소비한다.
+	if (!HasAuthority() || !GetWorld() || ExpiresAt < 0.0 || GetWorld()->GetTimeSeconds() >= ExpiresAt
+		|| IsDead() || IsEnemyPossessed() || IsAIControlSuppressed() || bCombatNavigationRetargetPending
+		|| CombatNavigationRetargetVelocity.ContainsNaN()
+		|| !Destination.Equals(CombatNavigationRetargetVelocityDestination, 1.0)
+		|| !Destination.Equals(CombatNavigationPathDestination, 1.0)
+		|| CombatNavigationPathController.Get() != GetController() || CombatNavigationPathTarget.Get() != GetTrackedTarget()
+		|| CombatNavigationPathGeneration != GetPoolGameplayGeneration() || CombatNavigationPathLease != GetPoolLeaseSerial()
+		|| CombatNavigationPathReservation == 0 || CombatNavigationPathReservation != GetCombatReservationRequest()
+		|| !IsCombatReservationRequestCurrent(CombatNavigationPathReservation)
+		|| !IsCombatTacticalEpisodeCurrent(CombatNavigationPathSerial))
+	{
+		return false;
+	}
+	OutVelocity = CombatNavigationRetargetVelocity;
+	return true;
+}
+
+void AEnemyBase::ClearCombatFlightHandoff(bool bStopMovement)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	// 먼저 소유권을 내려 Stop의 재진입과 이전 타이머가 새 이동을 정리하는 것을 막는다.
+	TSharedPtr<FEnemyFlyToLocationTaskInstanceData> Previous = MoveTemp(CombatFlightHandoff);
+	if (GetWorld())
+	{
+		GetWorldTimerManager().ClearTimer(CombatFlightHandoffTimer);
+	}
+	CombatFlightHandoffTarget.Reset();
+	CombatFlightHandoffDeadline = -1.0;
+	if (!Previous || !bStopMovement)
+	{
+		return;
+	}
+	const bool bSameOwner = Previous->CachedController == GetController()
+		&& Previous->CapturedMovementGeneration == GetPoolGameplayGeneration()
+		&& Previous->CapturedMovementLease == GetPoolLeaseSerial();
+	if (!bSameOwner)
+	{
+		return;
+	}
+	Previous->MoveResult = EEnemyFlightMoveResult::Interrupted;
+	StopFlyTask(*Previous);
+}
+
+void AEnemyBase::TickCombatFlightHandoff(float DeltaTime)
+{
+	const TSharedPtr<FEnemyFlyToLocationTaskInstanceData> Previous = CombatFlightHandoff;
+	if (!Previous)
+	{
+		return;
+	}
+	if (!GetWorld() || !FMath::IsFinite(DeltaTime) || DeltaTime <= 0.0f
+		|| GetWorld()->GetTimeSeconds() >= CombatFlightHandoffDeadline || !HasCurrentFlightRoom(*Previous)
+		|| Previous->CachedController != GetController() || IsAIControlSuppressed()
+		|| IsLocationInvestigationActive() || !CombatFlightHandoffTarget.IsValid()
+		|| CombatFlightHandoffTarget.Get() != GetTrackedTarget())
+	{
+		ClearCombatFlightHandoff();
+		return;
+	}
+	// 혼합 경로는 채택 시 연결 구간을 재검증한다. 전용 Orbit/Retreat는 기존 25cm 스냅샷 범위를 지킨다.
+	const float Remaining = Previous->bCombatNavigationPath ? TNumericLimits<float>::Max()
+		: FMath::Max(25.0f - Previous->PathClearance, 0.0f)
+			- FVector::Distance(GetActorLocation(), CombatFlightHandoffStart);
+	if (Remaining <= 1.0f)
+	{
+		ClearCombatFlightHandoff();
+		return;
+	}
+	// 마지막 구간 도착으로 새 선택의 실패 예산을 초기화하지 않도록 인계 종료를 먼저 처리한다.
+	if (!Previous->PathWaypoints.IsValidIndex(Previous->WaypointIndex)
+		|| (Previous->WaypointIndex == Previous->PathWaypoints.Num() - 1
+			&& FVector::Distance(Previous->CachedCapsule->GetComponentLocation(), Previous->PathWaypoints.Last())
+				<= GetFlightWaypointRadius(*Previous, true)))
+	{
+		ClearCombatFlightHandoff();
+		return;
+	}
+	// TickFlightPath는 통과 판정 뒤 Index를 바꿀 수 있다. 이번 Tick에서 검증한 입력 방향을 그대로 제한한다.
+	const FVector Next = Previous->PathWaypoints[Previous->WaypointIndex];
+	if (TickFlightPath(*Previous, DeltaTime) != EStateTreeRunStatus::Running || CombatFlightHandoff != Previous
+		|| Previous->bWaitingForPath || !Previous->PathWaypoints.IsValidIndex(Previous->WaypointIndex))
+	{
+		ClearCombatFlightHandoff();
+		return;
+	}
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		// 새 입력으로 가속되더라도 한 프레임에 스냅샷 범위를 넘어가지 않는 최종 제한이다.
+		Movement->MaxFlySpeed = FMath::Min(Movement->MaxFlySpeed, Remaining / DeltaTime);
+		Movement->Velocity = Movement->Velocity.GetClampedToMaxSize(Movement->MaxFlySpeed);
+		Movement->RequestDirectMove((Next - Previous->CachedCapsule->GetComponentLocation()).GetSafeNormal()
+			* Movement->MaxFlySpeed, false);
+	}
+}
+
+void AEnemyBase::ResumeCombatFlightHandoff(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	const TSharedPtr<FEnemyFlyToLocationTaskInstanceData> Previous = CombatFlightHandoff;
+	if (!Previous || &Data == Previous.Get())
+	{
+		return;
+	}
+	const bool bCurrent = GetWorld() && GetWorld()->GetTimeSeconds() < CombatFlightHandoffDeadline
+		&& HasCurrentFlightRoom(Data) && HasCurrentFlightRoom(*Previous)
+		&& Previous->CachedController == Data.CachedController
+		&& CombatFlightHandoffTarget.IsValid() && CombatFlightHandoffTarget.Get() == GetTrackedTarget()
+		&& Data.CapturedCombatTacticalSerial == Previous->CapturedCombatTacticalSerial;
+	if (bCurrent && Data.SpeedProfile.AccelerationCurve == Previous->SpeedProfile.AccelerationCurve
+		&& Data.SpeedProfile.AccelerationDuration == Previous->SpeedProfile.AccelerationDuration)
+	{
+		Data.SpeedProfileState = Previous->SpeedProfileState;
+		LogFlight(TEXT("HandoffResumed"), Data);
+	}
+	// 신규 Move가 이미 검증한 구간의 속도/코너 제한은 다음 갱신에서 적용한다. 옛 경로는 다시 쓰지 않는다.
+	ClearCombatFlightHandoff(false);
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 namespace EnemyFlightTesting
 {
@@ -993,18 +1465,36 @@ EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	Data.bNoiseSearchReady = false;
 	Data.CapturedNoiseSerial = 0;
-	if (!PrepareNoiseFlight(Data)) return EStateTreeRunStatus::Failed;
-	if (Data.bReturnHome && (!IsValid(Data.Enemy) || !Data.Enemy->GetReturnHomeDestination(Data.Destination)))
+	if (!PrepareNoiseFlight(Data))
+	{
 		return EStateTreeRunStatus::Failed;
-	if (!IsRetreatFlightConfigurationValid(Data)) return EStateTreeRunStatus::Failed;
+	}
+	if (Data.bReturnHome && (!IsValid(Data.Enemy) || !Data.Enemy->GetSelectedReturnHomeDestination(Data.Destination)))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+	if (!IsRetreatFlightConfigurationValid(Data))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
 	if (!IsValid(Data.Enemy) || !IsValid(Data.CachedRoomSubsystem)
 		|| !Data.CachedRoomSubsystem->BuildEnemyMovementRoomContext(Data.Enemy, Data.MovementRooms))
+	{
 		return EStateTreeRunStatus::Failed;
+	}
 	Data.CapturedMovementState = Data.Enemy->GetCombatState();
 	Data.CapturedMovementGeneration = Data.Enemy->GetPoolGameplayGeneration();
 	Data.CapturedMovementLease = Data.Enemy->GetPoolLeaseSerial();
-	if (!BeginNoiseFlight(Data)) return EStateTreeRunStatus::Failed;
-	return Data.bUsePlannedPath ? StartPlannedFlight(Data)
+	Data.CapturedReturnHomeSerial = Data.bReturnHome ? Data.Enemy->GetReturnHomeRequestSerial() : 0;
+	Data.CapturedSearchSerial = !Data.bReturnHome && Data.Enemy->GetSearchEpisode().bActive
+		? Data.Enemy->GetSearchEpisode().Serial : 0;
+	Data.CapturedCombatReservationRequest = Data.CapturedCombatTacticalSerial != 0
+		? Data.Enemy->GetCombatReservationRequest() : 0;
+	if (!BeginNoiseFlight(Data))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+	return (Data.bUsePlannedPath && !Data.bCombatNavigationPath) ? StartPlannedFlight(Data)
 		: Data.bUseInitialPath ? StartInitialFlight(Data) : FinishNoiseFlight(Data, RequestFlightPath(Data));
 }
 
@@ -1022,6 +1512,11 @@ EStateTreeRunStatus TickPath(FEnemyFlyToLocationTaskInstanceData& Data, float De
 bool CheckDirectBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
 {
 	return CheckDirectFlightBoundary(Data, DeltaTime);
+}
+
+void PrepareSpeedLimits(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	PrepareFlightSpeedLimits(Data);
 }
 
 void Stop(FEnemyFlyToLocationTaskInstanceData& Data)
@@ -1057,7 +1552,9 @@ bool FEnemyPassiveRotationTest::RunTest(const FString& Parameters)
 	{
 		FRotator Current(25, 0, 0);
 		for (int32 Index = 0; Index < 1200; ++Index)
+		{
 			Current = GetPassiveRotation(Current, FRotator(0, 180, 0), 120, 6, 1, Step);
+		}
 		TestTrue(TEXT("A 180-degree turn reaches the completion tolerance at different frame rates"),
 			FMath::Abs(FMath::FindDeltaAngleDegrees(Current.Yaw, 180.0f)) <= 1.0f && FMath::Abs(Current.Pitch) <= 1.0f);
 		TestTrue(TEXT("Completed rotation remains stable without micro oscillation"),
@@ -1077,7 +1574,10 @@ bool FEnemyAttackAimOwnershipTest::RunTest(const FString& Parameters)
 	(void)Parameters;
 	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
 		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("AttackAimOwnership")));
-	if (!TestNotNull(TEXT("World exists"), World)) return false;
+	if (!TestNotNull(TEXT("World exists"), World))
+	{
+		return false;
+	}
 	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
 	ON_SCOPE_EXIT
 	{
@@ -1089,7 +1589,10 @@ bool FEnemyAttackAimOwnershipTest::RunTest(const FString& Parameters)
 	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>();
 	AEnemyAIController* Controller = World->SpawnActor<AEnemyAIController>();
 	if (!TestNotNull(TEXT("Enemy exists"), Enemy)
-		|| !TestNotNull(TEXT("Controller exists"), Controller)) return false;
+		|| !TestNotNull(TEXT("Controller exists"), Controller))
+	{
+		return false;
+	}
 	Controller->Possess(Enemy);
 	const FRotator AttackRotation(-25.0f, 70.0f, 0.0f);
 	Controller->SetControlRotation(AttackRotation);
@@ -1121,11 +1624,17 @@ bool FEnemyAttackAimOwnershipTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Unpossess releases attack aim"), Controller->IsAttackAimActive());
 
 	AAutoTurret* Turret = World->SpawnActor<AAutoTurret>();
-	if (!TestNotNull(TEXT("Stationary turret exists"), Turret)) return false;
+	if (!TestNotNull(TEXT("Stationary turret exists"), Turret))
+	{
+		return false;
+	}
 	Turret->GetOutlierAbilitySystemComponent()->InitializeForPawn(Turret);
 	Turret->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.0f);
 	FEnumProperty* Lifecycle = FindFProperty<FEnumProperty>(Turret->GetClass(), TEXT("TurretLifecycleState"));
-	if (!TestNotNull(TEXT("Turret can select the existing active lifecycle"), Lifecycle)) return false;
+	if (!TestNotNull(TEXT("Turret can select the existing active lifecycle"), Lifecycle))
+	{
+		return false;
+	}
 	Lifecycle->GetUnderlyingProperty()->SetIntPropertyValue(Lifecycle->ContainerPtrToValuePtr<void>(Turret),
 		static_cast<int64>(EAutoTurretLifecycleState::Active));
 	Controller->Possess(Turret);
@@ -1133,7 +1642,10 @@ bool FEnemyAttackAimOwnershipTest::RunTest(const FString& Parameters)
 	const FVector HitLocation = Turret->GetPawnViewLocation() + FVector(0, 1000, 100);
 	FEnemyHitClue Hit;
 	if (!TestTrue(TEXT("Turret accepts a positional clue"),
-		Turret->CreateHitClue(HitLocation, World->GetTimeSeconds(), 6.0, Hit) && Turret->RecordHitClue(Hit))) return false;
+		Turret->CreateHitClue(HitLocation, World->GetTimeSeconds(), 6.0, Hit) && Turret->RecordHitClue(Hit)))
+	{
+		return false;
+	}
 	Turret->TickHitResponse(0.0f);
 	TestTrue(TEXT("Turret starts direction confirmation"), Turret->IsHitDirectionConfirmationActive());
 	TestFalse(TEXT("Stationary turret never adopts investigation flight"), Turret->CanRunHitInvestigationMovement());
@@ -1187,7 +1699,10 @@ bool FEnemyFlightCleanupTest::RunTest(const FString& Parameters)
 {
 	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
 		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("FlightCleanup")));
-	if (!TestNotNull(TEXT("World exists"), World)) return false;
+	if (!TestNotNull(TEXT("World exists"), World))
+	{
+		return false;
+	}
 	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
 	ON_SCOPE_EXIT
 	{
@@ -1198,7 +1713,10 @@ bool FEnemyFlightCleanupTest::RunTest(const FString& Parameters)
 	World->InitializeActorsForPlay(FURL());
 	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>();
 	AEnemyAIController* Controller = World->SpawnActor<AEnemyAIController>();
-	if (!TestNotNull(TEXT("Enemy exists"), Enemy) || !TestNotNull(TEXT("Controller exists"), Controller)) return false;
+	if (!TestNotNull(TEXT("Enemy exists"), Enemy) || !TestNotNull(TEXT("Controller exists"), Controller))
+	{
+		return false;
+	}
 	Controller->Possess(Enemy);
 	UCharacterMovementComponent* Movement = Enemy->GetCharacterMovement();
 	FEnemyFlyToLocationTaskInstanceData Data;
@@ -1216,11 +1734,17 @@ bool FEnemyFlightCleanupTest::RunTest(const FString& Parameters)
 	Enemy->AddMovementInput(FVector::ForwardVector, 1.0f, true);
 
 	// 중단 사유가 달라도 Exit에서 같은 정리 경로를 사용한다. 새 Controller의 입력만 예외로 보호한다.
-	if (Parameters == TEXT("Stun")) Enemy->EnterStun();
+	if (Parameters == TEXT("Stun"))
+	{
+		Enemy->EnterStun();
+	}
 	else if (Parameters == TEXT("Impact"))
 	{
 		Enemy->ApplyMagneticPullVelocity(FVector(1000, 0, 0), Enemy);
-		if (!TestTrue(TEXT("Impact reaction starts"), Enemy->BeginImpactReaction())) return false;
+		if (!TestTrue(TEXT("Impact reaction starts"), Enemy->BeginImpactReaction()))
+		{
+			return false;
+		}
 	}
 	else if (Parameters == TEXT("Death"))
 	{
@@ -1231,7 +1755,10 @@ bool FEnemyFlightCleanupTest::RunTest(const FString& Parameters)
 	else if (Parameters == TEXT("ControllerChanged"))
 	{
 		AEnemyAIController* Replacement = World->SpawnActor<AEnemyAIController>();
-		if (!TestNotNull(TEXT("Replacement controller exists"), Replacement)) return false;
+		if (!TestNotNull(TEXT("Replacement controller exists"), Replacement))
+		{
+			return false;
+		}
 		Replacement->Possess(Enemy);
 		Movement->Velocity = FVector(250, 0, 0);
 		Movement->MaxFlySpeed = 250.0f;
@@ -1333,6 +1860,14 @@ bool FEnemyFlightPathProgressTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Last successful retry still permits movement"), HasFlightRepathLimitExpired(Data));
 	Data.RetryElapsed = Data.RepathTimeout;
 	TestTrue(TEXT("No physical progress cannot extend retry deadline"), HasFlightRepathLimitExpired(Data));
+	Data.bReturnHome = true;
+	Data.bWaitingForPath = true;
+	Data.bRepathEpisode = false;
+	Data.RepathAttempts = 0;
+	Data.RetryElapsed = 0.0f;
+	TestTrue(TEXT("Return failure yields to the persistent home-selection budget"), HasFlightRepathLimitExpired(Data));
+	Data.bWaitingForPath = false;
+	TestFalse(TEXT("Normal return travel keeps its separate movement deadline"), HasFlightRepathLimitExpired(Data));
 	return true;
 }
 
@@ -1373,7 +1908,10 @@ bool FEnemyPlannedFlightGeometryTest::RunTest(const FString& Parameters)
 	const FVector Start(100, 200, 300);
 	TArray<FVector> Points;
 	Points.Add(Start);
-	for (int32 Index = 1; Index <= 10; ++Index) Points.Add(Start + FVector(Index * 50, 0, 0));
+	for (int32 Index = 1; Index <= 10; ++Index)
+	{
+		Points.Add(Start + FVector(Index * 50, 0, 0));
+	}
 	TestTrue(TEXT("Ten short segments permit five metre route"),
 		IsPlannedPathGeometryValid(Points, Start, Points.Last()));
 	TestFalse(TEXT("Endpoint cannot substitute a different destination"),
@@ -1409,7 +1947,7 @@ bool FEnemyInitialFlightGeometryTest::RunTest(const FString& Parameters)
 FEnemyFlyToLocationTask::FEnemyFlyToLocationTask()
 {
 	// 같은 Move 상태의 재선정은 Exit/Enter를 건너뛰어 경로와 가속 시간을 유지한다.
-	// Select로 실제 이탈하는 경우에는 미검증 경로로 이동하지 않도록 Exit에서 정지한다.
+	// Select로 이탈하면 검증된 남은 구간만 짧게 인계하고, 안전 구간이 없으면 정지한다.
 	bShouldStateChangeOnReselect = false;
 }
 
@@ -1422,7 +1960,10 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	InstanceData.Enemy = Enemy;
 	AAIController* AIController = ResolveAIController(Enemy);
 #if WITH_DEV_AUTOMATION_TESTS
-	if (Enemy) InstanceData.MaxCollisionChecks = FlightPathfinding::GetTestBudget(*Enemy->GetWorld(), InstanceData.MaxCollisionChecks);
+	if (Enemy)
+	{
+		InstanceData.MaxCollisionChecks = FlightPathfinding::GetTestBudget(*Enemy->GetWorld(), InstanceData.MaxCollisionChecks);
+	}
 #endif
 	InstanceData.CachedController = AIController;
 	InstanceData.MoveResult = EEnemyFlightMoveResult::Invalid;
@@ -1431,6 +1972,16 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	InstanceData.bOwnsMovement = false;
 	InstanceData.bNoiseSearchReady = false;
 	InstanceData.CapturedNoiseSerial = 0;
+	InstanceData.CapturedCombatTacticalSerial = Enemy && Enemy->GetCombatState() == EEnemyCombatState::Combat
+		&& Enemy->GetRuntimeStat().Type == EEnemyType::Gun && Enemy->HasTrackableTarget()
+		&& !InstanceData.bInvestigateNoise && !InstanceData.bReturnHome
+		? Enemy->GetCombatTacticalEpisodeSerial() : 0;
+	InstanceData.bTacticalSightReposition = Enemy && Enemy->NeedsCombatTacticalReposition();
+	InstanceData.CapturedCombatReservationRequest = InstanceData.CapturedCombatTacticalSerial != 0
+		? Enemy->GetCombatReservationRequest() : 0;
+	InstanceData.bCombatNavigationPath = Enemy && InstanceData.CapturedCombatReservationRequest != 0
+		&& Enemy->GetCombatNavigationPath(InstanceData.CapturedCombatReservationRequest,
+			InstanceData.Destination, InstanceData.PlannedWaypoints, &InstanceData.bCombatNavigationProgressOnly);
 	InstanceData.SpeedProfileState.Reset();
 	InstanceData.PathWaypoints.Reset();
 	InstanceData.WaypointSpeedLimits.Reset();
@@ -1451,8 +2002,11 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		LogFlight(TEXT("Rejected: missing enemy/authority/AIController"), InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
-	if (!PrepareNoiseFlight(InstanceData)) return EStateTreeRunStatus::Failed;
-	if (InstanceData.bReturnHome && !Enemy->GetReturnHomeDestination(InstanceData.Destination))
+	if (!PrepareNoiseFlight(InstanceData))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+	if (InstanceData.bReturnHome && !Enemy->GetSelectedReturnHomeDestination(InstanceData.Destination))
 	{
 		return EStateTreeRunStatus::Failed;
 	}
@@ -1470,6 +2024,9 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	InstanceData.CapturedMovementState = Enemy->GetCombatState();
 	InstanceData.CapturedMovementGeneration = Enemy->GetPoolGameplayGeneration();
 	InstanceData.CapturedMovementLease = Enemy->GetPoolLeaseSerial();
+	InstanceData.CapturedReturnHomeSerial = InstanceData.bReturnHome ? Enemy->GetReturnHomeRequestSerial() : 0;
+	InstanceData.CapturedSearchSerial = !InstanceData.bReturnHome && Enemy->GetSearchEpisode().bActive
+		? Enemy->GetSearchEpisode().Serial : 0;
 	if (!InstanceData.CachedRoomSubsystem
 		|| !InstanceData.CachedRoomSubsystem->BuildEnemyMovementRoomContext(Enemy, InstanceData.MovementRooms))
 	{
@@ -1484,16 +2041,16 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
-	if (InstanceData.bUseInitialPath && (!InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath
+	if (!InstanceData.bCombatNavigationPath && InstanceData.bUseInitialPath && (!InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath
 		|| InstanceData.bConstrainRetreatPath || InstanceData.GoalSearchRadius != 0.0f))
 	{
 		InstanceData.PathStatus = EFlightPathStatus::InvalidRequest;
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
-	if (InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath)
+	if (InstanceData.bCombatNavigationPath || InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath)
 	{
-		if (InstanceData.bUsePathfinding && InstanceData.bUsePlannedPath)
+		if (!InstanceData.bCombatNavigationPath && InstanceData.bUsePathfinding && InstanceData.bUsePlannedPath)
 		{
 			InstanceData.PathStatus = EFlightPathStatus::InvalidRequest;
 			StopFlyTask(InstanceData);
@@ -1521,8 +2078,18 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 			StopFlyTask(InstanceData);
 			return EStateTreeRunStatus::Failed;
 		}
-		if (InstanceData.bUsePlannedPath) return StartPlannedFlight(InstanceData);
-		if (InstanceData.bUseInitialPath) return StartInitialFlight(InstanceData);
+		if (InstanceData.bCombatNavigationPath)
+		{
+			return StartInitialFlight(InstanceData);
+		}
+		if (InstanceData.bUsePlannedPath)
+		{
+			return StartPlannedFlight(InstanceData);
+		}
+		if (InstanceData.bUseInitialPath)
+		{
+			return StartInitialFlight(InstanceData);
+		}
 		return FinishNoiseFlight(InstanceData, RequestFlightPath(InstanceData));
 	}
 
@@ -1545,7 +2112,10 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	}
 	InstanceData.MoveResult = bAlreadyAtDestination ? EEnemyFlightMoveResult::Arrived : EEnemyFlightMoveResult::Moving;
 	LogFlight(TEXT("Started"), InstanceData);
-	if (bAlreadyAtDestination) StopFlyTask(InstanceData);
+	if (bAlreadyAtDestination)
+	{
+		StopFlyTask(InstanceData);
+	}
 	return bAlreadyAtDestination
 		? EStateTreeRunStatus::Succeeded
 		: EStateTreeRunStatus::Running;
@@ -1558,6 +2128,15 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	AEnemyBase* Enemy = InstanceData.Enemy;
 	AAIController* AIController = InstanceData.CachedController;
+	// 저장된 트리는 매 Tick PatrolPointA를 다시 복사한다. 귀환은 그 입력 대신
+	// 현재 요청이 소유한 목적지를 사용해야 대체 경로가 원래 막힌 위치로 되돌아가지 않는다.
+	if (IsValid(Enemy) && InstanceData.bReturnHome
+		&& !Enemy->GetSelectedReturnHomeDestination(InstanceData.Destination))
+	{
+		InstanceData.MoveResult = EEnemyFlightMoveResult::Interrupted;
+		StopFlyTask(InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
 	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(AIController)
 		|| Enemy->GetController() != AIController || InstanceData.Destination.ContainsNaN())
 	{
@@ -1571,7 +2150,10 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
-	if (!UpdateNoiseFlightDestination(InstanceData)) return EStateTreeRunStatus::Failed;
+	if (!UpdateNoiseFlightDestination(InstanceData))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
 
 	// Keep the task resumable if hacking is cancelled before the state transition.
 	if (Enemy->IsPossessionInProgress())
@@ -1586,7 +2168,7 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 		return EStateTreeRunStatus::Running;
 	}
 
-	if (InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath)
+	if (InstanceData.bCombatNavigationPath || InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath)
 	{
 		return FinishNoiseFlight(InstanceData, TickFlightPath(InstanceData, DeltaTime));
 	}
@@ -1617,7 +2199,9 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 	if (InstanceData.bRotateTowardDestination)
 	{
 		if (InstanceData.bInvestigateNoise)
+		{
 			Enemy->UpdateNoiseInvestigationTravelDirection(InstanceData.CapturedNoiseSerial, ToDestination, InstanceData.RotationSpeed);
+		}
 		RotateTowardLocation(
 			*Enemy,
 			*AIController,
@@ -1649,6 +2233,16 @@ void FEnemyFlyToLocationTask::ExitState(
 	const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	if (IsValid(InstanceData.Enemy) && InstanceData.Enemy->OfferCombatFlightHandoff(InstanceData))
+	{
+		// 검증 경로의 소유권을 Pawn에 넘겼다. 이 Exit는 물리 속도나 새 소유자의 상태를 지우지 않는다.
+		LogFlight(TEXT("ExitToHandoff"), InstanceData, &Transition);
+		InstanceData.PathWaypoints.Reset();
+		InstanceData.WaypointSpeedLimits.Reset();
+		InstanceData.SpeedProfileState.Reset();
+		InstanceData.CachedController = nullptr;
+		return;
+	}
 	if (InstanceData.MoveResult == EEnemyFlightMoveResult::Moving)
 	{
 		InstanceData.MoveResult = EEnemyFlightMoveResult::Interrupted;
@@ -1670,10 +2264,19 @@ bool IsStationaryFireConfigurationValid(const FEnemyStationaryFireTaskInstanceDa
 bool CanHoldStationaryFire(const FEnemyStationaryFireTaskInstanceData& Data)
 {
 	const AEnemyBase* Enemy = Data.Enemy;
-	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(Data.CachedController)) return false;
-	if (Enemy->GetController() != Data.CachedController || Data.CachedController->GetPawn() != Enemy) return false;
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(Data.CachedController))
+	{
+		return false;
+	}
+	if (Enemy->GetController() != Data.CachedController || Data.CachedController->GetPawn() != Enemy)
+	{
+		return false;
+	}
 	if (Enemy->IsDead() || !Enemy->CanUseEnemyPerception() || Enemy->IsPossessionInProgress()
-		|| Enemy->GetCombatState() == EEnemyCombatState::Stun || !Enemy->IsPlayerCurrentlyVisible()) return false;
+		|| Enemy->GetCombatState() == EEnemyCombatState::Stun || !Enemy->IsPlayerCurrentlyVisible())
+	{
+		return false;
+	}
 	return Data.CapturedTarget.IsValid() && !Enemy->IsTargetOutsideWeaponRange(Data.CapturedTarget.Get())
 		&& Data.CachedController->GetCachedVisibleTarget() == Data.CapturedTarget.Get()
 		&& Enemy->GetPoolGameplayGeneration() == Data.CapturedGeneration
@@ -1682,29 +2285,68 @@ bool CanHoldStationaryFire(const FEnemyStationaryFireTaskInstanceData& Data)
 
 const TCHAR* GetStationaryFireReason(const FEnemyStationaryFireTaskInstanceData& Data)
 {
-	if (!IsStationaryFireConfigurationValid(Data)) return TEXT("InvalidDurationRange");
+	if (!IsStationaryFireConfigurationValid(Data))
+	{
+		return TEXT("InvalidDurationRange");
+	}
 	const AEnemyBase* Enemy = Data.Enemy;
-	if (!IsValid(Enemy)) return TEXT("InvalidEnemy");
-	if (!Enemy->HasAuthority()) return TEXT("NoAuthority");
+	if (!IsValid(Enemy))
+	{
+		return TEXT("InvalidEnemy");
+	}
+	if (!Enemy->HasAuthority())
+	{
+		return TEXT("NoAuthority");
+	}
 	if (!IsValid(Data.CachedController) || Enemy->GetController() != Data.CachedController
-		|| Data.CachedController->GetPawn() != Enemy) return TEXT("ControllerChanged");
-	if (Enemy->IsDead()) return TEXT("Dead");
-	if (!Enemy->CanUseEnemyPerception()) return TEXT("PerceptionDisabled");
-	if (Enemy->IsPossessionInProgress()) return TEXT("PossessionInProgress");
-	if (Enemy->GetCombatState() == EEnemyCombatState::Stun) return TEXT("Stun");
-	if (!Enemy->IsPlayerCurrentlyVisible()) return TEXT("SightLost");
+		|| Data.CachedController->GetPawn() != Enemy)
+	{
+		return TEXT("ControllerChanged");
+	}
+	if (Enemy->IsDead())
+	{
+		return TEXT("Dead");
+	}
+	if (!Enemy->CanUseEnemyPerception())
+	{
+		return TEXT("PerceptionDisabled");
+	}
+	if (Enemy->IsPossessionInProgress())
+	{
+		return TEXT("PossessionInProgress");
+	}
+	if (Enemy->GetCombatState() == EEnemyCombatState::Stun)
+	{
+		return TEXT("Stun");
+	}
+	if (!Enemy->IsPlayerCurrentlyVisible())
+	{
+		return TEXT("SightLost");
+	}
 	if (!Data.CapturedTarget.IsValid()
-		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get()) return TEXT("TargetChangedOrInvalid");
-	if (Enemy->IsTargetOutsideWeaponRange(Data.CapturedTarget.Get())) return TEXT("WeaponRangeLost");
+		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get())
+	{
+		return TEXT("TargetChangedOrInvalid");
+	}
+	if (Enemy->IsTargetOutsideWeaponRange(Data.CapturedTarget.Get()))
+	{
+		return TEXT("WeaponRangeLost");
+	}
 	if (Enemy->GetPoolGameplayGeneration() != Data.CapturedGeneration
-		|| Enemy->GetPoolLeaseSerial() != Data.CapturedLease) return TEXT("PoolLifetimeChanged");
+		|| Enemy->GetPoolLeaseSerial() != Data.CapturedLease)
+	{
+		return TEXT("PoolLifetimeChanged");
+	}
 	return TEXT("Valid");
 }
 
 void LogStationaryFire(const TCHAR* Phase, const FEnemyStationaryFireTaskInstanceData& Data,
 	const FStateTreeTransitionResult* Transition = nullptr)
 {
-	if (CVarEnemyFlightDebug.GetValueOnGameThread() == 0) return;
+	if (CVarEnemyFlightDebug.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
 	UE_LOG(LogEnemyFlight, Log, TEXT("[StationaryFire] %s Enemy=%s Time=%.3f Target=%s Reason=%s Duration=%.2f Elapsed=%.2f Speed=%.1f Current=%s TargetState=%s RunStatus=%s"),
 		Phase, *GetNameSafe(Data.Enemy),
 		IsValid(Data.Enemy) && Data.Enemy->GetWorld() ? Data.Enemy->GetWorld()->GetTimeSeconds() : 0.0,
@@ -1765,6 +2407,8 @@ EStateTreeRunStatus FEnemyStationaryFireTask::EnterState(FStateTreeExecutionCont
 	// 진입 시 한 번만 시간을 정한다. 이동을 소유하지 않고 조준/사격은 병렬 Task에 맡긴다.
 	Data.SelectedDuration = FMath::FRandRange(Data.MinDuration, Data.MaxDuration);
 	Data.CachedController->StopMovement();
+	Data.Enemy->ClearCombatFlightHandoff();
+	Data.Enemy->ReleaseCombatReservation();
 	PauseFlyMovement(*Data.Enemy);
 	LogStationaryFire(TEXT("Started"), Data, &Transition);
 	return EStateTreeRunStatus::Running;
@@ -1781,7 +2425,10 @@ EStateTreeRunStatus FEnemyStationaryFireTask::Tick(FStateTreeExecutionContext& C
 	}
 	PauseFlyMovement(*Data.Enemy);
 	Data.Elapsed += DeltaTime;
-	if (Data.Elapsed < Data.SelectedDuration) return EStateTreeRunStatus::Running;
+	if (Data.Elapsed < Data.SelectedDuration)
+	{
+		return EStateTreeRunStatus::Running;
+	}
 	LogStationaryFire(TEXT("Completed"), Data);
 	return EStateTreeRunStatus::Succeeded;
 }
@@ -1859,10 +2506,12 @@ EStateTreeRunStatus FEnemyMaintainFacingTask::EnterState(
 		const FVector Origin = InstanceData.Enemy->GetCombatShotOrigin();
 		// 공격 Task와 같은 좌표를 받았는지 진입 시에만 남긴다. 시선 Task의 바인딩 오류를 실제 레벨에서 확인한다.
 		if (FVector::DistSquared2D(Origin, Input) <= FMath::Square(500.0))
+		{
 			UE_LOG(LogEnemyFlight, Display, TEXT("[EnemyAimTask] Task=MaintainFacing.Enter Enemy=%s Actor=%s Preferred=%d Input=%s Origin=%s InputPitch=%.3f ControlPitch=%.3f AttackOwns=%d"),
 				*InstanceData.Enemy->GetName(), *GetNameSafe(InstanceData.TargetActor), InstanceData.bUsePreferredVisibleTarget,
 				*Input.ToCompactString(), *Origin.ToCompactString(), (Input - Origin).Rotation().Pitch,
 				Controller->GetControlRotation().Pitch, ShouldYieldRotationToAttack(*Controller));
+		}
 	}
 	if (CVarEnemyFlightDebug.GetValueOnGameThread() != 0)
 	{
@@ -2001,7 +2650,10 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	}
 
 	const float SafeDeltaTime = FMath::IsFinite(DeltaTime) ? FMath::Max(DeltaTime, 0.0f) : 0.0f;
-	if (bPlayerVisible) InstanceData.bScanInitialized = false;
+	if (bPlayerVisible)
+	{
+		InstanceData.bScanInitialized = false;
+	}
 	if (!ShouldYieldPassiveRotation(*Enemy, *AIController))
 	{
 		if (bPlayerVisible || Cast<AAutoTurret>(Enemy))
@@ -2041,7 +2693,10 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	// 기존 에셋에 저장된 LostCommitDuration=5는 이 경로에 적용하지 않는다.
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
 	{
-		if (EnemyAIController->ResolveInitialAwarenessAlert()) return EStateTreeRunStatus::Running;
+		if (EnemyAIController->ResolveInitialAwarenessAlert())
+		{
+			return EStateTreeRunStatus::Running;
+		}
 	}
 
 	if (bPlayerVisible)
@@ -2194,7 +2849,13 @@ EStateTreeRunStatus FEnemyLookAroundTask::EnterState(
 	InstanceData.BaseControlRotation = AIController->GetControlRotation().GetNormalized();
 	InstanceData.BaseControlRotation.Pitch = 0.0f;
 	InstanceData.BaseControlRotation.Roll = 0.0f;
-	// 시작 방향은 탐색 중심으로만 저장한다. 현재 Pitch는 첫 Tick부터 천천히 수평으로 돌린다.
+	// 수색은 확정한 단서 방향을 중심으로 훑는다. 숨은 대상의 현재 좌표는 읽지 않는다.
+	float InitialCluePitch = 0.0f;
+	if (Enemy->GetSearchLookPitch(InitialCluePitch))
+	{
+		InstanceData.BaseControlRotation.Pitch = InitialCluePitch;
+		InstanceData.BaseControlRotation.Yaw = (Enemy->GetSearchEpisode().LookLocation - Enemy->GetCombatShotOrigin()).Rotation().Yaw;
+	}
 	if (!InstanceData.bOwnsTaskDrivenPitch)
 	{
 		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
@@ -2240,8 +2901,9 @@ EStateTreeRunStatus FEnemyLookAroundTask::Tick(
 	// 시작 시점의 방향을 기준으로 계산해 각 단계의 회전 오차가 다음 단계에 누적되지 않게 한다.
 	FRotator DesiredRotation =
 		(InstanceData.BaseControlRotation + Step.RelativeRotation).GetNormalized();
-	// 기존 에셋에 상하 오프셋이 남아 있어도 일상 탐색 목표는 수평으로 제한한다.
-	DesiredRotation.Pitch = 0.0f;
+	// 단서가 있는 수색만 높이를 확인한다. 일반 경계는 기존 수평 회전과 속도를 유지한다.
+	float CluePitch = 0.0f;
+	DesiredRotation.Pitch = Enemy->GetSearchLookPitch(CluePitch) ? CluePitch : 0.0f;
 	DesiredRotation.Roll = 0.0f;
 
 	const float SafeDeltaTime = FMath::IsFinite(DeltaTime) ? FMath::Max(DeltaTime, 0.0f) : 0.0f;

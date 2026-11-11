@@ -109,7 +109,7 @@ UENUM(BlueprintType)
 enum class EEnemyEnvQueryResult : uint8
 {
 	None, Waiting, Running, Success, NoResults, Failed, Invalid, Stale, TimedOut, Cancelled,
-	NoReachableDestination, PathBudgetExceeded, CandidateLimitReached
+	NoReachableDestination, PathBudgetExceeded, CandidateLimitReached, ReservationConflict
 };
 
 USTRUCT()
@@ -158,11 +158,58 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0", ClampMax = "8"))
 	int32 MaxSearchSelectionRetries = 2;
 	TSharedPtr<FEnvQueryResult> DeferredSearchResult;
+	// 검증한 앞부분은 재정렬하지 않는다. 예산 재개 시 실패 후보도 다시 검사하지 않는다.
+	TArray<int32> SearchCandidateOrder;
 	int32 NextSearchCandidate = 0;
 	int32 SearchSelectionRetries = 0;
 	double NextSearchSelectionTime = 0.0;
 	bool bSearchSelectionPending = false;
 	bool bSearchPathBudgetExceeded = false;
+	// 전투 후보는 EQS 완료 후에도 공유 경로 스케줄러에서 이어서 검사한다.
+	// 회차 번호는 같은 lease 안에서 끝난 요청의 늦은 결과까지 구분한다.
+	uint64 CapturedCombatSerial = 0;
+	uint64 CombatReservationRequest = 0;
+	bool bCombatReservationConflict = false;
+	double CombatYieldStartedAt = -1.0;
+	double NextCombatYieldCheckAt = 0.0;
+	TSharedPtr<FFlightPathSearch> CombatYieldPath;
+	int32 CombatYieldCandidate = INDEX_NONE;
+	// 동료를 비키는 요청은 일반 예약 대기와 구분한다. 이전 요청의 늦은 결과도 이 번호로 차단한다.
+	uint64 CapturedCombatYieldSerial = 0;
+	FVector CapturedCombatYieldStart = FVector::ZeroVector;
+	FVector CapturedCombatYieldEnd = FVector::ZeroVector;
+	bool bCapturedForSightReposition = false;
+	// 사선 재배치만 혼합 후보를 사용한다. 일반 선회/자폭의 기존 정책은 유지한다.
+	bool bUnifiedCombatNavigation = false;
+	bool bNavigationTargetVisible = false;
+	TArray<bool> CombatCandidatesProgressOnly;
+	TArray<FVector> CurrentCombatRoute;
+	int32 CurrentCombatCandidate = INDEX_NONE;
+	// 대상 교체는 유효한 기존 경로를 우선한다. 같은 대상의 0.3초 비용 비교와 구분한다.
+	bool bPreserveCurrentCombatRoute = false;
+	bool bAcceptingRetargetRoute = false;
+	TSharedPtr<FFlightPathSearch> BestCombatPath;
+	int32 BestCombatCandidate = INDEX_NONE;
+	double BestCombatSeconds = TNumericLimits<double>::Max();
+	double BestCombatDistanceError = TNumericLimits<double>::Max();
+	double BestCombatCrowding = 0.0;
+	double CurrentCombatSeconds = TNumericLimits<double>::Max();
+	TSharedPtr<FFlightPathSearch> CurrentCombatPath;
+	TArray<TSharedPtr<FFlightPathSearch>> ValidatedCombatPaths;
+	TSharedPtr<FFlightPathSearch> CombatJoinSearch;
+	int32 CombatJoinCandidate = INDEX_NONE;
+	bool bCombatSelectionPending = false;
+	TArray<FEnemyOrbitCandidate> CombatCandidates;
+	TArray<bool> CombatCandidatesPassedQuery;
+	TArray<bool> CombatCandidatesHeightLimited;
+	int32 NextCombatCandidate = 0;
+	int32 CombatRemainingNodes = 0;
+	int32 CombatRemainingChecks = 0;
+	double CombatRemainingMilliseconds = 0.0;
+	bool bCombatHadLimitedCandidate = false;
+	TSharedPtr<FFlightPathSearch> CombatPathSearch;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bCombatObservationWaiting = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	TArray<FVector> SelectedSearchPoints;
 	UPROPERTY(EditAnywhere, Category = Output)
@@ -232,6 +279,8 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	UPROPERTY(Transient)
 	TObjectPtr<URoomCombatSubsystem> CachedRooms = nullptr;
 	UPROPERTY(Transient)
+	TObjectPtr<UEnemyRoomSubsystem> CachedReservationRooms = nullptr;
+	UPROPERTY(Transient)
 	FGameplayTag CapturedRoomTag;
 	FEnemyMovementRoomContext MovementRooms;
 	int32 CapturedGeneration = 0;
@@ -282,6 +331,8 @@ struct FEnemySearchSessionTaskInstanceData
 	bool bShouldRestart = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bLocalGuard = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bShouldReturnHome = false;
 
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bNoiseInvestigationSearch = false;
@@ -292,6 +343,8 @@ struct FEnemySearchSessionTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bNoiseSearchComplete = false;
 	uint64 CapturedNoiseSerial = 0;
+	uint64 CapturedSearchSerial = 0;
+	uint64 CapturedSearchSharedRevision = 0;
 	double NoiseSearchStartedAt = 0.0;
 };
 
@@ -319,7 +372,8 @@ enum class EEnemySearchProgress : uint8
 	SelectCurrentPoint,
 	PointChecked,
 	LocalGuard,
-	FinishNoiseInvestigation
+	FinishNoiseInvestigation,
+	FinishGeneralSearch
 };
 
 USTRUCT()
@@ -360,6 +414,12 @@ namespace EnemySearchTesting
 	OUTLIER_API void CompleteQuery(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
 	OUTLIER_API bool SelectDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
 	OUTLIER_API EStateTreeRunStatus ResumeSelection(FEnemyRunEnvQueryTaskInstanceData& Data);
+	OUTLIER_API EStateTreeRunStatus ResumeCombatSelection(FEnemyRunEnvQueryTaskInstanceData& Data);
+	OUTLIER_API void BeginUnifiedSelection(FEnemyRunEnvQueryTaskInstanceData& Data);
+	OUTLIER_API bool IsYieldSnapshotCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data);
+	OUTLIER_API void BuildYieldDestinations(const FVector& Origin, const FVector& CapsuleOffset,
+		float CapsuleRadius, float CapsuleHalfHeight, float Clearance, float PreferredRadius,
+		const FVector& Start, const FVector& End, TArray<FVector>& Destinations);
 	OUTLIER_API EStateTreeRunStatus EnterSession(FEnemySearchSessionTaskInstanceData& Data);
 	OUTLIER_API EStateTreeRunStatus TickSession(FEnemySearchSessionTaskInstanceData& Data);
 	OUTLIER_API void RefreshSessionTransitions(FEnemySearchSessionTaskInstanceData& Data);

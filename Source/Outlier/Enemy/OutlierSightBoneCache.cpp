@@ -8,6 +8,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogOutlierSightBones, Log, All);
 
 void FOutlierSightBoneCache::Invalidate()
 {
+	++Revision;
 	CachedMesh.Reset();
 	CachedBoneNames.Reset();
 	BoneIndices.Reset();

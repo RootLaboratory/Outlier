@@ -408,6 +408,50 @@ bool ValidateNoiseBranch(FAutomationTestBase& Test, UStateTree& Tree, UStateTree
 	}
 	Test.TestEqual(TEXT("Both move success and failure require an explicit search handoff"), ReadyTransitions, 2);
 	Test.TestTrue(TEXT("Both terminal move statuses support reached/exhausted handoff"), bReadySuccess && bReadyFailure);
+	// Task 출력이 존재하는 것과 저장 Tree가 그 출력으로 빠져나가는 것은 별개다.
+	// 완료보다 높은 우선순위의 OnTick 전이가 실제 이동 State에 연결됐는지 함께 검사한다.
+	const FStateTreeEditorNode* SessionNode = Search->Tasks.FindByPredicate([](const FStateTreeEditorNode& Node)
+	{
+		return Node.Node.GetScriptStruct() == FEnemySearchSessionTask::StaticStruct();
+	});
+	bool bHasRetarget = false;
+	bool bHasTimedCompletion = false;
+	if (SessionNode)
+	{
+		for (const FStateTreeTransition& Transition : Search->Transitions)
+		{
+			if (Transition.Trigger != EStateTreeTransitionTrigger::OnTick) continue;
+			for (const FStateTreeEditorNode& Condition : Transition.Conditions)
+			{
+				const auto* Bool = Condition.Instance.GetPtr<FStateTreeCompareBoolConditionInstanceData>();
+				if (!Bool || !Bool->bRight) continue;
+				bHasRetarget |= Transition.State.ID == Move->ID
+					&& Transition.Priority == EStateTreeTransitionPriority::High
+					&& HasNoiseBinding(Data, Condition.ID, TEXT("bLeft"), SessionNode->ID, TEXT("bShouldInvestigateNoise"));
+				bHasTimedCompletion |= Transition.Priority == EStateTreeTransitionPriority::Normal
+					&& HasNoiseBinding(Data, Condition.ID, TEXT("bLeft"), SessionNode->ID, TEXT("bNoiseSearchComplete"));
+			}
+		}
+	}
+	Test.TestTrue(TEXT("Saved search retargets to movement before completion, without waiting for child success"), bHasRetarget);
+	Test.TestTrue(TEXT("Saved completion remains below retarget priority"), bHasTimedCompletion);
+	if (UStateTreeState* GeneralSearch = FindNoiseState(Data, TEXT("Search")))
+	{
+		const FStateTreeEditorNode* Sync = FindNoiseSync(Data);
+		bool bHasGeneralHandoff = false;
+		for (const FStateTreeTransition& Transition : GeneralSearch->Transitions)
+		{
+			if (!Sync || Transition.Trigger != EStateTreeTransitionTrigger::OnTick
+				|| Transition.State.ID != Move->Parent->ID) continue;
+			for (const FStateTreeEditorNode& Condition : Transition.Conditions)
+			{
+				const auto* Goal = Condition.Instance.GetPtr<FStateTreeCompareEnumConditionInstanceData>();
+				bHasGeneralHandoff |= Goal && Goal->Right.Value == static_cast<uint32>(EEnemyPerceptionGoalType::InvestigateNoise)
+					&& HasNoiseBinding(Data, Condition.ID, TEXT("Left"), Sync->ID, TEXT("PerceptionGoalType"));
+			}
+		}
+		Test.TestTrue(TEXT("General lost-contact search has an OnTick handoff to hearing investigation"), bHasGeneralHandoff);
+	}
 	TArray<UStateTreeState*> NoiseStates;
 	CollectNoiseStates(Search, NoiseStates);
 	bool bHasFinish = false;

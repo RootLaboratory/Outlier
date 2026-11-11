@@ -98,7 +98,7 @@ struct FEnemyTurretBurstFireTaskInstanceData
 	TObjectPtr<AAutoTurret> Turret = nullptr;
 	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
 	TObjectPtr<AActor> TargetActor = nullptr;
-	float ElapsedTime = 0.0f;
+	TWeakObjectPtr<AActor> ActiveTarget;
 	FVector LastValidAimLocation = FVector::ZeroVector;
 	EEnemyTurretBurstTaskPhase Phase = EEnemyTurretBurstTaskPhase::TelegraphAndTracking;
 	bool bAttackStarted = false;

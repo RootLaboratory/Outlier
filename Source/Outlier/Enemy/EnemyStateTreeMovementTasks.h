@@ -120,6 +120,13 @@ struct FEnemyFlyToLocationTaskInstanceData
 	EEnemyCombatState CapturedMovementState = EEnemyCombatState::NonCombat;
 	int32 CapturedMovementGeneration = 0;
 	int32 CapturedMovementLease = 0;
+	// 전술 목적지의 회차를 이동에도 인계한다. 0인 순찰·수색·귀환은 기존 수명을 따른다.
+	uint64 CapturedCombatTacticalSerial = 0;
+	uint64 CapturedCombatReservationRequest = 0;
+	bool bTacticalSightReposition = false;
+	// 에셋의 선회/후퇴 옵션과 분리해 검증된 혼합 A* 경로만 재사용한다.
+	bool bCombatNavigationPath = false;
+	bool bCombatNavigationProgressOnly = false;
 	UPROPERTY(Transient)
 	FGameplayTag PathRoomTag;
 	UPROPERTY(Transient)
@@ -163,6 +170,9 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bNoiseSearchReady = false;
 	uint64 CapturedNoiseSerial = 0;
+	// 수색/귀환 회차가 바뀐 뒤 도착한 경로 결과는 새 행동에 적용하지 않는다.
+	uint64 CapturedSearchSerial = 0;
+	uint64 CapturedReturnHomeSerial = 0;
 };
 
 // 지상 NavMesh에 투영하지 않는다. 설정에 따라 직접 이동하거나 검증된 비행 경로를 추종한다.
@@ -198,6 +208,7 @@ namespace EnemyFlightTesting
 	OUTLIER_API EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data);
 	OUTLIER_API EStateTreeRunStatus TickPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime);
 	OUTLIER_API bool CheckDirectBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime);
+	OUTLIER_API void PrepareSpeedLimits(FEnemyFlyToLocationTaskInstanceData& Data);
 	OUTLIER_API void Stop(FEnemyFlyToLocationTaskInstanceData& Data);
 }
 #endif
