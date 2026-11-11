@@ -101,6 +101,10 @@ struct OUTLIER_API FRoomCombatRoomDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (Categories = "Room"))
 	FGameplayTag RoomTag;
 
+	// 유효한 체크포인트 저장 요청 시 남은 차수/Wave까지 Room 전체를 보상 없이 완료한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (DisplayName = "Finish Combat On Checkpoint Save"))
+	bool bFinishCombatOnCheckpointSave = false;
+
 	// 전투 차수와 Wave 번호는 별도 ID 없이 각 배열의 순서를 그대로 사용한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "StartPolicy"))
 	TArray<FRoomCombatPhaseDefinition> CombatPhases;

@@ -218,6 +218,7 @@ void URoomCombatSubsystem::NotifyMovementObstacleOpened(const FBox& Bounds)
 
 bool URoomCombatSubsystem::IsRoomStartHeld(FGameplayTag RoomTag) const
 {
+	if (bCheckpointCleanupInProgress) return true;
 	const FRoomStartHold* Hold = RoomStartHolds.Find(RoomTag);
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	return Hold && Hold->Owner.IsValid()
@@ -483,12 +484,135 @@ int32 URoomCombatSubsystem::GetFirstExternalTriggerPhaseIndex(FGameplayTag RoomT
 
 bool URoomCombatSubsystem::FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume, int32 GameplayGeneration)
 {
+	if (bCheckpointCleanupInProgress) return false;
 	return FinishCombatWithCleanup(RoomVolume, GameplayGeneration, false);
+}
+
+bool URoomCombatSubsystem::CollectCheckpointCleanupRooms(
+	TArray<FRoomCombatTriggerContext>& OutRooms, FString& OutReason) const
+{
+	OutRooms.Reset();
+	OutReason.Reset();
+	if (!CanRunServerGameplay() || bCheckpointCleanupInProgress)
+	{
+		OutReason = TEXT("Authority, reset or cleanup in progress");
+		return false;
+	}
+	TSet<FGameplayTag> Candidates = ReservedCombatRooms;
+	for (const auto& Hold : RoomStartHolds)
+	{
+		if (IsRoomStartHeld(Hold.Key))
+		{
+			OutReason = TEXT("Room start held by an active transition");
+			return false;
+		}
+	}
+	for (const auto& Entry : RoomRuntimes)
+	{
+		const FRoomCombatRuntime& Runtime = Entry.Value;
+		if (Runtime.CheckpointHoldExecutionId.IsValid() && Runtime.CheckpointHoldOwner.IsValid())
+		{
+			OutReason = TEXT("Encounter checkpoint held by an active transition");
+			return false;
+		}
+		if (Runtime.State == ERoomCombatState::Combat || Runtime.State == ERoomCombatState::Preparing
+			|| Runtime.bTriggeredSequenceActive || Runtime.PendingActivationCount > 0)
+		{
+			Candidates.Add(Entry.Key);
+		}
+	}
+	for (const FRoomCombatPendingSpawn& Request : PendingSpawnRequests) Candidates.Add(Request.RoomTag);
+	// EnemyRoom에는 RoomCombat 등록이 없는 전투도 존재할 수 있다. 그 적은 제거할 수 없다.
+	if (const UEnemyRoomSubsystem* Enemies = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		TArray<AEnemyBase*> ActiveEnemies;
+		Enemies->GetActiveCombatEnemies(ActiveEnemies);
+		for (AEnemyBase* Enemy : ActiveEnemies)
+		{
+			const FRoomCombatEnemyRegistration* Registration = RegisteredEnemies.Find(Enemy);
+			if (!Registration)
+			{
+				OutReason = FString::Printf(TEXT("Unregistered combat enemy %s"), *GetNameSafe(Enemy));
+				return false;
+			}
+			Candidates.Add(Registration->RoomTag);
+		}
+	}
+	const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	for (FGameplayTag Tag : Candidates)
+	{
+		const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Tag);
+		const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(Tag);
+		ARoomVolume* Room = Runtime ? Runtime->RoomVolume.Get() : nullptr;
+		if (!Runtime || !IsValid(Room) || Room->IsActorBeingDestroyed() || !Room->HasAuthority()
+			|| !Runtime->RegistrationId.IsValid() || !Runtime->bEncounterIdRegistered
+			|| !Definition || !Definition->bFinishCombatOnCheckpointSave || !Definition->HasValidPhaseOrder()
+			|| !Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
+			|| Runtime->State == ERoomCombatState::Cleared || Runtime->bPhaseCleanupInProgress
+			|| Runtime->CheckpointHoldExecutionId.IsValid() || IsRoomStartHeld(Tag)
+			|| (Arena && Runtime->GameplayGeneration != static_cast<int32>(Arena->GetGameplayGeneration())))
+		{
+			OutReason = FString::Printf(TEXT("Room not eligible for checkpoint cleanup: %s"), *Tag.ToString());
+			return false;
+		}
+		FRoomCombatTriggerContext& Context = OutRooms.AddDefaulted_GetRef();
+		Context.RoomTag = Tag;
+		Context.RoomRegistrationId = Runtime->RegistrationId;
+		Context.GameplayGeneration = Runtime->GameplayGeneration;
+		Context.CombatPhaseIndex = Runtime->CurrentCombatPhaseIndex;
+	}
+	return true;
+}
+
+bool URoomCombatSubsystem::CanFinishCombatForCheckpoint(FString& OutReason) const
+{
+	TArray<FRoomCombatTriggerContext> Rooms;
+	return CollectCheckpointCleanupRooms(Rooms, OutReason);
+}
+
+bool URoomCombatSubsystem::FinishCombatForCheckpoint()
+{
+	TArray<FRoomCombatTriggerContext> Rooms;
+	FString Reason;
+	if (!CollectCheckpointCleanupRooms(Rooms, Reason))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Combat cleanup preflight failed: %s"), *Reason);
+		return false;
+	}
+	TGuardValue<bool> Guard(bCheckpointCleanupInProgress, true);
+	auto IsCurrent = [this](const FRoomCombatTriggerContext& Context)
+	{
+		const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.RoomTag);
+		const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+		return CanRunServerGameplay() && Runtime && Runtime->RoomVolume.IsValid()
+			&& Runtime->RegistrationId == Context.RoomRegistrationId
+			&& Runtime->GameplayGeneration == Context.GameplayGeneration
+			&& (!Arena || static_cast<int32>(Arena->GetGameplayGeneration()) == Context.GameplayGeneration);
+	};
+	for (const FRoomCombatTriggerContext& Context : Rooms)
+	{
+		if (!IsCurrent(Context)
+			|| RoomRuntimes.FindChecked(Context.RoomTag).CurrentCombatPhaseIndex != Context.CombatPhaseIndex
+			|| !FinishCombatWithCleanup(RoomRuntimes.FindChecked(Context.RoomTag).RoomVolume.Get(),
+				Context.GameplayGeneration, true))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Combat cleanup interrupted; world may be partially cleaned. Room=%s"),
+				*Context.RoomTag.ToString());
+			return false;
+		}
+	}
+	for (const FRoomCombatTriggerContext& Context : Rooms)
+	{
+		if (!IsCurrent(Context) || GetRoomState(Context.RoomTag) != ERoomCombatState::Cleared) return false;
+	}
+	const UEnemyRoomSubsystem* Enemies = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+	return !HasActiveCombatReservation() && (!Enemies || !Enemies->HasActiveCombat());
 }
 
 #if WITH_EDITOR
 bool URoomCombatSubsystem::FinishRoomCombatForEditor(FGameplayTag RoomTag)
 {
+	if (bCheckpointCleanupInProgress) return false;
 	if (!GetWorld() || GetWorld()->WorldType != EWorldType::PIE || !CanRunServerGameplay()) return false;
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	return Runtime && FinishCombatWithCleanup(Runtime->RoomVolume.Get(), Runtime->GameplayGeneration, true);
@@ -3879,7 +4003,8 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	const FRoomCombatPhaseDefinition* CurrentPhase = Runtime && Definition
 		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
 		: nullptr;
-	if (!Runtime || !Definition || !CurrentPhase || Runtime->bPhaseDelayPending || Runtime->bPhaseCleanupInProgress
+	if ((bCheckpointCleanupInProgress && !bFinishRoom)
+		|| !Runtime || !Definition || !CurrentPhase || Runtime->bPhaseDelayPending || Runtime->bPhaseCleanupInProgress
 		|| Runtime->State == ERoomCombatState::Cleared
 		|| (!bFinishRoom && Runtime->State == ERoomCombatState::WaitingForTrigger))
 	{
@@ -3941,7 +4066,8 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 			{
 				Saves->ClearCurrentRoomPhaseProgress(RoomTag);
 			}
-			if (AOutlierGameMode* GameMode = World->GetAuthGameMode<AOutlierGameMode>())
+			if (AOutlierGameMode* GameMode = World->GetAuthGameMode<AOutlierGameMode>();
+				GameMode && !bCheckpointCleanupInProgress)
 			{
 				GameMode->CommitCombatPhaseCheckpoint(RoomTag, INDEX_NONE, true, Generation);
 			}

@@ -840,7 +840,9 @@ bool AOutlierGameMode::HandleArenaWorkerPairSetupTick(float DeltaTime)
 
 bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint, bool bRefreshSnapshot)
 {
-	if (!HasAuthority() || !Controller || !Checkpoint || Checkpoint->GetCheckpointId().IsNone())
+	if (!HasAuthority() || bCheckpointCommitInProgress || !IsValid(Controller) || !IsValid(Checkpoint)
+		|| Checkpoint->GetWorld() != GetWorld() || Checkpoint->GetCheckpointId().IsNone()
+		|| !Checkpoint->CanCaptureSnapshot(Controller, bRefreshSnapshot))
 	{
 		return false;
 	}
@@ -857,7 +859,8 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 	AOutlierPlayerState* PartnerPS = TriggeringPS->IsPartnerPlayer()
 		? TriggeringPS
 		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
-	if (!ShooterPS)
+	if (!ShooterPS || !PartnerPS || PairId == INDEX_NONE || ShooterPS->GetPairId() != PairId
+		|| PartnerPS->GetPairId() != PairId)
 	{
 		return false;
 	}
@@ -870,28 +873,13 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 			*Checkpoint->GetCheckpointId().ToString());
 		return false;
 	}
+	TGuardValue<bool> CommitGuard(bCheckpointCommitInProgress, true);
 	const UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>()
 		: nullptr;
-	if (EnemyRoomSubsystem && EnemyRoomSubsystem->HasActiveCombat())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[Checkpoint] Commit rejected while combat is active Id=%s"),
-			*Checkpoint->GetCheckpointId().ToString());
-		return false;
-	}
-	const URoomCombatSubsystem* RoomCombatSubsystem = GetWorld()
+	URoomCombatSubsystem* RoomCombatSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
 		: nullptr;
-	if (RoomCombatSubsystem
-		&& RoomCombatSubsystem->HasActiveCombatReservation())
-	{
-		// 생존 적이 잠시 0명이더라도 다음 Wave를 기다리는 중이면 체크포인트를 확정하지 않는다.
-		UE_LOG(LogTemp, Warning,
-			TEXT("[Checkpoint] Commit rejected while a Room Wave is active Id=%s"),
-			*Checkpoint->GetCheckpointId().ToString());
-		return false;
-	}
 
 	UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
@@ -906,6 +894,30 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 			TEXT("[Checkpoint] Commit rejected because stable Id validation failed"));
 		return false;
 	}
+	const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	const int32 Generation = Arena ? static_cast<int32>(Arena->GetGameplayGeneration()) : INDEX_NONE;
+	auto CanCapture = [&]()
+	{
+		AShooterCharacter* Shooter = ShooterPS->GetShooterCharacter();
+		APartnerCharacter* Partner = PartnerPS->GetPartnerCharacter();
+		AController* ShooterController = GetControllerFromPlayerState(ShooterPS);
+		AController* PartnerController = GetControllerFromPlayerState(PartnerPS);
+		return IsPairGameplayReady() && PairId == ActiveMatchPairId && IsValid(Checkpoint)
+			&& Checkpoint->CanCaptureSnapshot(Controller, bRefreshSnapshot)
+			&& SaveSubsystem->HasValidStableIds() && Arena
+			&& static_cast<int32>(Arena->GetGameplayGeneration()) == Generation
+			&& IsValid(Shooter) && !Shooter->IsDead() && IsValid(Partner)
+			&& ShooterController && ShooterController->GetPawn() == Shooter
+			&& PartnerController && PartnerController->GetPawn() == Partner;
+	};
+	FString CleanupReason;
+	if (!CanCapture() || !RoomCombatSubsystem
+		|| !RoomCombatSubsystem->CanFinishCombatForCheckpoint(CleanupReason))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Save/cleanup preflight rejected Id=%s Reason=%s"),
+			*Checkpoint->GetCheckpointId().ToString(), *CleanupReason);
+		return false;
+	}
 
 	FOutlierCheckpointSnapshot Snapshot;
 	if (!BuildPairCheckpointSnapshot(
@@ -915,13 +927,27 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 		false,
 		Checkpoint->GetSpawnTransform(),
 		Checkpoint->GetPartnerSpawnTransform(),
-		Snapshot))
+		Snapshot) || !SaveSubsystem->CanCommitDurableCheckpointSnapshot(Snapshot, bRefreshSnapshot))
 	{
+		return false;
+	}
+	// 캡처 가능 여부까지 확인한 다음 제거한다. 완료 알림이 Reset/Reload하면 저장하지 않는다.
+	if (!RoomCombatSubsystem->FinishCombatForCheckpoint() || !CanCapture()
+		|| RoomCombatSubsystem->HasActiveCombatReservation()
+		|| (EnemyRoomSubsystem && EnemyRoomSubsystem->HasActiveCombat())
+		|| !BuildPairCheckpointSnapshot(ShooterPS, PartnerPS, Checkpoint->GetCheckpointId(), false,
+			Checkpoint->GetSpawnTransform(), Checkpoint->GetPartnerSpawnTransform(), Snapshot))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Cleanup/final capture interrupted; previous save retained"));
 		return false;
 	}
 	Snapshot.SaveReason = EOutlierCheckpointSaveReason::Trigger;
 	Snapshot.RoomTag = Checkpoint->GetCombatRoomTag();
 	Snapshot.NextPhaseIndex = Snapshot.RoomTag.IsValid() ? 0 : INDEX_NONE;
+	if (SaveSubsystem->HasWorldProgress(EOutlierWorldProgressType::CompletedEncounter, Snapshot.RoomTag.GetTagName()))
+	{
+		Snapshot.NextPhaseIndex = INDEX_NONE;
+	}
 	// 업그레이드 추가 저장도 이미 완료한 차수를 보존한다. 입구 저장이라고 Phase0으로 되돌리지 않는다.
 	if (const FOutlierRoomPhaseProgress* Progress = Snapshot.RoomPhaseProgress.Find(Snapshot.RoomTag))
 	{
@@ -946,6 +972,12 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 	FGameplayTag RoomTag, int32 NextPhaseIndex,
 	bool bEncounterCleared, int32 GameplayGeneration)
 {
+	const URoomCombatSubsystem* CheckpointCombat = GetWorld()
+		? GetWorld()->GetSubsystem<URoomCombatSubsystem>() : nullptr;
+	if (bCheckpointCommitInProgress || (CheckpointCombat && CheckpointCombat->IsCheckpointCleanupInProgress()))
+	{
+		return false;
+	}
 	UWorld* World = GetWorld();
 	UOutlierSaveSubSystem* Saves = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;

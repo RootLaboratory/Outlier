@@ -174,6 +174,7 @@ private:
 	friend class FOutlierSettingsPauseTest;
 	friend class FOutlierDirectPairTest;
 	friend class FElevatorCheckpointIntegrationTest;
+	friend class FRoomCheckpointSaveIntegrationTest;
 	void TryStartDirectPairTest();
 	bool ResolveDirectPairTestSpawns(FTransform& ShooterSpawn, FTransform& PartnerSpawn) const;
 	TArray<TWeakObjectPtr<APlayerController>> DirectPairTestPlayers;
@@ -230,6 +231,7 @@ private:
 	void CancelCheckpointRestartVoteForDisconnect(APlayerController* ExitingPlayer);
 
 	bool bArenaReloadInProgress = false;
+	bool bCheckpointCommitInProgress = false;
 	bool bServerArenaReloadReady = false;
 	bool bCheckpointRestartInProgress = false;
 	bool bResumeRoomPhasesAfterReload = false;

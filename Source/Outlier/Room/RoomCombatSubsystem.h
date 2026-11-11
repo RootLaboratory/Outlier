@@ -273,6 +273,10 @@ public:
 	int32 GetFirstExternalTriggerPhaseIndex(FGameplayTag RoomTag) const;
 	// 업그레이드 문이 닫힌 뒤, 해제 옵션이 있는 선행 InitialDetection 차수만 보상 없이 정리한다.
 	bool FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume, int32 GameplayGeneration);
+	// 모든 후보를 부작용 없이 검증한 뒤 허용된 활성 Room 전체를 종료한다.
+	bool CanFinishCombatForCheckpoint(FString& OutReason) const;
+	bool FinishCombatForCheckpoint();
+	bool IsCheckpointCleanupInProgress() const { return bCheckpointCleanupInProgress; }
 #if WITH_EDITOR
 	// PIE 테스터 전용: 다음 차수를 시작하지 않고 방 전체를 정리/완료한다.
 	bool FinishRoomCombatForEditor(FGameplayTag RoomTag);
@@ -426,6 +430,7 @@ private:
 		FVector& OutLocation, FString* OutRejectionSummary = nullptr) const;
 	TArray<TWeakObjectPtr<ARoomCombatBarrier>> RegisteredBarriers;
 	bool CanRunServerGameplay() const;
+	bool CollectCheckpointCleanupRooms(TArray<FRoomCombatTriggerContext>& OutRooms, FString& OutReason) const;
 	bool HasPendingSpawns(FGameplayTag RoomTag) const;
 	bool HasPendingWaveWork(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	bool IsActiveCombatRuntime(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
@@ -500,5 +505,6 @@ private:
 	TSet<FGameplayTag> ReservedCombatRooms;
 	FTimerHandle SpawnRetryTimer;
 	bool bResettingRuntime = false;
+	bool bCheckpointCleanupInProgress = false;
 	bool bRestoredAutomaticStartAllowed = false;
 };

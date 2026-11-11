@@ -29,6 +29,7 @@ public:
 	FGuid GetActiveSaveId() const { return ActiveSaveId; }
 	bool CaptureInitialSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
 	bool CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot = false);
+	bool CanCommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot = false) const;
 	bool GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const;
 	bool HasInitialSnapshot() const { return bHasInitialSnapshot; }
 	bool HasLatestCheckpointSnapshot() const { return bHasLatestCheckpointSnapshot; }
