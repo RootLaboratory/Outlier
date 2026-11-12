@@ -7,7 +7,7 @@
 
 class UOutlierWorldGuideTargetComponent;
 
-/** 실제 PanelMover의 도착 알림을 받아 자기 마커와 Observer 진행을 완료한다. */
+/** 상호작용이 성공하면 즉시 자기 마커와 Observer 진행을 완료한다. */
 UCLASS()
 class OUTLIER_API ATuto_PanelMoverSwitch : public APanelMoverSwitch, public ITuto_ProgressSourceInterface
 {
@@ -25,12 +25,10 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
-	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual bool ActivateTarget() override;
 
 private:
-	void HandlePanelCompleted(AActor* Source, AOutlierPlayerState* SourcePlayerState);
+	void CompleteInteraction(AOutlierPlayerState* SourcePlayerState);
 	TWeakObjectPtr<AOutlierPlayerState> ActivatingPlayer;
-	TWeakObjectPtr<APanelMover> BoundPanel;
 	bool bEffectCompleted = false;
 };

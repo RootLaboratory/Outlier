@@ -1905,7 +1905,7 @@ void AShooterCharacter::CheckJumpInput(float DeltaTime)
 		const FVector FootLocation = Capsule->GetComponentLocation()
 			- FVector::UpVector * Capsule->GetScaledCapsuleHalfHeight();
 		EPhysicalSurface Surface = SurfaceType_Default;
-		// 지상 출발에만 짧게 조회한다. 공중 점프는 아래의 다른 바닥을 선택하지 않고 Plastic을 사용한다.
+		// 지상 출발에만 짧게 조회한다. 2단 점프는 표면과 무관한 전용 태그를 사용한다.
 		if (bWasOnGround)
 		{
 			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterJumpSurface), false, this);
@@ -1927,8 +1927,11 @@ void AShooterCharacter::CheckJumpInput(float DeltaTime)
 				Surface = UPhysicalMaterial::DetermineSurfaceType(SurfaceHit.PhysMaterial.Get());
 			}
 		}
+		const FGameplayTag JumpAudioContext = JumpCurrentCount == 2
+			? OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.DoubleJump"))
+			: OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Jump"));
 		MovementAudioSubsystem->PlayMovementSurfaceAudio(this,
-			OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Jump")), Surface, FootLocation,
+			JumpAudioContext, Surface, FootLocation,
 			JumpMovement->GetMovementAudioEventId(false));
 	}
 

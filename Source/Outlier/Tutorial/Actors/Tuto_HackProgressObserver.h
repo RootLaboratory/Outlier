@@ -45,7 +45,7 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	/** effect 완료를 집계하는 스위치(Tuto_LaserControlSwitch, Tuto_PanelMoverSwitch).
+	/** 레이저 비활성화 완료(Tuto_LaserControlSwitch), 패널 스위치 상호작용 성공(Tuto_PanelMoverSwitch)을 집계한다.
 	 *  폭발물은 RequiredCount=1로 첫 폭발, 0으로 전체 폭발을 감지할 수 있다. */
 	UPROPERTY(EditInstanceOnly, Category = "Tutorial|Event")
 	TArray<TObjectPtr<AActor>> Sources;

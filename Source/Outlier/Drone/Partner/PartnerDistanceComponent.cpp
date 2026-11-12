@@ -3,6 +3,7 @@
 
 #include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Audio/OutlierAudioFeedback.h"
+#include "Event/OutlierEventSubsystem.h"
 #include "LocalPlayerUISubSystem.h"
 #include "OutlierPlayerState.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -16,6 +17,7 @@ UPartnerDistanceComponent::UPartnerDistanceComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
+	DisconnectEventTag = FGameplayTag::RequestGameplayTag(TEXT("Event.CONNECT_lost.TIME"), false);
 }
 
 void UPartnerDistanceComponent::BeginPlay()
@@ -130,8 +132,15 @@ void UPartnerDistanceComponent::RefreshDistance()
 
 void UPartnerDistanceComponent::UpdateBoundaryState()
 {
-	if (!IsComponentTickEnabled() || !PartnerCharacter || !ShooterCharacter || !PartnerCharacter->HasAuthority())
+	if (!IsComponentTickEnabled() || !IsValid(PartnerCharacter) || !IsValid(ShooterCharacter)
+		|| !PartnerCharacter->HasAuthority())
 	{
+		return;
+	}
+	const AOutlierPlayerState* PS = PartnerCharacter->GetPlayerState<AOutlierPlayerState>();
+	if (!IsValid(PS) || !PS->IsPairSuitAcquired())
+	{
+		RefreshActivationFromPlayerState();
 		return;
 	}
 
@@ -142,6 +151,12 @@ void UPartnerDistanceComponent::UpdateBoundaryState()
 	if (bStateChanged)
 	{
 		PlayBoundaryTransitionAudio(bOutside);
+		if (bOutside && !bDisconnectEventSubmitted && DisconnectEventTag.IsValid())
+		{
+			// Cut off repeat disconnects here; failed delivery remains retryable on the next transition.
+			// The subsystem still guards the game-flow record across component respawns.
+			bDisconnectEventSubmitted = UOutlierEventSubsystem::EventCallOnce(this, DisconnectEventTag);
+		}
 	}
 }
 
