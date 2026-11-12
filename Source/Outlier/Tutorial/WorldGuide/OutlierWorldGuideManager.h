@@ -69,6 +69,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "World Guide")
 	void ClearGuides(bool bResetCompleted = false);
+	/** 큐 변경 콜백 안에서는 정리를 보류한다. false를 정리 완료로 취급하지 않는다. */
+	bool CanClearGuides() const { return HasAuthority() && !bChangingQueue; }
+	bool TryClearGuides(bool bResetCompleted = false);
 
 	bool TryGetDefinition(FGameplayTag WidgetID, FOutlierWorldGuideDataRow& OutRow);
 	void RegisterTarget(UOutlierWorldGuideTargetComponent* Target);
@@ -84,6 +87,7 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
+	friend class FOutlierPresetGuideLifecycleTest;
 	void LoadTables();
 	void AdvanceQueue();
 	void FinishContext(const FOutlierWorldGuideContext& Context, bool bCompleted, FGameplayTag NextWidgetID = FGameplayTag());
