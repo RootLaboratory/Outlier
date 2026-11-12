@@ -52,6 +52,7 @@ private:
 
 	bool bAttackInputHeld = false;
 	bool bAttackNeedsFreshPress = false;
+	uint8 LastDebugAttackBlockMask = 0;
 	bool bAttackStartPending = false;
 	bool bRebootSuspended = false;
 	uint32 NextAttackInputRequest = 0;

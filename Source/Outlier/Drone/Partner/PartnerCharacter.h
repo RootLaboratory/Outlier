@@ -17,6 +17,8 @@
 #include "Enemy/OutlierBoneSight.h"
 #include "PartnerCharacter.generated.h"
 
+DECLARE_LOG_CATEGORY_EXTERN(LogPartnerInputDebug, Log, All);
+
 UENUM(BlueprintType)
 enum class EDroneMovementState : uint8
 {
@@ -469,6 +471,8 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
+	virtual void PawnClientRestart() override;
+	void LogActionInputState(const TCHAR* Event) const;
 	virtual void OnRep_PlayerState() override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
@@ -521,6 +525,7 @@ protected:
 	// 실행 중인 가속과 분리해 재부팅 중에도 Hold/Toggle의 최신 의도를 보존한다.
 	bool bAccelerateRequested = false;
 	bool bAccelerateNeedsFreshPress = false;
+	uint8 LastDebugBoostBlockMask = 0;
 	bool bRebootActionRecoveryPending = false;
 	// 서버 수명주기와 요청 순번을 함께 검사해 지연된 ON이 초기화 이후 되살아나지 않게 한다.
 	UPROPERTY(ReplicatedUsing = OnRep_AccelerateInputEpoch)
