@@ -1,6 +1,9 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
+#include "EnvironmentQuery/EnvQueryManager.h"
+#include "Components/CapsuleComponent.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
@@ -2864,8 +2867,11 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	}
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
-	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	UGameInstance* QuantumLeapInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(QuantumLeapInstance);
 	// 프로젝트 기본 GameMode 에셋 유무와 무관하게 능력 검증용 월드를 만든다.
+	QuantumLeapInstance->Init();
+	World->CreateAISystem();
 	FURL TestURL;
 	TestURL.AddOption(TEXT("game=/Script/Engine.GameModeBase"));
 	TestTrue(TEXT("Quantum Leap world creates an authority game mode"), World->SetGameMode(TestURL));
@@ -2881,6 +2887,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		|| !TestNotNull(TEXT("Partner spawns for Quantum Leap"), Partner))
 	{
 		World->DestroyWorld(true);
+		QuantumLeapInstance->Shutdown();
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
@@ -2899,6 +2906,24 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	Partner->SetActorEnableCollision(false);
 	Shooter->SetActorLocationAndRotation(FVector::ZeroVector, FRotator(0.0f, 45.0f, 0.0f));
 	Partner->SetActorLocationAndRotation(FVector(300.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+	// 충전/무적 시간은 실제 World Tick으로 진행하되, 무조종 Pawn의 낙하는 분리한다.
+	Shooter->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Partner->GetCharacterMovement()->SetComponentTickEnabled(false);
+	AActor* Floor = World->SpawnActor<AActor>();
+	UBoxComponent* FloorBox = NewObject<UBoxComponent>(Floor);
+	Floor->SetRootComponent(FloorBox);
+	FloorBox->SetBoxExtent(FVector(3000.0f, 3000.0f, 10.0f));
+	FloorBox->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	FloorBox->SetCollisionObjectType(ECC_WorldStatic);
+	FloorBox->SetCollisionResponseToAllChannels(ECR_Block);
+	FloorBox->RegisterComponent();
+	FloorBox->SetWorldLocation(FVector(0, 0, -Shooter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() - 12));
+	const auto CompleteQueries = [World]()
+	{
+		// 안전한 목적지를 받은 뒤에만 시전/무적이 시작된다. 여기서는 시전 시간을 진행하지 않는다.
+		for (int32 Index = 0; Index < 100; ++Index)
+			UEnvQueryManager::GetCurrent(World)->Tick(0.01f);
+	};
 
 	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
 	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
@@ -2912,6 +2937,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		|| !TestTrue(TEXT("Quantum Leap fixture has configured suit abilities"), ShooterASC->IsShooterSuitConfigured()))
 	{
 		World->DestroyWorld(true);
+		QuantumLeapInstance->Shutdown();
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
@@ -2933,6 +2959,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		|| !TestTrue(TEXT("Quantum Leap fixture has a usable acquired suit"), Shooter->IsSuitUsable()))
 	{
 		World->DestroyWorld(true);
+		QuantumLeapInstance->Shutdown();
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
@@ -2945,15 +2972,18 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		&& TestNotNull(TEXT("Blocked-destination collision is created"), BlockingBox))
 	{
 		Blocker->SetRootComponent(BlockingBox);
-		BlockingBox->SetBoxExtent(FVector(140.0f, 140.0f, 200.0f));
+		BlockingBox->SetBoxExtent(FVector(360.0f, 360.0f, 600.0f));
 		BlockingBox->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		BlockingBox->SetCollisionResponseToAllChannels(ECR_Block);
 		BlockingBox->RegisterComponent();
 		Blocker->SetActorLocation(Partner->GetActorLocation());
 	}
+	World->GetPhysicsScene()->ProcessDeferredCreatePhysicsState();
+	World->GetPhysicsScene()->Flush();
 	TestTrue(
 		TEXT("A valid Quantum Leap input reaches the authoritative attempt even when all destinations are blocked"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	TestFalse(
 		TEXT("Blocked Quantum Leap ends without leaving damage immunity active"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
@@ -2985,11 +3015,12 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		Blocker->Destroy();
 	}
 
-	const FVector SnapshotDestination(250.0f, 0.0f, 0.0f);
+	const FVector SnapshotAnchor = Partner->GetActorLocation();
 	const FRotator PreservedRotation = Shooter->GetActorRotation();
 	TestTrue(
 		TEXT("Quantum Leap starts when the Partner is in range and a destination is clear"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	TestTrue(
 		TEXT("Quantum Leap grants exact damage immunity during its cast"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
@@ -3007,7 +3038,8 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(
 		TEXT("Quantum Leap uses the Partner position captured when the cast started"),
-		Shooter->GetActorLocation().Equals(SnapshotDestination, 1.0f));
+		FVector::Dist2D(Shooter->GetActorLocation(), SnapshotAnchor) <= 200.1f
+			&& Shooter->GetActorLocation().X < SnapshotAnchor.X);
 	TestTrue(TEXT("Quantum Leap preserves Shooter facing"), Shooter->GetActorRotation().Equals(PreservedRotation, 0.01f));
 	TestFalse(
 		TEXT("Quantum Leap removes its exact damage immunity after relocation"),
@@ -3041,6 +3073,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
 	TestTrue(TEXT("First charged leap activates"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	TestEqual(TEXT("Cast start does not consume a charge before relocation succeeds"),
 		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
 	TickWorld(10);
@@ -3049,6 +3082,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	const uint32 RecoveryBeforeUse = ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial;
 	TestTrue(TEXT("Remaining charge activates while a recharge is running"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	TickWorld(10);
 	TestEqual(TEXT("Second success exhausts the two charges"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 0);
 	TestEqual(TEXT("Second success preserves the original recharge start"),
@@ -3125,6 +3159,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::InvincibleAfterLeap());
 	TestTrue(TEXT("Upgraded Quantum Leap starts"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	TickWorld(10);
 	TestFalse(TEXT("Post-success immunity outlives the cast state"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::QuantumLeaping()));
@@ -3136,6 +3171,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags);
 	TestTrue(TEXT("A second leap can refresh the previous success immunity"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	TickWorld(30);
 	TestTrue(TEXT("Refreshed immunity survives the first leap's original expiry"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
@@ -3174,6 +3210,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("Upgraded leap starts for failed-cast coverage"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	Partner->SetActorLocation(FVector(2000.0f, 0.0f, 0.0f));
 	TickWorld(10);
 	TestFalse(TEXT("Failed upgraded leap does not grant post-success immunity"),
@@ -3195,6 +3232,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	Partner->SetActorLocation(FVector(300.0f, 0.0f, 0.0f));
 	TestTrue(TEXT("Quantum Leap starts for Partner reboot coverage"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	const FActiveGameplayEffectHandle RebootHandle = PartnerASC->ApplyRebootStateToSelf(0.25f);
 	TestTrue(TEXT("Partner reboot starts"), RebootHandle.IsValid());
 	TickWorld(10);
@@ -3207,6 +3245,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	TestTrue(
 		TEXT("Quantum Leap starts for Partner teardown cleanup coverage"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	CompleteQueries();
 	TestTrue(
 		TEXT("Teardown coverage starts with cast damage immunity"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
@@ -3254,6 +3293,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	Shooter->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);
 	World->DestroyWorld(true);
+	QuantumLeapInstance->Shutdown();
 	World->SetPhysicsScene(nullptr);
 	GEngine->DestroyWorldContext(World);
 	World->RemoveFromRoot();

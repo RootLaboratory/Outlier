@@ -40,6 +40,9 @@ class UCurveFloat;
 class UMaterialInterface;
 class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
+class UPlayerRelocationQuery;
+class UOutlierArenaSubsystem;
+struct FPlayerRelocationResult;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UOutlierWeaponAttributeSet;
@@ -1045,7 +1048,9 @@ protected:
 	bool ValidateSuitTransitionPair() const;
 	bool ValidateSuitTransitionPartnerState(bool bForReservation) const;
 	bool CanCommitSuitTransition() const;
-	bool TeleportSuitTransitionPartner();
+	void StartSuitTransitionPartnerQuery();
+	bool IsSuitTransitionRelocationCurrent(const FGuid& TransitionId) const;
+	void CompleteSuitTransitionPartnerQuery(const FGuid& TransitionId, const FPlayerRelocationResult& Result);
 	float GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase) const;
 	bool IsSuitTransitionPhaseReady() const;
 	void EnterSuitTransitionPhase(ESuitTransitionPhase Phase);
@@ -1059,6 +1064,10 @@ protected:
 	ESuitTransitionPhase SuitTransitionPhase = ESuitTransitionPhase::Idle;
 	TWeakObjectPtr<ASuitInteraction> SuitTransitionInteraction;
 	TWeakObjectPtr<APartnerCharacter> SuitTransitionPartner;
+	UPROPERTY(Transient)
+	TObjectPtr<UPlayerRelocationQuery> SuitTransitionPartnerQuery;
+	TWeakObjectPtr<UOutlierArenaSubsystem> SuitTransitionArena;
+	uint32 SuitTransitionGameplayGeneration = 0;
 	FVector SuitTransitionPartnerDestination = FVector::ZeroVector;
 	TWeakObjectPtr<APlayerController> SuitTransitionShooterController;
 	TWeakObjectPtr<APlayerController> SuitTransitionPartnerController;

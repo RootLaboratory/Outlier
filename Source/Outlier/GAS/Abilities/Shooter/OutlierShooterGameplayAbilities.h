@@ -8,6 +8,9 @@
 class APartnerCharacter;
 class AShooterCharacter;
 class UOutlierAbilitySystemComponent;
+class UPlayerRelocationQuery;
+class UOutlierArenaSubsystem;
+struct FPlayerRelocationResult;
 
 UCLASS(Abstract)
 class OUTLIER_API UOutlierShooterGameplayAbility : public UGameplayAbility
@@ -54,22 +57,32 @@ protected:
 		bool bWasCancelled) override;
 
 private:
-	bool TryResolveDestination(
-		const AShooterCharacter& Shooter,
-		const APartnerCharacter& Partner,
-		FVector& OutDestination) const;
-	bool IsDestinationClear(
-		const AShooterCharacter& Shooter,
-		const APartnerCharacter& Partner,
-		const FVector& Destination) const;
+	enum class ELeapPhase : uint8 { Idle, FindingInitial, Casting, FindingFinal, Applying, Finishing };
+	bool HasCurrentParticipants() const;
+	bool CheckLeapEligibility();
+	void StartDestinationQuery(bool bExpandedOnly);
+	void HandleDestinationResult(uint32 Execution, const FPlayerRelocationResult& Result);
+	void BeginCast();
+	void ApplyDestination();
 	void CompleteQuantumLeap();
 
-	FVector Destination = FVector::ZeroVector;
+	UPROPERTY(Transient)
+	TObjectPtr<UPlayerRelocationQuery> DestinationQuery;
+	TWeakObjectPtr<AShooterCharacter> LeapShooter;
+	TWeakObjectPtr<APartnerCharacter> LeapPartner;
+	TWeakObjectPtr<UOutlierArenaSubsystem> LeapArena;
+	FTransform Reference = FTransform::Identity;
+	uint32 GameplayGeneration = 0;
+	uint32 ExecutionSerial = 0;
+	ELeapPhase Phase = ELeapPhase::Idle;
 	FActiveGameplayEffectHandle QuantumLeapStateHandle;
 	FActiveGameplayEffectHandle DamageImmuneHandle;
 	FTimerHandle CastTimerHandle;
 	bool bCommitFailureCooldown = false;
 	bool bTeleportSucceeded = false;
+	bool bEndRequestedDuringTeleport = false;
+	bool bDeferredReplicateEnd = true;
+	bool bDeferredWasCancelled = false;
 };
 
 UCLASS()

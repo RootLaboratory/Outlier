@@ -16,6 +16,10 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "EnvironmentQuery/EnvQueryManager.h"
+#include "FirstPerson/PlayerRelocationEQS.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
+#include "UObject/StrongObjectPtr.h"
 #include "EngineUtils.h"
 #include "Misc/AutomationTest.h"
 #include "GameFramework/PlayerController.h"
@@ -54,6 +58,7 @@ namespace
 struct FScopedSuitInteractionTestWorld
 {
 	UWorld* World = nullptr;
+	UGameInstance* Instance = nullptr;
 	uint64 LastSimulatedFrame = 0;
 
 	bool Initialize(FAutomationTestBase& Test)
@@ -72,13 +77,22 @@ struct FScopedSuitInteractionTestWorld
 
 		World->AddToRoot();
 		WorldContext.SetCurrentWorld(World);
-		World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+		Instance = NewObject<UGameInstance>(GEngine);
+		World->SetGameInstance(Instance);
+		Instance->Init();
+		World->CreateAISystem();
 		if (!Test.TestTrue(TEXT("Transient Suit world creates an authority game mode"), World->SetGameMode(FURL())))
 		{
 			return false;
 		}
 		World->InitializeActorsForPlay(FURL());
 		return true;
+	}
+	void CompleteQueries()
+	{
+		// 비동기 목적지 응답만 처리한다. 암전 최소 시간이나 준비 timeout은 진행하지 않는다.
+		for (int32 Index = 0; Index < 100; ++Index)
+			UEnvQueryManager::GetCurrent(World)->Tick(0.01f);
 	}
 
 	void AdvanceTime(float Duration, TFunction<void()> BeforeTick = {})
@@ -120,6 +134,7 @@ struct FScopedSuitInteractionTestWorld
 
 		GEngine->ShutdownWorldNetDriver(World);
 		World->DestroyWorld(true);
+		if (Instance) Instance->Shutdown();
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		if (World->IsRooted())
@@ -377,6 +392,8 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 	ShooterController->NotifySuitFadeOutFinished(TransitionId);
 	TestFalse(TEXT("One ready participant cannot commit"), ShooterPS->GetAcquiredSuit());
 	PartnerController->NotifySuitFadeOutFinished(TransitionId);
+	TestFalse(TEXT("Pending placement cannot acquire a suit before EQS completes"), ShooterPS->GetAcquiredSuit());
+	TestWorld.CompleteQueries();
 	TestTrue(TEXT("Committed transition waits for applied presentation"), Shooter->GetSuitTransitionPhase() == ESuitTransitionPhase::Applying);
 	TestTrue(TEXT("Applying requests do not automatically report readiness"),
 		ShooterController->PresentationRequests == 1 && PartnerController->PresentationRequests == 1
@@ -1478,14 +1495,42 @@ bool FOutlierSuitTeleportPlacementTest::RunTest(const FString& Parameters)
 		Box->SetMobility(EComponentMobility::Movable);
 		Box->RegisterComponent();
 		Wall->SetActorLocation(Origin + Offset);
+		World->GetPhysicsScene()->ProcessDeferredCreatePhysicsState();
 		return Wall;
 	};
-	auto ExpectPlacement = [this, Shooter, Partner, Origin](const TCHAR* Label, const FVector& Offset)
+	auto ResolvePlacement = [Shooter, Partner, Suit, &TestWorld]()
 	{
-		TestTrue(Label, Shooter->TeleportSuitTransitionPartner());
-		TestTrue(FString(Label) + TEXT(" selects the expected side"), Partner->GetActorLocation().Equals(Origin + Offset, 0.1f));
+		FPlayerRelocationRequest Request;
+		Request.MovingCharacter = Partner;
+		Request.Anchor = Shooter;
+		Request.Reference = Shooter->GetActorTransform();
+		Request.Mode = EPlayerRelocationMode::Flight;
+		Request.bPreferOffset = true;
+		Request.bRequireAnchorSweep = true;
+		// 슈트 연출은 10초보다 길게 설정할 수도 있다. 공통 탐색이 양자도약 제한을 강제하지 않는지 검증한다.
+		Request.TimeoutSeconds = 20.0;
+		const FStructProperty* OffsetProperty = FindFProperty<FStructProperty>(Suit->GetClass(), TEXT("PartnerTeleportOffset"));
+		if (!OffsetProperty) return false;
+		Request.PreferredLocalOffset = *OffsetProperty->ContainerPtrToValuePtr<FVector>(Suit);
+		Request.InitialRadius = FMath::Max(200.0f, float(Request.PreferredLocalOffset.Size2D()));
+		Request.ExpandedRadius = FMath::Max(300.0f, Request.InitialRadius + 100.0f);
+		Request.GridSpacing = FMath::Max(50.0f, Request.ExpandedRadius / 6.0f);
+		TStrongObjectPtr<UPlayerRelocationQuery> Query(NewObject<UPlayerRelocationQuery>());
+		if (!Query->Start(Request, [](const FPlayerRelocationResult&) {})) return false;
+		TestWorld.CompleteQueries();
+		return Query->GetResult().Status == EPlayerRelocationStatus::Success && Query->Revalidate()
+			&& Partner->TeleportTo(Query->GetResult().Location, Partner->GetActorRotation(), false, true);
 	};
-	ExpectPlacement(TEXT("Open space uses preferred right side"), FVector(0.0f, 200.0f, 0.0f));
+	auto ExpectPlacement = [this, Partner, Origin, &ResolvePlacement](const TCHAR* Label, float RelativeHeight = 0.0f)
+	{
+		TestTrue(Label, ResolvePlacement());
+		TestTrue(FString(Label) + TEXT(" selects a safe nearby flight candidate"),
+			FVector::Dist2D(Partner->GetActorLocation(), Origin) <= 300.1f
+			&& FMath::IsNearlyEqual(Partner->GetActorLocation().Z, Origin.Z + RelativeHeight, 0.1f));
+	};
+	ExpectPlacement(TEXT("Open space uses preferred right side"));
+	TestTrue(TEXT("Unblocked preferred offset retains the original presentation"),
+		Partner->GetActorLocation().Equals(Origin + FVector(0, 200, 0), 0.1f));
 	AActor* RightWall = AddWall(FVector(0.0f, 100.0f, 0.0f), FVector(75.0f, 3.0f, 500.0f));
 	const UCapsuleComponent* Capsule = Partner->GetCapsuleComponent();
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SuitTeleportPlacementTest), false, Partner);
@@ -1494,14 +1539,19 @@ bool FOutlierSuitTeleportPlacementTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Thin wall leaves preferred destination itself empty"), World->OverlapBlockingTestByChannel(
 		Origin + FVector(0.0f, 200.0f, 0.0f), FQuat::Identity, Capsule->GetCollisionObjectType(),
 		Capsule->GetCollisionShape(), QueryParams, ResponseParams));
-	ExpectPlacement(TEXT("Thin right wall falls back to left"), FVector(0.0f, -200.0f, 0.0f));
+	ExpectPlacement(TEXT("Thin right wall selects another reachable candidate"));
 	AActor* LeftWall = AddWall(FVector(0.0f, -100.0f, 0.0f), FVector(75.0f, 3.0f, 500.0f));
-	ExpectPlacement(TEXT("Both sides blocked falls back behind"), FVector(-200.0f, 0.0f, 0.0f));
+	ExpectPlacement(TEXT("Both sides blocked still find reachable nearby space"));
 	AActor* BackWall = AddWall(FVector(-100.0f, 0.0f, 0.0f), FVector(3.0f, 75.0f, 500.0f));
-	ExpectPlacement(TEXT("Three sides blocked falls back in front"), FVector(200.0f, 0.0f, 0.0f));
+	ExpectPlacement(TEXT("Three sides blocked still find reachable nearby space"));
 	AActor* FrontWall = AddWall(FVector(100.0f, 0.0f, 0.0f), FVector(3.0f, 75.0f, 500.0f));
+	// 네 방향의 기존 선호점이 막혀도 안쪽 후보는 유효할 수 있다. 겹치지 않는 두 캡슐이 들어갈 수 없게 좁힌다.
+	RightWall->SetActorLocation(Origin + FVector(0, 60, 0));
+	LeftWall->SetActorLocation(Origin + FVector(0, -60, 0));
+	BackWall->SetActorLocation(Origin + FVector(-60, 0, 0));
+	FrontWall->SetActorLocation(Origin + FVector(60, 0, 0));
 	const FVector BeforeRejectedMove = Partner->GetActorLocation();
-	TestFalse(TEXT("Four walls reject every candidate"), Shooter->TeleportSuitTransitionPartner());
+	TestFalse(TEXT("Four walls reject every candidate"), ResolvePlacement());
 	TestEqual(TEXT("Rejected placement preserves Partner position"), Partner->GetActorLocation(), BeforeRejectedMove);
 	for (AActor* Wall : { RightWall, LeftWall, BackWall, FrontWall }) { Wall->Destroy(); }
 
@@ -1510,38 +1560,43 @@ bool FOutlierSuitTeleportPlacementTest::RunTest(const FString& Parameters)
 	FHitResult Hit;
 	TestFalse(TEXT("Edge obstacle does not block center ray"), World->LineTraceSingleByChannel(
 		Hit, Origin, Origin + FVector(0.0f, 200.0f, 0.0f), Capsule->GetCollisionObjectType(), QueryParams, ResponseParams));
-	ExpectPlacement(TEXT("Capsule edge obstacle falls back to left"), FVector(0.0f, -200.0f, 0.0f));
+	ExpectPlacement(TEXT("Capsule edge obstacle selects another swept candidate"));
 	EdgeObstacle->Destroy();
 
 	AActor* InitialOverlap = AddWall(FVector::ZeroVector, FVector(3.0f, 3.0f, 500.0f));
 	const FVector BeforeInitialOverlap = Partner->GetActorLocation();
-	TestFalse(TEXT("Initial world penetration rejects placement"), Shooter->TeleportSuitTransitionPartner());
+	TestFalse(TEXT("Initial world penetration rejects placement"), ResolvePlacement());
 	TestEqual(TEXT("Initial penetration preserves Partner"), Partner->GetActorLocation(), BeforeInitialOverlap);
 	InitialOverlap->Destroy();
 
 	// 호출 기준은 Shooter다. 멀리 있던 Partner와 Shooter 사이의 벽은 합류를 막지 않는다.
 	AActor* DistantWall = AddWall(FVector(500.0f, 0.0f, 0.0f), FVector(3.0f, 500.0f, 500.0f));
 	Partner->TeleportTo(Origin + FVector(1000.0f, 0.0f, 0.0f), FRotator::ZeroRotator, false, true);
-	ExpectPlacement(TEXT("Wall at old Partner location does not block summon"), FVector(0.0f, 200.0f, 0.0f));
+	ExpectPlacement(TEXT("Wall at old Partner location does not block summon"));
 	DistantWall->Destroy();
 	Shooter->SetActorRotation(FRotator(0.0f, 90.0f, 0.0f));
-	ExpectPlacement(TEXT("Shooter yaw rotates preferred offset"), FVector(-200.0f, 0.0f, 0.0f));
+	ExpectPlacement(TEXT("Shooter yaw rotates preferred offset"));
+	TestTrue(TEXT("Unblocked preferred offset follows saved Shooter yaw"),
+		Partner->GetActorLocation().Equals(Origin + FVector(-200, 0, 0), 0.1f));
 	RightWall = AddWall(FVector(-100.0f, 0.0f, 0.0f), FVector(3.0f, 75.0f, 500.0f));
-	ExpectPlacement(TEXT("Shooter yaw also rotates fallback"), FVector(200.0f, 0.0f, 0.0f));
+	ExpectPlacement(TEXT("Rotated preferred wall still allows another reachable candidate"));
 	RightWall->Destroy();
 	// CharacterMovement가 유지하는 실제 바닥 간격에서 합류를 검증한다. 높이 오프셋도 대체 위치에 유지한다.
 	Shooter->SetActorRotation(FRotator::ZeroRotator);
 	const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
 	const float FloorDistance = (UCharacterMovementComponent::MIN_FLOOR_DIST + UCharacterMovementComponent::MAX_FLOOR_DIST) * 0.5f;
 	AActor* Floor = AddWall(FVector(0.0f, 0.0f, -HalfHeight - FloorDistance - 10.0f), FVector(1000.0f, 1000.0f, 10.0f));
-	ExpectPlacement(TEXT("Normal grounded floor clearance permits summon"), FVector(0.0f, 200.0f, 0.0f));
+	ExpectPlacement(TEXT("Normal grounded floor clearance permits summon"));
 	Suit->SetPartnerTeleportOffset(FVector(0.0f, 250.0f, 40.0f));
 	RightWall = AddWall(FVector(0.0f, 125.0f, 0.0f), FVector(75.0f, 3.0f, 500.0f));
-	ExpectPlacement(TEXT("Fallback preserves configured distance and height"), FVector(0.0f, -250.0f, 40.0f));
+	ExpectPlacement(TEXT("Fallback preserves configured flight height"), 40.0f);
 	RightWall->Destroy();
 	Floor->Destroy();
 	Suit->SetPartnerTeleportOffset(FVector::ZeroVector);
-	TestFalse(TEXT("Zero offset cannot overlap Shooter"), Shooter->TeleportSuitTransitionPartner());
+	TestTrue(TEXT("Zero preferred offset finds a separate safe nearby candidate"), ResolvePlacement());
+	TestTrue(TEXT("Zero preferred offset does not overlap Shooter"),
+		FVector::Dist2D(Partner->GetActorLocation(), Shooter->GetActorLocation())
+			>= Capsule->GetScaledCapsuleRadius() + Shooter->GetCapsuleComponent()->GetScaledCapsuleRadius());
 	return true;
 }
 
@@ -1748,6 +1803,7 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	Shooter->SuitPresentation.ThirdPersonAnimClass = nullptr;
 	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::FadingOut);
 	Shooter->AcknowledgeSuitTransition(PartnerController, Id, ESuitTransitionPhase::FadingOut);
+	TestWorld.CompleteQueries();
 	TestFalse(TEXT("Changed configuration cancels before grants"), Shooter->GetSuitTransitionId().IsValid());
 	TestFalse(TEXT("Changed configuration does not acquire"), ShooterPS->GetAcquiredSuit());
 	TestNull(TEXT("Changed configuration does not equip"), Shooter->GetCurrentWeapon());
@@ -1781,6 +1837,8 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Reservation does not move Partner"), Partner->GetActorLocation(), PartnerBeforeBlockedMove);
 	ShooterController->NotifySuitFadeOutFinished(Id);
 	PartnerController->NotifySuitFadeOutFinished(Id);
+	TestFalse(TEXT("Pending blocked placement has not granted a suit"), ShooterPS->GetAcquiredSuit());
+	TestWorld.CompleteQueries();
 	TestFalse(TEXT("Blocked destination cancels the transition"), Shooter->GetSuitTransitionId().IsValid());
 	TestFalse(TEXT("Blocked destination grants neither player a suit"), ShooterPS->GetAcquiredSuit() || PartnerPS->GetAcquiredSuit());
 	TestEqual(TEXT("Blocked destination preserves Partner position"), Partner->GetActorLocation(), PartnerBeforeBlockedMove);
@@ -1788,15 +1846,84 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Blocked destination releases both movement blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
 	Obstacle->Destroy();
 
-	// 공간이 비어 있어도 Shooter와 겹치는 목적지는 거부한다. Pawn 충돌 설정에 의존하지 않는다.
+	// 선호 위치가 겹쳐도 주변 후보를 탐색한다. 응답을 기다리는 동안 지급/소비는 일어나지 않는다.
 	Suit->SetPartnerTeleportOffset(FVector::ZeroVector);
-	TestTrue(TEXT("Overlapping destination case reserves"), Suit->Interact(Shooter));
+	TestTrue(TEXT("Zero offset pending cancellation case reserves"), Suit->Interact(Shooter));
 	Id = Shooter->GetSuitTransitionId();
 	ShooterController->NotifySuitFadeOutFinished(Id);
 	PartnerController->NotifySuitFadeOutFinished(Id);
-	TestFalse(TEXT("Overlapping destination cancels without acquiring"), ShooterPS->GetAcquiredSuit());
-	TestTrue(TEXT("Overlapping destination preserves the suit"), Suit->CanReserveFor(Shooter));
+	TestNotNull(TEXT("Both fade responses start a pending relocation query"), Shooter->SuitTransitionPartnerQuery.Get());
+	TestFalse(TEXT("Pending relocation does not acquire"), ShooterPS->GetAcquiredSuit() || PartnerPS->GetAcquiredSuit());
+	TestTrue(TEXT("Pending relocation keeps stored weapons hidden"), StoredRifle->IsHidden() && StoredPartnerWeapon->IsHidden());
+	const auto* PendingQuery = Shooter->SuitTransitionPartnerQuery.Get();
+	ShooterController->NotifySuitFadeOutFinished(Id);
+	PartnerController->NotifySuitFadeOutFinished(Id);
+	TestTrue(TEXT("Duplicate ACK does not restart the pending query"), Shooter->SuitTransitionPartnerQuery.Get() == PendingQuery);
+	Shooter->CancelSuitTransition();
+	TestWorld.CompleteQueries();
+	TestFalse(TEXT("Cancelled pending result grants nothing"), ShooterPS->GetAcquiredSuit());
+	TestTrue(TEXT("Cancelled pending query preserves reservation retry"), Suit->CanReserveFor(Shooter));
 	Suit->SetPartnerTeleportOffset(FVector(0.0f, 200.0f, 0.0f));
+
+	// 모든 무효화는 EQS 응답 전 경계에서 발생시킨다. 이전 결과가 새 예약을 끝내거나 지급하지 않아야 한다.
+	for (int32 PendingCase = 0; PendingCase < 6; ++PendingCase)
+	{
+		const TCHAR* Label = PendingCase == 0 ? TEXT("Pair") : PendingCase == 1 ? TEXT("Pawn")
+			: PendingCase == 2 ? TEXT("Reboot") : PendingCase == 3 ? TEXT("Generation")
+			: PendingCase == 4 ? TEXT("Timeout") : TEXT("PresentationChanged");
+		if (!TestTrue(FString(Label) + TEXT(" pending transition reserves"), Suit->Interact(Shooter))) return false;
+		const FGuid PendingId = Shooter->GetSuitTransitionId();
+		ShooterController->NotifySuitFadeOutFinished(PendingId);
+		PartnerController->NotifySuitFadeOutFinished(PendingId);
+		if (!TestNotNull(FString(Label) + TEXT(" has a pending EQS request"), Shooter->SuitTransitionPartnerQuery.Get())) return false;
+		const FVector BeforeInvalidation = Partner->GetActorLocation();
+		switch (PendingCase)
+		{
+		case 0: PartnerPS->SetPairId(1); break;
+		case 1: PartnerController->UnPossess(); break;
+		case 2: PartnerASC->AddLooseGameplayTag(OutlierGameplayTags::State::Rebooting()); break;
+		case 3:
+			// 저장된 세대가 현재 Arena와 달라지는 문맥을 재현한다. 실제 레벨 unload는 별도 통합 검증 대상이다.
+			++Shooter->SuitTransitionGameplayGeneration;
+			break;
+		case 4:
+		{
+			// EQS를 먼저 완료하는 World Tick 대신 응답 제한 타이머만 만료시킨다.
+			TGuardValue<uint64> RestoreFrame(GFrameCounter, GFrameCounter);
+			GFrameCounter = FMath::Max(GFrameCounter, TestWorld.LastSimulatedFrame);
+			for (int32 Index = 0; Index < 40; ++Index)
+			{
+				++GFrameCounter;
+				World->GetTimerManager().Tick(1.0f / 60.0f);
+			}
+			TestWorld.LastSimulatedFrame = GFrameCounter;
+			break;
+		}
+		case 5: Shooter->SuitPresentation.ThirdPersonAnimClass = nullptr; break;
+		}
+		TestWorld.CompleteQueries();
+		TestFalse(FString(Label) + TEXT(" stale result grants neither suit"), ShooterPS->GetAcquiredSuit() || PartnerPS->GetAcquiredSuit());
+		TestTrue(FString(Label) + TEXT(" stale result preserves Partner position"), Partner->GetActorLocation().Equals(BeforeInvalidation));
+		TestFalse(FString(Label) + TEXT(" invalidation releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
+		if (PendingCase == 0) PartnerPS->SetPairId(0);
+		if (PendingCase == 1)
+		{
+			PartnerController->Possess(Partner);
+			Partner->SetPlayerState(PartnerPS);
+		}
+		if (PendingCase == 2) PartnerASC->RemoveLooseGameplayTag(OutlierGameplayTags::State::Rebooting());
+		if (PendingCase == 5) Shooter->SuitPresentation = Configuration;
+		if (!TestTrue(FString(Label) + TEXT(" permits a fresh reservation"), Suit->Interact(Shooter))) return false;
+		const FGuid FreshId = Shooter->GetSuitTransitionId();
+		FPlayerRelocationResult LateSuccess;
+		LateSuccess.Status = EPlayerRelocationStatus::Success;
+		LateSuccess.Location = BeforeInvalidation + FVector(200, 0, 0);
+		Shooter->CompleteSuitTransitionPartnerQuery(PendingId, LateSuccess);
+		TestTrue(FString(Label) + TEXT(" late callback cannot cancel the fresh transition"), Shooter->GetSuitTransitionId() == FreshId);
+		TestTrue(FString(Label) + TEXT(" late callback cannot move Partner"), Partner->GetActorLocation().Equals(BeforeInvalidation));
+		TestNull(FString(Label) + TEXT(" late callback cannot equip Rifle"), Shooter->GetCurrentWeapon());
+		Shooter->CancelSuitTransition();
+	}
 
 	// 실제 위치 갱신 콜백에서 취소를 재진입시킨다. 이동 성공 뒤라도 지급 전이면 원래 위치로 복구해야 한다.
 	bool bCanceledDuringTeleport = false;
@@ -1814,6 +1941,7 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	Id = Shooter->GetSuitTransitionId();
 	ShooterController->NotifySuitFadeOutFinished(Id);
 	PartnerController->NotifySuitFadeOutFinished(Id);
+	TestWorld.CompleteQueries();
 	Partner->GetRootComponent()->TransformUpdated.Remove(CancelOnMove);
 	TestTrue(TEXT("Actual teleport invokes the cancellation callback"), bCanceledDuringTeleport);
 	TestFalse(TEXT("Reentrant cancellation cannot grant a suit"), ShooterPS->GetAcquiredSuit() || PartnerPS->GetAcquiredSuit());
@@ -1848,6 +1976,8 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	ShooterController->NotifySuitFadeOutFinished(Id);
 	TestEqual(TEXT("One covered screen cannot move Partner"), Partner->GetActorLocation(), PartnerBeforeBlockedMove);
 	PartnerController->NotifySuitFadeOutFinished(Id);
+	TestFalse(TEXT("Both covered screens still wait for EQS before commit"), ShooterPS->GetAcquiredSuit());
+	TestWorld.CompleteQueries();
 	TestTrue(TEXT("Partner arrives to the right in Shooter yaw space"), Partner->GetActorLocation().Equals(ExpectedPartnerDestination, 1.0f));
 	TestEqual(TEXT("Teleport retains the movement stop until reveal"), EMovementMode(Partner->GetCharacterMovement()->MovementMode), MOVE_None);
 	TestTrue(TEXT("Both screens receive the committed destination"),
@@ -2066,6 +2196,7 @@ bool FOutlierSlideSuitRecoveryTest::RunTest(const FString& Parameters)
 		{
 			ShooterController->NotifySuitFadeOutFinished(Id);
 			PartnerController->NotifySuitFadeOutFinished(Id);
+			TestWorld.CompleteQueries();
 			if (!TestEqual(TEXT("Committed Slide transition waits in Applying"), Shooter->GetSuitTransitionPhase(), ESuitTransitionPhase::Applying)) return false;
 			if (Outcome == EOutcome::TimeoutAfterCommit)
 			{

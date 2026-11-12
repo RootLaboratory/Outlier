@@ -96,6 +96,7 @@ struct FShooterSlideSnapshot
 	bool bFireHeld = false;
 	bool bCrouchHeld = false;
 	bool bCrouched = false;
+	bool bRelocation = false; // 안전 착지 전환만 새 앉기 입력을 새 이동 기준으로 이어 준다.
 	void Serialize(FArchive& Ar);
 };
 
@@ -186,6 +187,7 @@ public:
 	void ApplyMovementInput();
 	bool IsReplayingMovement() const;
 	void ResetSlideForLifecycle();
+	bool TeleportToRelocation(const FVector& Destination, bool bCrouched);
 	void StartSlideJumpMomentum(const FVector& ActualHorizontalVelocity);
 	void ResetSlideJumpMomentum();
 
@@ -290,6 +292,8 @@ private:
 	bool bMovementInputTransition = false;
 	bool bSlidePresented = false;
 	bool bRestoringMovementState = false;
+	bool bRelocationTeleport = false;
+	bool bRelocationEpoch = false;
 	FShooterSlideSnapshot PendingServerSlide;
 	// 재생 도중 정리돼도 엔진이 현재 SavedMove의 PostUpdate를 마칠 때까지 객체 수명은 유지한다.
 	TArray<FSavedMovePtr> LifecycleReplayMoves;

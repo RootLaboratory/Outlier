@@ -5,6 +5,8 @@
 #include "Shooter/ShooterCombatComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Weapon/MeleeWeaponBase.h"
 
@@ -81,6 +83,7 @@ void FShooterSlideSnapshot::Serialize(FArchive& Ar)
 	Ar.SerializeBits(&bFireHeld, 1);
 	Ar.SerializeBits(&bCrouchHeld, 1);
 	Ar.SerializeBits(&bCrouched, 1);
+	Ar.SerializeBits(&bRelocation, 1);
 	Ar << EndReason;
 	if (bActive)
 	{
@@ -349,6 +352,7 @@ FShooterSlideSnapshot UShooterCharacterMovementComponent::CaptureSlideSnapshot()
 	Result.EndReason = SlideEndReason;
 	Result.bActive = bSlideSimulating;
 	Result.bCrouched = CharacterOwner && CharacterOwner->bIsCrouched;
+	Result.bRelocation = bRelocationEpoch;
 	if (const auto* Shooter = Cast<AShooterCharacter>(CharacterOwner))
 	{
 		Result.bAimHeld = Shooter->WantsToAim();
@@ -369,13 +373,23 @@ void UShooterCharacterMovementComponent::RestoreSlideSnapshot(const FShooterSlid
 	auto* Movement = GetShooterMovement();
 	if (!Movement) return;
 	if (static_cast<int32>(Snapshot.AppliedInput.Epoch - MovementEpoch) < 0) return;
+	bRelocationEpoch = Snapshot.bRelocation;
 	SlideJumpMomentum = Snapshot.JumpMomentum;
 	if (Snapshot.AppliedInput.Epoch != MovementEpoch)
 	{
+		const FShooterMovementInput PreviousInput = LiveMovementInput;
 		MovementEpoch = Snapshot.AppliedInput.Epoch;
 		// 전환 전 홀드/진입 요청을 새 서버 기준에 붙이지 않는다. 요청 순번 자체는 계속 증가한다.
 		LiveMovementInput = {};
 		LiveMovementInput.Epoch = MovementEpoch;
+		// 서버가 보존한 앉기 홀드만 새 기준으로 잇는다. 보정 전에 놓은 입력은 다시 누르지 않는다.
+		LiveMovementInput.bCrouch = Snapshot.bRelocation && Snapshot.bCrouchHeld && PreviousInput.bCrouch;
+		if (Snapshot.bRelocation && static_cast<int32>(PreviousInput.CrouchRequest - Snapshot.ProcessedCrouchRequest) > 0)
+		{
+			// 서버가 아직 보지 못한 새 Press/Release는 새 위치에서 처리하되 이전 Sprint로 Slide를 재개하지 않는다.
+			LiveMovementInput.CrouchRequest = PreviousInput.CrouchRequest;
+			LiveMovementInput.bCrouch = PreviousInput.bCrouch;
+		}
 		RequireFreshSprintPress();
 		MoveInput = LiveMovementInput;
 	}
@@ -487,6 +501,7 @@ void UShooterCharacterMovementComponent::ReconcileSlidePresentation()
 
 void UShooterCharacterMovementComponent::ResetSlideForLifecycle()
 {
+	bRelocationEpoch = false;
 	RequireFreshSprintPress();
 	ResetSlideJumpMomentum();
 	bSlideJumpAttempt = bStopSlideJumpAfterCheck = false;
@@ -1559,11 +1574,50 @@ void UShooterCharacterMovementComponent::OnMovementModeChanged(EMovementMode Pre
 	Super::OnMovementModeChanged(PreviousMode, PreviousCustomMode);
 }
 
+bool UShooterCharacterMovementComponent::TeleportToRelocation(const FVector& Destination, bool bCrouched)
+{
+	auto* Shooter = Cast<AShooterCharacter>(CharacterOwner);
+	if (!Shooter || !Shooter->HasAuthority() || Shooter->IsDead() || Shooter->IsSuitTransitionBlocked()) return false;
+	UCapsuleComponent* Capsule = Shooter->GetCapsuleComponent();
+	const float HalfHeight = bCrouched ? GetCrouchedHalfHeight()
+		: Shooter->GetClass()->GetDefaultObject<ACharacter>()->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(RelocationTeleport), false, Shooter);
+	Params.AddIgnoredActor(Shooter->GetPartnerCharacter());
+	if (GetWorld()->OverlapBlockingTestByChannel(Destination, FQuat::Identity, Capsule->GetCollisionObjectType(),
+		FCollisionShape::MakeCapsule(Capsule->GetScaledCapsuleRadius(), FMath::Max(Capsule->GetScaledCapsuleRadius(), HalfHeight * Capsule->GetShapeScale())),
+		Params, FCollisionResponseParams(Capsule->GetCollisionResponseToChannels()))) return false;
+
+	// 검증된 자세와 캡슐 중심을 한 번에 반영한다. 출발점에서 중심을 밀거나 Slide를 시작하지 않는다.
+	const bool bWasCrouched = Shooter->bIsCrouched;
+	FScopedMovementUpdate ScopedMove(UpdatedComponent, EScopedUpdate::DeferredUpdates);
+	RestoreCrouchedPosture(bCrouched);
+	TGuardValue<bool> RelocationGuard(bRelocationTeleport, true);
+	if (!Shooter->TeleportTo(Destination, Shooter->GetActorRotation(), false, true))
+	{
+		RestoreCrouchedPosture(bWasCrouched);
+		ScopedMove.RevertMove();
+		return false;
+	}
+	bForceNextFloorCheck = true;
+	return true;
+}
+
 void UShooterCharacterMovementComponent::OnTeleported()
 {
 	ResetCoyoteTime();
-	// 일반 위치 보정/재생은 승인된 Slide를 이어야 한다. 실제 순간이동만 수명주기를 끊는다.
+	auto* Movement = GetShooterMovement();
+	const bool bPreserveCrouch = bRelocationTeleport && Movement && Movement->WantsToCrouch();
 	if (!IsReplayingMovement()) ResetSlideForLifecycle();
+	if (bRelocationTeleport && Movement)
+	{
+		// 실제 착지 자세와 입력 의도를 분리한다. 강제 앉기는 천장이 열리면 기존 CMC 기립 검사로 해제된다.
+		bRelocationEpoch = true;
+		Movement->bWantsToCrouch = bPreserveCrouch;
+		bWantsToCrouch = bPreserveCrouch;
+		LiveMovementInput.bCrouch = MoveInput.bCrouch = AppliedMovementInput.bCrouch = bPreserveCrouch;
+		Movement->RefreshMovementState();
+		PendingServerSlide = CaptureSlideSnapshot();
+	}
 	Super::OnTeleported();
 }
 
