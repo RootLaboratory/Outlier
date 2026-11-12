@@ -80,6 +80,7 @@ class UOutlierVitalAttributeSet;
 class UOutlierPartnerMovementAttributeSet;
 class UOutlierPartnerCombatAttributeSet;
 class UPartnerVitalityComponent;
+class ULocalPlayer;
 class ULocalPlayerSettingsSubsystem;
 class UEnhancedInputLocalPlayerSubsystem;
 class UEnhancedInputUserSettings;
@@ -589,6 +590,12 @@ protected:
 	FDelegateHandle MoveSpeedChangedHandle;
 	FDelegateHandle BoostSpeedChangedHandle;
 	FDelegateHandle RebootingTagChangedHandle;
+
+	// RDG Partner KnockDown 화면 연출. 로컬로 조종 중이고 다운(State.Rebooting)이면 켜고, 아니면 끈다.
+	// 남은 시간은 Reboot GE에서 읽어 늦게 들어와도 진행 중인 시점부터 맞춘다. bForceStop은 EndPlay용.
+	void RefreshKnockDownPostProcess(bool bForceStop = false);
+	// 연출을 켜 둔 로컬 플레이어. 빙의가 풀리면 컨트롤러가 사라지므로 끌 대상을 따로 기억한다.
+	TWeakObjectPtr<ULocalPlayer> KnockDownPostProcessLocalPlayer;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 

@@ -23,7 +23,9 @@ void UGhostProgressBar::SetPercentImmediate(float InPercent)
 	const float Target = FMath::IsFinite(InPercent) ? FMath::Clamp(InPercent, 0.0f, 1.0f) : 0.0f;
 	bHasReceivedValue = true;
 	bAnimating = false;
+	bRecovering = false;
 	Elapsed = 0.0;
+	DisplayedMainPercent = MainStartPercent = Target;
 	GhostPercent = GhostStartPercent = Target;
 	Super::SetPercent(Target);
 	RefreshSlateAppearance();
@@ -42,13 +44,26 @@ void UGhostProgressBar::SetTargetPercent(float InPercent)
 	RefreshSlateAppearance();
 	if (Target == GetPercent()) return;
 
-	// 현재 화면의 잔상을 보존한다. 감소 중 재피격/회복 모두 새 목표에서 Delay를 다시 시작한다.
+	const bool bIncreasing = Target > GetPercent();
 	Super::SetPercent(Target);
-	GhostPercent = FMath::Max(GhostPercent, Target);
+	bRecovering = bIncreasing;
+	if (bRecovering)
+	{
+		// 회복 중에는 잔상을 분리하지 않고 두 바를 같은 화면 값에서 함께 채운다.
+		GhostPercent = DisplayedMainPercent;
+		MainStartPercent = DisplayedMainPercent;
+	}
+	else
+	{
+		// 회복 중 재피격도 실제 피해량을 즉시 반영한다.
+		DisplayedMainPercent = Target;
+		GhostPercent = FMath::Max(GhostPercent, Target);
+	}
 	GhostStartPercent = GhostPercent;
-	Elapsed = 0.0;
 	ValidateTiming();
-	if (GhostPercent <= Target || (EffectiveDelay == 0.0f && EffectiveDuration == 0.0f))
+	Elapsed = 0.0;
+	if ((!bRecovering && GhostPercent <= Target)
+		|| (EffectiveDelay == 0.0f && EffectiveDuration == 0.0f))
 	{
 		SetPercentImmediate(Target);
 		return;
@@ -90,6 +105,7 @@ void UGhostProgressBar::SetGhostTiming(float InDelay, float InDuration)
 			return;
 		}
 		GhostStartPercent = GhostPercent;
+		MainStartPercent = DisplayedMainPercent;
 		Elapsed = 0.0;
 		BeginGhostAnimation();
 	}
@@ -106,12 +122,19 @@ void UGhostProgressBar::AdvanceGhostAnimation(float DeltaTime)
 
 	// 경과 시간 하나로 Delay 경계를 넘긴 잔여 시간도 보간에 반영한다.
 	Elapsed += DeltaTime;
-	if (Elapsed < EffectiveDelay) return;
+	const double Delay = bRecovering ? 0.0 : EffectiveDelay;
+	if (Elapsed < Delay) return;
 	const double Alpha = EffectiveDuration > 0.0f
-		? FMath::Clamp((Elapsed - EffectiveDelay) / EffectiveDuration, 0.0, 1.0) : 1.0;
+		? FMath::Clamp((Elapsed - Delay) / EffectiveDuration, 0.0, 1.0) : 1.0;
 	const double Remaining = 1.0 - Alpha;
 	const double EasedAlpha = 1.0 - Remaining * Remaining * Remaining;
-	GhostPercent = FMath::Max(GetPercent(), static_cast<float>(FMath::Lerp(static_cast<double>(GhostStartPercent), static_cast<double>(GetPercent()), EasedAlpha)));
+	if (bRecovering)
+	{
+		DisplayedMainPercent = FMath::Lerp(MainStartPercent, GetPercent(), static_cast<float>(EasedAlpha));
+		GhostPercent = DisplayedMainPercent;
+	}
+	else
+		GhostPercent = FMath::Max(GetPercent(), static_cast<float>(FMath::Lerp(static_cast<double>(GhostStartPercent), static_cast<double>(GetPercent()), EasedAlpha)));
 	if (Alpha >= 1.0) ResetGhostToCurrent();
 	else RefreshSlatePercent();
 }
@@ -133,6 +156,8 @@ void UGhostProgressBar::TickGhostFromGameTime()
 
 void UGhostProgressBar::RefreshSlatePercent()
 {
+	// Super::SetPercent는 실제 값을 유지한다. 화면에만 회복 보간값을 적용한다.
+	if (MyProgressBar) MyProgressBar->SetPercent(DisplayedMainPercent);
 	if (GhostWidget) GhostWidget->SetGhostPercent(GhostPercent);
 }
 

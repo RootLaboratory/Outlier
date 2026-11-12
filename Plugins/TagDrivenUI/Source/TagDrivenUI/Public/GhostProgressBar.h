@@ -7,7 +7,7 @@
 class SGhostProgressBar;
 class UWorld;
 
-/** Main은 즉시 반영하고 Ghost만 지연 후 감소시키는 공통 게이지. */
+/** 피해는 Main 감소 후 Ghost가 따라오고, 회복은 두 바가 함께 차오르는 게이지. */
 UCLASS(meta = (DisplayName = "Ghost Progress Bar"))
 class TAGDRIVENUI_API UGhostProgressBar : public UProgressBar
 {
@@ -46,6 +46,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Ghost")
 	float GetGhostPercent() const { return GhostPercent; }
+	float GetDisplayedMainPercent() const { return DisplayedMainPercent; }
 
 	bool IsGhostAnimating() const { return bAnimating; }
 
@@ -70,11 +71,14 @@ private:
 	TWeakObjectPtr<UWorld> AnimationWorld;
 	float GhostPercent = 0.0f;
 	float GhostStartPercent = 0.0f;
+	float DisplayedMainPercent = 0.0f;
+	float MainStartPercent = 0.0f;
 	double Elapsed = 0.0;
 	double LastGameTime = 0.0;
 	float EffectiveDelay = 0.25f;
 	float EffectiveDuration = 0.60f;
 	bool bHasReceivedValue = false;
 	bool bAnimating = false;
+	bool bRecovering = false;
 	bool bInvalidTimingWarningLogged = false;
 };

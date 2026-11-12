@@ -56,20 +56,60 @@ bool FGhostProgressBarRestartTest::RunTest(const FString& Parameters)
 	Bar->AdvanceGhostAnimation(0.125f);
 	TestEqual(TEXT("Repeated damage gets a fresh delay"), Bar->GetGhostPercent(), DisplayedGhost);
 	Bar->SetTargetPercent(0.6f);
-	TestEqual(TEXT("Recovery updates main immediately"), Bar->GetPercent(), 0.6f);
-	TestEqual(TEXT("Partial recovery preserves a higher ghost"), Bar->GetGhostPercent(), DisplayedGhost);
+	TestEqual(TEXT("Recovery updates actual value immediately"), Bar->GetPercent(), 0.6f);
+	TestEqual(TEXT("Recovery clears damage trail to displayed main"), Bar->GetGhostPercent(), 0.4f);
 	Bar->AdvanceGhostAnimation(0.25f);
-	TestEqual(TEXT("Recovery starts a new complete delay"), Bar->GetGhostPercent(), DisplayedGhost);
+	TestTrue(TEXT("Recovery starts without damage delay"), Bar->GetDisplayedMainPercent() > 0.4f);
+	TestEqual(TEXT("Recovery fills stay together"), Bar->GetGhostPercent(), Bar->GetDisplayedMainPercent());
 	Bar->AdvanceGhostAnimation(1.0f);
 	TestEqual(TEXT("Remaining recovery trail reaches the new main"), Bar->GetGhostPercent(), 0.6f);
 	Bar->SetTargetPercent(0.4f);
 	Bar->SetTargetPercent(0.9f);
-	TestEqual(TEXT("Recovery above ghost synchronizes both fills"), Bar->GetGhostPercent(), 0.9f);
-	TestFalse(TEXT("Recovery above ghost ends animation"), Bar->IsGhostAnimating());
+	TestEqual(TEXT("Recovery ghost starts with the main"), Bar->GetGhostPercent(), 0.4f);
+	TestEqual(TEXT("Recovery main starts at its displayed value"), Bar->GetDisplayedMainPercent(), 0.4f);
+	TestTrue(TEXT("Recovery above ghost animates the main fill"), Bar->IsGhostAnimating());
+	Bar->AdvanceGhostAnimation(0.75f);
+	TestTrue(TEXT("Recovery main uses cubic easing without delay"), FMath::IsNearlyEqual(Bar->GetDisplayedMainPercent(), 0.8921875f, 1.e-5f));
+	TestEqual(TEXT("Both recovery fills use the same easing"), Bar->GetGhostPercent(), Bar->GetDisplayedMainPercent());
+	Bar->AdvanceGhostAnimation(0.5f);
+	TestEqual(TEXT("Recovery main reaches the target"), Bar->GetDisplayedMainPercent(), 0.9f);
+	TestFalse(TEXT("Recovery completion becomes idle"), Bar->IsGhostAnimating());
 	Bar->SetTargetPercent(0.2f);
 	Bar->SetPercentImmediate(0.2f);
 	TestEqual(TEXT("Immediate update clears trail even for the same target"), Bar->GetGhostPercent(), 0.2f);
 	TestFalse(TEXT("Immediate update cancels pending delay"), Bar->IsGhostAnimating());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGhostProgressBarContinuousRecoveryTest, "Outlier.UI.GhostProgressBar.ContinuousRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGhostProgressBarContinuousRecoveryTest::RunTest(const FString& Parameters)
+{
+	UGhostProgressBar* Bar = NewObject<UGhostProgressBar>();
+	Bar->SetPercentImmediate(0.0f);
+	for (int32 Step = 1; Step <= 10; ++Step)
+	{
+		const float Before = Bar->GetDisplayedMainPercent();
+		Bar->SetTargetPercent(Step * 0.1f);
+		TestEqual(TEXT("Repeated recovery preserves displayed main"), Bar->GetDisplayedMainPercent(), Before);
+		TestEqual(TEXT("Repeated recovery preserves synchronized fills"), Bar->GetGhostPercent(), Before);
+		Bar->AdvanceGhostAnimation(0.1f);
+		TestTrue(TEXT("Recovery main never moves backward"), Bar->GetDisplayedMainPercent() >= Before);
+		TestEqual(TEXT("Continuous recovery animates both fills together"), Bar->GetGhostPercent(), Bar->GetDisplayedMainPercent());
+		if (Step >= 3) TestTrue(TEXT("Frequent recovery does not perpetually restart delay"), Bar->GetDisplayedMainPercent() > Before);
+	}
+	Bar->AdvanceGhostAnimation(1.0f);
+	TestEqual(TEXT("Continuous recovery finishes at full"), Bar->GetDisplayedMainPercent(), 1.0f);
+	Bar->SetPercentImmediate(0.0f);
+	Bar->SetTargetPercent(1.0f);
+	Bar->AdvanceGhostAnimation(0.4f);
+	const float BeforeDamage = Bar->GetGhostPercent();
+	Bar->SetTargetPercent(0.5f);
+	TestEqual(TEXT("Damage interrupts recovery immediately"), Bar->GetDisplayedMainPercent(), 0.5f);
+	TestEqual(TEXT("Damage preserves the visible ghost"), Bar->GetGhostPercent(), BeforeDamage);
+	Bar->AdvanceGhostAnimation(1.0f);
+	TestEqual(TEXT("Damage after recovery finishes its trail"), Bar->GetGhostPercent(), 0.5f);
 	return true;
 }
 

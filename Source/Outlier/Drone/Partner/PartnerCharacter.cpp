@@ -51,6 +51,7 @@
 #include "GameplayEffect.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Engine/LocalPlayer.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "Templates/UnrealTemplate.h"
 #include "Environment/PartnerLightVolume.h"
 #include "Components/SpotLightComponent.h"
@@ -192,6 +193,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	UnbindPartnerCooldownUIObserver();
 	UnbindGasCombatObservers();
 	UnbindGasMobilityObservers();
+	RefreshKnockDownPostProcess(true);
 	CleanupBoostVFXComponents();
 	if (PartnerVitalityComponent)
 	{
@@ -213,6 +215,8 @@ void APartnerCharacter::PossessedBy(AController* NewController)
 	bStandbyAimInitialized = false;
 	RefreshAbilitySystemActorInfo();
 	RefreshPartnerHackChargeUI();
+	// 리슨 서버 호스트가 다운된 파트너에 빙의한 경우.
+	RefreshKnockDownPostProcess();
 
 	if (bIsAccelerate)
 	{
@@ -317,6 +321,7 @@ void APartnerCharacter::UnPossessed()
 
 	Super::UnPossessed();
 	RefreshAbilitySystemActorInfo();
+	RefreshKnockDownPostProcess();
 }
 
 void APartnerCharacter::OnRep_Controller()
@@ -333,6 +338,7 @@ void APartnerCharacter::OnRep_Controller()
 	}
 	RefreshAbilitySystemActorInfo();
 	RefreshPartnerCooldownUI();
+	RefreshKnockDownPostProcess();
 }
 
 void APartnerCharacter::OnRep_PlayerState()
@@ -502,6 +508,75 @@ void APartnerCharacter::UnbindGasMobilityObservers()
 void APartnerCharacter::HandleRebootingTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	RefreshMovementLoopAudio();
+	RefreshKnockDownPostProcess();
+}
+
+void APartnerCharacter::RefreshKnockDownPostProcess(bool bForceStop)
+{
+	const APlayerController* PlayerController = GetController<APlayerController>();
+	ULocalPlayer* LocalPlayer = !bForceStop && PlayerController && IsLocallyControlled()
+		? PlayerController->GetLocalPlayer()
+		: nullptr;
+	const bool bRebooting = LocalPlayer
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
+
+	// 다운이 풀렸거나 조종하는 로컬 플레이어가 바뀌었으면 이전 화면의 연출을 끈다.
+	if (ULocalPlayer* PreviousLocalPlayer = KnockDownPostProcessLocalPlayer.Get();
+		PreviousLocalPlayer && (!bRebooting || PreviousLocalPlayer != LocalPlayer))
+	{
+		if (ULocalPlayerPostProcessSubsystem* PreviousSubsystem = PreviousLocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PreviousSubsystem->StopPartnerKnockDown();
+		}
+		KnockDownPostProcessLocalPlayer.Reset();
+	}
+
+	if (!bRebooting || KnockDownPostProcessLocalPlayer.Get() == LocalPlayer)
+	{
+		return;
+	}
+
+	ULocalPlayerPostProcessSubsystem* Subsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>();
+	if (!Subsystem)
+	{
+		return;
+	}
+
+	// Reboot GE는 Duration이 있어서 클라이언트도 남은 시간 / 전체 시간을 그대로 읽을 수 있다.
+	float RebootRemaining = 0.0f;
+	float RebootDuration = 0.0f;
+	const FGameplayEffectQuery RebootQuery = FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(
+		FGameplayTagContainer(OutlierGameplayTags::State::Rebooting()));
+	for (const TPair<float, float>& TimeRemainingAndDuration
+		: OutlierAbilitySystemComponent->GetActiveEffectsTimeRemainingAndDuration(RebootQuery))
+	{
+		if (TimeRemainingAndDuration.Value > RebootDuration)
+		{
+			RebootRemaining = TimeRemainingAndDuration.Key;
+			RebootDuration = TimeRemainingAndDuration.Value;
+		}
+	}
+
+	// GE 시간을 못 읽으면 데이터 테이블의 다운 시간으로 처음부터 돈다.
+	if (RebootDuration <= 0.0f && PartnerVitalityComponent)
+	{
+		RebootDuration = PartnerVitalityComponent->GetConfiguredRebootTime();
+		RebootRemaining = RebootDuration;
+	}
+	if (RebootDuration <= 0.0f)
+	{
+		return;
+	}
+
+	Subsystem->StartPartnerKnockDown(RebootDuration, FMath::Max(0.0f, RebootDuration - RebootRemaining));
+	KnockDownPostProcessLocalPlayer = LocalPlayer;
+
+	// KnockDown 화면이 덮이므로 그 전에 떠 있던 피격 피드백(진행 중 + 대기 중)을 정리한다.
+	if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+	{
+		UISubsystem->ClearDamageFeedback();
+	}
 }
 
 void APartnerCharacter::HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData)

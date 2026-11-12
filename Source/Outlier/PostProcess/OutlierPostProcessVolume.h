@@ -158,6 +158,16 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Death Transition")
 	TObjectPtr<UTexture2D> DeathBlackNoiseTexture = nullptr;
 
+	// RDG Partner KnockDown 글리치 마스크(R 채널, 0~1). 흰색일수록 글리치가 세고, 다운 시간이 흐를수록
+	// 값이 낮은 곳부터 글리치가 사라진다. 비워 두면 전 화면이 1로 취급돼 끝날 때 한꺼번에 사라진다.
+	// sRGB를 끈 선형(Masks) 텍스처를 권장한다.
+	UPROPERTY(EditAnywhere, Category = "Partner KnockDown")
+	TObjectPtr<UTexture2D> PartnerKnockDownMaskTexture = nullptr;
+
+	// RDG Partner KnockDown 동안 화면에 얹는 UI 텍스처(DamageHud, RGBA straight alpha). 글리치되지 않는다.
+	UPROPERTY(EditAnywhere, Category = "Partner KnockDown")
+	TObjectPtr<UTexture2D> PartnerKnockDownDamageHudTexture = nullptr;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scan", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UMaterialParameterCollection> ScanParameterCollection;
 

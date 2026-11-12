@@ -440,6 +440,124 @@ struct FDroneDamageFeedbackParameters
 	FLinearColor Tint = FLinearColor::Black;
 };
 
+// Partner KnockDown(Reboot)에 바인드되는 텍스처 슬롯. 볼륨이 넣어주고, 서브시스템과 SVE가 이 순서로 들고 있다.
+enum class EPartnerKnockDownTexture : uint8
+{
+	// 글리치 영역 / 회복 순서 마스크(R 채널, 0~1). 뷰 영역 전체에 한 장 깔린다. 없으면 전 화면 1.
+	Mask,
+	// 화면에 그대로 얹는 UI 텍스처(straight alpha, rgb × a). 글리치되지 않는다.
+	DamageHud,
+
+	Count
+};
+
+constexpr int32 PartnerKnockDownTextureCount = static_cast<int32>(EPartnerKnockDownTexture::Count);
+
+// DamageHud 합성 방식.
+enum class EPartnerKnockDownDamageHudBlend : int32
+{
+	// lerp(장면, HUD, w). 텍스처 색보다 밝아지지 않는다.
+	AlphaOver = 0,
+	// 장면 × (1 - w × Darken) + HUD.rgb × w × 세기. 세기가 1을 넘으면 외곽이 1까지 차오른다.
+	AddDarken = 1,
+};
+
+// DamageHud 텍스처 합성 설정. Tonemap 이후(0~1)에서 합성한다.
+//   Hud = pow(텍스처 RGBA, 1 / (1 + 지수 펄스))
+//   w   = Hud.a × Opacity × 페이드아웃
+//   AddDarken: 결과 = 장면 × (1 - w × Darken) + Hud.rgb × Tint × w × 세기 펄스
+// 지수 펄스와 세기 펄스는 같은 타임라인을 쓴다:
+//   진입 순간 Min → PulseInTime 동안 EaseIn으로 Max → PulseOutTime 동안 EaseOut으로 Min, 이후 Min에 머문다.
+// 펄스가 끝나면 숨쉬기: Hud.rgb × Breath(BreathMin ~ 1 반복).
+struct FPartnerKnockDownDamageHudParameters
+{
+	// EPartnerKnockDownDamageHudBlend.
+	int32 BlendMode = static_cast<int32>(EPartnerKnockDownDamageHudBlend::AddDarken);
+	// 전체 강도. w에 곱해진다. 0이면 안 보인다.
+	float Opacity = 1.0f;
+	// 텍스처 RGB에 곱해지는 색.
+	FLinearColor Tint = FLinearColor::White;
+	// AddDarken 전용. HUD 알파가 있는 곳의 장면을 얼마나 눌러 어둡게 할지. 0이면 순수 덧셈.
+	float Darken = 0.6f;
+
+	// 세기 펄스(AddDarken 덧셈 배율). 1이면 텍스처 색 그대로 더한다.
+	float MinIntensity = 1.0f;
+	float MaxIntensity = 1.2f;
+
+	// 지수 펄스. 0이면 원본 텍스처, 클수록 지수가 1보다 작아져 색과 알파가 올라간다(1이면 지수 0.5).
+	float MinExponent = 0.0f;
+	float MaxExponent = 1.1f;
+
+	// 두 펄스 공용 시간.
+	float PulseInTime = 0.2f;
+	float PulseOutTime = 0.15f;
+	// 다운 종료 몇 초 전부터 사라지기 시작할지. 0이면 종료 순간 바로 꺼진다.
+	float FadeOutTime = 0.3f;
+
+	// 숨쉬기. 펄스(PulseInTime + PulseOutTime)가 끝난 뒤부터 HUD 색 전체에 같은 값을 곱해 눌렀다 놓는다.
+	// 한 값을 곱하므로 텍스처 그라데이션 비율은 유지된다. 알파(w)는 건드리지 않는다.
+	//   Breath = lerp(BreathMin, 1, 0.5 + 0.5 × cos(2π × 경과 / BreathPeriod)). 시작 순간 1이라 펄스 끝과 이어진다.
+	int32 bBreath = true;
+	// 가장 많이 눌렀을 때 곱해지는 값. 1이면 숨쉬기 없음.
+	float BreathMin = 0.6f;
+	// 한 번 숨쉬는 데 걸리는 시간(초).
+	float BreathPeriod = 1.6f;
+};
+
+// Partner KnockDown. 로컬로 조종 중인 파트너가 다운(State.Rebooting)된 동안 Tonemap 이후(UI 제외)에 그린다.
+//  1. 마스크 패스(RDG.PartnerKnockDown.Mask): 마스크 값 × 회복 진행도로 글리치 가중치를 뷰 크기 R8에 굽는다.
+//     진행도가 오를수록 마스크 값이 낮은 곳부터 글리치가 사라지고, 다운이 끝나면 전부 사라진다.
+//  2. 메인 패스(RDG.PartnerKnockDown): 사망 Noise와 같은 슬라이스 글리치에 가중치를 곱하고, 장면과 DamageHud에 같은 이동량을 적용한다.
+struct FPartnerKnockDownParameters
+{
+	// ---- 런타임. 서브시스템이 채우고 튜닝값 setter는 건드리지 않는다. ----
+	int32 bEnabled = false;
+	// 다운 진입 후 경과 시간(초)과 전체 다운 시간(초).
+	float Time = 0.0f;
+	float Duration = 0.0f;
+
+	// ---- 디버그 ----
+	// 켜면 Time 대신 ProgressOverride(0~1)를 진행도로 쓴다.
+	int32 bProgressOverride = false;
+	float ProgressOverride = 0.0f;
+	// 켜면 글리치 가중치가 낮은 곳일수록 빨갛게 겹쳐 보여준다.
+	int32 bMaskVisualize = false;
+
+	// ---- 슬라이스 글리치. 기본값은 사망 Noise(FDeathNoiseParameters)와 같다. ----
+	float MaxIntensity = 0.09f;
+	float Seed = 0.0f;
+	float SliceRows = 255.0f;
+	float SliceSplitChance = 0.2f;
+	float GlitchRate = 16.0f;
+	float GlitchStrength = 0.06f;
+	float GlitchThreshold = 0.6f;
+	float GlitchGlow = 0.0f;
+	float BurstChance = 0.15f;
+	float BurstStrength = 10.0f;
+	float BurstThreshold = 0.3f;
+	FLinearColor Tint = FLinearColor::White;
+
+	// ---- Chromatic Aberration. UI CA(UIChromatic.usf)와 같은 렌즈 방식, 글리치 가중치를 곱해 마스크 영역에만 걸린다. ----
+	// 렌즈 중심에서 StartOffset(0~1) 밖부터 가장자리로 갈수록 R / G가 벌어진다. B는 제자리.
+	int32 bChromaticAberration = true;
+	float ChromaticStartOffset = 0.2f;
+	float ChromaticIntensity = 0.4f;
+	// 켜면 글리치에 걸린 슬라이스에만 CA. 끄면 마스크 영역 전체.
+	int32 bChromaticGlitchOnly = false;
+
+	// ---- 마스크 ----
+	// 기본은 흰색(1) = 글리치. 켜면 검은색이 글리치.
+	int32 bMaskInvert = false;
+	// 마스크 값을 saturate((v - Black) / (White - Black))로 늘린 뒤 pow(Gamma)로 곡선을 준다.
+	float MaskBlackPoint = 0.0f;
+	float MaskWhitePoint = 1.0f;
+	float MaskGamma = 1.0f;
+	// 회복 경계의 부드러움. 진행도가 마스크 값을 지나갈 때 이 폭만큼 부드럽게 사라진다.
+	float RecoverSoftness = 0.1f;
+
+	FPartnerKnockDownDamageHudParameters DamageHud;
+};
+
 // Split Prism 튜닝값. RDG Debugger에서 조정한다.
 // 초점이 빗나간 양 d(t)가 1에서 0으로 간다. 지나침이 있으면 부호를 바꿔 가며 줄어든다(1 → -A → +A·k → 0).
 // Split offset = StartOffset × d, 블러 반경 = MaxBlurRadius × |d|. 둘이 같은 순간에 0이 된다.
@@ -570,4 +688,6 @@ struct FPostProcessStrcture
 	FSplitPrismDefocusParameters SplitPrismDefocus;
 
 	FDroneDamageFeedbackParameters DroneDamageFeedback;
+
+	FPartnerKnockDownParameters PartnerKnockDown;
 };

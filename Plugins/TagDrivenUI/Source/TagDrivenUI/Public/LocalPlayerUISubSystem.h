@@ -99,6 +99,8 @@ public:
 	void OnRep_InfiniteAmmoDisplayChanged(bool bActive);
 	// HealthDamage: 실드를 넘어 Health 에 실제로 들어간 피해량. HUD 피격 단계 계산에 쓴다.
 	void OnDamageFeedback(AActor* DamagedCharacter, const FVector& DamageOrigin, float HealthDamage);
+	// 떠 있는 피격 피드백(방향 인디케이터 + Health HUD 진행 / 대기 중인 단계 전환)을 즉시 지운다.
+	void ClearDamageFeedback();
 
 	// Shooter 의 슈트 획득 상태가 바뀌었을 때 로컬 화면에 반영한다.
 	// 지금은 Partner 의 거리 위젯만 이 신호를 쓴다.

@@ -1,6 +1,7 @@
 #include "LocalPlayerPostProcessSubsystem.h"
 
 #include "OutlierPostProcessSceneViewExtension.h"
+#include "FRDGPartnerKnockDownPass.h"
 #include "RDGExplosionVolumeProvider.h"
 #include "RenderingThread.h"
 #include "SceneViewExtension.h"
@@ -92,6 +93,7 @@ void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 	// 텍스처 리소스는 지정 직후엔 아직 없을 수 있어서, 준비될 때까지 매 틱 확인한다.
 	RefreshDeathTransitionTextures();
 	RefreshDroneDamageMaskTextures();
+	RefreshPartnerKnockDownTextures();
 
 	UpdateOverlay(DeltaTime);
 	UpdateADSBlur(DeltaTime);
@@ -100,6 +102,7 @@ void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 	UpdateDeathTransition(DeltaTime);
 	UpdateDeathNoise(DeltaTime);
 	UpdateDroneDamageFeedback(DeltaTime);
+	UpdatePartnerKnockDown(DeltaTime);
 	UpdateSplitPrism(DeltaTime);
 	UpdateScreenBlackout(DeltaTime);
 	UpdateDepthOfField();
@@ -214,6 +217,9 @@ void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTr
 	{
 		MaskWeight = 0.0f;
 	}
+	PostProcessParameters.PartnerKnockDown.bEnabled = false;
+	PostProcessParameters.PartnerKnockDown.Time = 0.0f;
+	PostProcessParameters.PartnerKnockDown.Duration = 0.0f;
 	if (!bPreserveDeathTransition)
 	{
 		DeathTransition.Reset(PostProcessParameters, UIPostProcessParameters);
@@ -927,6 +933,151 @@ void ULocalPlayerPostProcessSubsystem::UpdateDroneDamageFeedback(float DeltaTime
 	DroneDamage.Time += DeltaTime;
 	MarkDirty();
 	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::StartPartnerKnockDown(float Duration, float ElapsedTime)
+{
+	if (Duration <= 0.0f || ElapsedTime >= Duration)
+	{
+		StopPartnerKnockDown();
+		return;
+	}
+
+	FPartnerKnockDownParameters& KnockDown = PostProcessParameters.PartnerKnockDown;
+	KnockDown.bEnabled = 1;
+	KnockDown.Duration = Duration;
+	KnockDown.Time = FMath::Clamp(ElapsedTime, 0.0f, Duration);
+	RefreshPartnerKnockDownTextures();
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::StopPartnerKnockDown()
+{
+	FPartnerKnockDownParameters& KnockDown = PostProcessParameters.PartnerKnockDown;
+	if (KnockDown.bEnabled == 0 && KnockDown.Time == 0.0f && KnockDown.Duration == 0.0f)
+	{
+		return;
+	}
+
+	KnockDown.bEnabled = 0;
+	KnockDown.Time = 0.0f;
+	KnockDown.Duration = 0.0f;
+	MarkDirty();
+	TickFrame();
+}
+
+float ULocalPlayerPostProcessSubsystem::GetPartnerKnockDownProgress() const
+{
+	return FRDGPartnerKnockDownPass::GetProgress(PostProcessParameters.PartnerKnockDown);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPartnerKnockDownParameters(const FPartnerKnockDownParameters& InParameters)
+{
+	FPartnerKnockDownParameters& KnockDown = PostProcessParameters.PartnerKnockDown;
+	KnockDown.bProgressOverride = InParameters.bProgressOverride ? 1 : 0;
+	KnockDown.ProgressOverride = FMath::Clamp(InParameters.ProgressOverride, 0.0f, 1.0f);
+	KnockDown.bMaskVisualize = InParameters.bMaskVisualize ? 1 : 0;
+	KnockDown.MaxIntensity = FMath::Max(0.0f, InParameters.MaxIntensity);
+	KnockDown.Seed = InParameters.Seed;
+	KnockDown.SliceRows = FMath::Clamp(InParameters.SliceRows, 1.0f, 1024.0f);
+	KnockDown.SliceSplitChance = FMath::Clamp(InParameters.SliceSplitChance, 0.0f, 1.0f);
+	KnockDown.GlitchRate = FMath::Clamp(InParameters.GlitchRate, 1.0f, 120.0f);
+	KnockDown.GlitchStrength = FMath::Max(0.0f, InParameters.GlitchStrength);
+	KnockDown.GlitchThreshold = FMath::Clamp(InParameters.GlitchThreshold, 0.0f, 1.0f);
+	KnockDown.GlitchGlow = FMath::Max(0.0f, InParameters.GlitchGlow);
+	KnockDown.BurstChance = FMath::Clamp(InParameters.BurstChance, 0.0f, 1.0f);
+	KnockDown.BurstStrength = FMath::Max(1.0f, InParameters.BurstStrength);
+	KnockDown.BurstThreshold = FMath::Clamp(InParameters.BurstThreshold, 0.0f, 1.0f);
+	KnockDown.Tint = InParameters.Tint.GetClamped(0.0f, 1.0f);
+	KnockDown.bChromaticAberration = InParameters.bChromaticAberration ? 1 : 0;
+	KnockDown.ChromaticStartOffset = FMath::Clamp(InParameters.ChromaticStartOffset, 0.0f, 1.0f);
+	KnockDown.ChromaticIntensity = FMath::Clamp(InParameters.ChromaticIntensity, 0.0f, 16.0f);
+	KnockDown.bChromaticGlitchOnly = InParameters.bChromaticGlitchOnly ? 1 : 0;
+	KnockDown.bMaskInvert = InParameters.bMaskInvert ? 1 : 0;
+	KnockDown.MaskBlackPoint = FMath::Clamp(InParameters.MaskBlackPoint, 0.0f, 1.0f);
+	KnockDown.MaskWhitePoint = FMath::Clamp(InParameters.MaskWhitePoint, 0.0f, 1.0f);
+	KnockDown.MaskGamma = FMath::Clamp(InParameters.MaskGamma, 0.05f, 8.0f);
+	KnockDown.RecoverSoftness = FMath::Clamp(InParameters.RecoverSoftness, 0.0f, 0.5f);
+	KnockDown.DamageHud.Opacity = FMath::Clamp(InParameters.DamageHud.Opacity, 0.0f, 1.0f);
+	KnockDown.DamageHud.Tint = InParameters.DamageHud.Tint.GetClamped(0.0f, 1.0f);
+	KnockDown.DamageHud.BlendMode = FMath::Clamp(
+		InParameters.DamageHud.BlendMode,
+		static_cast<int32>(EPartnerKnockDownDamageHudBlend::AlphaOver),
+		static_cast<int32>(EPartnerKnockDownDamageHudBlend::AddDarken));
+	KnockDown.DamageHud.Darken = FMath::Clamp(InParameters.DamageHud.Darken, 0.0f, 1.0f);
+	KnockDown.DamageHud.MinIntensity = FMath::Clamp(InParameters.DamageHud.MinIntensity, 0.0f, 16.0f);
+	KnockDown.DamageHud.MaxIntensity = FMath::Clamp(InParameters.DamageHud.MaxIntensity, 0.0f, 16.0f);
+	KnockDown.DamageHud.MinExponent = FMath::Clamp(InParameters.DamageHud.MinExponent, 0.0f, 16.0f);
+	KnockDown.DamageHud.MaxExponent = FMath::Clamp(InParameters.DamageHud.MaxExponent, 0.0f, 16.0f);
+	KnockDown.DamageHud.PulseInTime = FMath::Max(0.0f, InParameters.DamageHud.PulseInTime);
+	KnockDown.DamageHud.PulseOutTime = FMath::Max(0.0f, InParameters.DamageHud.PulseOutTime);
+	KnockDown.DamageHud.FadeOutTime = FMath::Max(0.0f, InParameters.DamageHud.FadeOutTime);
+	KnockDown.DamageHud.bBreath = InParameters.DamageHud.bBreath ? 1 : 0;
+	KnockDown.DamageHud.BreathMin = FMath::Clamp(InParameters.DamageHud.BreathMin, 0.0f, 1.0f);
+	KnockDown.DamageHud.BreathPeriod = FMath::Clamp(InParameters.DamageHud.BreathPeriod, 0.05f, 30.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdatePartnerKnockDown(float DeltaTime)
+{
+	FPartnerKnockDownParameters& KnockDown = PostProcessParameters.PartnerKnockDown;
+	if (KnockDown.bEnabled == 0 || DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	KnockDown.Time += DeltaTime;
+	// 진행도 오버라이드 중에는 디버그로 멈춰 보는 중이라 끝나도 끄지 않는다.
+	if (!KnockDown.bProgressOverride && KnockDown.Time >= KnockDown.Duration)
+	{
+		StopPartnerKnockDown();
+		return;
+	}
+
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPartnerKnockDownTexture(EPartnerKnockDownTexture Slot, UTexture2D* InTexture)
+{
+	if (Slot >= EPartnerKnockDownTexture::Count)
+	{
+		return;
+	}
+
+	PartnerKnockDownTextures[static_cast<int32>(Slot)] = InTexture;
+	RefreshPartnerKnockDownTextures();
+}
+
+void ULocalPlayerPostProcessSubsystem::RefreshPartnerKnockDownTextures()
+{
+	static_assert(UE_ARRAY_COUNT(PartnerKnockDownTextures) == PartnerKnockDownTextureCount, "PartnerKnockDownTextures must match EPartnerKnockDownTexture");
+
+	for (int32 SlotIndex = 0; SlotIndex < PartnerKnockDownTextureCount; ++SlotIndex)
+	{
+		const UTexture2D* Texture = PartnerKnockDownTextures[SlotIndex];
+		const FTextureRHIRef NewTextureRHI = Texture && Texture->GetResource()
+			? Texture->GetResource()->TextureRHI
+			: FTextureRHIRef();
+		if (PartnerKnockDownTextureRHIs[SlotIndex] == NewTextureRHI)
+		{
+			continue;
+		}
+
+		PartnerKnockDownTextureRHIs[SlotIndex] = NewTextureRHI;
+		if (ViewExtension.IsValid())
+		{
+			const TSharedPtr<FOutlierPostProcessSceneViewExtension, ESPMode::ThreadSafe> TargetViewExtension = ViewExtension;
+			const EPartnerKnockDownTexture Slot = static_cast<EPartnerKnockDownTexture>(SlotIndex);
+			ENQUEUE_RENDER_COMMAND(UpdatePartnerKnockDownTexture)(
+				[TargetViewExtension, Slot, NewTextureRHI](FRHICommandListImmediate&)
+				{
+					TargetViewExtension->UpdatePartnerKnockDownTexture(Slot, NewTextureRHI);
+				});
+		}
+	}
 }
 
 namespace SplitPrismAnimation
