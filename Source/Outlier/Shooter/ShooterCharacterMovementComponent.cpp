@@ -154,6 +154,9 @@ bool UShooterCharacterMovementComponent::QueueMovementInput(EShooterMovementInpu
 		LiveMovementInput.bSprint = LiveMovementInput.bHoldSprint || !LiveMovementInput.bSprint;
 		if (LiveMovementInput.bSprint)
 		{
+			// 계속 누른 Hold와 새 Sprint Press를 구분한다. 새 ON은 이전 첫 발 대기를 취소한다.
+			if (auto* Shooter = Cast<AShooterCharacter>(CharacterOwner); Shooter && Shooter->CombatComponent)
+				Shooter->CombatComponent->CancelPendingSprintExitFire();
 			LiveMovementInput.bAim = false;
 			LiveMovementInput.AimSwitchId = 0;
 		}

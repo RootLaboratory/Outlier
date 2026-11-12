@@ -4,17 +4,24 @@
 #include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Shooter/ShooterCombatComponent.h"
 #include "Shooter/ShooterMovementComponent.h"
+#include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "InputAction.h"
+#include "Shooter/ShooterInputConfig.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "TimerManager.h"
+#include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShooterActionIntentTest,
 	"Outlier.Shooter.ActionIntent", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -66,6 +73,7 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	// 포인터만 대입하면 캐릭터의 무기 타입은 Unarmed로 남는다. 실제 장착 경로로 ADS 조건을 준비한다.
 	Shooter->AFirstPersonCharacter::EquipWeapon(Pistol);
 	Shooter->RefreshWeaponMode();
+	Movement->SetSprintInputMode(EOutlierSprintInputMode::Toggle);
 	Movement->SetMovementMode(MOVE_Walking);
 	Movement->Velocity = FVector(100.0f, 0.0f, 0.0f);
 	Input->SetSprintIntent(false);
@@ -340,6 +348,163 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	Movement->ResetSlideForLifecycle();
 	TestFalse(TEXT("Previous lifecycle request cannot start Sprint"), Movement->ApplyActionInput(24, PreviousEpoch, true, false));
 	TestFalse(TEXT("Lifecycle cleanup leaves Sprint off"), Input->WantsToSprint());
+
+	// 달리기 복귀 대기는 아직 무기를 발사하지 않은 정상 상태다. 실제 이동 입력 적용이
+	// Aim(false)까지 갱신해도 이 대기를 오래된 발사 의도로 정리하면 안 된다.
+	Movement->NotifyFreshSprintPress();
+	Combat->UpdateFireInput(true);
+	Combat->QueueSprintExitFire(*Shooter);
+	Movement->ApplyMovementInput();
+	TestTrue(TEXT("Held attack survives movement input and combat-state refresh"), Combat->bWantsToFire);
+	TestTrue(TEXT("Held attack remains pending before the first shot"), Combat->bPendingSprintExitFire);
+	TestTrue(TEXT("Physical Fire remains held while waiting"), Combat->IsFireInputHeld());
+
+	// 일반 Release는 반복만 막는다. 달리기 해제를 위해 수락한 첫 공격은 남긴다.
+	Combat->TryStopAttack();
+	TestTrue(TEXT("A short click preserves its pending first attack"), Combat->bPendingSprintExitFire);
+	TestFalse(TEXT("Preserving a click does not resurrect physical Fire"), Combat->IsFireInputHeld());
+	Combat->ClearInputIntent();
+
+	// 실제 무기와 타이머로 첫 발/반복을 구분한다. 상태 플래그만 맞고 탄약이 줄지 않는
+	// 회귀를 막고, 일반 Release와 수명주기 취소가 서로 다른 결과를 내는지 확인한다.
+	UClass* RifleClass = LoadClass<ARangedWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+	const auto* InfiniteAmmo = FindFProperty<FBoolProperty>(ARangedWeaponBase::StaticClass(), TEXT("bInfiniteAmmo"));
+	const auto* IntervalProperty = FindFProperty<FFloatProperty>(ARangedWeaponBase::StaticClass(), TEXT("AttackInterval"));
+	const auto* AutomaticProperty = FindFProperty<FBoolProperty>(ARangedWeaponBase::StaticClass(), TEXT("bIsAutomatic"));
+	if (!TestNotNull(TEXT("Rifle fixture"), RifleClass) || !InfiniteAmmo || !IntervalProperty || !AutomaticProperty) return false;
+	auto TickFireTimers = [World](float Delta)
+	{
+		++GFrameCounter;
+		World->GetTimerManager().Tick(Delta);
+	};
+	for (UClass* WeaponClass : {RifleClass, PistolClass})
+	{
+		for (EOutlierSprintInputMode Mode : {EOutlierSprintInputMode::Toggle, EOutlierSprintInputMode::Hold})
+		{
+			for (bool bReleaseBeforeReady : {false, true})
+			{
+				Shooter->ClearInputIntent();
+				Movement->ResetSlideForLifecycle();
+				ARangedWeaponBase* Weapon = World->SpawnActor<ARangedWeaponBase>(WeaponClass, Spawn);
+				if (!TestNotNull(TEXT("Sprint fire weapon"), Weapon)) return false;
+				Shooter->AFirstPersonCharacter::EquipWeapon(Weapon);
+				Shooter->RefreshWeaponMode();
+				InfiniteAmmo->SetPropertyValue_InContainer(Weapon, false);
+				Movement->SetSprintInputMode(Mode);
+				Movement->NotifyFreshSprintPress();
+				Movement->Velocity = FVector(100.0f, 0.0f, 0.0f);
+				Input->HandleSprintPressed();
+				Movement->ApplyMovementInput();
+				if (!TestTrue(TEXT("Attack fixture starts in actual Sprint"), Input->IsSprinting())) return false;
+				auto* Anim = Cast<UShooterFirstPersonAnimInstance>(Shooter->GetFirstPersonMesh()->GetAnimInstance());
+				const auto* SprintAlpha = FindFProperty<FFloatProperty>(UShooterFirstPersonAnimInstance::StaticClass(), TEXT("ViewModelSprintAlpha"));
+				if (!TestNotNull(TEXT("Real sprint pose instance"), Anim) || !SprintAlpha) return false;
+				SprintAlpha->SetPropertyValue_InContainer(Anim, 1.0f);
+				Combat->TryStartAttack();
+				const uint32 Request = Combat->PendingSprintExitRequest;
+				const uint32 FireEpoch = Combat->PendingSprintExitEpoch;
+				if (!TestTrue(TEXT("Valid sprint-exit press is accepted"), Combat->bPendingSprintExitFire)) return false;
+				Movement->ApplyMovementInput();
+				if (bReleaseBeforeReady) Combat->TryStopAttack();
+				const int32 Before = Weapon->GetCurrentAmmo();
+				TickFireTimers(0.0f);
+				TickFireTimers(0.03f);
+				TestEqual(TEXT("Unready sprint pose cannot consume ammo"), Weapon->GetCurrentAmmo(), Before);
+				TestTrue(TEXT("Pose wait survives an actual timer retry"), Combat->bPendingSprintExitFire);
+				SprintAlpha->SetPropertyValue_InContainer(Anim, 0.0f);
+				TickFireTimers(0.03f);
+				TestEqual(TEXT("Ready dispatch consumes exactly one round"), Weapon->GetCurrentAmmo(), Before - 1);
+				Combat->ResolveSprintExitFire(Request, FireEpoch, true);
+				TestEqual(TEXT("Duplicate ready cannot dispatch another round"), Weapon->GetCurrentAmmo(), Before - 1);
+				TestFalse(TEXT("Consumed request cannot be registered again"), Combat->BeginSprintExitFire(Weapon, Request, FireEpoch));
+				const float Interval = IntervalProperty->GetPropertyValue_InContainer(Weapon);
+				TickFireTimers(0.0f);
+				TickFireTimers(Interval * 0.5f);
+				TestEqual(TEXT("Sprint exit preserves the original fire interval"), Weapon->GetCurrentAmmo(), Before - 1);
+				TickFireTimers(Interval * 0.6f);
+				const bool bRepeats = !bReleaseBeforeReady && AutomaticProperty->GetPropertyValue_InContainer(Weapon);
+				TestEqual(TEXT("Only an automatic held weapon repeats"), Weapon->GetCurrentAmmo(), Before - (bRepeats ? 2 : 1));
+				TestEqual(TEXT("Dispatch does not restore a released Fire hold"), Combat->IsFireInputHeld(), !bReleaseBeforeReady);
+				Combat->TryStopAttack();
+				const int32 AfterRelease = Weapon->GetCurrentAmmo();
+				TickFireTimers(Interval * 2.0f);
+				TestEqual(TEXT("Release stops later repeated shots"), Weapon->GetCurrentAmmo(), AfterRelease);
+
+				// 권총의 기존 재사용 쿨다운을 취소 테스트의 준비 조건과 섞지 않는다.
+				// 새 무기는 발사 전 상태이므로 대기 취소 자체만 검증할 수 있다.
+				Weapon = World->SpawnActor<ARangedWeaponBase>(WeaponClass, Spawn);
+				if (!TestNotNull(TEXT("Cancellation weapon"), Weapon)) return false;
+				Shooter->AFirstPersonCharacter::EquipWeapon(Weapon);
+				Shooter->RefreshWeaponMode();
+				InfiniteAmmo->SetPropertyValue_InContainer(Weapon, false);
+				const int32 BeforeCancel = Weapon->GetCurrentAmmo();
+				// 새 요청에 대해서 취소/만료/수명 변경을 각각 적용한다. 과거 Ready는 발사하지 않는다.
+				for (int32 CancelCase = 0; CancelCase < 5; ++CancelCase)
+				{
+					Combat->UpdateFireInput(false);
+					Combat->UpdateFireInput(true);
+					Combat->QueueSprintExitFire(*Shooter);
+					const uint32 CancelRequest = Combat->PendingSprintExitRequest;
+					const uint32 CancelEpoch = Combat->PendingSprintExitEpoch;
+					if (!TestTrue(FString::Printf(TEXT("Cancellation case %d pending (%s, mode=%d, release=%d, request=%u, epoch=%u, canFire=%d, canAttack=%d, lock=%d)"),
+						CancelCase, *Weapon->GetName(), static_cast<int32>(Mode), bReleaseBeforeReady,
+						Movement->GetActionInputRequest(), Movement->GetMovementInputEpoch(), Combat->CanFireInCurrentState(),
+						Weapon->CanAttack(), static_cast<int32>(Shooter->GetActionLock())), Combat->bPendingSprintExitFire)) return false;
+					if (CancelCase == 0) Shooter->ResetActionInput();
+					if (CancelCase == 1) Combat->SprintExitFireDeadline = -1.0;
+					if (CancelCase == 2) Movement->ResetSlideForLifecycle();
+					if (CancelCase == 3) Shooter->BeginActionLock(EShooterActionLock::Equip);
+					if (CancelCase == 4)
+					{
+						// Attack 매핑만 사라져도 예약 공격과 실제 홀드를 모두 폐기한다.
+						auto* Config = NewObject<UShooterInputConfig>(Shooter);
+						Config->AttackAction = NewObject<UInputAction>(Config);
+						Shooter->InputConfig = Config;
+						Shooter->ActionInputSubsystem = NewObject<UEnhancedInputLocalPlayerSubsystem>(Controller->GetLocalPlayer());
+						Shooter->HandleControlMappingsRebuilt();
+						TestFalse(TEXT("Context removal clears Fire hold"), Combat->IsFireInputHeld());
+					}
+					Combat->ResolveSprintExitFire(CancelRequest, CancelEpoch, true);
+					TestEqual(TEXT("Cancelled, expired, old-life or locked request cannot fire"), Weapon->GetCurrentAmmo(), BeforeCancel);
+					Shooter->ClearInputIntent();
+					if (CancelCase == 3) Shooter->EndActionLock(EShooterActionLock::Equip);
+				}
+			}
+		}
+	}
+	// 원격 소유자의 서버 경로는 1P 알파/로컬 재시도를 사용하지 않는다. Release가 최신
+	// 이동 입력으로 먼저 도착해도 수락한 첫 발은 Ready 통보에서 한 번만 실행한다.
+	Shooter->ClearInputIntent();
+	Controller->UnPossess();
+	ARangedWeaponBase* RemoteWeapon = World->SpawnActor<ARangedWeaponBase>(RifleClass, Spawn);
+	if (!TestNotNull(TEXT("Remote authoritative weapon"), RemoteWeapon)) return false;
+	Shooter->AFirstPersonCharacter::EquipWeapon(RemoteWeapon);
+	Shooter->RefreshWeaponMode();
+	InfiniteAmmo->SetPropertyValue_InContainer(RemoteWeapon, false);
+	const uint32 RemoteEpoch = Movement->GetMovementInputEpoch();
+	const uint32 RemoteRequest = 10000;
+	const int32 RemoteAmmo = RemoteWeapon->GetCurrentAmmo();
+	TestFalse(TEXT("Remote authority has no local pose owner"), Shooter->IsLocallyControlled());
+	if (!TestTrue(TEXT("Server accepts the remote first-shot request"),
+		Combat->BeginSprintExitFire(RemoteWeapon, RemoteRequest, RemoteEpoch))) return false;
+	Movement->ApplyActionInput(RemoteRequest + 1, RemoteEpoch, false, false, 0, true, false);
+	TickFireTimers(0.0f);
+	TickFireTimers(0.03f);
+	TestEqual(TEXT("Remote server waits for owner readiness"), RemoteWeapon->GetCurrentAmmo(), RemoteAmmo);
+	Combat->ResolveSprintExitFire(RemoteRequest, RemoteEpoch, true);
+	Combat->ResolveSprintExitFire(RemoteRequest, RemoteEpoch, true);
+	TestEqual(TEXT("Remote released press dispatches exactly once"), RemoteWeapon->GetCurrentAmmo(), RemoteAmmo - 1);
+	TickFireTimers(0.5f);
+	TestEqual(TEXT("Remote Release cannot start automatic repeats"), RemoteWeapon->GetCurrentAmmo(), RemoteAmmo - 1);
+	Combat->TryStopAttack();
+	if (!TestTrue(TEXT("Server accepts the next request"),
+		Combat->BeginSprintExitFire(RemoteWeapon, RemoteRequest + 2, RemoteEpoch))) return false;
+	TickFireTimers(0.0f);
+	TickFireTimers(Combat->SprintExitFireTimeout + 0.1f);
+	TestFalse(TEXT("Silent remote owner expires without retrying forever"), Combat->bPendingSprintExitFire);
+	Combat->ResolveSprintExitFire(RemoteRequest + 2, RemoteEpoch, true);
+	TestEqual(TEXT("Late Ready cannot fire an expired request"), RemoteWeapon->GetCurrentAmmo(), RemoteAmmo - 1);
 	return true;
 }
 

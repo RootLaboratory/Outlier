@@ -2830,6 +2830,13 @@ void ARangedWeaponBase::StopAttack()
 	CurrentBurstShotCount = 0;
 }
 
+void ARangedWeaponBase::ReleaseAttack()
+{
+	if (!HasAuthority()) return;
+	Super::StopAttack();
+	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(AutoFireTimerHandle);
+}
+
 void ARangedWeaponBase::PauseTargetAttack()
 {
 	if (!HasAuthority() || !GetWorld()) return;

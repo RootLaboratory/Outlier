@@ -65,7 +65,11 @@ void UShooterMovementComponent::SetSprintIntent(bool bSprint)
 	bWantsToSprint = bSprint && !ShooterCharacter->IsDead() && !ShooterCharacter->IsSuitTransitionBlocked();
 	if (bWantsToSprint && CanSprint())
 	{
-		if (!bHoldSprintInput) ShooterCharacter->TryStopAttack();
+		if (!bHoldSprintInput)
+		{
+			if (ShooterCharacter->CombatComponent) ShooterCharacter->CombatComponent->CancelPendingSprintExitFire();
+			ShooterCharacter->TryStopAttack();
+		}
 		ShooterCharacter->StopLean();
 	}
 	RefreshMovementState();

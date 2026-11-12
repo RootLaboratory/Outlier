@@ -368,6 +368,8 @@ public:
 	virtual void RefreshShadowWeaponPresentation() override;
 
 	virtual bool CanAttack() const override;
+	// 입력을 놓은 뒤 보존된 첫 발만 실행할 때 연사만 끝내고 이미 시작한 쿨다운은 유지한다.
+	void ReleaseAttack();
 	virtual void StartAttack() override;
 	virtual void StopAttack() override;
 	void PauseTargetAttack();

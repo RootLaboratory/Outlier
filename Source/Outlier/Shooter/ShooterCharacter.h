@@ -1098,6 +1098,12 @@ protected:
 	void ServerStartAttack();
 
 	UFUNCTION(Server, Reliable)
+	void ServerBeginSprintExitFire(AWeaponBase* Weapon, uint32 Request, uint32 Epoch);
+
+	UFUNCTION(Server, Reliable)
+	void ServerResolveSprintExitFire(uint32 Request, uint32 Epoch, bool bFire);
+
+	UFUNCTION(Server, Reliable)
 	void ServerStopAttack();
 
 	UFUNCTION(Server, Reliable)
