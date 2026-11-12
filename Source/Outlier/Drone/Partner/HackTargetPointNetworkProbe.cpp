@@ -702,7 +702,11 @@ void AHackTargetPointNetworkProbe::ClientRequestHack_Implementation(int32 Reques
 {
 #if WITH_DEV_AUTOMATION_TESTS
 	if (HackTargetProbe::Enabled() && RequestedCase == CaseIndex && Partner && Target && Partner->IsLocallyControlled())
-		HackComponent->ServerTryStartHack(Target);
+	{
+		const uint32 HoldId = uint32(RequestedCase + 1);
+		HackComponent->ServerBeginHackHold(Target, HoldId);
+		HackComponent->ServerTryStartHack(Target, HoldId);
+	}
 #endif
 }
 

@@ -111,7 +111,16 @@ public:
 	void RefreshHackCandidates();
 
 	UFUNCTION(Server, Reliable)
-	void ServerTryStartHack(AActor* TargetActor);
+	void ServerTryStartHack(AActor* TargetActor, uint32 HoldId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerBeginHackHold(AActor* TargetActor, uint32 HoldId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerEndHackHold(uint32 HoldId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientCancelHackHold(uint32 HoldId);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	void ClientCompleteHack();
@@ -129,10 +138,10 @@ public:
 	bool IsHackInteractionActive() const { return bHackCandidateSearchActive || ActiveHackableComponent || HackMiniGameWidget; }
 
 	bool TryBeginHackHold();
+	bool IsHackHoldActive() const { return HeldHackActor != nullptr; }
 	void NotifyHackMarkerHovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
 	void NotifyHackMarkerUnhovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
-	void NotifyHackHoldCompleted(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
-	void ResetLocalHackHoldProgress();
+	void ResetLocalHackHoldProgress(bool bNotifyServer = true);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	const TArray<AActor*>& GetHackCandidateActors() const { return HackCandidateActors; }
@@ -155,6 +164,7 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
 	// 네트워크 검증은 실제 검색·RPC 결과를 관측한다. 테스트를 위한 판정 우회 API는 노출하지 않는다.
 	friend class AHackTargetPointNetworkProbe;
+	friend class FPartnerHackHoldTest;
 #endif
 	UPROPERTY(VisibleInstanceOnly, Category = "Hack")
 	FPartnerHackAbilityData CachedAbilityData;
@@ -171,6 +181,17 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UHackCandidateMarkerWidget> HoveredMarkerWidget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AActor> HeldHackActor;
+
+	TWeakObjectPtr<AActor> ServerHeldHackActor;
+	uint32 LocalHoldId = 0;
+	uint32 ServerHoldId = 0;
+	float HackHoldStartTime = 0.0f;
+	float HackHoldDuration = 0.0f;
+	void UpdateLocalHackHold();
+	bool CanMaintainHackHold(AActor* Actor, const FHackQueryContext& Context) const;
 
 	FHackQueryContext BuildQueryContext() const;
 	UHackableComponent* ResolveHackableComponent(AActor* Actor) const;
