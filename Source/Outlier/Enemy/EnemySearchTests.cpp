@@ -3065,4 +3065,109 @@ bool FEnemyF5NoiseContinuationTest::RunTest(const FString& Parameters)
 	return TestFalse(TEXT("Same rear remainder cannot replay at another boundary"), Enemy->TryBeginNoiseDirectionConfirmation());
 }
 
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNearNoiseFacingTest,
+	"Outlier.Enemy.Perception.NearNoiseFacing", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNearNoiseFacingTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : { TEXT("BeforeAdoption"), TEXT("MovingRear"), TEXT("MovingVeryNear"), TEXT("Queued"), TEXT("FarBoundary"), TEXT("NearBoundary"), TEXT("AttackAim"), TEXT("Stun"), TEXT("Expired"), TEXT("Merge"), TEXT("CommittedCharge") })
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNearNoiseFacingTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemySearchTestWorld Fixture(true);
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(FGameplayTag());
+	AEnemyAIController* AI = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* Source = Fixture.SpawnPlayer(FVector(5000, 0, 0));
+	if (!TestNotNull(TEXT("Enemy"), Enemy) || !TestNotNull(TEXT("AI"), AI) || !TestNotNull(TEXT("Source"), Source)) return false;
+	AI->Possess(Enemy);
+	Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Source->GetCharacterMovement()->SetComponentTickEnabled(false);
+	const auto Advance = [&]()
+	{
+		++GFrameCounter;
+		Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+	};
+	Advance();
+	const_cast<FEnemyStat&>(Enemy->GetRuntimeStat()).AwarenessNearDistance = 300.0f;
+	if (Parameters == TEXT("CommittedCharge"))
+	{
+		ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>();
+		AEnemyAIController* DroneAI = Fixture.World->SpawnActor<AEnemyAIController>();
+		if (!TestNotNull(TEXT("Drone"), Drone) || !TestNotNull(TEXT("Drone AI"), DroneAI)) return false;
+		DroneAI->Possess(Drone);
+		Drone->EnterCombatFromRoom(FVector::ZeroVector, false);
+		TestTrue(TEXT("Charge commits"), Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 10.0f, 100.0f, 1000.0f));
+		TestTrue(TEXT("Committed drone receives nearby sound"), Drone->RecordHeardNoise(Source, FVector(-200, 0, 0), Fixture.World->GetTimeSeconds()));
+		DroneAI->UpdateControlRotation(1.0f / 32.0f);
+		TestTrue(TEXT("Charge remains committed"), Drone->IsSelfDestructCommitted());
+		return TestFalse(TEXT("Nearby sound cannot own committed charge facing"), Drone->IsNoiseDirectionConfirmationActive());
+	}
+	FVector Destination;
+	if (Parameters == TEXT("MovingRear") || Parameters == TEXT("MovingVeryNear"))
+	{
+		TestTrue(TEXT("Far movement clue accepted"), Enemy->RecordHeardNoise(Source, FVector(1000, 0, 0), Fixture.World->GetTimeSeconds()));
+		if (!TestTrue(TEXT("Far movement adopted"), Enemy->BeginNoiseInvestigation(Destination))) return false;
+		Advance();
+	}
+	const FVector Snapshot = Parameters == TEXT("NearBoundary") ? FVector(0, 300, 0)
+		: Parameters == TEXT("FarBoundary") ? FVector(0, 301, 0)
+		: Parameters == TEXT("MovingVeryNear") ? FVector(-20, 0, 0) : FVector(-200, 0, 0);
+	TestTrue(TEXT("Sound accepted"), Enemy->RecordHeardNoise(Source, Snapshot, Fixture.World->GetTimeSeconds()));
+	if (Parameters == TEXT("AttackAim")) AI->SetAttackAimActive(true);
+	if (Parameters == TEXT("Stun")) Enemy->EnterStun();
+	if (Parameters == TEXT("Expired"))
+	{
+		Enemy->HeardNoiseLifetime = 0.01f;
+		Advance();
+	}
+	AI->UpdateControlRotation(1.0f / 32.0f);
+	if (Parameters == TEXT("FarBoundary")) return TestFalse(TEXT("Beyond boundary keeps adoption gate"), Enemy->IsNoiseDirectionConfirmationActive());
+	if (Parameters == TEXT("AttackAim") || Parameters == TEXT("Stun") || Parameters == TEXT("Expired"))
+		return TestFalse(TEXT("Higher priority or expired evidence blocks near facing"), Enemy->IsNoiseDirectionConfirmationActive());
+	if (!TestTrue(TEXT("Near sound starts on first facing update"), Enemy->IsNoiseDirectionConfirmationActive())) return false;
+	TestTrue(TEXT("Smooth first rotation"), FMath::Abs(Enemy->GetActorRotation().Yaw) > 0.0 && FMath::Abs(Enemy->GetActorRotation().Yaw) < 20.0);
+	const FEnemyNoiseDirectionConfirmation Initial = Enemy->GetNoiseDirectionConfirmation();
+	Source->SetActorLocation(FVector(0, 5000, 0));
+	TestTrue(TEXT("Fixed sound snapshot"), Enemy->GetNoiseDirectionConfirmation().Clue.Location.Equals(Snapshot));
+	if (Parameters == TEXT("BeforeAdoption"))
+	{
+		TestTrue(TEXT("Near destination remains adoptable"), Enemy->BeginNoiseInvestigation(Destination));
+		TestTrue(TEXT("Adoption preserves active turn"), Enemy->IsNoiseDirectionConfirmationActive());
+		TestEqual(TEXT("Adoption keeps response identity"), Enemy->GetNoiseDirectionConfirmation().Serial, Initial.Serial);
+	}
+	if (Parameters == TEXT("MovingRear"))
+	{
+		for (int32 Frame = 0; Frame < 20; ++Frame) { Advance(); AI->UpdateControlRotation(1.0f / 32.0f); }
+		TestTrue(TEXT("Near rear bypasses moving sixty degree limit"), FMath::Abs(Enemy->GetActorRotation().Yaw) > 60.0);
+	}
+	if (Parameters == TEXT("Queued"))
+	{
+		Advance();
+		TestTrue(TEXT("Opposite new event accepted"), Enemy->RecordHeardNoise(Source, FVector(0, 200, 0), Fixture.World->GetTimeSeconds()));
+		AI->UpdateControlRotation(1.0f / 32.0f);
+		TestEqual(TEXT("New event cannot reverse active turn"), Enemy->GetNoiseDirectionConfirmation().Serial, Initial.Serial);
+		TestEqual(TEXT("New event cannot extend deadline"), Enemy->GetNoiseDirectionConfirmation().PhaseEndsAt, Initial.PhaseEndsAt);
+		Enemy->EndNoiseDirectionConfirmation(Initial.Serial);
+		AI->UpdateControlRotation(1.0f / 32.0f);
+		return TestTrue(TEXT("Queued near event bypasses interval after end"), Enemy->IsNoiseDirectionConfirmationActive());
+	}
+	if (Parameters == TEXT("Merge"))
+	{
+		Advance();
+		TestTrue(TEXT("Same direction new sound accepted"), Enemy->RecordHeardNoise(Source, FVector(-210, 0, 0), Fixture.World->GetTimeSeconds()));
+		AI->UpdateControlRotation(1.0f / 32.0f);
+		TestEqual(TEXT("Merged event keeps response identity"), Enemy->GetNoiseDirectionConfirmation().Serial, Initial.Serial);
+		TestEqual(TEXT("Merged event keeps deadline"), Enemy->GetNoiseDirectionConfirmation().PhaseEndsAt, Initial.PhaseEndsAt);
+	}
+	Enemy->EndNoiseDirectionConfirmation(Initial.Serial);
+	return TestFalse(TEXT("Same near event cannot replay"), Enemy->TryBeginNoiseDirectionConfirmation());
+}
+
 #endif

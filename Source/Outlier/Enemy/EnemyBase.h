@@ -90,6 +90,9 @@ struct FEnemyHeardNoise
 	TWeakObjectPtr<AActor> Source;
 	FVector Location = FVector::ZeroVector;
 	double OccurredAt = -1.0;
+	double ReceivedAt = -1.0;
+	double ReceivedDistance = 0.0;
+	bool bNearDirectionReaction = false;
 	uint64 Serial = 0;
 	bool bUsedForDirectionConfirmation = false;
 };
@@ -1020,7 +1023,7 @@ public:
 	bool HasMeaningfulSearchHint() const;
 	bool GetSearchLookPitch(float& OutPitch) const;
 	bool CanContinueSearchEpisode() const;
-	void EndSearchEpisode();
+	void EndSearchEpisode(bool bPreserveNearNoiseFacing = false);
 	void CompleteSearchAnchor();
 	bool SetSearchPoints(const TArray<FVector>& Points);
 	bool CompleteSearchPoint();
@@ -1274,7 +1277,10 @@ protected:
 	void ClearNoiseInvestigationFailure();
 	void HandleNoiseInvestigationObstacleOpened(const FBox& Bounds);
 	bool IsFailedNoiseLocation(const FVector& Location) const;
-	bool CanRunNoiseDirectionConfirmation() const;
+	bool CanRunNoiseDirectionConfirmation(bool bNearReaction = false, const TCHAR** OutReason = nullptr) const;
+	bool TryGetNearDirectionConfirmationNoise(FEnemyHeardNoise& OutNoise) const;
+	uint64 LastNoiseDirectionBlockedClueSerial = 0;
+	const TCHAR* LastNoiseDirectionBlockedReason = nullptr;
 	bool IsNoiseDirectionMerged(const FEnemyHeardNoise& Noise) const;
 	void MergePendingNoiseDirections();
 	void ScheduleNoiseDirectionConfirmationEnd();

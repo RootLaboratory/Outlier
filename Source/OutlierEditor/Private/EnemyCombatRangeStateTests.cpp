@@ -1,4 +1,4 @@
-#if WITH_DEV_AUTOMATION_TESTS
+﻿#if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
 #include "Conditions/StateTreeCommonConditions.h"
@@ -82,10 +82,12 @@ int32 CountRangeTransitions(const UStateTreeEditorData& Data, const UStateTreeSt
 	{
 		if (Transition.Trigger != EStateTreeTransitionTrigger::OnTick
 			|| Transition.State.ID != Decision.ID || Transition.Priority != EStateTreeTransitionPriority::High
-			|| Transition.Conditions.Num() != 1) continue;
-		const FStateTreeEditorNode& Condition = Transition.Conditions[0];
+			|| Transition.Conditions.IsEmpty()) continue;
+		for (const FStateTreeEditorNode& Condition : Transition.Conditions)
+		{
 		const auto* Instance = Condition.Instance.GetPtr<FStateTreeCompareBoolConditionInstanceData>();
 		if (Instance && Instance->bRight && HasRangeBinding(Data, Assessment, Condition.ID)) ++Count;
+		}
 	}
 	return Count;
 }
@@ -222,7 +224,7 @@ bool FEnemyCombatRangeStateBindingsTest::RunTest(const FString& Parameters)
 			bool bSightResolved = false;
 			for (const auto& Condition : Transition.Conditions)
 				for (const auto& Binding : Data->EditorBindings.GetBindings())
-					bSightResolved |= Binding.GetSourcePath().ToString() == TEXT("bRepositionResolved")
+					bSightResolved |= (Binding.GetSourcePath().ToString() == TEXT("bRepositionResolved") || Binding.GetSourcePath().ToString() == TEXT("bCloseRangeRetreatRequired"))
 						&& Binding.GetTargetPath().GetStructID() == Condition.ID;
 			if (bSightResolved) continue;
 			Tree->Modify();
@@ -236,11 +238,16 @@ bool FEnemyCombatRangeStateBindingsTest::RunTest(const FString& Parameters)
 	{
 		if (Transition.Trigger != EStateTreeTransitionTrigger::OnTick || Transition.State.ID != Decision->ID) continue;
 		bool bSightResolved = false;
+		bool bCloseRetreat = false;
 		for (const auto& Condition : Transition.Conditions)
 			for (const auto& Binding : Data->EditorBindings.GetBindings())
-				bSightResolved |= Binding.GetSourcePath().ToString() == TEXT("bRepositionResolved")
+			{
+				bSightResolved |= (Binding.GetSourcePath().ToString() == TEXT("bRepositionResolved") || Binding.GetSourcePath().ToString() == TEXT("bCloseRangeRetreatRequired"))
 					&& Binding.GetTargetPath().GetStructID() == Condition.ID;
-		TestTrue(TEXT("Approach reselects only for reopened sight, not tactical distance alone"), bSightResolved);
+				bCloseRetreat |= Binding.GetSourcePath().ToString() == TEXT("bCloseRangeRetreatRequired")
+					&& Binding.GetTargetPath().GetStructID() == Condition.ID;
+			}
+		TestTrue(TEXT("Approach reselects for reopened sight or close emergency, not ordinary distance bands"), bSightResolved || bCloseRetreat);
 	}
 	if (HasAnyErrors()) return false;
 	if (bChanged)

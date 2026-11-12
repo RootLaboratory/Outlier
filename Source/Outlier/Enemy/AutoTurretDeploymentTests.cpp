@@ -2,6 +2,7 @@
 
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyTargetRules.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
@@ -536,6 +537,81 @@ bool FAutoTurretAimPolicyTest::RunTest(const FString& Parameters)
 		}
 	}
 	TestTrue(TEXT("Head aiming never turns the turret body"), Turret->GetActorQuat().Equals(BodyRotation, 0.0001));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutoTurretTargetLifecycleTest,
+	"Outlier.Enemy.Turret.TargetLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAutoTurretTargetLifecycleTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FTurretDeploymentTestWorld Fixture;
+	if (!TestNotNull(TEXT("Target lifecycle world"), Fixture.World)) return false;
+	AAutoTurret* Observer = Fixture.World->SpawnActor<AAutoTurret>();
+	AAutoTurret* Target = Fixture.World->SpawnActor<AAutoTurret>();
+	AEnemyAIController* AI = Fixture.World->SpawnActor<AEnemyAIController>();
+	if (!TestNotNull(TEXT("Observer turret"), Observer)
+		|| !TestNotNull(TEXT("Target turret"), Target)
+		|| !TestNotNull(TEXT("Observer controller"), AI)) return false;
+
+	for (AAutoTurret* Turret : { Observer, Target })
+	{
+		Turret->GetOutlierAbilitySystemComponent()->InitializeForPawn(Turret);
+		Turret->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.0f);
+	}
+	// 미니게임과 수명 타이머 대신 팀만 고정해 대상의 전개 상태에 따른 자격을 검증한다.
+	FBoolProperty* HackedTeam = FindFProperty<FBoolProperty>(AAutoTurret::StaticClass(), TEXT("bHackedToPlayerTeam"));
+	if (!TestNotNull(TEXT("Hacked team property"), HackedTeam)) return false;
+	HackedTeam->SetPropertyValue_InContainer(Observer, true);
+	AI->Possess(Observer);
+	Observer->SetTurretLifecycleState(EAutoTurretLifecycleState::Active);
+	Observer->EnterCombatFromRoom(FVector::ZeroVector, false);
+
+	auto CheckTarget = [&](const TCHAR* Stage, bool bExpectedAvailable)
+	{
+		TestEqual(FString::Printf(TEXT("%s: common target availability"), Stage),
+			!OutlierEnemyTargetRules::IsUnavailable(Target), bExpectedAvailable);
+		TestEqual(FString::Printf(TEXT("%s: detection and tracking eligibility"), Stage),
+			AI->IsValidTrackingTarget(Target), bExpectedAvailable);
+		AI->SetVisibleTargetsForTesting({ Target });
+		TestEqual(FString::Printf(TEXT("%s: visible target selection"), Stage),
+			AI->GetPreferredKnownVisibleTarget(), bExpectedAvailable ? static_cast<AActor*>(Target) : nullptr);
+	};
+
+	CheckTarget(TEXT("Waiting for wave"), false);
+	if (!TestTrue(TEXT("Target starts deployment"), Target->BeginRoomWaveDeployment(0))) return false;
+	CheckTarget(TEXT("Deploying"), false);
+	if (!TestTrue(TEXT("Target completes deployment"), Target->CompleteRoomWaveDeployment())) return false;
+	CheckTarget(TEXT("Active"), true);
+	Observer->SetPlayerCurrentlyVisible(true);
+	Observer->ObserveTrackedTarget(Target);
+	TestEqual(TEXT("Active target is tracked for attack"), Observer->GetTrackedTarget(), static_cast<AActor*>(Target));
+
+	// 한 번 감지한 대상도 대기로 돌아가면 캐시에서 재선택되거나 직접 시야로 인정되지 않아야 한다.
+	Target->PrepareForRoomWaveActivation();
+	TestNull(TEXT("Reset invalidates the previously selected candidate"), AI->GetPreferredKnownVisibleTarget());
+	TestFalse(TEXT("Reset invalidates cached direct sight"), AI->IsTargetDirectlyVisible(Target));
+	TestNull(TEXT("Reset invalidates the attack target immediately"), Observer->GetTrackedTarget());
+	CheckTarget(TEXT("Reset to waiting"), false);
+	TestTrue(TEXT("Target can deploy again"), Target->BeginRoomWaveDeployment(1));
+	TestTrue(TEXT("Target can complete deployment again"), Target->CompleteRoomWaveDeployment());
+	CheckTarget(TEXT("Reactivated"), true);
+
+	HackedTeam->SetPropertyValue_InContainer(Target, true);
+	TestFalse(TEXT("Active friendly turret remains excluded"), AI->IsValidTrackingTarget(Target));
+	Target->SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPresentation);
+	CheckTarget(TEXT("Death presentation"), false);
+	Target->SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPersistent);
+	CheckTarget(TEXT("Persistent remains"), false);
+
+	AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>();
+	if (!TestNotNull(TEXT("Ordinary enemy"), Enemy)) return false;
+	Enemy->GetOutlierAbilitySystemComponent()->InitializeForPawn(Enemy);
+	Enemy->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.0f);
+	TestFalse(TEXT("Ordinary enemy availability is preserved"), OutlierEnemyTargetRules::IsUnavailable(Enemy));
+	TestTrue(TEXT("Ordinary hostile enemy remains a tracking candidate"), AI->IsValidTrackingTarget(Enemy));
 	return true;
 }
 

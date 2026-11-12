@@ -263,6 +263,7 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	FVector RetreatOrigin = FVector::ZeroVector;
 	UPROPERTY(EditAnywhere, Category = Output)
 	FVector RetreatDirection = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, Category = Output)
 	FVector CapturedRetreatStart = FVector::ZeroVector;
 
 	FVector CapturedOrbitStart = FVector::ZeroVector;

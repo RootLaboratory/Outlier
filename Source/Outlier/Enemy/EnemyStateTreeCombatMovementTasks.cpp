@@ -97,6 +97,8 @@ void LogCombatDestinationGuard(const TCHAR* Phase, const FEnemyCombatDestination
 
 void ResetAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 {
+	Data.bCloseRangeRetreatRequired = false;
+	Data.bCloseRangeRetreatStarted = false;
 	Data.bHasValidTarget = false;
 	Data.bTargetOutsideWeaponRange = false;
 	Data.bNeedsReposition = false;
@@ -108,6 +110,13 @@ void ResetAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 	Data.bBothSidesBlocked = false;
 }
 
+bool IsCloseRetreatDistance(bool bActive, float Distance, float Enter, float Release)
+{
+	if (!FMath::IsFinite(Distance) || !FMath::IsFinite(Enter) || !FMath::IsFinite(Release)
+		|| Distance < 0.0f || Enter <= 0.0f || Release <= Enter) return false;
+	return bActive ? Distance < Release : Distance <= Enter;
+}
+
 AActor* GetAssessmentTarget(const FEnemyCombatAssessmentTaskInstanceData& Data)
 {
 	if (IsValid(Data.TargetActor))
@@ -115,6 +124,22 @@ AActor* GetAssessmentTarget(const FEnemyCombatAssessmentTaskInstanceData& Data)
 		return Data.TargetActor;
 	}
 	return IsValid(Data.Enemy) ? Data.Enemy->GetTrackedTarget() : nullptr;
+}
+
+void LogCloseRetreatAssessment(const FEnemyCombatAssessmentTaskInstanceData& Data,
+	const TCHAR* Event, const TCHAR* Reason, AActor* Target)
+{
+	static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.FlightDebug"));
+	const AEnemyBase* Enemy = Data.Enemy;
+	if (!Debug || Debug->GetInt() == 0 || !IsValid(Enemy) || !Enemy->HasAuthority() || !Enemy->GetWorld()) return;
+	// 무효화/대상 교체 때의 이전 거리를 새 관측처럼 기록하지 않는다.
+	const float Distance = FCString::Strcmp(Event, TEXT("End")) == 0 ? -1.0f : Data.HorizontalDistance;
+	UE_LOG(LogEnemyCombatNavigation, Log,
+		TEXT("[EnemyCloseRetreat] Enemy=%s Target=%s Event=%s Now=%.3f Lease=%d Generation=%d Distance2D=%.1f Required=%d Reposition=%d Observation=%d Enter=%.1f Release=%.1f Interval=%.3f Reason=%s"),
+		*GetNameSafe(Enemy), *GetNameSafe(Target), Event, Enemy->GetWorld()->GetTimeSeconds(),
+		Enemy->GetPoolLeaseSerial(), Enemy->GetPoolGameplayGeneration(), Distance,
+		Data.bCloseRangeRetreatRequired, Data.bNeedsReposition, Data.bCombatObservationWaiting,
+		Data.CloseRetreatEnterDistance, Data.CloseRetreatReleaseDistance, Data.UpdateInterval, Reason);
 }
 
 void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
@@ -127,6 +152,10 @@ void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 		|| Enemy->GetCombatState() != EEnemyCombatState::Combat
 		|| Enemy->IsEnemyPossessed() || Enemy->IsPossessionInProgress())
 	{
+		if (Data.bCloseRangeRetreatActive)
+			LogCloseRetreatAssessment(Data, TEXT("End"), TEXT("AssessmentInvalid"), Data.LastTarget.Get());
+		Data.bCloseRangeRetreatActive = false;
+		Data.bCloseRetreatDiagnosticSuppressed = false;
 		return;
 	}
 	UWorld* World = Enemy->GetWorld();
@@ -145,6 +174,25 @@ void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 	Data.bPrefersLeft = Enemy->PrefersCombatLeft();
 	const FVector Origin = Enemy->GetActorLocation();
 	Data.HorizontalDistance = CalculateTacticalDistance(Origin, Enemy->GetCombatNavigationTargetLocation(Target), EEnemyTacticalDistanceMode::Horizontal2D);
+	const bool bWasClose = Data.bCloseRangeRetreatActive;
+	const bool bTargetChanged = Data.LastTarget.Get() != Target;
+	// 같은 프레임에 대상을 바꿔도 두 대상의 진입 회차가 합쳐지지 않게 먼저 닫는다.
+	if (bWasClose && bTargetChanged)
+		LogCloseRetreatAssessment(Data, TEXT("End"), TEXT("TargetChanged"), Data.LastTarget.Get());
+	Data.bCloseRangeRetreatActive = Enemy->GetRuntimeStat().Type == EEnemyType::Gun
+		&& IsCloseRetreatDistance(Data.LastTarget.Get() == Target && bWasClose, Data.HorizontalDistance,
+			Data.CloseRetreatEnterDistance, Data.CloseRetreatReleaseDistance);
+	Data.bCloseRangeRetreatRequired = Data.bCloseRangeRetreatActive && !Enemy->IsAIControlSuppressed();
+	Data.bCloseRangeRetreatStarted = !bWasClose && Data.bCloseRangeRetreatRequired;
+	if (Data.bCloseRangeRetreatActive && (!bWasClose || bTargetChanged))
+		LogCloseRetreatAssessment(Data, TEXT("Enter"), TEXT("Distance"), Target);
+	else if (bWasClose && !bTargetChanged && !Data.bCloseRangeRetreatActive)
+		LogCloseRetreatAssessment(Data, TEXT("Release"), TEXT("Distance"), Target);
+	const bool bSuppressed = Data.bCloseRangeRetreatActive && !Data.bCloseRangeRetreatRequired;
+	if (Data.bCloseRangeRetreatActive && (bSuppressed != Data.bCloseRetreatDiagnosticSuppressed || bTargetChanged))
+		LogCloseRetreatAssessment(Data, bSuppressed ? TEXT("Suspended") : TEXT("Resumed"),
+			bSuppressed ? TEXT("AIControlSuppressed") : TEXT("AssessmentAllowed"), Target);
+	Data.bCloseRetreatDiagnosticSuppressed = bSuppressed;
 	FVector Forward = (Enemy->GetCombatNavigationTargetLocation(Target) - Origin).GetSafeNormal2D();
 	if (Forward.IsNearlyZero()) Forward = Enemy->GetActorForwardVector().GetSafeNormal2D();
 	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward);
@@ -525,6 +573,19 @@ bool IsCandidateOccupied(
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCloseRetreatHysteresisTest,
+	"Outlier.Enemy.Combat.CloseRetreat.Hysteresis", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyCloseRetreatHysteresisTest::RunTest(const FString& Parameters)
+{
+	TestFalse(TEXT("Approaching four metres does not enter emergency"), IsCloseRetreatDistance(false, 400, 300, 500));
+	TestTrue(TEXT("Three metre boundary enters"), IsCloseRetreatDistance(false, 300, 300, 500));
+	TestTrue(TEXT("Four metres preserves active retreat"), IsCloseRetreatDistance(true, 400, 300, 500));
+	TestFalse(TEXT("Five metre boundary releases"), IsCloseRetreatDistance(true, 500, 300, 500));
+	TestFalse(TEXT("Invalid distance resets emergency state"), IsCloseRetreatDistance(true, -1, 300, 500));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCombatAssessmentMathTest,
 	"Outlier.Enemy.Combat.Assessment", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -660,6 +721,8 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::EnterState(
 	auto& Data = Context.GetInstanceData(*this);
 	Data.Elapsed = 0.0f;
 	Data.LastTarget = GetAssessmentTarget(Data);
+	Data.bCloseRangeRetreatActive = false;
+	Data.bCloseRetreatDiagnosticSuppressed = false;
 	Data.bPrefersLeft = false;
 	UpdateAssessment(Data);
 	return IsValid(Data.Enemy) && Data.Enemy->HasAuthority()
@@ -669,6 +732,7 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::EnterState(
 EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
 {
 	auto& Data = Context.GetInstanceData(*this);
+	Data.bCloseRangeRetreatStarted = false;
 	if (!IsValid(Data.Enemy) || !Data.Enemy->HasAuthority())
 	{
 		ResetAssessment(Data);
@@ -678,8 +742,12 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext&
 	if (!IsValid(Target) || Data.Enemy->GetCombatState() != EEnemyCombatState::Combat
 		|| Data.Enemy->IsEnemyPossessed() || Data.Enemy->IsPossessionInProgress())
 	{
+		if (Data.bCloseRangeRetreatActive)
+			LogCloseRetreatAssessment(Data, TEXT("End"), TEXT("TargetOrCombatInvalid"), Data.LastTarget.Get());
 		ResetAssessment(Data);
 		Data.LastTarget.Reset();
+		Data.bCloseRangeRetreatActive = false;
+		Data.bCloseRetreatDiagnosticSuppressed = false;
 		Data.Elapsed = FMath::Max(Data.UpdateInterval, 0.01f);
 		return EStateTreeRunStatus::Running;
 	}
@@ -689,8 +757,8 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext&
 		|| Data.Elapsed >= FMath::Max(Data.UpdateInterval, 0.01f))
 	{
 		Data.Elapsed = 0.0f;
-		Data.LastTarget = Target;
 		UpdateAssessment(Data);
+		Data.LastTarget = Target;
 	}
 	return EStateTreeRunStatus::Running;
 }
@@ -699,7 +767,11 @@ void FEnemyCombatAssessmentTask::ExitState(FStateTreeExecutionContext& Context,
 	const FStateTreeTransitionResult& Transition) const
 {
 	auto& Data = Context.GetInstanceData(*this);
+	if (Data.bCloseRangeRetreatActive)
+		LogCloseRetreatAssessment(Data, TEXT("End"), TEXT("StateExit"), Data.LastTarget.Get());
 	ResetAssessment(Data);
+	Data.bCloseRangeRetreatActive = false;
+	Data.bCloseRetreatDiagnosticSuppressed = false;
 	Data.bPrefersLeft = false;
 	Data.LastTarget.Reset();
 	Data.Elapsed = 0.0f;

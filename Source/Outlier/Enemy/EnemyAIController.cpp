@@ -28,7 +28,7 @@ namespace
 		TEXT("outlier.Enemy.PerceptionDiagnostics"),
 		0,
 		TEXT("Logs Enemy AI perception events and sight-loss geometry when set to 1."),
-		ECVF_Cheat);
+		ECVF_Default);
 
 	bool IsEnemyPerceptionDiagnosticsEnabled()
 	{
@@ -161,6 +161,14 @@ void AEnemyAIController::OnPossess(APawn* InPawn)
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(InPawn))
 	{
 		RefreshTeamAndPerceptionFromPawn();
+		if (IsEnemyPerceptionDiagnosticsEnabled())
+		{
+			const IConsoleVariable* FlightDebug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.FlightDebug"));
+			const IConsoleVariable* EQSDebug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.EQSDebug"));
+			UE_LOG(LogOutlier, Log, TEXT("[EnemyPlaytestDiag] Revision=CloseReactions-20261111 Enemy=%s Perception=1 Flight=%d EQS=%d HearingNear=%.1f"),
+				*GetNameSafe(Enemy), FlightDebug ? FlightDebug->GetInt() : 0, EQSDebug ? EQSDebug->GetInt() : 0,
+				Enemy->GetRuntimeStat().AwarenessNearDistance);
+		}
 	}
 }
 

@@ -779,6 +779,12 @@ void CaptureEnvQuerySnapshot(FEnemyRunEnvQueryTaskInstanceData& Data)
 	Data.HeightSnapshot.Preference = Enemy->GetCombatHeightPreference();
 	Data.RetreatOrigin = ToQueryParamLocation(Data.SelectedTargetLocation);
 	Data.RetreatDirection = (Data.CapturedRetreatStart - Data.RetreatOrigin).GetSafeNormal2D();
+	if (Data.bValidateRetreatPath && Data.RetreatDirection.IsNearlyZero())
+		Data.RetreatDirection = FVector::ForwardVector;
+	// Emergency distance gain uses the bounded long/short retreat set, not an approach-like mixed candidate.
+	if (Data.bValidateRetreatPath && FVector::Dist2D(Data.CapturedRetreatStart, Data.RetreatOrigin) <= 500.0
+		&& Data.bNavigationTargetVisible && Data.CapturedCombatYieldSerial == 0)
+		Data.bUnifiedCombatNavigation = false;
 	if (Data.SearchMode != EEnemySearchQueryMode::None)
 	{
 		const FEnemySearchEpisode& Episode = Enemy->GetSearchEpisode();
@@ -2392,6 +2398,13 @@ bool TryAcceptReservedCombatCandidate(FEnemyRunEnvQueryTaskInstanceData& Data,
 	Data.bHasDestination = true;
 	Data.bCombatSelectionPending = false;
 	Data.QueryResult = EEnemyEnvQueryResult::Success;
+	if (Data.bValidateRetreatPath && CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
+		UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyRetreatSelected] Enemy=%s Short=%d Start=%s Goal=%s StartDistance2D=%.1f GoalDistance2D=%.1f Checked=%d Episode=%llu Now=%.3f Lease=%d Generation=%d Target=%s"),
+			*GetNameSafe(Data.Enemy), FVector::Dist2D(Data.Destination, Data.CapturedRetreatStart) <= 300.01,
+			*Data.CapturedRetreatStart.ToCompactString(), *Data.Destination.ToCompactString(),
+			FVector::Dist2D(Data.CapturedRetreatStart, Data.RetreatOrigin), FVector::Dist2D(Data.Destination, Data.RetreatOrigin),
+			Data.CheckedPathCandidates, Data.CapturedCombatSerial, Data.Enemy->GetWorld()->GetTimeSeconds(),
+			Data.Enemy->GetPoolLeaseSerial(), Data.Enemy->GetPoolGameplayGeneration(), *GetNameSafe(Data.SelectedTargetActor));
 	Data.CombatYieldPath.Reset();
 	return true;
 }
@@ -2613,6 +2626,12 @@ EStateTreeRunStatus AdvanceCombatSelection(FEnemyRunEnvQueryTaskInstanceData& Da
 			return EStateTreeRunStatus::Running;
 		}
 		const FFlightPathResult Path = Data.CombatPathSearch->GetResult();
+		if (Data.bValidateRetreatPath && CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
+			UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyRetreatCandidate] Enemy=%s Candidate=%d Short=%d Goal=%s Distance2D=%.1f PassedQuery=%d Path=%s Nodes=%d Checks=%d Milliseconds=%.3f"),
+				*GetNameSafe(Data.Enemy), Index, FVector::Dist2D(Candidate.Destination, Data.CapturedRetreatStart) <= 300.01,
+				*Candidate.Destination.ToCompactString(), FVector::Dist2D(Candidate.Destination, Data.RetreatOrigin),
+				Data.CombatCandidatesPassedQuery[Index], *UEnum::GetValueAsString(Path.Status),
+				Path.SearchNodes, Path.CollisionChecks, Path.ElapsedMilliseconds);
 		const FBox Bounds = Data.CombatPathSearch->GetRequest().SearchBounds;
 		const TSharedPtr<FCombatReservationPathSearch> ReservedPath = StaticCastSharedPtr<FCombatReservationPathSearch>(Data.CombatPathSearch);
 		Data.CombatPathSearch.Reset();

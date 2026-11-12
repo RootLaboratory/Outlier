@@ -76,6 +76,10 @@ struct FEnemyFlyToLocationTaskInstanceData
 	// 후퇴 EQS의 스냅샷을 전달한다. 다른 이동에는 끄고, 후퇴는 A* / 정확한 목적지만 사용한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bConstrainRetreatPath = false;
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bAllowShortRetreat = false;
+	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
+	FVector RetreatStart = FVector::ZeroVector;
 	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
 	FVector RetreatOrigin = FVector::ZeroVector;
 	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
@@ -158,6 +162,7 @@ struct FEnemyFlyToLocationTaskInstanceData
 	FVector LastDestination = FVector::ZeroVector;
 	UPROPERTY(Transient)
 	bool bOwnsMovement = false;
+	bool bDiagnosticMovementReported = false;
 	FVector LastPathPosition = FVector::ZeroVector;
 	// 조사 회전의 통과 검사와 최종 실패 문맥은 경로 배열 정리 이후에도 인계할 수 있어야 한다.
 	FVector LastNoiseProgressLocation = FVector::ZeroVector;

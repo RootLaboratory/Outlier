@@ -280,18 +280,35 @@ void EnemyRetreat::BuildCandidates(const FVector& Start, const FVector& Center, 
 {
 	OutCandidates.Reset();
 	if (Start.ContainsNaN() || Center.ContainsNaN()) return;
-	const FVector Away = (Start - Center).GetSafeNormal2D();
-	if (Away.IsNearlyZero() || FVector::Dist2D(Start, Center) > 1000.0) return;
+	const FVector Delta = Start - Center;
+	FVector Away = Delta.GetSafeNormal2D();
+	const double InitialDistance = Delta.Size2D();
+	if (InitialDistance > 1000.0) return;
+	const bool bOverlap = Away.IsNearlyZero();
+	if (bOverlap) Away = FVector::ForwardVector;
 	// 10m 경계/도착 허용 반경을 피한 세 거리에서 직후방부터 확인한다.
 	// 사선 후보도 현재 위치보다 뒤에 있어야 한다. 고도는 현재 드론 높이를 유지한다.
 	for (float Distance : {1250.0f, 1100.0f, 1400.0f})
 	{
+		if (bOverlap) break;
 		for (float Degrees : {0.0f, -30.0f, 30.0f})
 		{
 			FVector Candidate = MakeApproachCandidate(Center, Away, Distance, Degrees);
 			Candidate.Z = Start.Z;
 			if (FVector::DotProduct(Candidate - Start, Away) >= 25.0) OutCandidates.Add(Candidate);
 		}
+	}
+	// Long retreat failure must still have bounded local distance-gain alternatives.
+	// One candidate list is shared by height preparation, EQS and path validation.
+	if (InitialDistance <= 500.0)
+	{
+		for (float Length : {300.0f, 200.0f, 100.0f})
+			for (float Degrees : {0.0f, -30.0f, 30.0f})
+			{
+				const FVector Candidate = Start + Away.RotateAngleAxis(Degrees, FVector::UpVector) * Length;
+				if (FVector::Dist2D(Candidate, Center) >= InitialDistance + 75.0)
+					OutCandidates.Add(Candidate);
+			}
 	}
 }
 
@@ -989,18 +1006,22 @@ bool FEnemyRetreatCandidatesTest::RunTest(const FString& Parameters)
 	{
 		EnemyRetreat::BuildCandidates(Start, Center, Candidates);
 		TestFalse(TEXT("Near and ten metre targets have retreat candidates"), Candidates.IsEmpty());
-		TestTrue(TEXT("Candidate count is bounded"), Candidates.Num() <= 9);
+		TestTrue(TEXT("Candidate count is bounded"), Candidates.Num() <= 18);
 		const FVector Away = (Start - Center).GetSafeNormal2D();
 		for (const FVector& Candidate : Candidates)
 		{
 			const double Distance = FVector::Dist2D(Candidate, Center);
-			TestTrue(TEXT("Goal keeps margin beyond ten and within fifteen metres"), Distance > 1050.0 && Distance <= 1450.0);
+			const bool bShort = FVector::Dist2D(Candidate, Start) <= 300.01;
+			TestTrue(TEXT("Goal is long retreat or short distance gain"),
+				(Distance > 1050.0 && Distance <= 1450.0)
+				|| (bShort && Distance >= FVector::Dist2D(Start, Center) + 75.0));
 			TestEqual(TEXT("Goal preserves current altitude"), Candidate.Z, Start.Z);
 			TestTrue(TEXT("Goal moves away rather than across player"), FVector::DotProduct(Candidate - Start, Away) >= 25.0);
 		}
 	}
 	EnemyRetreat::BuildCandidates(Center, Center, Candidates);
-	TestTrue(TEXT("Undefined away direction cannot make arbitrary goals"), Candidates.IsEmpty());
+	TestEqual(TEXT("Overlap still has finite safe-checkable short candidates"), Candidates.Num(), 9);
+	TestTrue(TEXT("Overlap fallback uses three metre first step"), Candidates[0].Equals(Center + FVector(300, 0, 0)));
 	EnemyRetreat::BuildCandidates(Center + FVector(1001, 0, 0), Center, Candidates);
 	TestTrue(TEXT("Beyond ten metres does not start retreat"), Candidates.IsEmpty());
 	return true;

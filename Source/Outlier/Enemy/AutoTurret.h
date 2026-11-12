@@ -369,6 +369,7 @@ private:
 	friend struct FEnemyRecoverTurretImpactOffsetTask;
 	friend class URoomCombatSubsystem;
 	friend class FAutoTurretDeploymentPresentationTest;
+	friend class FAutoTurretTargetLifecycleTest;
 
 	UPROPERTY(ReplicatedUsing = OnRep_TurretLifecycleState)
 	FAutoTurretLifecycleSnapshot ReplicatedLifecycle;

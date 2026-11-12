@@ -67,6 +67,17 @@ struct FEnemyCombatAssessmentTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01"))
 	float UpdateInterval = 0.2f;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float CloseRetreatEnterDistance = 300.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float CloseRetreatReleaseDistance = 500.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bCloseRangeRetreatRequired = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bCloseRangeRetreatStarted = false;
+	bool bCloseRangeRetreatActive = false;
+	// 진단은 상태가 바뀔 때만 남긴다. 기절 유지 중 같은 보류 로그를 반복하지 않는다.
+	bool bCloseRetreatDiagnosticSuppressed = false;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
 	float WallCheckDistance = 300.0f;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (Units = "cm"))
 	float WallCheckHeightOffset = 0.0f;

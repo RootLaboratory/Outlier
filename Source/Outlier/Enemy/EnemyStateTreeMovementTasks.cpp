@@ -68,12 +68,21 @@ void LogFlight(
 	}
 	if (Data.bConstrainRetreatPath)
 	{
+		AActor* ObservedTarget = Enemy ? Enemy->GetTrackedTarget() : nullptr;
+		// Origin은 계획 시점 스냅샷이다. 추격하는 플레이어와의 실제 관측 간격은 별도로 기록한다.
+		const double ObservedDistance = Enemy && IsValid(ObservedTarget)
+			? FVector::Dist2D(Location, Enemy->GetCombatNavigationTargetLocation(ObservedTarget)) : -1.0;
 		UE_LOG(LogEnemyFlight, Log,
-			TEXT("[EnemyRetreatMove] %s Enemy=%s Result=%s Origin=%s Direction=%s CurrentDistance2D=%.1f GoalDistance2D=%.1f Acceptance=%.1f GoalSearchRadius=%.1f"),
+			TEXT("[EnemyRetreatMove] %s Enemy=%s Result=%s Origin=%s Direction=%s CurrentDistance2D=%.1f GoalDistance2D=%.1f Acceptance=%.1f GoalSearchRadius=%.1f ShortAllowed=%d StartDistance2D=%.1f Gain=%.1f Now=%.3f Lease=%d Generation=%d Target=%s ObservedDistance2D=%.1f Episode=%llu"),
 			Phase, *GetNameSafe(Enemy), *UEnum::GetValueAsString(Data.MoveResult),
 			*Data.RetreatOrigin.ToCompactString(), *Data.RetreatDirection.ToCompactString(),
 			FVector::Dist2D(Location, Data.RetreatOrigin), FVector::Dist2D(Data.Destination, Data.RetreatOrigin),
-			Data.AcceptanceRadius, Data.GoalSearchRadius);
+			Data.AcceptanceRadius, Data.GoalSearchRadius, Data.bAllowShortRetreat,
+			FVector::Dist2D(Data.RetreatStart, Data.RetreatOrigin),
+			FVector::Dist2D(Location, Data.RetreatOrigin) - FVector::Dist2D(Data.RetreatStart, Data.RetreatOrigin),
+			Enemy && Enemy->GetWorld() ? Enemy->GetWorld()->GetTimeSeconds() : 0.0,
+			Enemy ? Enemy->GetPoolLeaseSerial() : 0, Enemy ? Enemy->GetPoolGameplayGeneration() : 0,
+			*GetNameSafe(ObservedTarget), ObservedDistance, Data.CapturedCombatTacticalSerial);
 	}
 }
 
@@ -570,12 +579,19 @@ bool IsRetreatFlightConfigurationValid(const FEnemyFlyToLocationTaskInstanceData
 		return true;
 	}
 	const double Distance = FVector::Dist2D(Data.Destination, Data.RetreatOrigin);
+	const FVector Start = IsValid(Data.Enemy) ? Data.Enemy->GetActorLocation() : Data.RetreatStart;
+	const bool bShort = Data.bAllowShortRetreat && !Data.RetreatStart.ContainsNaN()
+		&& Data.AcceptanceRadius <= 25.0f
+		&& FVector::Dist2D(Data.RetreatStart, Data.RetreatOrigin) <= 500.0
+		&& FVector::Dist2D(Data.Destination, Data.RetreatStart) <= 300.01
+		&& Distance >= FVector::Dist2D(Start, Data.RetreatOrigin) + 50.0 + Data.AcceptanceRadius
+		&& FVector::DotProduct(Data.Destination - Data.RetreatStart, Data.RetreatDirection) >= 75.0;
 	return Data.bUsePathfinding && !(Data.bUsePlannedPath && !Data.bCombatNavigationPath) && Data.GoalSearchRadius == 0.0f
 		&& !Data.RetreatOrigin.ContainsNaN() && !Data.RetreatDirection.ContainsNaN()
 		&& FMath::IsNearlyZero(Data.RetreatDirection.Z)
 		&& FMath::IsNearlyEqual(Data.RetreatDirection.SizeSquared2D(), 1.0, 0.001)
 		&& FMath::IsFinite(Data.AcceptanceRadius) && Data.AcceptanceRadius >= 0.0f
-		&& Data.AcceptanceRadius <= 50.0f && Distance > 1050.0 && Distance <= 1450.0;
+		&& Data.AcceptanceRadius <= 50.0f && ((Distance > 1050.0 && Distance <= 1450.0) || bShort);
 }
 
 bool HasCurrentFlightRoom(const FEnemyFlyToLocationTaskInstanceData& Data)
@@ -784,6 +800,7 @@ EStateTreeRunStatus StartPlannedFlight(FEnemyFlyToLocationTaskInstanceData& Data
 	PrepareFlightSpeedLimits(Data);
 	Data.LastPathPosition = Data.PathWaypoints[0];
 	Data.TravelledPathLength = 0.0f;
+	Data.bDiagnosticMovementReported = false;
 	Data.SegmentCheckElapsed = 0.0f;
 	Data.MoveResult = EEnemyFlightMoveResult::Moving;
 	if (Data.CapturedCombatTacticalSerial != 0)
@@ -931,6 +948,7 @@ EStateTreeRunStatus StartInitialFlight(FEnemyFlyToLocationTaskInstanceData& Data
 	Data.BestDistance = FVector::Distance(Data.PathWaypoints[0], Data.PathWaypoints[1]);
 	Data.LastPathPosition = Data.PathWaypoints[0];
 	Data.TravelledPathLength = 0.0f;
+	Data.bDiagnosticMovementReported = false;
 	Data.SegmentCheckElapsed = 0.0f;
 	Data.bWaitingForPath = false;
 	LogFlight(TEXT("InitialPathStarted"), Data);
@@ -1093,6 +1111,13 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	if (Data.bInvestigateNoise)
 	{
 		Data.Enemy->UpdateNoiseInvestigationTravelDirection(Data.CapturedNoiseSerial, NextPoint - Position, Data.RotationSpeed);
+	}
+	// 경로 승인과 물리 이동 시작을 구분한다. 짧은 경로는 첫 이동에 도착할 수도 있으므로 도착 판정보다 먼저 기록한다.
+	if (Data.bConstrainRetreatPath && !Data.bDiagnosticMovementReported
+		&& FVector::DistSquared2D(Data.Enemy->GetActorLocation(), Data.RetreatStart) > 1.0)
+	{
+		Data.bDiagnosticMovementReported = true;
+		LogFlight(TEXT("ActualMovementStarted"), Data);
 	}
 	if (bReachedPoint && bFinalPoint)
 	{
@@ -1473,6 +1498,7 @@ EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data)
 	{
 		return EStateTreeRunStatus::Failed;
 	}
+	if (Data.bConstrainRetreatPath && IsValid(Data.Enemy)) Data.RetreatStart = Data.Enemy->GetActorLocation();
 	if (!IsRetreatFlightConfigurationValid(Data))
 	{
 		return EStateTreeRunStatus::Failed;
@@ -1897,6 +1923,18 @@ bool FEnemyRetreatFlightConfigurationTest::RunTest(const FString& Parameters)
 	Data.RetreatDirection = FVector::ForwardVector;
 	Data.Destination.X = 1000.0;
 	TestFalse(TEXT("Exactly ten metre goal is forbidden"), IsRetreatFlightConfigurationValid(Data));
+	Data.bAllowShortRetreat = true;
+	Data.RetreatStart = FVector(200, 0, 250);
+	Data.Destination = FVector(500, 0, 250);
+	TestFalse(TEXT("Short retreat cannot use large arrival tolerance"), IsRetreatFlightConfigurationValid(Data));
+	Data.AcceptanceRadius = 25.0f;
+	TestTrue(TEXT("Three metre short retreat retains safe path configuration"), IsRetreatFlightConfigurationValid(Data));
+	Data.Destination = FVector(275, 0, 250);
+	TestTrue(TEXT("Planned gain includes arrival tolerance"), IsRetreatFlightConfigurationValid(Data));
+	Data.Destination.X = 274.0;
+	TestFalse(TEXT("Small shuffle is not short retreat"), IsRetreatFlightConfigurationValid(Data));
+	Data.Destination = FVector(501, 0, 250);
+	TestFalse(TEXT("Short retreat stays within three metre displacement"), IsRetreatFlightConfigurationValid(Data));
 	return true;
 }
 
@@ -2034,6 +2072,8 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		return EStateTreeRunStatus::Failed;
 	}
 	InstanceData.BestDistance = FVector::Distance(Enemy->GetActorLocation(), InstanceData.Destination);
+	// A sibling query task cannot bind its transient output into this state. Capture the actual move origin.
+	if (InstanceData.bConstrainRetreatPath) InstanceData.RetreatStart = Enemy->GetActorLocation();
 	if (InstanceData.Destination.ContainsNaN() || !IsRetreatFlightConfigurationValid(InstanceData))
 	{
 		InstanceData.PathStatus = EFlightPathStatus::InvalidRequest;

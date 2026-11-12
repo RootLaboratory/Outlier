@@ -2869,6 +2869,194 @@ bool CheckCommittedCharge(FEnemyCombatIntegrationWorld& Fixture, const FString& 
 }
 }
 
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyCloseRetreatIntegrationTest, "Outlier.Enemy.Combat.CloseRetreat.Integration",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyCloseRetreatIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("ApproachInterrupted"), TEXT("OrbitInterrupted"), TEXT("PrecisionInterrupted"),
+		TEXT("HoldInterrupted"), TEXT("BlockedLongShortMovingFire"), TEXT("Short200Arrival"), TEXT("Short100Arrival"),
+		TEXT("StunReleased"), TEXT("BoundaryContinuity")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyCloseRetreatIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	const bool bMovingFire = Parameters == TEXT("BlockedLongShortMovingFire");
+	const bool bShort = bMovingFire || Parameters.StartsWith(TEXT("Short"));
+	const bool bPrecision = Parameters == TEXT("PrecisionInterrupted");
+	const bool bBoundary = Parameters == TEXT("BoundaryContinuity");
+	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
+	const float InitialRange = bShort ? 200.0f : Parameters == TEXT("ApproachInterrupted") ? 3500.0f : 1500.0f;
+	if (!Fixture.Initialize(false, FVector(InitialRange, 0, 0))) return false;
+
+	// 후보 생성은 그대로 실행하고, 벽의 앞면만 옮겨 3m -> 2m -> 1m 대체 선택을 만든다.
+	if (bShort)
+	{
+		// 1m 목적지는 실제 캡슐 반경 + 경로 여유 5cm를 확보한다.
+		// 이 앞면에서도 2m의 ±30도 후보는 캡슐과 겹치므로 긴 후보 차단은 유지된다.
+		const float Short100WallFront = -100.0f - Fixture.Enemy->GetCapsuleComponent()->GetScaledCapsuleRadius() - 5.0f - 10.0f;
+		const float WallExtent = Parameters == TEXT("Short100Arrival") ? 1200.0f + Short100WallFront
+			: Parameters == TEXT("Short200Arrival") ? 955.0f : 500.0f;
+		if (!TestNotNull(TEXT("Longer retreat endpoints are physically blocked"), Fixture.SpawnBlockingBox(
+			FVector(-1200, 0, 1000), FVector(WallExtent, 2000, 3000)))) return false;
+	}
+	if (bPrecision)
+	{
+		// 양쪽 선회 후보를 막아 실제 후보 실패를 거쳐 정밀 사격 상태에 진입한다.
+		const FVector Start = Fixture.Enemy->GetActorLocation();
+		const double InnerEdge = Fixture.Enemy->GetCapsuleComponent()->GetScaledCapsuleRadius() + 15.0;
+		for (const double Sign : {-1.0, 1.0})
+		{
+			if (!TestNotNull(TEXT("Orbit side is blocked"), Fixture.SpawnBlockingBox(
+				Start + FVector(0, Sign * (InnerEdge + 300.0), 0), FVector(600, 300, 2500)))) return false;
+		}
+	}
+
+	Fixture.Start();
+	if (bShort)
+	{
+		ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+		if (!TestNotNull(TEXT("Real retreat weapon exists"), Weapon)) return false;
+		FBoolProperty* InfiniteAmmo = FindFProperty<FBoolProperty>(Weapon->GetClass(), TEXT("bInfiniteAmmo"));
+		if (!TestNotNull(TEXT("Real ammunition consumption can be observed"), InfiniteAmmo)) return false;
+		InfiniteAmmo->SetPropertyValue_InContainer(Weapon, false);
+
+		const FVector Start = Fixture.Enemy->GetActorLocation();
+		const FVector TargetLocation = Fixture.Target->GetActorLocation();
+		const float InitialDistance = FVector::Dist2D(Start, TargetLocation);
+		const float ExpectedLength = Parameters == TEXT("Short100Arrival") ? 100.0f
+			: Parameters == TEXT("Short200Arrival") ? 200.0f : 300.0f;
+		FVector SelectedDestination = FVector::ZeroVector;
+		float Acceptance = 0.0f;
+		bool bSelectedShort = false;
+		bool bArrived = false;
+		bool bGainedDistance = false;
+		bool bFiredWhileMoving = false;
+		int32 PreviousAmmo = Weapon->GetCurrentAmmo();
+		for (int32 Frame = 0; Frame < 600; ++Frame)
+		{
+			if (!Fixture.Advance()) break;
+			const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+			if (!bSelectedShort && Fly && Fly->bConstrainRetreatPath
+				&& FMath::Abs(FVector::Dist2D(Fly->Destination, Start) - ExpectedLength) <= 1.0)
+			{
+				bSelectedShort = true;
+				SelectedDestination = Fly->Destination;
+				Acceptance = Fly->AcceptanceRadius;
+			}
+			if (bSelectedShort)
+			{
+				// 정지 타겟에 대한 실제 도착과 거리 증가를 같은 프레임에서 확인한다.
+				const bool bAtDestination = FVector::Dist(Fixture.Enemy->GetActorLocation(), SelectedDestination) <= Acceptance + 1.0f;
+				bArrived |= bAtDestination;
+				bGainedDistance |= bAtDestination
+					&& FVector::Dist2D(Fixture.Enemy->GetActorLocation(), TargetLocation) >= InitialDistance + 50.0f;
+				bFiredWhileMoving |= Fly && Fly->bConstrainRetreatPath
+					&& Weapon->GetCurrentAmmo() < PreviousAmmo && Fixture.Enemy->GetVelocity().SizeSquared() > 1.0f;
+			}
+			PreviousAmmo = Weapon->GetCurrentAmmo();
+			if (bArrived && bGainedDistance && (!bMovingFire || bFiredWhileMoving)) break;
+		}
+		TestTrue(TEXT("Real EQS and path validation select the expected short retreat length"), bSelectedShort);
+		TestTrue(TEXT("The enemy physically reaches the selected short destination"), bArrived);
+		TestTrue(TEXT("Short arrival gains at least fifty centimetres from the stationary target"), bGainedDistance);
+		if (bMovingFire)
+			TestTrue(TEXT("Actual ammunition is consumed while short retreat physically moves"), bFiredWhileMoving);
+		return bSelectedShort && bArrived && bGainedDistance && (!bMovingFire || bFiredWhileMoving);
+	}
+
+	// 먼저 기존 행동이 실제 실행 중임을 확인한 뒤 타겟을 급접근시킨다.
+	if (bPrecision)
+	{
+		for (int32 Frame = 0; Frame < 360 && !Fixture.Snapshot.HasState(TEXT("PrecisionFire")); ++Frame)
+			if (!Fixture.Advance()) return false;
+		if (!TestTrue(TEXT("Real failed orbit selection enters PrecisionFire"), Fixture.Snapshot.HasState(TEXT("PrecisionFire")))) return false;
+	}
+	else if (Parameters == TEXT("HoldInterrupted"))
+	{
+		if (!Fixture.WaitForTask<FEnemyStationaryFireTask>()) return false;
+		const auto* Hold = Fixture.Data<FEnemyStationaryFireTask>();
+		if (!TestTrue(TEXT("Stationary fire still has time remaining before close entry"), Hold->SelectedDuration - Hold->Elapsed > 0.25f)) return false;
+	}
+	else
+	{
+		if (!Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+		if (Parameters != TEXT("ApproachInterrupted")
+			&& !TestTrue(TEXT("Existing orbit follows its real planned arc"), Fixture.Data<FEnemyFlyToLocationTask>()->bUsePlannedPath)) return false;
+	}
+
+	const bool bStun = Parameters == TEXT("StunReleased");
+	if (bStun) Fixture.Enemy->EnterStun();
+	if (bBoundary)
+	{
+		// 경계 왕복만 분리한다. 이동을 고정하되 실제 트리, EQS, 주기 판단은 계속 실행한다.
+		Fixture.Enemy->GetCharacterMovement()->StopMovementImmediately();
+		Fixture.Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	}
+	Fixture.Target->SetActorLocation(Fixture.Enemy->GetActorLocation() + FVector(bBoundary ? 300.0f : 200.0f, 0, 0));
+	Fixture.SetSight(true);
+	if (bStun)
+	{
+		// 초근접 입력이 들어와도 상위 기절을 끊지 않고, 해제된 현재 거리로 재판단해야 한다.
+		for (int32 Frame = 0; Frame < 18; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			if (!TestEqual(TEXT("Close entry cannot preempt stun"), Fixture.Enemy->GetCombatState(), EEnemyCombatState::Stun)
+				|| !TestNull(TEXT("Stun keeps combat flight inactive"), Fixture.Data<FEnemyFlyToLocationTask>())) return false;
+		}
+		Fixture.Enemy->RestoreStateAfterStun();
+		Fixture.SetSight(true);
+	}
+
+	bool bInterrupted = false;
+	for (int32 Frame = 0; Frame < 15; ++Frame)
+	{
+		if (!Fixture.Advance()) return false;
+		if (Fixture.Snapshot.HasState(TEXT("RetreatFire")))
+		{
+			bInterrupted = true;
+			break;
+		}
+	}
+	if (!TestTrue(TEXT("Close entry selects retreat within the assessment interval plus transition ticks"), bInterrupted)) return false;
+	if (!bBoundary) return true;
+
+	for (int32 Frame = 0; Frame < 180; ++Frame)
+	{
+		const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+		if (Fly && Fly->bConstrainRetreatPath) break;
+		if (!Fixture.Advance()) return false;
+	}
+	const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+	if (!TestTrue(TEXT("Close boundary selects an actual retreat flight"), Fly && Fly->bConstrainRetreatPath)) return false;
+	const FVector Destination = Fly->Destination;
+	const TArray<FVector> Route = Fly->PathWaypoints;
+	const uint64 Episode = Fixture.Enemy->GetCombatTacticalEpisodeSerial();
+	const FVector FixedStart = Fixture.Enemy->GetActorLocation();
+	// 3~5m 완충 구간에서 작은 왕복은 유효한 후퇴와 후보 예산을 새로 시작하지 않는다.
+	for (const float Distance : {400.0f, 499.0f, 400.0f, 300.0f})
+	{
+		Fixture.Target->SetActorLocation(FixedStart + FVector(Distance, 0, 0));
+		Fixture.SetSight(true);
+		// 각 입력은 판단 주기 0.2초를 넘기되, 고정 이동의 총 관찰은 무진행 제한 1초 전에 끝낸다.
+		for (int32 Frame = 0; Frame < 13; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+			if (!TestTrue(TEXT("Buffer oscillation preserves active retreat and destination"),
+				Fly && Fly->bConstrainRetreatPath && Fly->Destination.Equals(Destination, 1.0f) && Fly->PathWaypoints == Route)
+				|| !TestEqual(TEXT("Buffer oscillation preserves the tactical episode"),
+					Fixture.Enemy->GetCombatTacticalEpisodeSerial(), Episode)) return false;
+		}
+	}
+	return true;
+}
+
 IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyCombatWorldTest, "Outlier.Enemy.Combat.Integration",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter)
 

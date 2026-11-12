@@ -2918,12 +2918,20 @@ void AEnemyBase::LogNoiseInvestigationDiagnostic(const TCHAR* Stage, const FEnem
 		: VisualInvestigation.AdoptedAt + (FMath::IsFinite(VisualInvestigationHoldDuration)
 			? FMath::Max(0.0f, VisualInvestigationHoldDuration) : 1.0f);
 	UE_LOG(LogOutlier, Log,
-		TEXT("[EnemyHearingDiag] Stage=%s Enemy=%s Source=%s Clue=%llu Occurred=%.3f Now=%.3f Expires=%.3f State=%s Goal=%s Investigation=%llu Search=%llu Reason=%s NoiseHoldUntil=%.3f VisualHoldUntil=%.3f Location=%s"),
+		TEXT("[EnemyHearingDiag] Stage=%s Enemy=%s Source=%s Clue=%llu Occurred=%.3f Now=%.3f Expires=%.3f State=%s Goal=%s Investigation=%llu Search=%llu Reason=%s NoiseHoldUntil=%.3f VisualHoldUntil=%.3f Location=%s Received=%.3f ReceiveLag=%.3f ReceivedDistance=%.1f Near=%d Facing=%llu StartDelay=%.3f FacingElapsed=%.3f Lease=%d Generation=%d"),
 		Stage, *GetName(), *GetNameSafe(Clue.Source.Get()), static_cast<unsigned long long>(Clue.Serial),
 		Clue.OccurredAt, GetWorld()->GetTimeSeconds(), Clue.OccurredAt + HeardNoiseLifetime,
 		*UEnum::GetValueAsString(CombatState), *UEnum::GetValueAsString(PerceptionGoal.Type),
 		static_cast<unsigned long long>(NoiseInvestigationSerial), static_cast<unsigned long long>(SearchEpisode.Serial),
-		Reason, NoiseHoldEndsAt, VisualHoldEndsAt, *Clue.Location.ToCompactString());
+		Reason, NoiseHoldEndsAt, VisualHoldEndsAt, *Clue.Location.ToCompactString(),
+		Clue.ReceivedAt, Clue.ReceivedAt >= 0.0 ? Clue.ReceivedAt - Clue.OccurredAt : -1.0,
+		Clue.ReceivedDistance, Clue.bNearDirectionReaction ? 1 : 0,
+		static_cast<unsigned long long>(NoiseDirectionConfirmation.Serial),
+		NoiseDirectionConfirmation.Clue.Serial == Clue.Serial && Clue.ReceivedAt >= 0.0
+			? NoiseDirectionConfirmation.StartedAt - Clue.ReceivedAt : -1.0,
+		NoiseDirectionConfirmation.Clue.Serial == Clue.Serial && NoiseDirectionConfirmation.StartedAt >= 0.0
+			? GetWorld()->GetTimeSeconds() - NoiseDirectionConfirmation.StartedAt : -1.0,
+		GetPoolLeaseSerial(), GetPoolGameplayGeneration());
 }
 
 bool AEnemyBase::RecordHeardNoise(AActor* Source, const FVector& Location, double OccurredAt, bool* bValidStimulus)
@@ -2968,6 +2976,11 @@ bool AEnemyBase::RecordHeardNoise(AActor* Source, const FVector& Location, doubl
 	Incoming.Source = Source;
 	Incoming.Location = Location;
 	Incoming.OccurredAt = OccurredAt;
+	Incoming.ReceivedAt = Now;
+	Incoming.ReceivedDistance = FVector::Distance(GetActorLocation(), Location);
+	Incoming.bNearDirectionReaction = FMath::IsFinite(RuntimeStat.AwarenessNearDistance)
+		&& RuntimeStat.AwarenessNearDistance >= 0.0f
+		&& Incoming.ReceivedDistance <= RuntimeStat.AwarenessNearDistance;
 	// 근접한 동일 출처 입력만 병합한다. 다른 출처의 오래된 유효 소리는 거리 비교에 남긴다.
 	FEnemyHeardNoise* Nearby = HeardNoiseCandidates.FindByPredicate([&](const FEnemyHeardNoise& Candidate)
 	{
@@ -3033,6 +3046,14 @@ bool AEnemyBase::RecordHeardNoise(AActor* Source, const FVector& Location, doubl
 		: bNoiseInvestigationActive && Now < LastNoiseDestinationChangedAt + NoiseDestinationUpdateInterval ? TEXT("NoiseHold")
 		: TEXT("PriorityOrDestinationEligibility");
 	LogNoiseInvestigationDiagnostic(TEXT("CandidateReceived"), Incoming, Reason);
+	if (Incoming.bNearDirectionReaction && IsNoiseDirectionMerged(Incoming))
+	{
+		LogNoiseInvestigationDiagnostic(TEXT("FacingMerged"), Incoming, TEXT("SameDirectionWithinConfirmationWindow"));
+	}
+	else if (Incoming.bNearDirectionReaction && IsNoiseDirectionConfirmationActive())
+	{
+		LogNoiseInvestigationDiagnostic(TEXT("FacingBlocked"), Incoming, TEXT("QueuedUntilActiveConfirmationEnds"));
+	}
 	return true;
 }
 
@@ -3102,31 +3123,59 @@ bool AEnemyBase::MarkNoiseDirectionUsed(uint64 ClueSerial)
 	return false;
 }
 
-bool AEnemyBase::CanRunNoiseDirectionConfirmation() const
+bool AEnemyBase::TryGetNearDirectionConfirmationNoise(FEnemyHeardNoise& OutNoise) const
 {
+	OutNoise = FEnemyHeardNoise();
+	for (const FEnemyHeardNoise& Candidate : HeardNoiseCandidates)
+	{
+		if (!Candidate.bNearDirectionReaction || Candidate.bUsedForDirectionConfirmation
+			|| !IsHeardNoiseValid(Candidate) || Candidate.OccurredAt <= LastPerceptionObservedAt
+			|| (Candidate.Location - GetActorLocation()).IsNearlyZero() || IsNoiseDirectionMerged(Candidate)) continue;
+		if (OutNoise.Serial == 0 || Candidate.ReceivedDistance < OutNoise.ReceivedDistance
+			|| (Candidate.ReceivedDistance == OutNoise.ReceivedDistance && Candidate.OccurredAt > OutNoise.OccurredAt))
+		{
+			OutNoise = Candidate;
+		}
+	}
+	return OutNoise.Serial != 0;
+}
+
+bool AEnemyBase::CanRunNoiseDirectionConfirmation(bool bNearReaction, const TCHAR** OutReason) const
+{
+	if (OutReason) *OutReason = nullptr;
+	const auto Blocked = [OutReason](const TCHAR* Reason)
+	{
+		if (OutReason) *OutReason = Reason;
+		return false;
+	};
+	bNearReaction |= IsNoiseDirectionConfirmationActive() && NoiseDirectionConfirmation.Clue.bNearDirectionReaction;
 	const AEnemyAIController* AI = Cast<AEnemyAIController>(GetController());
 	if (!HasAuthority() || !GetWorld() || !AI || !UsesHearingPerception() || !CanUseEnemyPerception()
-		|| IsDead() || (CombatState != EEnemyCombatState::Combat && CombatState != EEnemyCombatState::Alert)
-		|| AI->IsAttackAimActive() || IsHitResponseCommitted()
-		|| (HasHitResponse() && (!bInvestigatingObservedLocation || IsHitDirectionConfirmationActive())) || IsHitClueValid(PendingHitClue)
-		|| (!bNoiseInvestigationActive && VisualInvestigation.AdoptedAt < 0.0))
+		|| IsDead() || (CombatState != EEnemyCombatState::Combat && CombatState != EEnemyCombatState::Alert))
 	{
-		return false;
+		return Blocked(TEXT("StateOrPerceptionUnavailable"));
 	}
+	if (AI->IsAttackAimActive() || IsHitResponseCommitted()) return Blocked(TEXT("AttackAimOrCommittedAction"));
+	if ((HasHitResponse() && (!bInvestigatingObservedLocation || IsHitDirectionConfirmationActive()))
+		|| IsHitClueValid(PendingHitClue)) return Blocked(TEXT("HitResponse"));
 	if (AI->IsTargetDirectlyVisible(AI->GetCachedVisibleTarget())
 		|| AI->IsTargetDirectlyVisible(GetTrackedTarget()))
 	{
-		return false;
+		return Blocked(TEXT("DirectSight"));
 	}
+	// 근거리 반응은 이동 목표를 부여하지 않는다. 같은 상위 행동 경계 안에서 회전만 먼저 시작한다.
+	if (bNearReaction) return true;
+	if (!bNoiseInvestigationActive && VisualInvestigation.AdoptedAt < 0.0) return Blocked(TEXT("AwaitInvestigationAdoption"));
 	if (!bNoiseInvestigationActive && PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateNoise)
 	{
-		return false;
+		return Blocked(TEXT("AwaitInvestigationAdoption"));
 	}
 	// 이동 의도가 먼저 정해졌으면 별도 돌아보기를 시작하지 않는다. 실제 채택 전에도 옛 확인은 양보한다.
-	return (PerceptionGoal.Type == EEnemyPerceptionGoalType::Search
+	const bool bEligible = (PerceptionGoal.Type == EEnemyPerceptionGoalType::Search
 		|| PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateNoise
 		|| (bInvestigatingObservedLocation && PerceptionGoal.Type == EEnemyPerceptionGoalType::InvestigateHit))
 		&& (!bNoiseInvestigationActive || PerceptionGoal.NoiseClueSerial == NoiseInvestigationClue.Serial);
+	return bEligible || Blocked(TEXT("HigherPriorityGoal"));
 }
 
 bool AEnemyBase::IsNoiseDirectionMerged(const FEnemyHeardNoise& Noise) const
@@ -3195,23 +3244,35 @@ bool AEnemyBase::TryBeginNoiseDirectionConfirmation()
 		return false;
 	}
 	RefreshPerceptionGoal();
-	if (IsNoiseDirectionConfirmationActive() || !CanRunNoiseDirectionConfirmation())
+	FEnemyHeardNoise Selected;
+	const bool bNearReaction = TryGetNearDirectionConfirmationNoise(Selected);
+	const TCHAR* BlockReason = nullptr;
+	if (IsNoiseDirectionConfirmationActive() || !CanRunNoiseDirectionConfirmation(bNearReaction, &BlockReason))
 	{
+		if (bNearReaction && (LastNoiseDirectionBlockedClueSerial != Selected.Serial || LastNoiseDirectionBlockedReason != BlockReason))
+		{
+			LastNoiseDirectionBlockedClueSerial = Selected.Serial;
+			LastNoiseDirectionBlockedReason = BlockReason;
+			LogNoiseInvestigationDiagnostic(TEXT("FacingBlocked"), Selected, BlockReason ? BlockReason : TEXT("ActiveConfirmation"));
+		}
 		return false;
 	}
 	const double Now = GetWorld()->GetTimeSeconds();
 	const float Interval = FMath::IsFinite(NoiseDirectionConfirmationInterval)
 		? FMath::Max(0.0f, NoiseDirectionConfirmationInterval) : 1.0f;
-	if (NoiseDirectionConfirmation.StartedAt >= 0.0 && Now < NoiseDirectionConfirmation.StartedAt + Interval)
+	if (!bNearReaction && NoiseDirectionConfirmation.StartedAt >= 0.0 && Now < NoiseDirectionConfirmation.StartedAt + Interval)
 	{
 		return false;
 	}
 	MergePendingNoiseDirections();
-	FEnemyHeardNoise Selected;
-	const bool bResumeDeferred = bDeferredNoiseDirectionReady
+	const bool bResumeDeferred = !bNearReaction && bDeferredNoiseDirectionReady
 		&& DeferredNoiseInvestigationSerial == GetLocationInvestigationSerial() && IsHeardNoiseValid(DeferredNoiseDirectionClue);
 	const bool bStationaryContinuation = bResumeDeferred && bDeferredNoiseDirectionStationary;
-	if (bResumeDeferred)
+	if (bNearReaction)
+	{
+		if (!MarkNoiseDirectionUsed(Selected.Serial)) return false;
+	}
+	else if (bResumeDeferred)
 	{
 		Selected = DeferredNoiseDirectionClue;
 		DeferredNoiseDirectionClue = FEnemyHeardNoise();
@@ -3219,6 +3280,7 @@ bool AEnemyBase::TryBeginNoiseDirectionConfirmation()
 	}
 	else if (!TryGetDirectionConfirmationNoise(Selected) || !MarkNoiseDirectionUsed(Selected.Serial))
 	{
+		bNoiseDirectionEvaluationPending = false;
 		return false;
 	}
 	NoiseDirectionConfirmation = FEnemyNoiseDirectionConfirmation();
@@ -3233,7 +3295,7 @@ bool AEnemyBase::TryBeginNoiseDirectionConfirmation()
 		NoiseDirectionConfirmation.bStartedWhileMoving = false;
 	}
 	const FVector Direction = Selected.Location - GetActorLocation();
-	if (!bResumeDeferred && NoiseDirectionConfirmation.bStartedWhileMoving && !NoiseInvestigationTravelDirection.IsNearlyZero())
+	if (!bNearReaction && !bResumeDeferred && NoiseDirectionConfirmation.bStartedWhileMoving && !NoiseInvestigationTravelDirection.IsNearlyZero())
 	{
 		const double Offset = FMath::Abs(FMath::FindDeltaAngleDegrees(NoiseInvestigationTravelDirection.Rotation().Yaw, Direction.Rotation().Yaw));
 		const float Limit = FMath::IsFinite(NoiseDirectionMovingHalfAngle) ? FMath::Clamp(NoiseDirectionMovingHalfAngle, 0.0f, 180.0f) : 60.0f;
@@ -3253,6 +3315,7 @@ bool AEnemyBase::TryBeginNoiseDirectionConfirmation()
 	NoiseDirectionConfirmation.PhaseEndsAt = FMath::Min(Now + RotationTime, Selected.OccurredAt + HeardNoiseLifetime);
 	MergePendingNoiseDirections();
 	ScheduleNoiseDirectionConfirmationEnd();
+	LogNoiseInvestigationDiagnostic(TEXT("FacingStarted"), Selected, bNearReaction ? TEXT("NearImmediate") : TEXT("DirectionConfirmation"));
 	return true;
 }
 
@@ -3285,6 +3348,8 @@ bool AEnemyBase::NotifyNoiseDirectionReached(uint64 Serial)
 	}
 	const float Hold = FMath::IsFinite(NoiseDirectionConfirmationHold) ? FMath::Max(0.0f, NoiseDirectionConfirmationHold) : 0.3f;
 	NoiseDirectionConfirmation.Phase = EEnemyNoiseConfirmationPhase::Holding;
+	LogNoiseInvestigationDiagnostic(TEXT("FacingReached"), NoiseDirectionConfirmation.Clue,
+		NoiseDirectionConfirmation.bLimitedByMovingAngle ? TEXT("MovingAngleLimit") : TEXT("SourceDirection"));
 	if (!IsHeardNoiseValid(NoiseDirectionConfirmation.Clue))
 	{
 		EndNoiseDirectionConfirmation(Serial);
@@ -3317,6 +3382,12 @@ bool AEnemyBase::EndNoiseDirectionConfirmation(uint64 Serial)
 	}
 	NoiseDirectionConfirmation.Phase = EEnemyNoiseConfirmationPhase::None;
 	NoiseDirectionConfirmation.EndedAt = GetWorld()->GetTimeSeconds();
+	const TCHAR* ActionReason = nullptr;
+	const bool bCanContinue = CanRunNoiseDirectionConfirmation(NoiseDirectionConfirmation.Clue.bNearDirectionReaction, &ActionReason);
+	const TCHAR* EndReason = !IsHeardNoiseValid(NoiseDirectionConfirmation.Clue) ? TEXT("ClueExpiredOrInvalid")
+		: !bCanContinue ? ActionReason
+		: NoiseDirectionConfirmation.EndedAt >= NoiseDirectionConfirmation.PhaseEndsAt ? TEXT("PhaseDeadline") : TEXT("Interrupted");
+	LogNoiseInvestigationDiagnostic(TEXT("FacingEnded"), NoiseDirectionConfirmation.Clue, EndReason);
 	bNoiseDirectionFacing = false;
 	bNoiseDirectionEvaluationPending = true;
 	ForceNetUpdate();
@@ -3326,11 +3397,17 @@ bool AEnemyBase::EndNoiseDirectionConfirmation(uint64 Serial)
 
 void AEnemyBase::ClearNoiseDirectionConfirmation()
 {
+	if (IsNoiseDirectionConfirmationActive())
+	{
+		LogNoiseInvestigationDiagnostic(TEXT("FacingEnded"), NoiseDirectionConfirmation.Clue, TEXT("LifecycleReset"));
+	}
 	if (GetWorld())
 	{
 		GetWorldTimerManager().ClearTimer(NoiseDirectionConfirmationTimer);
 	}
 	NoiseDirectionConfirmation = FEnemyNoiseDirectionConfirmation();
+	LastNoiseDirectionBlockedClueSerial = 0;
+	LastNoiseDirectionBlockedReason = nullptr;
 	bNoiseDirectionFacing = false;
 	bNoiseDirectionEvaluationPending = false;
 	DeferredNoiseDirectionClue = FEnemyHeardNoise();
@@ -3368,7 +3445,8 @@ void AEnemyBase::UpdateNoiseInvestigationProgress(uint64 InvestigationSerial, co
 		return;
 	}
 	NoiseInvestigationAcceptanceRadius = AcceptanceRadius;
-	if (!IsNoiseDirectionConfirmationActive() || !NoiseDirectionConfirmation.bStartedWhileMoving)
+	if (!IsNoiseDirectionConfirmationActive() || !NoiseDirectionConfirmation.bStartedWhileMoving
+		|| NoiseDirectionConfirmation.Clue.bNearDirectionReaction)
 	{
 		return;
 	}
@@ -3474,23 +3552,26 @@ bool AEnemyBase::UpdateNoiseDirectionFacing(float DeltaTime)
 	}
 	if (!IsNoiseDirectionConfirmationActive())
 	{
-		if (!bNoiseDirectionEvaluationPending || !CanRunNoiseDirectionConfirmation())
+		if (!bNoiseDirectionEvaluationPending)
 		{
 			return false;
 		}
-		const float Interval = FMath::IsFinite(NoiseDirectionConfirmationInterval)
-			? FMath::Max(0.0f, NoiseDirectionConfirmationInterval) : 1.0f;
-		if (NoiseDirectionConfirmation.StartedAt >= 0.0
-			&& GetWorld()->GetTimeSeconds() < NoiseDirectionConfirmation.StartedAt + Interval)
+		FEnemyHeardNoise NearCandidate;
+		if (!TryGetNearDirectionConfirmationNoise(NearCandidate))
 		{
-			return false;
+			if (!CanRunNoiseDirectionConfirmation()) return false;
+			const float Interval = FMath::IsFinite(NoiseDirectionConfirmationInterval)
+				? FMath::Max(0.0f, NoiseDirectionConfirmationInterval) : 1.0f;
+			if (NoiseDirectionConfirmation.StartedAt >= 0.0
+				&& GetWorld()->GetTimeSeconds() < NoiseDirectionConfirmation.StartedAt + Interval) return false;
+			bNoiseDirectionEvaluationPending = false;
 		}
-		// 후보 수신/종료/의도 변경 때만 선택한다. 비활성 프레임마다 후보를 다시 훑지 않는다.
-		bNoiseDirectionEvaluationPending = false;
+		// 근거리 후보는 일반 간격과 채택 gate를 우회한다. 상위 행동 차단 중에는 pending을 유지한다.
 		if (!TryBeginNoiseDirectionConfirmation())
 		{
 			return false;
 		}
+		bNoiseDirectionEvaluationPending = false;
 	}
 	if (!CanRunNoiseDirectionConfirmation() || !IsHeardNoiseValid(NoiseDirectionConfirmation.Clue))
 	{
@@ -3499,7 +3580,8 @@ bool AEnemyBase::UpdateNoiseDirectionFacing(float DeltaTime)
 	}
 	AEnemyAIController* AI = CastChecked<AEnemyAIController>(GetController());
 	const FVector Direction = NoiseDirectionConfirmation.Clue.Location - GetActorLocation();
-	if (NoiseDirectionConfirmation.bStartedWhileMoving && Direction.SizeSquared() <= FMath::Square(NoiseInvestigationAcceptanceRadius))
+	if (!NoiseDirectionConfirmation.Clue.bNearDirectionReaction && NoiseDirectionConfirmation.bStartedWhileMoving
+		&& Direction.SizeSquared() <= FMath::Square(NoiseInvestigationAcceptanceRadius))
 	{
 		// Controller가 비행 Task보다 먼저 갱신돼도 이미 가까운 단서를 한 프레임 돌아보지 않는다.
 		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
@@ -3519,7 +3601,8 @@ bool AEnemyBase::UpdateNoiseDirectionFacing(float DeltaTime)
 	{
 		Desired.Yaw = Current.Yaw;
 	}
-	else if (NoiseDirectionConfirmation.bStartedWhileMoving && !NoiseInvestigationTravelDirection.IsNearlyZero())
+	else if (!NoiseDirectionConfirmation.Clue.bNearDirectionReaction
+		&& NoiseDirectionConfirmation.bStartedWhileMoving && !NoiseInvestigationTravelDirection.IsNearlyZero())
 	{
 		const double TravelYaw = NoiseInvestigationTravelDirection.Rotation().Yaw;
 		double Delta = FMath::FindDeltaAngleDegrees(TravelYaw, Desired.Yaw);
@@ -4544,11 +4627,14 @@ bool AEnemyBase::BeginNoiseInvestigation(FVector& OutDestination)
 	// 이동으로 채택한 사건을 나중에 옛 돌아보기로 재생하지 않는다. 위치 후보의 수명은 그대로 둔다.
 	// 후보 수신/재진입이 아닌 실제 목적지 채택에서만 이전 전투 회차와 예약을 폐기한다.
 	ResetCombatTacticalEpisode(false);
-	MarkNoiseDirectionUsed(Selected.Serial);
-	EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+	if (!Selected.bNearDirectionReaction) MarkNoiseDirectionUsed(Selected.Serial);
+	if (!NoiseDirectionConfirmation.Clue.bNearDirectionReaction)
+	{
+		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+	}
 	DeferredNoiseDirectionClue = FEnemyHeardNoise();
 	bDeferredNoiseDirectionReady = false;
-	EndSearchEpisode();
+	EndSearchEpisode(true);
 	bNoiseInvestigationActive = true;
 	bNoiseInvestigationSearching = false;
 	++NoiseInvestigationSerial;
@@ -4591,8 +4677,11 @@ bool AEnemyBase::TryUpdateNoiseInvestigationDestination(FVector& OutDestination)
 	}
 	ClearNoiseInvestigationFailure();
 	ResetCombatTacticalEpisode(false);
-	MarkNoiseDirectionUsed(Selected.Serial);
-	EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+	if (!Selected.bNearDirectionReaction) MarkNoiseDirectionUsed(Selected.Serial);
+	if (!NoiseDirectionConfirmation.Clue.bNearDirectionReaction)
+	{
+		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
+	}
 	DeferredNoiseDirectionClue = FEnemyHeardNoise();
 	bDeferredNoiseDirectionReady = false;
 	NoiseInvestigationLocation = Selected.Location;
@@ -7666,13 +7755,29 @@ void AEnemyBase::LogTargetAttackReadiness(const TCHAR* Stage) const
 	{
 		return;
 	}
-	UE_LOG(LogOutlier, Log, TEXT("[EnemyAttackDiag] Stage=%s Enemy=%s Target=%s Now=%.3f TelegraphRemaining=%.3f RecoveryRemaining=%.3f Phase=%s"),
+	UE_LOG(LogOutlier, Log, TEXT("[EnemyAttackDiag] Stage=%s Enemy=%s Target=%s Now=%.3f TelegraphRemaining=%.3f RecoveryRemaining=%.3f Phase=%s Lease=%d Generation=%d"),
 		Stage, *GetName(), *GetNameSafe(GetTrackedTarget()), GetWorld()->GetTimeSeconds(),
-		TargetAttackPreparationRemaining, GetTargetAttackRecoveryRemaining(), *UEnum::GetValueAsString(AttackPhase));
+		TargetAttackPreparationRemaining, GetTargetAttackRecoveryRemaining(), *UEnum::GetValueAsString(AttackPhase),
+		GetPoolLeaseSerial(), GetPoolGameplayGeneration());
 }
 
 void AEnemyBase::NotifyTargetAttackShotConsumed()
 {
+	// 공격 Task의 진입 횟수가 아니라 실제 총구별 탄 소비를 기록한다.
+	// 숨은 대상의 실시간 위치 대신 기존 전투 관측 위치를 사용한다.
+	static const IConsoleVariable* Diagnostics = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.PerceptionDiagnostics"));
+	if (HasAuthority() && GetWorld() && Diagnostics && Diagnostics->GetInt() != 0)
+	{
+		AActor* Target = GetTrackedTarget();
+		const FVector ObservedTarget = IsValid(Target) ? GetCombatNavigationTargetLocation(Target) : GetActorLocation();
+		const FVector Away = (GetActorLocation() - ObservedTarget).GetSafeNormal2D();
+		UE_LOG(LogOutlier, Log,
+			TEXT("[EnemyShotConsumed] Enemy=%s Target=%s Now=%.3f Lease=%d Generation=%d Speed=%.1f AwaySpeed=%.1f Distance2D=%.1f Location=%s ObservedTarget=%s"),
+			*GetName(), *GetNameSafe(Target), GetWorld()->GetTimeSeconds(), GetPoolLeaseSerial(), GetPoolGameplayGeneration(),
+			GetVelocity().Size2D(), FVector::DotProduct(GetVelocity(), Away),
+			IsValid(Target) ? FVector::Dist2D(GetActorLocation(), ObservedTarget) : -1.0,
+			*GetActorLocation().ToCompactString(), *ObservedTarget.ToCompactString());
+	}
 	if (IsTargetAttemptActive() && TargetAttackAttemptRecords.IsValidIndex(ActiveAttemptIndex))
 	{
 		FTargetAttackAttemptRecord& Entry = TargetAttackAttemptRecords[ActiveAttemptIndex];
@@ -8169,7 +8274,7 @@ bool AEnemyBase::GetSearchLookPitch(float& OutPitch) const
 	return true;
 }
 
-void AEnemyBase::EndSearchEpisode()
+void AEnemyBase::EndSearchEpisode(bool bPreserveNearNoiseFacing)
 {
 	if (!HasAuthority())
 	{
@@ -8179,7 +8284,7 @@ void AEnemyBase::EndSearchEpisode()
 	{
 		LogNoiseInvestigationDiagnostic(TEXT("SearchEnded"), NoiseInvestigationClue, TEXT("ReleaseOwnedEpisode"));
 	}
-	if (SearchEpisode.bActive)
+	if (SearchEpisode.bActive && !(bPreserveNearNoiseFacing && NoiseDirectionConfirmation.Clue.bNearDirectionReaction))
 	{
 		EndNoiseDirectionConfirmation(NoiseDirectionConfirmation.Serial);
 	}
