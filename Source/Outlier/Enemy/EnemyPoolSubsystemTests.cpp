@@ -15,6 +15,7 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "Misc/AutomationTest.h"
+#include "Network/OutlierArenaSubsystem.h"
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
 #endif
@@ -276,6 +277,8 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	if (MaxLeaseA)
 	{
 		// 빈 컬렉션으로 물리 파편 없이 요청/타이머 수명만 검증한다.
+		// 앞선 Pool 검사는 임의 세대를 사용하므로 presentation의 월드 세대도 같은 실행으로 맞춘다.
+		World->GetSubsystem<UOutlierArenaSubsystem>()->GameplayGeneration = MaxLeaseA->GetPoolGameplayGeneration();
 		UGeometryCollection* Collection = NewObject<UGeometryCollection>(World);
 		MaxLeaseA->SetDeathDebrisForPoolTesting(Collection, 0.5f);
 		TestTrue(TEXT("Living Enemy returns without a death event"), Pool->ReturnEnemy(

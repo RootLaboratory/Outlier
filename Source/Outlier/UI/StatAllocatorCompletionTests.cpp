@@ -96,8 +96,9 @@ bool FStatAllocatorCompletionTest::RunTest(const FString& Parameters)
 		Shooter->IsStatAllocatorUICompletedForGeneration(Generation));
 	Shooter->SetAcquiredSuit(true);
 
-	const uint32 NextGeneration = Arena->ReserveGameplayGeneration();
-	if (TestTrue(TEXT("A new gameplay generation is reserved"), NextGeneration != 0))
+	// UI 격리 검사는 현재 세대만 주입한다. 실제 예약/확정은 Arena 전환 자동화에서 검증한다.
+	const uint32 NextGeneration = ++Arena->GameplayGeneration;
+	if (TestTrue(TEXT("A new gameplay generation is supplied"), NextGeneration != 0))
 	{
 		TestFalse(TEXT("Previous completion is not valid in the next generation"),
 			Shooter->IsStatAllocatorUICompletedForGeneration(NextGeneration));

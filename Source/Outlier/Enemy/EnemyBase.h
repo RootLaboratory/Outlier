@@ -195,6 +195,7 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 	GENERATED_BODY()
 	friend class FOutlierSightBoneTargetsTest;
 	friend class FEnemyAdaptationCombatPresentationTest;
+	friend class FEnemyAdaptationGenerationDamageTest;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FEnemyHitClueLifecycleTest;
 #endif
@@ -301,6 +302,12 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
 	int32 GetPoolLeaseSerial() const { return PoolLeaseSerial; }
+
+	// 풀은 대여 수명, 배치 적은 Actor 초기화 때 고정한 수명으로 등록과 피해 보고를 맞춘다.
+	int32 GetCombatGameplayGeneration() const
+	{
+		return IsPoolManaged() ? PoolGameplayGeneration : PreplacedGameplayGeneration;
+	}
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void ResetPatrolPointsForTesting() { ResetPatrolPoints(); }
@@ -1527,6 +1534,7 @@ protected:
 
 	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
 	int32 PoolGameplayGeneration = 0;
+	int32 PreplacedGameplayGeneration = 0;
 
 	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
 	int32 PoolLeaseSerial = 0;

@@ -2482,6 +2482,32 @@ bool FRoomCombatGameplayActorReloadTest::RunTest(const FString& Parameters)
 	{
 		NewTurret->Destroy();
 	}
+	// 전체 Encounter 정리는 개별 터렛 처치 목록 없이 저장된다. 실제 복원 API를 거쳐
+	// Room 전/후 등록 모두에서 남은 터렛과 배치 적이 재등장하지 않는지 대조한다.
+	const FOutlierWorldProgressSnapshot CompletedProgress = Save->GetCurrentWorldProgress();
+	Save->RestoreCurrentDestroyedTurretIds(TSet<FName>());
+	for (bool bRoomFirst : {true, false})
+	{
+		Save->RestoreCurrentWorldProgress(CompletedProgress);
+		ARoomVolume* CompletedRoom = bRoomFirst ? SpawnRoom() : nullptr;
+		AEnemyBase* RemainingEnemy = SpawnEnemy();
+		AAutoTurret* RemainingTurret = SpawnTurret();
+		ARoomCombatSpawnPoint* CompletedPoint = SpawnPoint();
+		TestTrue(TEXT("Completed encounter suppresses placed Enemy before or after Room registration"),
+			RemainingEnemy && RemainingEnemy->IsActorBeingDestroyed());
+		TestTrue(TEXT("Completed encounter suppresses an unrecorded surviving turret"),
+			RemainingTurret && RemainingTurret->IsActorBeingDestroyed());
+		if (!bRoomFirst) CompletedRoom = SpawnRoom();
+		TestEqual(TEXT("Completed restore remains cleared"), Combat->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+		TestEqual(TEXT("Completed restore has no live enemies"), Combat->GetAliveEnemyCount(RoomTag), 0);
+		TestEqual(TEXT("Completed restore has no remaining turret registration"),
+			Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 1), 0);
+		TestTrue(TEXT("Completed restore clears SpawnPoint"), CompletedPoint && CompletedPoint->IsRoomCleared());
+		TestTrue(TEXT("Restore cleanup does not manufacture turret kills"), Save->GetCurrentDestroyedTurretIds().IsEmpty());
+		Combat->ResetRuntimeCombatState();
+		if (IsValid(CompletedRoom)) CompletedRoom->Destroy();
+		if (IsValid(CompletedPoint)) CompletedPoint->Destroy();
+	}
 	Save->SetWorldProgressState(
 		EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName(), false);
 	Save->RestoreCurrentDestroyedTurretIds(TSet<FName>());

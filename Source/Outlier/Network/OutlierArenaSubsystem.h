@@ -64,8 +64,11 @@ public:
 	void ReleaseArena();
 	void EnsureArenaLoaded();
 	uint32 ReserveGameplayGeneration();
+	void CancelGameplayGeneration(uint32 Generation);
+	bool CommitGameplayGeneration(uint32 Generation);
 	bool ReloadGameplayLevels(uint32 Generation, bool bWaitForClientAcks);
 	bool BeginClientGameplayReload(uint32 Generation);
+	bool SynchronizeClientGameplayGeneration(uint32 Generation);
 	void AllowGameplayLevelLoad(uint32 Generation);
 	bool RetryStalledGameplayReload(uint32 Generation);
 	void FailGameplayReload(uint32 Generation, EOutlierGameplayReloadFailure Failure);
@@ -74,6 +77,7 @@ public:
 
 	bool IsGameplayLevelsConfigured() const;
 	bool IsGameplayLevelsReady() const;
+	bool IsGameplayReloadBootstrapReady() const;
 	bool IsGameplayReloadUnloaded(uint32 Generation) const;
 	void SuspendGameplayVisibilityForConnection(APlayerController* PlayerController) const;
 	ULevel* GetArenaLoadedLevel() const;
@@ -133,6 +137,8 @@ private:
 		// TArray<uint8> UnloadedLevelLogged;
 		// TArray<uint8> ShownLevelLogged;
 		TWeakObjectPtr<ULevel> StableArenaLevel;
+		// 확정 후 스냅샷/페어 준비가 끝나야 실제 unload를 진행한다.
+		bool bUnloadRequested = false;
 		bool bCanLoad = false;
 		bool bUnloaded = false;
 		bool bGCRequested = false;
@@ -171,6 +177,16 @@ private:
 	TArray<TSoftObjectPtr<UWorld>> GameplaySublevels;
 	TSoftObjectPtr<UWorld> ArenaLevel;
 	uint32 GameplayGeneration = 0;
+	uint32 LastReservedGameplayGeneration = 0;
+	uint32 ReservedGameplayGeneration = 0;
+	friend class FOutlierArenaGenerationTransitionTest;
+	friend class FOutlierPresetGuideLifecycleTest;
+	friend class FLevel1SuitUpgradeDoorTest;
+	friend class FStatAllocatorCompletionTest;
+	friend class FEnemyAdaptationRuntimeRegistrationTest;
+	friend class FEnemyAdaptationGenerationDamageTest;
+	friend class FOutlierArenaRecoveryWatchdogTest;
+	friend class FOutlierClientReloadRecoveryTest;
 	bool bGameplayLevelsResolved = false;
 	bool bInitialGameplayLevelsRequested = false;
 	bool bPreloadAfterRelease = false;

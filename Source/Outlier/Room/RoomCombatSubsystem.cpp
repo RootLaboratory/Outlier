@@ -1633,10 +1633,12 @@ bool URoomCombatSubsystem::RegisterRoom(
 		Runtime.State = ERoomCombatState::WaitingForTrigger;
 	}
 
-	if (TSet<TWeakObjectPtr<AEnemyBase>>* PendingEnemies =
-		PendingPreplacedEnemies.Find(RoomTag))
+	// Destroy는 EndPlay → UnregisterEnemy로 재진입해 Pending 집합을 변경한다.
+	// Room 등록이 처리할 목록을 먼저 분리해야 복원 중 선행 적을 지워도 순회가 무효화되지 않는다.
+	TSet<TWeakObjectPtr<AEnemyBase>> PendingEnemies;
+	if (PendingPreplacedEnemies.RemoveAndCopyValue(RoomTag, PendingEnemies))
 	{
-		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *PendingEnemies)
+		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : PendingEnemies)
 		{
 			AEnemyBase* Enemy = EnemyPtr.Get();
 			if (!IsValid(Enemy))
@@ -1655,7 +1657,6 @@ bool URoomCombatSubsystem::RegisterRoom(
 			Runtime.TrackedAliveEnemies.Add(EnemyPtr);
 			Runtime.bHadPreplacedEnemy = true;
 		}
-		PendingPreplacedEnemies.Remove(RoomTag);
 	}
 	// SpawnPoint가 RoomVolume보다 먼저 등록됐어도 복원된 완료 상태를 적용한다.
 	ApplyRoomClearedToSpawnPoints(RoomTag, Runtime.State == ERoomCombatState::Cleared);
@@ -1996,6 +1997,11 @@ bool URoomCombatSubsystem::RegisterWaveTurret(
 	{
 		return false;
 	}
+	if (const UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+		Arena && Turret->GetCombatGameplayGeneration() != static_cast<int32>(Arena->GetGameplayGeneration()))
+	{
+		return false;
+	}
 	if (!RoomTag.IsValid() || CombatPhaseIndex < 0 || WaveIndex < 0)
 	{
 		return false;
@@ -2054,6 +2060,14 @@ bool URoomCombatSubsystem::RegisterWaveTurret(
 		? World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
 	const FOutlierRoomPhaseProgress* SavedProgress = Saves
 		? Saves->GetCurrentRoomPhaseProgress().Find(RoomTag) : nullptr;
+	// 전체 Encounter 완료는 선행 Phase 정리와 다르다. Room 등록 전에도 남은 모든 터렛을 막는다.
+	if ((ProgressRuntime && ProgressRuntime->State == ERoomCombatState::Cleared)
+		|| (Saves && Saves->HasWorldProgress(EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName())))
+	{
+		UnregisterWaveTurret(Turret);
+		Turret->Destroy();
+		return false;
+	}
 	const int32 ProgressPhaseIndex = ProgressRuntime ? ProgressRuntime->CurrentCombatPhaseIndex
 		: SavedProgress ? SavedProgress->NextPhaseIndex : INDEX_NONE;
 	if (TurretPhase && TurretPhase->bReleaseCombatOnCompletion
@@ -2302,6 +2316,20 @@ void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
 	{
 		return;
 	}
+	if (const UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+		Arena && Enemy->GetCombatGameplayGeneration() != static_cast<int32>(Arena->GetGameplayGeneration()))
+	{
+		return;
+	}
+	const UOutlierSaveSubSystem* Saves = World->GetGameInstance()
+		? World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	if (Saves && Saves->HasWorldProgress(EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()))
+	{
+		// RoomVolume보다 먼저 로드되어도 완료된 전투의 적을 Pending 목록에 되살리지 않는다.
+		UnregisterEnemy(Enemy);
+		Enemy->Destroy();
+		return;
+	}
 
 	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
 	FRoomCombatEnemyRegistration& Registration = RegisteredEnemies.FindOrAdd(EnemyPtr);
@@ -2309,7 +2337,7 @@ void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
 	Registration.RoomTag = RoomTag;
 	Registration.CombatPhaseIndex = 0;
 	Registration.WaveIndex = 0;
-	Registration.GameplayGeneration = 0;
+	Registration.GameplayGeneration = Enemy->GetCombatGameplayGeneration();
 	Registration.bPreplaced = true;
 	Registration.bPoolManaged = false;
 

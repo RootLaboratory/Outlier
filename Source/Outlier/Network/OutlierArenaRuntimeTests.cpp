@@ -12,6 +12,13 @@
 #include "Engine/LevelStreaming.h"
 #include "Engine/LevelStreamingDynamic.h"
 #include "Engine/World.h"
+#include "Engine/Level.h"
+#include "OutlierGameMode.h"
+#include "OutlierPlayerState.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
+#include "Shooter/ShooterCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "UObject/UnrealType.h"
 #include "Misc/PackageName.h"
 #endif
 
@@ -108,6 +115,193 @@ bool FOutlierArenaMapContractTest::RunTest(const FString& Parameters)
 }
 
 #if WITH_EDITOR
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierArenaGenerationTransitionTest,
+	"Outlier.Network.SingleArena.GenerationTransition",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierArenaGenerationTransitionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("GenerationTransition")));
+	if (!TestNotNull(TEXT("Isolated server world exists"), World)) return false;
+	World->AddToRoot();
+	UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+	FObjectPropertyBase* LoadedLevelProperty = FindFProperty<FObjectPropertyBase>(
+		ULevelStreaming::StaticClass(), TEXT("LoadedLevel"));
+	if (!TestNotNull(TEXT("Arena subsystem exists"), Arena)
+		|| !TestNotNull(TEXT("Streaming fixture can supply loaded levels"), LoadedLevelProperty))
+	{
+		World->DestroyWorld(false);
+		World->RemoveFromRoot();
+		return false;
+	}
+
+	// 스트리밍 I/O만 격리하고 예약/확정/실패 및 GameMode 진입은 실제 함수를 사용한다.
+	ULevelStreamingDynamic* Base = NewObject<ULevelStreamingDynamic>(World);
+	ULevelStreamingDynamic* Gameplay = NewObject<ULevelStreamingDynamic>(World);
+	ULevel* GameplayLevel = NewObject<ULevel>(World);
+	GameplayLevel->bIsVisible = true;
+	LoadedLevelProperty->SetObjectPropertyValue_InContainer(Base, World->PersistentLevel);
+	LoadedLevelProperty->SetObjectPropertyValue_InContainer(Gameplay, GameplayLevel);
+	Arena->Arena.StreamingLevel = Base;
+	Arena->GameplayStreamingLevels = { Gameplay };
+	Arena->GameplaySublevels = { TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/Tests/GenerationGameplay.GenerationGameplay"))) };
+	Arena->bGameplayLevelsResolved = true;
+	Arena->bInitialGameplayLevelsRequested = true;
+	int32 Starts = 0;
+	int32 Failures = 0;
+	uint32 ObservedGeneration = 0;
+	Arena->OnArenaGameplayReloadStarted.AddLambda([&](uint32 Generation)
+	{
+		++Starts;
+		ObservedGeneration = Generation;
+		TestEqual(TEXT("Listeners see the committed generation"), Arena->GetGameplayGeneration(), Generation);
+	});
+	Arena->OnArenaGameplayReloadFailed.AddLambda([&](uint32, EOutlierGameplayReloadFailure) { ++Failures; });
+
+	const uint32 Cancelled = Arena->ReserveGameplayGeneration();
+	TestTrue(TEXT("Ready world can reserve"), Cancelled != 0);
+	TestEqual(TEXT("Reservation preserves the live generation"), Arena->GetGameplayGeneration(), 0u);
+	TestEqual(TEXT("Reservation does not notify consumers"), Starts, 0);
+	TestEqual(TEXT("Overlapping reservation is rejected"), Arena->ReserveGameplayGeneration(), 0u);
+	Arena->CancelGameplayGeneration(Cancelled);
+	TestFalse(TEXT("Cancelled reservation cannot commit"), Arena->CommitGameplayGeneration(Cancelled));
+
+	// 실제 페어 진입의 veto가 저장 적용과 세대 전환 전에 끝나는지 검증한다.
+	UClass* ModeClass = LoadClass<AOutlierGameMode>(nullptr,
+		TEXT("/Game/Blueprints/Outlier/BP_OutlierGM.BP_OutlierGM_C"));
+	AOutlierGameMode* Mode = ModeClass ? World->SpawnActor<AOutlierGameMode>(ModeClass) : nullptr;
+	AOutlierPlayerState* ShooterState = World->SpawnActor<AOutlierPlayerState>();
+	AOutlierPlayerState* PartnerState = World->SpawnActor<AOutlierPlayerState>();
+	AFirstPersonPlayerController* ShooterController = World->SpawnActor<AFirstPersonPlayerController>();
+	AFirstPersonPlayerController* PartnerController = World->SpawnActor<AFirstPersonPlayerController>();
+	if (TestNotNull(TEXT("Production GameMode exists"), Mode)
+		&& TestNotNull(TEXT("Shooter state exists"), ShooterState)
+		&& TestNotNull(TEXT("Partner state exists"), PartnerState)
+		&& TestNotNull(TEXT("Shooter controller exists"), ShooterController)
+		&& TestNotNull(TEXT("Partner controller exists"), PartnerController))
+	{
+		Mode->ShooterClass = AShooterCharacter::StaticClass();
+		Mode->PartnerClass = APartnerCharacter::StaticClass();
+		ShooterState->SetOwner(ShooterController);
+		PartnerState->SetOwner(PartnerController);
+		TestFalse(TEXT("Abstract pawn class is rejected before reservation"),
+			Mode->ReloadArenaAndRespawnPair(ShooterState, PartnerState,
+				FTransform::Identity, FTransform::Identity, true));
+		TestEqual(TEXT("Invalid class does not consume a generation token"), Arena->LastReservedGameplayGeneration, Cancelled);
+		Mode->ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+			TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+		bool bApplied = false;
+		bool bVetoChecked = false;
+		TestFalse(TEXT("GameMode rejects a failed pre-transition callback"),
+			Mode->ReloadArenaAndRespawnPair(ShooterState, PartnerState,
+				FTransform::Identity, FTransform::Identity, true, INDEX_NONE,
+				[&]() { bVetoChecked = true; return false; }, [&]() { bApplied = true; }));
+		TestTrue(TEXT("Valid preflight reaches the veto callback"), bVetoChecked);
+		TestFalse(TEXT("Rejected transition does not apply the snapshot"), bApplied);
+		TestFalse(TEXT("Rejected transition does not enter reload"), Mode->bArenaReloadInProgress);
+		TestEqual(TEXT("Rejected transition releases its reservation"), Arena->ReservedGameplayGeneration, 0u);
+		TestEqual(TEXT("Rejected transition preserves the live generation"), Arena->GetGameplayGeneration(), 0u);
+	}
+
+	const uint32 Committed = Arena->ReserveGameplayGeneration();
+	TestTrue(TEXT("Cancelled tokens are not reused"), Committed > Cancelled);
+	Arena->CancelGameplayGeneration(Cancelled);
+	TestTrue(TEXT("Stale cancellation preserves the current reservation"), Arena->CommitGameplayGeneration(Committed));
+	TestEqual(TEXT("Consumers transition exactly once"), Starts, 1);
+	TestEqual(TEXT("Consumer and Arena generations agree"), ObservedGeneration, Committed);
+	TestFalse(TEXT("Duplicate commit is rejected"), Arena->CommitGameplayGeneration(Committed));
+	TestFalse(TEXT("Commit does not start streaming before restore"), Arena->PendingGameplayReload->bUnloadRequested);
+	Arena->TickArenaLevels(0.0f);
+	TestEqual(TEXT("Preparation cannot advance the unload phase"),
+		Arena->GetGameplayReloadPhase(), EOutlierGameplayReloadPhase::WaitingForUnload);
+	TestTrue(TEXT("Committed execution starts unload"), Arena->ReloadGameplayLevels(Committed, true));
+	AddExpectedError(TEXT("Reject server reload"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Duplicate unload start is rejected"), Arena->ReloadGameplayLevels(Committed, true));
+	Arena->AllowGameplayLevelLoad(Cancelled);
+	TestFalse(TEXT("Stale authorization cannot unlock the new execution"), Arena->PendingGameplayReload->bCanLoad);
+	Arena->FailGameplayReload(Cancelled, EOutlierGameplayReloadFailure::InvalidRuntime);
+	TestEqual(TEXT("Stale failure cannot terminate the new execution"), Failures, 0);
+	AddExpectedError(TEXT("Reload failed:"), EAutomationExpectedErrorFlags::Contains, 1);
+	Arena->FailGameplayReload(Committed, EOutlierGameplayReloadFailure::InvalidRuntime);
+	Arena->FailGameplayReload(Committed, EOutlierGameplayReloadFailure::InvalidRuntime);
+	TestEqual(TEXT("Committed failure is notified once"), Failures, 1);
+	TestEqual(TEXT("Committed failure never rewinds the generation"), Arena->GetGameplayGeneration(), Committed);
+
+	// 완료 후 늦은 실패는 pending을 부활시키지 않으며 다음 실행은 새 토큰을 사용한다.
+	Arena->PendingGameplayReload.Reset();
+	Arena->FailGameplayReload(Committed, EOutlierGameplayReloadFailure::InvalidRuntime);
+	TestFalse(TEXT("Late failure does not recreate a completed reload"), Arena->PendingGameplayReload.IsSet());
+	const uint32 Next = Arena->ReserveGameplayGeneration();
+	TestTrue(TEXT("Next execution advances past committed tokens"), UOutlierArenaSubsystem::IsGameplayGenerationNewer(Next, Committed));
+	TestFalse(TEXT("Old committed token cannot replace the new reservation"), Arena->CommitGameplayGeneration(Committed));
+	TestTrue(TEXT("Next execution commits"), Arena->CommitGameplayGeneration(Next));
+	TestTrue(TEXT("Next execution requests unload"), Arena->ReloadGameplayLevels(Next, true));
+	int32 GCReady = 0;
+	Arena->OnArenaGameplayGCReady.AddLambda([&](uint32) { ++GCReady; });
+	// unload 완료 통보에서 실패하는 재진입을 실제 poll 경로에 주입한다.
+	Arena->OnArenaGameplayUnloaded.AddLambda([&](uint32 Generation)
+	{
+		Arena->FailGameplayReload(Generation, EOutlierGameplayReloadFailure::InvalidRuntime);
+	});
+	Arena->PendingGameplayReload->Phase = EOutlierGameplayReloadPhase::WaitingForGCPurge;
+	AddExpectedError(TEXT("Reload failed:"), EAutomationExpectedErrorFlags::Contains, 1);
+	Arena->TickArenaLevels(0.0f);
+	TestEqual(TEXT("Failure during unload notification suppresses GCReady"), GCReady, 0);
+	TestEqual(TEXT("Each failed execution notifies once"), Failures, 2);
+	Arena->OnArenaGameplayUnloaded.Clear();
+	Arena->OnArenaGameplayGCReady.Clear();
+
+	// GameMode의 실제 복원 콜백이 확정 이후에 실행되고, 콜백 중 실패하면 스폰 전에 멈춘다.
+	Arena->PendingGameplayReload.Reset();
+	if (Mode && ShooterState && PartnerState && ShooterController && PartnerController)
+	{
+		FObjectPropertyBase* AuthorityModeProperty = FindFProperty<FObjectPropertyBase>(
+			UWorld::StaticClass(), TEXT("AuthorityGameMode"));
+		if (TestNotNull(TEXT("Fixture can supply the authoritative GameMode"), AuthorityModeProperty))
+		{
+			AuthorityModeProperty->SetObjectPropertyValue_InContainer(World, Mode);
+			Mode->PendingGameplayGeneration = Next;
+			Mode->bArenaReloadInProgress = true;
+			Mode->bServerArenaReloadReady = true;
+			const FDelegateHandle FailureHandle = Arena->OnArenaGameplayReloadFailed.AddUObject(
+				Mode, &AOutlierGameMode::HandleArenaGameplayReloadFailed);
+			AddExpectedError(TEXT("Reload failed:"), EAutomationExpectedErrorFlags::Contains, 1);
+			AddExpectedError(TEXT("Gameplay reload failed. Generation="), EAutomationExpectedErrorFlags::Contains, 1);
+			AddExpectedError(TEXT("Unrecoverable arena state; leaving arena"), EAutomationExpectedErrorFlags::Contains, 1);
+			Arena->FailGameplayReload(Next, EOutlierGameplayReloadFailure::RequiredClientDisconnected);
+			TestFalse(TEXT("Pair-wait failure remains valid after server streaming completes"), Mode->bArenaReloadInProgress);
+			Arena->OnArenaGameplayReloadFailed.Remove(FailureHandle);
+			Arena->PendingGameplayReload.Reset();
+			Arena->FailGameplayReload(Next, EOutlierGameplayReloadFailure::InvalidRuntime);
+			TestFalse(TEXT("Finished pair cannot be failed again"), Arena->PendingGameplayReload.IsSet());
+			AuthorityModeProperty->SetObjectPropertyValue_InContainer(World, nullptr);
+		}
+		bool bAppliedAfterCommit = false;
+		AddExpectedError(TEXT("Reload failed:"), EAutomationExpectedErrorFlags::Contains, 1);
+		AddExpectedError(TEXT("Gameplay reload failed. Generation="), EAutomationExpectedErrorFlags::Contains, 1);
+		TestTrue(TEXT("Failure after commit is an accepted transition, not a preflight rejection"),
+			Mode->ReloadArenaAndRespawnPair(ShooterState, PartnerState,
+				FTransform::Identity, FTransform::Identity, true, INDEX_NONE, {}, [&]()
+				{
+					bAppliedAfterCommit = Mode->IsGameplayReloadInProgress(Arena->GetGameplayGeneration())
+						&& ObservedGeneration == Arena->GetGameplayGeneration();
+					Arena->FailGameplayReload(Arena->GetGameplayGeneration(), EOutlierGameplayReloadFailure::InvalidRuntime);
+				}));
+		TestTrue(TEXT("Snapshot application observes the committed lifecycle"), bAppliedAfterCommit);
+		TestFalse(TEXT("Failure during restore stops GameMode reload"), Mode->bArenaReloadInProgress);
+		TestNull(TEXT("Failed restore does not spawn a new shooter"), ShooterState->GetShooterCharacter());
+		TestNull(TEXT("Failed restore does not spawn a new partner"), PartnerState->GetPartnerCharacter());
+	}
+	Arena->OnArenaGameplayReloadStarted.Clear();
+	Arena->OnArenaGameplayReloadFailed.Clear();
+	World->DestroyWorld(false);
+	World->RemoveFromRoot();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierArenaGameplayPlacementTest,
 	"Outlier.Network.SingleArena.GameplayPlacement",

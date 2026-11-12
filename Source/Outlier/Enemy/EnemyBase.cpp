@@ -226,6 +226,15 @@ void AEnemyBase::ResetPatrolPoints()
 void AEnemyBase::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
+	if (HasAuthority())
+	{
+		// 등록 시점마다 갱신하면 이전 Actor의 늦은 등록이 새 세대로 둔갑한다.
+		// Wave 대기 터렛도 여기서 고정하고, 풀 Actor는 별도의 대여 세대를 사용한다.
+		if (const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>())
+		{
+			PreplacedGameplayGeneration = static_cast<int32>(Arena->GetGameplayGeneration());
+		}
+	}
 	ApplyCoreWeakPointRuntimeState();
 
 	ResetPatrolPoints();
@@ -536,6 +545,15 @@ void AEnemyBase::BeginPlay()
 	{
 		if (bActivateAsPreplacedEnemy)
 		{
+			// 완료 Room 복원은 처치가 아니다. 전투/내성 등록과 AI 시작 전에 배치 적을 정리한다.
+			if (URoomCombatSubsystem* CombatSubsystem = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+			{
+				CombatSubsystem->RegisterPreplacedEnemy(this);
+			}
+			if (IsActorBeingDestroyed())
+			{
+				return;
+			}
 			if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 			{
 				// RoomTag가 없는 배치 적도 아레나 전역의 현재 전투 필드 후보로 관리한다.
@@ -544,11 +562,6 @@ void AEnemyBase::BeginPlay()
 			if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 			{
 				RoomSubsystem->RegisterEnemy(this);
-			}
-			if (URoomCombatSubsystem* CombatSubsystem =
-				GetWorld()->GetSubsystem<URoomCombatSubsystem>())
-			{
-				CombatSubsystem->RegisterPreplacedEnemy(this);
 			}
 		}
 		if (IsActorBeingDestroyed())
@@ -5693,7 +5706,7 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem();
 			AdaptationSubsystem && AdaptationSubsystem->ReportPistolHit(
 				this,
-				PoolGameplayGeneration,
+				GetCombatGameplayGeneration(),
 				PoolLeaseSerial,
 				false,
 				AdaptationResult))
@@ -8580,7 +8593,7 @@ void AEnemyBase::ReportFinalAdaptationResult()
 	if (LastAcceptedAdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol
 		&& AdaptationSubsystem->ReportPistolHit(
 			this,
-			PoolGameplayGeneration,
+			GetCombatGameplayGeneration(),
 			PoolLeaseSerial,
 			true,
 			Result))
@@ -8591,7 +8604,7 @@ void AEnemyBase::ReportFinalAdaptationResult()
 
 	AdaptationSubsystem->ReportEnemyDefeat(
 		this,
-		PoolGameplayGeneration,
+		GetCombatGameplayGeneration(),
 		PoolLeaseSerial,
 		ResolveFinalKillCategory(LastAcceptedAdaptationDamageCategory),
 		Result);

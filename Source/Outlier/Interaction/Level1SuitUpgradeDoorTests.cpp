@@ -36,6 +36,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	// 이 검사는 문/Room 복원만 격리한다. 실제 스트리밍 예약/확정은 Arena 전환 자동화가 담당한다.
+	const auto AdvanceTestGeneration = [](UWorld* TestWorld)
+	{
+		return ++TestWorld->GetSubsystem<UOutlierArenaSubsystem>()->GameplayGeneration;
+	};
 	const FName WorldName = MakeUniqueObjectName(
 		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
 	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
@@ -324,7 +329,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Door->OnDoorMotionFinished.Broadcast(Door, true);
 	TestEqual(TEXT("Duplicate completion is ignored"), OpenedCount, 1);
 	TestEqual(TEXT("Duplicate completion does not restart combat"), CombatStartCount, 1);
-	const uint32 NextGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	const uint32 NextGeneration = AdvanceTestGeneration(World);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(NextGeneration);
 	Door->OnDoorMotionFinished.Broadcast(Door, true);
 	TestEqual(TEXT("Old door completion does not advance a new generation"), OpenedCount, 1);
@@ -351,7 +356,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("The encounter completion is recorded"),
 		Save->RecordCompletedEncounter(RoomTag.GetTagName()));
-	const uint32 ClearedGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	const uint32 ClearedGeneration = AdvanceTestGeneration(World);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(ClearedGeneration);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(ClearedGeneration);
 	TestTrue(TEXT("Cleared encounter keeps the door open"), Door->IsDoorOpen());
@@ -372,7 +377,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	{
 		CommittedProperty->SetPropertyValue_InContainer(Checkpoint, false);
 	}
-	const uint32 InitialGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	const uint32 InitialGeneration = AdvanceTestGeneration(World);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(InitialGeneration);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(InitialGeneration);
 	TestTrue(TEXT("Initial snapshot restores the open entrance"), Door->IsDoorOpen());
@@ -388,7 +393,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 		Save->CommitCheckpointSnapshotForTesting(BeforeEntrance));
 	ShooterPS->SetAcquiredSuit(true);
 	PartnerPS->SetAcquiredSuit(true);
-	const uint32 SuitGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	const uint32 SuitGeneration = AdvanceTestGeneration(World);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(SuitGeneration);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(SuitGeneration);
 	TestTrue(TEXT("Suit ownership alone does not seal the restored entrance"), Door->IsDoorOpen());
@@ -430,7 +435,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	}
 	Save->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
 	Save->ResetRuntimeCheckpointState();
-	const uint32 SafetyGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	const uint32 SafetyGeneration = AdvanceTestGeneration(World);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(SafetyGeneration);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(SafetyGeneration);
 	TestTrue(TEXT("Safety rejection retains the open entrance"), Door->IsDoorOpen());
@@ -460,7 +465,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Closing alone does not complete Level 1 opening"), OpenedCount, OpenedBeforeSafety);
 	TestEqual(TEXT("Closing alone does not start combat"), CombatStartCount, CombatBeforeSafety);
 
-	const uint32 InterruptedGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	const uint32 InterruptedGeneration = AdvanceTestGeneration(World);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(InterruptedGeneration);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(InterruptedGeneration);
 	TestFalse(TEXT("Clear entry starts closing before interruption"), Door->IsDoorOpen());
@@ -497,7 +502,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	// unrelated Pawns cannot bypass the current pair's safety obstruction.
 	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
 	SafetyPhysicsScene->Flush();
-	const uint32 OverlapGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	const uint32 OverlapGeneration = AdvanceTestGeneration(World);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(OverlapGeneration);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(OverlapGeneration);
 	ShooterPS->ReportStatAllocatorUIOpened(InterruptedGeneration);
@@ -592,7 +597,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	// 같은 Volume의 Phase0 배치 전투와 Phase1 문 이벤트를 검증한다. 위의 기존 단일 외부 차수
 	// 회귀와 fixture를 공유하되, 리로드 경계에서 전투·문·저장 상태를 모두 끊고 새 구성을 적용한다.
 	UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
-	const uint32 BoundaryGeneration = Arena->ReserveGameplayGeneration();
+	const uint32 BoundaryGeneration = AdvanceTestGeneration(World);
 	Arena->OnArenaGameplayReloadStarted.Broadcast(BoundaryGeneration);
 	Save->ResetRuntimeCheckpointState();
 	FRoomCombatPhaseDefinition MainPhase = RoomDefinition.CombatPhases[0];
@@ -708,9 +713,9 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	UpgradeBoundary.NextPhaseIndex = 1;
 	UpgradeBoundary.SaveReason = EOutlierCheckpointSaveReason::PhaseTransition;
 	UpgradeBoundary.RoomPhaseProgress.Add(RoomTag).NextPhaseIndex = 1;
-	const auto RestoreBoundary = [Arena, Save, Door, this](const FOutlierCheckpointSnapshot& Snapshot)
+	const auto RestoreBoundary = [Arena, Save, Door, this, World, AdvanceTestGeneration](const FOutlierCheckpointSnapshot& Snapshot)
 	{
-		const uint32 RestoredGeneration = Arena->ReserveGameplayGeneration();
+		const uint32 RestoredGeneration = AdvanceTestGeneration(World);
 		Arena->OnArenaGameplayReloadStarted.Broadcast(RestoredGeneration);
 		Save->ResetRuntimeCheckpointState();
 		TestTrue(TEXT("The boundary checkpoint is selected"), Save->CommitCheckpointSnapshotForTesting(Snapshot));
@@ -751,7 +756,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 
 	// 이미 닫힌 문은 Timeline 완료를 기다릴 수 없다. 입장 확정 경로 자체가 같은 Phase0 정리를 수행한다.
-	const uint32 ClosedEntryGeneration = Arena->ReserveGameplayGeneration();
+	const uint32 ClosedEntryGeneration = AdvanceTestGeneration(World);
 	Arena->OnArenaGameplayReloadStarted.Broadcast(ClosedEntryGeneration);
 	Save->ResetRuntimeCheckpointState();
 	Door->bInitiallyOpen = false;

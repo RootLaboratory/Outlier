@@ -47,6 +47,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "TimerManager.h"
 #include "Network/OutlierArenaSubsystem.h"
+#include "OutlierArenaSettings.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "PostProcess/OutlierStencilSubsystem.h"
@@ -675,12 +676,52 @@ void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementa
 
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
+	bClientArenaExitPrepared = true;
+	ClearClientArenaContentWait();
+	ClearClientGameplayReloadWatchdog();
+	bClientReloadBootstrapPending = false;
+	bClientGameplayLoadAuthorized = false;
+	bClientArenaReadyReported = false;
+	PendingArenaReconnectRequestId = 0;
+	if (UOutlierArenaSubsystem* Arena = GetWorld() ? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
+	{
+		Arena->OnArenaShown.RemoveAll(this);
+		Arena->OnArenaGameplayUnloaded.RemoveAll(this);
+		Arena->OnArenaGameplayReady.RemoveAll(this);
+	}
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
+	bReleaseDeathTransitionOnPossess = false;
+	RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
+	RemoveCameraBlackoutReason(ECameraBlackoutReason::GameOver);
+	if (ULocalPlayerPostProcessSubsystem* PP = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr)
+	{
+		PP->OnDeathBlackNoiseStarted.RemoveAll(this);
+		PP->ResetAllPostProcess();
+	}
 	if (UOutlierGameInstance* OutlierGameInstance =
 		Cast<UOutlierGameInstance>(GetGameInstance()))
 	{
 		OutlierGameInstance->PrepareForExplicitLeave();
+	}
+}
+
+void AFirstPersonPlayerController::ClientArenaRecoveryFailed_Implementation(
+	bool bReturnToLobby, const FString& Reason)
+{
+	if (bClientGameplayReloadFailed) return;
+	bClientGameplayReloadFailed = true;
+	UE_LOG(LogTemp, Error, TEXT("[ArenaRecovery][Client] %s"), *Reason);
+	if (UOutlierGameInstance* GI = Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		// 기존 UI가 없더라도 복귀는 진행한다. 표시 가능한 로비/타이틀에서 사유를 안내한다.
+		GI->SetArenaRecoveryFailureReason(Reason);
+	}
+	ClientPrepareForArenaExit_Implementation();
+	if (UOutlierGameInstance* GI = Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		GI->ReturnAfterArenaRecoveryFailure(bReturnToLobby);
 	}
 }
 
@@ -1225,6 +1266,7 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 		}
 		if (P)
 		{
+			if (bClientArenaReadyReported) ClearClientGameplayReloadWatchdog();
 			ReleaseLevelLoadBlackoutIfNoIntroPending();
 		}
 
@@ -1575,6 +1617,18 @@ void AFirstPersonPlayerController::BindMainUI()
 
 }
 
+void AFirstPersonPlayerController::PawnLeavingGame()
+{
+	// 엔진은 Logout보다 먼저 PawnLeavingGame에서 Pawn을 파괴한다. 재접속 대상만 여기서
+	// 분리하고, 이후 Logout이 진행 정보·ACK·재접속 제한 시간을 기존 순서대로 정리한다.
+	if (AOutlierGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
+		Mode && Mode->PreserveGameplayPawnForReconnect(this))
+	{
+		return;
+	}
+	Super::PawnLeavingGame();
+}
+
 void AFirstPersonPlayerController::Destroyed()
 {
 	// 엔진은 Destroyed에서 Pauser를 다른 플레이어로 넘길 수 있다. 그 전에 GameOver 소유권을 정리한다.
@@ -1597,6 +1651,7 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	ClearClientArenaContentWait();
+	ClearClientGameplayReloadWatchdog();
 	// 재접속이나 역할 Controller 교체로 이전 PC가 먼저 파괴될 수 있다. Delegate가 남아 있으면
 	// 다음 Generation의 Ready를 폐기될 PC가 받아 서버에 잘못 보고하므로 여기서 직접 끊는다.
 	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
@@ -1605,6 +1660,7 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 	{
 		ArenaSubsystem->OnArenaGameplayUnloaded.RemoveAll(this);
 		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
+		ArenaSubsystem->OnArenaShown.RemoveAll(this);
 	}
 
 	// AddToViewport로 붙인 Widget은 GameViewportClient가 들고 있어서 PC가 파괴돼도
@@ -2354,17 +2410,34 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 }
 
 void AFirstPersonPlayerController::ClientArenaLoad_Implementation(
-	FVector InSpawnLocation, uint32 ReconnectRequestId)
+	FVector InSpawnLocation, uint32 ReconnectRequestId, uint32 GameplayGeneration)
 {
-	(void)ReconnectRequestId;
-	ApplyServerArenaSpawnLocation(InSpawnLocation);
-	PendingGameplayGeneration = 0;
+	if (bClientGameplayReloadFailed || bClientArenaExitPrepared) return;
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
 	if (!ArenaSubsystem)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] ClientArenaLoad has no subsystem"));
 		return;
+	}
+	// 재접속 준비 ACK의 0은 유지하되, 파편 등 로컬 세대 검증은 실제 서버 세대에 맞춘다.
+	if (GetNetMode() == NM_Client && !ArenaSubsystem->SynchronizeClientGameplayGeneration(GameplayGeneration))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[ArenaLevels] Reject stale generation for client load Gen=%u Current=%u"),
+			GameplayGeneration, ArenaSubsystem->GetGameplayGeneration());
+		return;
+	}
+	ApplyServerArenaSpawnLocation(InSpawnLocation);
+	PendingArenaReconnectRequestId = ReconnectRequestId;
+	bClientArenaReadyReported = false;
+	// Room 재검증이 같은 리로드 안에서 추가 로딩을 요청할 수 있다. 기존 세대는 유지한다.
+	if (!ClientGameplayReloadWatchdogHandle.IsValid()) PendingGameplayGeneration = 0;
+	if (ReconnectRequestId != 0 && !ClientGameplayReloadWatchdogHandle.IsValid())
+	{
+		// 일반 재접속도 초기 Arena/콘텐츠 준비가 끝나기 전에는 무한 대기하지 않는다.
+		ClientGameplayReloadStartedAt = FPlatformTime::Seconds();
+		ClientGameplayReloadWatchdogHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateUObject(this, &AFirstPersonPlayerController::TickClientGameplayReloadWatchdog), 0.25f);
 	}
 	bHasPendingArenaRequest = true;
 	ArenaSubsystem->OnArenaShown.RemoveAll(this);
@@ -2397,8 +2470,15 @@ void AFirstPersonPlayerController::ApplyServerArenaSpawnLocation(const FVector& 
 void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	uint32 GameplayGeneration, FVector InSpawnLocation)
 {
+	if (bClientGameplayReloadFailed || bClientArenaExitPrepared) return;
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (GameplayGeneration == PendingGameplayGeneration && GameplayGeneration != 0)
+	{
+		// 같은 세대의 재전송은 수명을 다시 시작하지 않는다. 잃어버린 ACK만 다시 보낸다.
+		ClientRetryArenaGameplayReload_Implementation(GameplayGeneration);
+		return;
+	}
 	if (!ArenaSubsystem || !UOutlierArenaSubsystem::IsGameplayGenerationNewer(
 		GameplayGeneration, PendingGameplayGeneration))
 	{
@@ -2412,7 +2492,14 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	// 오래된 리로드 요청은 위에서 거부한다. 유효한 리로드가 시작될 때만 이전 슈트 연출 콜백을 끊는다.
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
+	ClearClientArenaContentWait();
+	ClearClientGameplayReloadWatchdog();
 	ClientGameplayReloadStartedAt = FPlatformTime::Seconds();
+	bClientGameplayReloadFailed = false;
+	bClientArenaReadyReported = false;
+	bClientGameplayLoadAuthorized = false;
+	bClientReloadBootstrapPending = false;
+	PendingArenaReconnectRequestId = 0;
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReload][Client] ReloadRPC PC=%s Gen=%u Spawn=%s LevelsReady=%d"),
 		*GetNameSafe(this), GameplayGeneration, *InSpawnLocation.ToString(),
@@ -2423,24 +2510,56 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	bReleaseDeathTransitionOnPossess = true;
 	bHasPendingArenaRequest = true;
 	PendingGameplayGeneration = GameplayGeneration;
+	ClientGameplayReloadWatchdogHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &AFirstPersonPlayerController::TickClientGameplayReloadWatchdog), 0.25f);
+	ContinueClientGameplayReload();
+}
+
+void AFirstPersonPlayerController::ContinueClientGameplayReload()
+{
+	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!ArenaSubsystem || bClientGameplayReloadFailed || PendingGameplayGeneration == 0) return;
+	// 재접속으로 Controller만 바뀌어도 진행 중인 세대의 unload/ready 통보를 다시 받아야 한다.
 	ArenaSubsystem->OnArenaGameplayUnloaded.RemoveAll(this);
 	ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
-	ArenaSubsystem->OnArenaGameplayUnloaded.AddUObject(
-		this, &AFirstPersonPlayerController::HandleArenaGameplayUnloaded);
-	ArenaSubsystem->OnArenaGameplayReady.AddUObject(
-		this, &AFirstPersonPlayerController::HandleArenaGameplayReady);
-	if (!ArenaSubsystem->BeginClientGameplayReload(GameplayGeneration))
+	ArenaSubsystem->OnArenaGameplayUnloaded.AddUObject(this, &AFirstPersonPlayerController::HandleArenaGameplayUnloaded);
+	ArenaSubsystem->OnArenaGameplayReady.AddUObject(this, &AFirstPersonPlayerController::HandleArenaGameplayReady);
+	if (ArenaSubsystem->GetGameplayGeneration() == PendingGameplayGeneration)
+	{
+		bClientReloadBootstrapPending = false;
+		if (ArenaSubsystem->IsGameplayLevelsReady()) HandleArenaGameplayReady(PendingGameplayGeneration);
+		else if (ArenaSubsystem->IsGameplayReloadUnloaded(PendingGameplayGeneration)) HandleArenaGameplayUnloaded(PendingGameplayGeneration);
+		return;
+	}
+	if (!ArenaSubsystem->IsGameplayReloadBootstrapReady())
+	{
+		// 새 연결은 Arena와 스트리밍 목록부터 만든다. 초기 Ready를 현재 세대 Ready로 오인하지 않는다.
+		bClientReloadBootstrapPending = true;
+		ArenaSubsystem->OnArenaShown.RemoveAll(this);
+		ArenaSubsystem->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
+		ArenaSubsystem->EnsureArenaLoaded();
+		if (ArenaSubsystem->IsGameplayReloadBootstrapReady()) ContinueClientGameplayReload();
+		return;
+	}
+	bClientReloadBootstrapPending = false;
+	ArenaSubsystem->OnArenaShown.RemoveAll(this);
+	if (!ArenaSubsystem->BeginClientGameplayReload(PendingGameplayGeneration))
 	{
 		UE_LOG(LogTemp, Error,
 			TEXT("[ArenaReload][Client] BeginReloadFailed PC=%s Gen=%u Phase=%s"),
-			*GetNameSafe(this), GameplayGeneration,
+			*GetNameSafe(this), PendingGameplayGeneration,
 			*UEnum::GetValueAsString(ArenaSubsystem->GetGameplayReloadPhase()));
+	}
+	else if (bClientGameplayLoadAuthorized)
+	{
+		ArenaSubsystem->AllowGameplayLevelLoad(PendingGameplayGeneration);
 	}
 }
 
 void AFirstPersonPlayerController::HandleArenaGameplayUnloaded(uint32 GameplayGeneration)
 {
-	if (GameplayGeneration != PendingGameplayGeneration)
+	if (bClientArenaExitPrepared || bClientGameplayReloadFailed || GameplayGeneration != PendingGameplayGeneration)
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[ArenaReload][Client] IgnoreUnloadedEvent Gen=%u PendingGen=%u"),
@@ -2463,13 +2582,14 @@ void AFirstPersonPlayerController::HandleArenaGameplayUnloaded(uint32 GameplayGe
 void AFirstPersonPlayerController::ClientActivateArenaGameplayLevels_Implementation(
 	uint32 GameplayGeneration)
 {
-	if (GameplayGeneration != PendingGameplayGeneration)
+	if (bClientArenaExitPrepared || bClientGameplayReloadFailed || GameplayGeneration != PendingGameplayGeneration)
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[ArenaReload][Client] RejectActivateRPC Gen=%u PendingGen=%u"),
 			GameplayGeneration, PendingGameplayGeneration);
 		return;
 	}
+	bClientGameplayLoadAuthorized = true;
 	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
 	{
@@ -2479,7 +2599,7 @@ void AFirstPersonPlayerController::ClientActivateArenaGameplayLevels_Implementat
 			ArenaSubsystem->IsGameplayReloadUnloaded(GameplayGeneration) ? 1 : 0,
 			ClientGameplayReloadStartedAt > 0.0
 				? (FPlatformTime::Seconds() - ClientGameplayReloadStartedAt) * 1000.0 : -1.0);
-		ArenaSubsystem->AllowGameplayLevelLoad(GameplayGeneration);
+		if (!bClientReloadBootstrapPending) ArenaSubsystem->AllowGameplayLevelLoad(GameplayGeneration);
 	}
 	else
 	{
@@ -2493,6 +2613,11 @@ void AFirstPersonPlayerController::HandleArenaShown()
 {
 	if (!bHasPendingArenaRequest)
 	{
+		return;
+	}
+	if (bClientReloadBootstrapPending)
+	{
+		ContinueClientGameplayReload();
 		return;
 	}
 	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
@@ -2544,12 +2669,13 @@ void AFirstPersonPlayerController::ArenaDumpClientGameplayActors()
 }
 */
 
-void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation(uint32 GameplayGeneration)
+void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation(
+	uint32 GameplayGeneration, uint32 ReconnectRequestId)
 {
 	if (AOutlierGameMode* GameMode = GetWorld()
 		? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
 	{
-		GameMode->OnClientArenaReady(this, GameplayGeneration);
+		GameMode->OnClientArenaReady(this, GameplayGeneration, ReconnectRequestId);
 	}
 }
 
@@ -2566,10 +2692,16 @@ void AFirstPersonPlayerController::ServerNotifyArenaGameplayUnloaded_Implementat
 void AFirstPersonPlayerController::ClientRetryArenaGameplayReload_Implementation(
 	uint32 GameplayGeneration)
 {
-	if (GameplayGeneration != PendingGameplayGeneration)
+	if (bClientArenaExitPrepared || GameplayGeneration != PendingGameplayGeneration || bClientGameplayReloadFailed)
 	{
 		return;
 	}
+	if (bClientArenaReadyReported)
+	{
+		ServerNotifyArenaReady(GameplayGeneration, PendingArenaReconnectRequestId);
+		return;
+	}
+	ContinueClientGameplayReload();
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
 	if (!ArenaSubsystem)
@@ -2586,11 +2718,20 @@ void AFirstPersonPlayerController::ClientRetryArenaGameplayReload_Implementation
 	}
 }
 
+void AFirstPersonPlayerController::ServerNotifyArenaGameplayReloadFailed_Implementation(uint32 GameplayGeneration)
+{
+	if (AOutlierGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GameMode->OnClientArenaGameplayReloadFailed(this, GameplayGeneration);
+	}
+}
+
 void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(
 	FVector InSpawnLocation)
 {
 	ApplyServerArenaSpawnLocation(InSpawnLocation);
 	PendingGameplayGeneration = 0;
+	PendingArenaReconnectRequestId = 0;
 	bHasPendingArenaRequest = true;
 	bWaitingForArenaStart = true;
 	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
@@ -2678,6 +2819,7 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 	}
 	bWaitingForArenaStart = false;
 	bHasPendingArenaRequest = false;
+	bClientArenaReadyReported = true;
 	ClientArenaReadyStableFrames = 0;
 	ClientArenaWaitSeconds = 0.0;
 	ClientArenaContentTickerHandle.Reset();
@@ -2690,7 +2832,7 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 				? (FPlatformTime::Seconds() - ClientGameplayReloadStartedAt) * 1000.0 : -1.0,
 			RequiredStableFrames);
 	}
-	ServerNotifyArenaReady(PendingGameplayGeneration);
+	ServerNotifyArenaReady(PendingGameplayGeneration, PendingArenaReconnectRequestId);
 	return false;
 }
 
@@ -2706,6 +2848,50 @@ void AFirstPersonPlayerController::ClearClientArenaContentWait()
 	bWaitingForArenaStart = false;
 	bHasPendingArenaRequest = false;
 }
+
+bool AFirstPersonPlayerController::TickClientGameplayReloadWatchdog(float DeltaTime)
+{
+	(void)DeltaTime;
+	if (bClientGameplayReloadFailed || ClientGameplayReloadStartedAt <= 0.0)
+	{
+		ClientGameplayReloadWatchdogHandle.Reset();
+		return false;
+	}
+	// 목록 준비가 표시 완료보다 먼저 끝나는 재접속은 OnArenaShown 없이도 다음 단계로 진행한다.
+	if (bClientReloadBootstrapPending) ContinueClientGameplayReload();
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	const double Timeout = PendingGameplayGeneration != 0
+		? (Settings ? FMath::Max(Settings->ArenaGameplayReloadFailureSeconds, 1.0f) : 60.0)
+		: (Settings ? FMath::Max(Settings->ArenaWorkerReconnectGraceSeconds, 1.0f) : 30.0);
+	if (FPlatformTime::Seconds() - ClientGameplayReloadStartedAt >= Timeout)
+	{
+		// Arena bootstrap, Ready ACK 이후의 Possess 대기도 같은 최초 마감 안에 포함한다.
+		ClientGameplayReloadWatchdogHandle.Reset();
+		FailClientGameplayReload(TEXT("Gameplay reload exceeded the total recovery deadline."));
+		return false;
+	}
+	return true;
+}
+
+void AFirstPersonPlayerController::ClearClientGameplayReloadWatchdog()
+{
+	if (ClientGameplayReloadWatchdogHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(ClientGameplayReloadWatchdogHandle);
+		ClientGameplayReloadWatchdogHandle.Reset();
+	}
+	ClientGameplayReloadStartedAt = 0.0;
+}
+
+void AFirstPersonPlayerController::FailClientGameplayReload(const FString& Reason)
+{
+	if (bClientGameplayReloadFailed) return;
+	ServerNotifyArenaGameplayReloadFailed(PendingGameplayGeneration);
+	UOutlierGameInstance* GI = Cast<UOutlierGameInstance>(GetGameInstance());
+	const bool bReturnToLobby = GI && GI->ShouldReturnToLobbyAfterRecoveryFailure();
+	ClientArenaRecoveryFailed_Implementation(bReturnToLobby, Reason);
+}
+
 void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 {
 	AOutlierGameMode* GameMode = GetWorld()
