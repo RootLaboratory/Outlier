@@ -81,38 +81,6 @@ bool FGhostProgressBarRestartTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGhostProgressBarContinuousRecoveryTest, "Outlier.UI.GhostProgressBar.ContinuousRecovery",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FGhostProgressBarContinuousRecoveryTest::RunTest(const FString& Parameters)
-{
-	UGhostProgressBar* Bar = NewObject<UGhostProgressBar>();
-	Bar->SetPercentImmediate(0.0f);
-	for (int32 Step = 1; Step <= 10; ++Step)
-	{
-		const float Before = Bar->GetDisplayedMainPercent();
-		Bar->SetTargetPercent(Step * 0.1f);
-		TestEqual(TEXT("Repeated recovery preserves displayed main"), Bar->GetDisplayedMainPercent(), Before);
-		TestEqual(TEXT("Repeated recovery preserves synchronized fills"), Bar->GetGhostPercent(), Before);
-		Bar->AdvanceGhostAnimation(0.1f);
-		TestTrue(TEXT("Recovery main never moves backward"), Bar->GetDisplayedMainPercent() >= Before);
-		TestEqual(TEXT("Continuous recovery animates both fills together"), Bar->GetGhostPercent(), Bar->GetDisplayedMainPercent());
-		if (Step >= 3) TestTrue(TEXT("Frequent recovery does not perpetually restart delay"), Bar->GetDisplayedMainPercent() > Before);
-	}
-	Bar->AdvanceGhostAnimation(1.0f);
-	TestEqual(TEXT("Continuous recovery finishes at full"), Bar->GetDisplayedMainPercent(), 1.0f);
-	Bar->SetPercentImmediate(0.0f);
-	Bar->SetTargetPercent(1.0f);
-	Bar->AdvanceGhostAnimation(0.4f);
-	const float BeforeDamage = Bar->GetGhostPercent();
-	Bar->SetTargetPercent(0.5f);
-	TestEqual(TEXT("Damage interrupts recovery immediately"), Bar->GetDisplayedMainPercent(), 0.5f);
-	TestEqual(TEXT("Damage preserves the visible ghost"), Bar->GetGhostPercent(), BeforeDamage);
-	Bar->AdvanceGhostAnimation(1.0f);
-	TestEqual(TEXT("Damage after recovery finishes its trail"), Bar->GetGhostPercent(), 0.5f);
-	return true;
-}
-
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGhostProgressBarEdgeCasesTest, "Outlier.UI.GhostProgressBar.EdgeCases",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

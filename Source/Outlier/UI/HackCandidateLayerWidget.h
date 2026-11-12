@@ -87,7 +87,6 @@ private:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class AHackTargetPointNetworkProbe;
-	friend class FPartnerHackHoldWidgetTest;
 #endif
 	UPROPERTY()
 	TObjectPtr<UPartnerHackComponent> HackComponent;

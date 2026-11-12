@@ -46,7 +46,6 @@ protected:
 	virtual void DeriveGameplayCueTagFromAssetName() override;
 
 private:
-	friend class FOutlierStunOverlayUsageTest;
 
 	void ApplyOverlayMaterials(AActor* Target);
 	void RestoreOverlayMaterials();
