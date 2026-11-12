@@ -296,6 +296,16 @@ bool FGroupLifecycleReconnectTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Actual destination has a registration token"), Context.DestinationRoomRegistrationId.IsValid());
 	TestEqual(TEXT("Event-only anchor room still waits for trigger"), Test.Combat->GetRoomState(LifecycleC), ERoomCombatState::WaitingForTrigger);
 	TestFalse(TEXT("Reconnect does not recruit the anchor room"), Test.Combat->IsRoomCombatReserved(LifecycleC));
+	// 새 최초 발각 EQS와 달리 재접속은 기존 동기 8방향 정책을 유지한다.
+	// 바닥 없는 Partner 비행과 첫 후보(기준 Yaw 뒤쪽)를 함께 고정해 정책 전파를 검출한다.
+	const float Offset = Player->GetCapsuleComponent()->GetScaledCapsuleRadius()
+		+ Anchor->GetCapsuleComponent()->GetScaledCapsuleRadius() + 50.0f;
+	TestTrue(TEXT("Reconnect keeps the legacy first rear candidate without requiring a floor"),
+		Player->GetActorLocation().Equals(Anchor->GetActorLocation() - Anchor->GetActorForwardVector() * Offset, 0.1f));
+	const FVector Rejoined = Player->GetActorLocation();
+	TestTrue(TEXT("Repeated reconnect placement is idempotent"), Test.Combat->TryPlaceReconnectingPlayer(Player, Anchor, Context));
+	TestTrue(TEXT("Repeated placement retains the accepted position"), Player->GetActorLocation().Equals(Rejoined));
+	TestEqual(TEXT("Reconnect does not start initial-detection preparation"), Test.Combat->GetRoomState(LifecycleC), ERoomCombatState::WaitingForTrigger);
 	const FGuid PreviousGroupId = Context.CombatGroupId;
 	const FGuid PreviousDestinationId = Context.DestinationRoomRegistrationId;
 	Test.Combat->UnregisterRoom(Test.Rooms[LifecycleC]);

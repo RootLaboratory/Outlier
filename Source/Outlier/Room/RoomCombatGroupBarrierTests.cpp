@@ -271,4 +271,39 @@ bool FGroupBarrierTopologyTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBarrierSafetyGeometryTest, "Outlier.Room.BarrierSafety.DisabledRotatedGeometry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBarrierSafetyGeometryTest::RunTest(const FString& Parameters)
+{
+	FGroupBarrierWorld Fixture;
+	ARoomCombatBarrier* Barrier = Fixture.AddBarrier(BarrierA);
+	UBoxComponent* Box = CastChecked<UBoxComponent>(Barrier->GetRootComponent());
+	Box->SetBoxExtent(FVector(100, 100, 100));
+	Barrier->SetActorRotation(FRotator(25, 45, 15));
+	TestEqual(TEXT("Safety geometry works before physics collision is enabled"), Box->GetCollisionEnabled(), ECollisionEnabled::NoCollision);
+	TestTrue(TEXT("Disabled rotated OBB detects an interior capsule"), Barrier->OverlapsJoinCapsule(FVector::ZeroVector, 20, 70));
+	const FVector Corner = Box->GetComponentTransform().TransformPosition(FVector(119, 119, 0));
+	TestFalse(TEXT("Expanded AABB corner outside the capsule radius remains clear"), Barrier->OverlapsJoinCapsule(Corner, 20, 20));
+	const FVector Face = Box->GetComponentTransform().TransformPosition(FVector(115, 0, 0));
+	TestTrue(TEXT("Rounded capsule radius intersects an OBB face"), Barrier->OverlapsJoinCapsule(Face, 20, 20));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBarrierSafetySharedRoomTest, "Outlier.Room.BarrierSafety.SharedUnregisteredRoom",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBarrierSafetySharedRoomTest::RunTest(const FString& Parameters)
+{
+	FGroupBarrierWorld Fixture;
+	Fixture.AddRoom(BarrierA);
+	Fixture.AddEnemy(BarrierA);
+	TestTrue(TEXT("Registered group member starts combat"), Fixture.Start(BarrierA));
+	// 출입구가 속한 형제 방은 WP에서 아직 등록되지 않았지만 그룹 전투는 진행 중이다.
+	ARoomCombatBarrier* Shared = Fixture.AddBarrier(BarrierC);
+	TestEqual(TEXT("Safety uses the registered active group member"), Fixture.Combat->FindBarrierClosureRoom(Shared), BarrierA.GetTag());
+	CheckBarrierPresentation(*this, Shared, true);
+	return true;
+}
+
 #endif

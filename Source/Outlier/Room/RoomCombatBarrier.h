@@ -26,6 +26,8 @@ public:
 	bool CanBlockRoom(FGameplayTag InRoomTag) const;
 	FVector GetJoinFallbackLocation() const;
 	bool OverlapsJoinCapsule(const FVector& Location, float Radius, float HalfHeight) const;
+	// 연결 정보의 우선순위를 보존한다. 방 안쪽을 로컬 축/가까운 방으로 추측하지 않는다.
+	void GetSafetyRoomTags(TArray<FGameplayTag>& OutTags) const;
 
 protected:
 	virtual void BeginPlay() override;
