@@ -164,6 +164,13 @@ class OUTLIER_API UShooterCharacterMovementComponent : public UCharacterMovement
 public:
 	UShooterCharacterMovementComponent();
 
+	/** 하강 시 기존 중력에 곱할 배율. 1이면 기존 낙하이며 발판에서 떨어질 때도 적용한다.
+	 * 런타임 복제 값이 아니므로 서버와 클라이언트가 같은 클래스 기본값을 사용해야 한다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement|Jump", meta = (ClampMin = "1.0", UIMin = "1.0"))
+	float FallingGravityMultiplier = 1.5f;
+
+	virtual FVector NewFallVelocity(const FVector& InitialVelocity, const FVector& Gravity, float DeltaTime) const override;
+
 	bool IsSlideSimulating() const { return bSlideSimulating; }
 	float GetSlideElapsedTime() const { return SlideElapsedTime; }
 	float GetCurrentSlideSpeed() const { return CurrentSlideSpeed; }

@@ -1505,6 +1505,17 @@ void UShooterCharacterMovementComponent::CalcVelocity(float DeltaTime, float Fri
 	// 여기서는 영속 상태를 바꾸지 않고 실제 Falling 계산이 끝난 뒤에만 종료한다.
 }
 
+FVector UShooterCharacterMovementComponent::NewFallVelocity(const FVector& InitialVelocity, const FVector& Gravity, float DeltaTime) const
+{
+	// 중력 방향으로 움직이거나 정점에 도달한 구간만 하강 배율을 적용한다.
+	// 멤버 Velocity 대신 이번 적분의 입력을 써야 정점 substep/충돌 재계산과 서버·예측·재생의 판정이 일치한다.
+	const bool bDescending = IsFalling() && FVector::DotProduct(InitialVelocity, Gravity) >= 0.0;
+	const float Multiplier = bDescending ? FMath::Max(1.0f, FallingGravityMultiplier) : 1.0f;
+
+	// 기본 GravityScale은 변경하지 않는다. 실제 속도 적분과 최대 낙하 속도 제한은 엔진이 처리한다.
+	return Super::NewFallVelocity(InitialVelocity, Gravity * Multiplier, DeltaTime);
+}
+
 void UShooterCharacterMovementComponent::PhysFalling(float DeltaTime, int32 Iterations)
 {
 	if (!SlideJumpMomentum.bActive || DeltaTime < MIN_TICK_TIME || !HasValidData()
