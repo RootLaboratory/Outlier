@@ -1652,7 +1652,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	const float LeftHandRuntimeSprintAlpha =
 		GetEasedAlpha(ViewModelSprintAlpha, WeaponValues.SprintAlphaEaseStrength) *
 		LeftHandFirearmAlpha *
-		LeftHandSprintAnimMultiplier;
+		LeftHandSprintAnimMultiplier * GetReloadSprintPoseScale();
 	float TargetLeftHandIKAlpha = 0.0f;
 	FVector TargetLeftHandGripOffsetLoc = FVector::ZeroVector;
 	FRotator TargetLeftHandGripOffsetRot = FRotator::ZeroRotator;
@@ -1822,6 +1822,13 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	ViewModelMovementRot = ViewModelSprintPoseRot;
 }
 
+float UShooterFirstPersonAnimInstance::GetReloadSprintPoseScale() const
+{
+	// 실제 Run과 SprintAlpha는 유지한다. Reload 포즈와 늦게 복귀하는 손 IK가
+	// 모두 빠진 만큼만 무기 내리기/왼손 Sprint 소켓을 함께 복원한다.
+	return 1.0f - FMath::Clamp(FMath::Max(ViewModelReloadPoseAlpha, ViewModelReloadIKBlendAlpha), 0.0f, 1.0f);
+}
+
 // 프레임마다 계산해 둔 개별 알파/오프셋들을 ABP가 소비하는 런타임 구조체
 // (ViewModelProceduralRuntime) 하나로 합성한다
 void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float DeltaSeconds)
@@ -1936,7 +1943,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 		WallActionAlpha
 	);
 	const float SlidePoseAlpha = bEnableProceduralAction ? FMath::Clamp(ViewModelSlidePoseAlpha, 0.0f, 1.0f) : 0.0f;
-	const float RuntimeSprintAlpha = RawSprintAlpha * FirearmAlpha * AimToSprintGateAlpha;
+	const float RuntimeSprintAlpha = RawSprintAlpha * FirearmAlpha * AimToSprintGateAlpha * GetReloadSprintPoseScale();
 	const float RuntimeAimSwayScale = FMath::Lerp(
 		1.0f,
 		FMath::Clamp(WeaponValues.AimSwayScale, 0.0f, 1.0f),

@@ -187,7 +187,7 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 		Shooter->BeginActionLock(EShooterActionLock::Reload);
 		Input->RefreshMovementState();
 		TestTrue(TEXT("Reload preserves Hold Sprint intent"), Input->WantsToSprint());
-		TestFalse(TEXT("Reload suspends actual Hold Sprint"), Input->IsSprinting());
+		TestTrue(TEXT("Reload preserves actual Hold Sprint"), Input->IsSprinting());
 		if (bReleaseDuringReload) Release();
 		Combat->FinishReloadInternal();
 		TestEqual(TEXT("Reload completion respects a Release during the restriction"),

@@ -17,6 +17,7 @@ class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBas
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
 	friend class FShooterSprintInputModeTest;
+	friend class FShooterSprintReloadTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")

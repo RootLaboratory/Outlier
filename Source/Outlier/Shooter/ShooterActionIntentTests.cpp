@@ -128,7 +128,7 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	Shooter->BeginActionLock(EShooterActionLock::Reload);
 	Input->RefreshMovementState();
 	TestTrue(TEXT("Reload preserves toggle intent"), Input->WantsToSprint());
-	TestFalse(TEXT("Reload still blocks actual Sprint"), Input->IsSprinting());
+	TestTrue(TEXT("Reload preserves actual Sprint"), Input->IsSprinting());
 	Combat->bIsReloading = false;
 	Shooter->EndActionLock(EShooterActionLock::Reload);
 	Input->RefreshMovementState();
