@@ -5,6 +5,7 @@
 #include "Engine/EngineTypes.h"
 #include "GameplayTagContainer.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "TimerManager.h"
 #include "OutlierArenaInstance.h"
 #include "OutlierArenaSubsystem.generated.h"
 
@@ -14,6 +15,7 @@ class ULevelStreamingDynamic;
 class AActor;
 class FDataValidationContext;
 class UOutlierAudioSubsystem;
+class AOutlierDeathDebrisActor;
 
 UENUM(BlueprintType)
 enum class EOutlierGameplayReloadPhase : uint8
@@ -69,6 +71,11 @@ public:
 	bool ReloadGameplayLevels(uint32 Generation, bool bWaitForClientAcks);
 	bool BeginClientGameplayReload(uint32 Generation);
 	bool SynchronizeClientGameplayGeneration(uint32 Generation);
+	// 원본 Enemy의 풀 반환/파괴와 독립적이되, 확정된 Gameplay 세대 안에서만 유지한다.
+	bool IsDeathDebrisGenerationCurrent(uint32 Generation) const;
+	FTimerHandle ScheduleDeathDebris(uint32 Generation, float Delay, FTimerDelegate Callback);
+	bool RegisterDeathDebrisActor(AOutlierDeathDebrisActor* Debris, uint32 Generation);
+	void UnregisterDeathDebrisActor(AOutlierDeathDebrisActor* Debris);
 	void AllowGameplayLevelLoad(uint32 Generation);
 	bool RetryStalledGameplayReload(uint32 Generation);
 	void FailGameplayReload(uint32 Generation, EOutlierGameplayReloadFailure Failure);
@@ -116,6 +123,13 @@ public:
 	FOnArenaGameplayReloadFailed OnArenaGameplayReloadFailed;
 
 private:
+	void ClearDeathDebris();
+	TMap<uint64, FTimerHandle> PendingDeathDebris;
+	TSet<TWeakObjectPtr<AOutlierDeathDebrisActor>> DeathDebrisActors;
+	uint64 NextDeathDebrisRequestId = 0;
+	bool bDeathDebrisReleased = false;
+	friend class FOutlierDeathDebrisLifecycleTest;
+	friend class FEnemyPoolRuntimeTest;
 	friend class FOutlierArenaMusicPreloadTest;
 	uint64 RequestLevelMusicPreload(const TSoftObjectPtr<UWorld>& Map);
 	void SetLevelMusicPreload(ULevelStreaming* Level, const TSoftObjectPtr<UWorld>& Map, bool bLoaded);

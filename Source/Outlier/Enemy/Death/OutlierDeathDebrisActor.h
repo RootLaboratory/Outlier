@@ -41,9 +41,12 @@ public:
 		const UGeometryCollection* RestCollection,
 		const FTransform& SpawnTransform,
 		const FVector& InheritedVelocity,
-		const FGeometryCollectionDeathProfile& Profile);
+		const FGeometryCollectionDeathProfile& Profile,
+		uint32 GameplayGeneration);
 
 protected:
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Debris")
 	TObjectPtr<UGeometryCollectionComponent> DebrisComponent;
 

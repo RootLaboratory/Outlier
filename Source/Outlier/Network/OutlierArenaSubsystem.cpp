@@ -1,5 +1,6 @@
 #include "Network/OutlierArenaSubsystem.h"
 #include "Audio/OutlierAudioSubsystem.h"
+#include "Enemy/Death/OutlierDeathDebrisActor.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -118,6 +119,8 @@ void UOutlierArenaSubsystem::PreloadInitiallyRequestedLevelMusic()
 
 void UOutlierArenaSubsystem::Deinitialize()
 {
+	bDeathDebrisReleased = true;
+	ClearDeathDebris();
 	ReservedGameplayGeneration = 0;
 	ClearLevelMusicPreloads();
 	CachedAudioSubsystem.Reset();
@@ -411,6 +414,7 @@ bool UOutlierArenaSubsystem::CreateListenGameplayLevels()
 
 void UOutlierArenaSubsystem::EnsureArenaLoaded()
 {
+	bDeathDebrisReleased = false;
 	if (AOutlierGameMode::IsDirectPairTestWorld(GetWorld()))
 	{
 		RefreshArenaReadyState();
@@ -453,11 +457,14 @@ FOutlierArenaInstance* UOutlierArenaSubsystem::AcquireArena()
 		return nullptr;
 	}
 	Arena.bInUse = true;
+	bDeathDebrisReleased = false;
 	return &Arena;
 }
 
 void UOutlierArenaSubsystem::ReleaseArena()
 {
+	bDeathDebrisReleased = true;
+	ClearDeathDebris();
 	ClearLevelMusicPreloads();
 	ReservedGameplayGeneration = 0;
 	Arena.bInUse = false;
@@ -637,7 +644,65 @@ bool UOutlierArenaSubsystem::SynchronizeClientGameplayGeneration(uint32 Generati
 	if (PendingGameplayReload.IsSet() || !IsGameplayGenerationNewer(Generation, GameplayGeneration)) return false;
 	GameplayGeneration = Generation;
 	LastReservedGameplayGeneration = Generation;
+	ClearDeathDebris();
 	return true;
+}
+
+bool UOutlierArenaSubsystem::IsDeathDebrisGenerationCurrent(uint32 Generation) const
+{
+	return !bDeathDebrisReleased && GetWorld() && Generation == GameplayGeneration;
+}
+
+FTimerHandle UOutlierArenaSubsystem::ScheduleDeathDebris(
+	uint32 Generation, float Delay, FTimerDelegate Callback)
+{
+	FTimerHandle Handle;
+	if (!IsDeathDebrisGenerationCurrent(Generation) || GetWorld()->GetNetMode() == NM_DedicatedServer
+		|| !Callback.IsBound() || Delay <= 0.0f) return Handle;
+
+	const uint64 RequestId = ++NextDeathDebrisRequestId;
+	GetWorld()->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+		[this, Generation, RequestId, Callback = MoveTemp(Callback)]() mutable
+		{
+			// 취소 직전에 복사된 콜백도 등록/세대를 함께 검사한다. 같은 월드가 남아 있어도 재생하지 않는다.
+			if (PendingDeathDebris.Remove(RequestId) == 0 || !IsDeathDebrisGenerationCurrent(Generation)) return;
+			Callback.ExecuteIfBound();
+		}), Delay, false);
+	PendingDeathDebris.Add(RequestId, Handle);
+	return Handle;
+}
+
+bool UOutlierArenaSubsystem::RegisterDeathDebrisActor(AOutlierDeathDebrisActor* Debris, uint32 Generation)
+{
+	if (!IsValid(Debris) || Debris->GetWorld() != GetWorld()
+		|| !IsDeathDebrisGenerationCurrent(Generation) || GetWorld()->GetNetMode() == NM_DedicatedServer) return false;
+	DeathDebrisActors.Add(Debris);
+	return true;
+}
+
+void UOutlierArenaSubsystem::UnregisterDeathDebrisActor(AOutlierDeathDebrisActor* Debris)
+{
+	DeathDebrisActors.Remove(Debris);
+}
+
+void UOutlierArenaSubsystem::ClearDeathDebris()
+{
+	// 먼저 소유 목록을 비운다. Destroy/타이머 정리의 재진입에서도 같은 연출을 두 번 처리하지 않는다.
+	TMap<uint64, FTimerHandle> Timers = MoveTemp(PendingDeathDebris);
+	TSet<TWeakObjectPtr<AOutlierDeathDebrisActor>> Actors = MoveTemp(DeathDebrisActors);
+	if (!Timers.IsEmpty() || !Actors.IsEmpty())
+	{
+		UE_LOG(LogTemp, Display, TEXT("[DeathDebris] Clear Generation=%u Timers=%d Actors=%d"),
+			GameplayGeneration, Timers.Num(), Actors.Num());
+	}
+	if (UWorld* World = GetWorld())
+	{
+		for (auto& Entry : Timers) World->GetTimerManager().ClearTimer(Entry.Value);
+	}
+	for (const TWeakObjectPtr<AOutlierDeathDebrisActor>& Entry : Actors)
+	{
+		if (AOutlierDeathDebrisActor* Debris = Entry.Get()) Debris->Destroy();
+	}
 }
 
 bool UOutlierArenaSubsystem::CommitGameplayGeneration(uint32 Generation)
@@ -652,6 +717,7 @@ bool UOutlierArenaSubsystem::CommitGameplayGeneration(uint32 Generation)
 	// 여기부터 이전 실행으로 돌아가지 않는다. 새 Actor 생성 전에 구세대 수명을 함께 닫는다.
 	GameplayGeneration = Generation;
 	ReservedGameplayGeneration = 0;
+	ClearDeathDebris();
 	PendingGameplayReload.Emplace();
 	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
 	Pending.Generation = Generation;
@@ -774,6 +840,7 @@ bool UOutlierArenaSubsystem::BeginClientGameplayReload(uint32 Generation)
 	}
 	GameplayGeneration = Generation;
 	LastReservedGameplayGeneration = Generation;
+	ClearDeathDebris();
 	PendingGameplayReload.Emplace();
 	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
 	Pending.Generation = Generation;

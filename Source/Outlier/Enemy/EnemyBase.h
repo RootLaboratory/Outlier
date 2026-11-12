@@ -1502,7 +1502,9 @@ protected:
 	// 파편은 놓치면 적이 그냥 사라져 보이므로 Reliable 을 쓴다.
 	// ( 폭발 VFX/사운드는 GameplayCue 로 나가고 그쪽은 unreliable 이다 )
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayDeathDebris(FTransform SourceTransform, FVector_NetQuantize100 DeathVelocity);
+	void MulticastPlayDeathDebris(uint32 GameplayGeneration, int32 LeaseSerial,
+		FTransform SourceTransform, FVector_NetQuantize100 DeathVelocity);
+	friend class FOutlierDeathDebrisLifecycleTest;
 
 	// 시체가 남은 DeathDestroyDelay 동안 트레이스/판정에 걸리지 않게 한다.
 	void DisableDeathCollision();

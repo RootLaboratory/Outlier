@@ -814,7 +814,8 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 		if (DeathDebrisCollection)
 		{
 			FlushNetDormancy();
-			MulticastPlayDeathDebris(GetMesh() ? GetMesh()->GetComponentTransform() : GetActorTransform(), GetVelocity());
+			MulticastPlayDeathDebris(uint32(GameplayGeneration), LeaseSerial,
+				GetMesh() ? GetMesh()->GetComponentTransform() : GetActorTransform(), GetVelocity());
 		}
 	}
 
@@ -8306,13 +8307,14 @@ void AEnemyBase::HandleDeath()
 {
 	ResetReturnHomeRecovery();
 	UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Death Enemy=%s Collection=%s Generation=%d Lease=%d"),
-		*GetName(), *GetNameSafe(DeathDebrisCollection), PoolGameplayGeneration, PoolLeaseSerial);
+		*GetName(), *GetNameSafe(DeathDebrisCollection), GetCombatGameplayGeneration(), PoolLeaseSerial);
 	// 파편 컬렉션이 지정된 적만 연출을 탄다. 없으면 기존 사망 동작 그대로다.
 	// Super 가 아래에서 SetLifeSpan 으로 파괴를 예약하므로 그 전에 브로드캐스트해야
 	// 액터 채널이 닫히기 전에 RPC 가 나간다 ( DeathDestroyDelay 주석 참고 ).
 	if (DeathDebrisCollection)
 	{
-		MulticastPlayDeathDebris(GetMesh() ? GetMesh()->GetComponentTransform() : GetActorTransform(), GetVelocity());
+		MulticastPlayDeathDebris(uint32(GetCombatGameplayGeneration()), PoolLeaseSerial,
+			GetMesh() ? GetMesh()->GetComponentTransform() : GetActorTransform(), GetVelocity());
 	}
 
 	PerformDeathCleanup();
@@ -8363,48 +8365,62 @@ void AEnemyBase::MulticastAdaptationShieldBreak_Implementation(UNiagaraSystem* B
 	}
 }
 
-void AEnemyBase::MulticastPlayDeathDebris_Implementation(FTransform SourceTransform, FVector_NetQuantize100 DeathVelocity)
+void AEnemyBase::MulticastPlayDeathDebris_Implementation(
+	uint32 GameplayGeneration, int32 LeaseSerial, FTransform SourceTransform, FVector_NetQuantize100 DeathVelocity)
 {
+	UOutlierArenaSubsystem* Arena = GetWorld() ? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!Arena || !Arena->IsDeathDebrisGenerationCurrent(GameplayGeneration))
+	{
+		UE_LOG(LogOutlier, Verbose, TEXT("[DeathDebris] Reject stale request Enemy=%s Generation=%u Current=%u"),
+			*GetName(), GameplayGeneration, Arena ? Arena->GetGameplayGeneration() : 0);
+		return;
+	}
 	// 판정 제거는 데디케이티드 서버를 포함한 모든 인스턴스에서 한다.
-	DisableDeathCollision();
+	// 같은 세대의 이전 lease 파편은 재생하되 새 대여의 원본 상태는 건드리지 않는다.
+	const bool bSourceLeaseMatches = !IsPoolManaged()
+		|| (uint32(PoolGameplayGeneration) == GameplayGeneration && PoolLeaseSerial == LeaseSerial
+			&& PoolState != EEnemyPoolState::Idle);
+	if (bSourceLeaseMatches) DisableDeathCollision();
 	if (GetNetMode() == NM_DedicatedServer)
 	{
 		return;
 	}
 
 	// 월드 소유 타이머와 스냅샷으로 풀 반환/재대여/파괴와 독립적으로 재생한다.
-	const uint32 PresentationSerial = ++DeathDebrisPresentationSerial;
+	const uint32 PresentationSerial = bSourceLeaseMatches ? ++DeathDebrisPresentationSerial : DeathDebrisPresentationSerial;
 	const TWeakObjectPtr<AEnemyBase> WeakSource(this);
-	const TWeakObjectPtr<UWorld> WeakWorld(GetWorld());
+	const TWeakObjectPtr<UOutlierArenaSubsystem> WeakArena(Arena);
 	const TStrongObjectPtr<UGeometryCollection> Collection(DeathDebrisCollection);
 	const FGeometryCollectionDeathProfile Profile = DeathDebrisProfile;
-	const auto SpawnDebris = [WeakSource, WeakWorld, Collection, Profile, SourceTransform, DeathVelocity, PresentationSerial]()
+	const auto SpawnDebris = [WeakSource, WeakArena, Collection, Profile, SourceTransform, DeathVelocity,
+		PresentationSerial, GameplayGeneration, LeaseSerial, bSourceLeaseMatches]()
 	{
-		UWorld* World = WeakWorld.Get();
-		if (!World)
+		UOutlierArenaSubsystem* CurrentArena = WeakArena.Get();
+		if (!CurrentArena || !CurrentArena->IsDeathDebrisGenerationCurrent(GameplayGeneration))
 		{
 			return;
 		}
 		const AOutlierDeathDebrisActor* Debris = AOutlierDeathDebrisActor::SpawnLocalDebris(
-			World, Collection.Get(), SourceTransform, FVector(DeathVelocity), Profile);
+			CurrentArena->GetWorld(), Collection.Get(), SourceTransform, FVector(DeathVelocity), Profile, GameplayGeneration);
 		AEnemyBase* Source = WeakSource.Get();
 		// 새 대여의 메시를 이전 파편 연출이 숨기지 않는다. 생성 실패 시에도 원본은 유지한다.
-		if (Debris && Source && Source->DeathDebrisPresentationSerial == PresentationSerial
-			&& (!Source->IsPoolManaged() || Source->PoolState != EEnemyPoolState::Idle))
+		if (Debris && Source && bSourceLeaseMatches && Source->DeathDebrisPresentationSerial == PresentationSerial
+			&& (!Source->IsPoolManaged() || (Source->PoolState != EEnemyPoolState::Idle
+				&& uint32(Source->PoolGameplayGeneration) == GameplayGeneration && Source->PoolLeaseSerial == LeaseSerial)))
 		{
 			Source->HideSourceMeshes();
 		}
-		UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Spawn Source=%s Success=%d Collection=%s Location=%s"),
-			*GetNameSafe(Source), Debris != nullptr, *GetNameSafe(Collection.Get()), *SourceTransform.GetLocation().ToCompactString());
+		UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Spawn Source=%s Generation=%u Lease=%d Success=%d Collection=%s Location=%s"),
+			*GetNameSafe(Source), GameplayGeneration, LeaseSerial, Debris != nullptr,
+			*GetNameSafe(Collection.Get()), *SourceTransform.GetLocation().ToCompactString());
 	};
 	const float Delay = FMath::Max(DeathDebrisDelay, 0.0f);
 	UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Requested Enemy=%s PoolState=%s Generation=%d Lease=%d Delay=%.3f Collection=%s Location=%s"),
-		*GetName(), *UEnum::GetValueAsString(PoolState), PoolGameplayGeneration, PoolLeaseSerial, Delay,
+		*GetName(), *UEnum::GetValueAsString(PoolState), int32(GameplayGeneration), LeaseSerial, Delay,
 		*GetNameSafe(DeathDebrisCollection), *SourceTransform.GetLocation().ToCompactString());
 	if (Delay > KINDA_SMALL_NUMBER)
 	{
-		GetWorldTimerManager().SetTimer(DeathDebrisTimerHandle,
-			FTimerDelegate::CreateLambda(SpawnDebris), Delay, false);
+		DeathDebrisTimerHandle = Arena->ScheduleDeathDebris(GameplayGeneration, Delay, FTimerDelegate::CreateLambda(SpawnDebris));
 		return;
 	}
 	SpawnDebris();
