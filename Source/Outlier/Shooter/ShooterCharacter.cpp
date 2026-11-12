@@ -826,6 +826,8 @@ void AShooterCharacter::BindGasVitalityObservers()
 	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
 			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
+	StealthCooldownEffectAddedHandle = OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.AddUObject(
+		this, &AShooterCharacter::HandleStealthCooldownEffectAdded);
 	StealthSpeedTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).AddUObject(
 			this, &AShooterCharacter::HandleStealthSpeedTagChanged);
@@ -833,6 +835,7 @@ void AShooterCharacter::BindGasVitalityObservers()
 
 void AShooterCharacter::UnbindGasVitalityObservers()
 {
+	GetWorldTimerManager().ClearTimer(StealthCooldownUIRefreshTimer);
 	if (!OutlierAbilitySystemComponent)
 	{
 		return;
@@ -860,6 +863,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 		OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()).Remove(WeaponOverchargeCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.Remove(StealthCooldownEffectAddedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).Remove(StealthSpeedTagChangedHandle);
 
@@ -875,6 +879,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	BulletReflectionCooldownTagChangedHandle.Reset();
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
+	StealthCooldownEffectAddedHandle.Reset();
 	StealthSpeedTagChangedHandle.Reset();
 }
 
@@ -1262,11 +1267,30 @@ static void QueueShooterSkillReadyAudio(AShooterCharacter* Character, const FGam
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	QueueShooterSkillReadyAudio(this, Tag, NewCount);
-	if (!IsLocallyControlled())
+	QueueStealthCooldownUIRefresh();
+}
+
+void AShooterCharacter::HandleStealthCooldownEffectAdded(UAbilitySystemComponent* AbilitySystem,
+	const FGameplayEffectSpec& EffectSpec, FActiveGameplayEffectHandle EffectHandle)
+{
+	// 복제 중 기존 효과가 새 효과로 교체돼도 태그 개수는 그대로일 수 있다.
+	// 효과 추가도 감지해야 암살자의 일격으로 줄어든 잔여 시간이 오너 HUD에 반영된다.
+	if (EffectSpec.Def && EffectSpec.Def->GetGrantedTags().HasTagExact(
+		OutlierGameplayTags::Cooldown::Shooter::Stealth()))
+	{
+		QueueStealthCooldownUIRefresh();
+	}
+}
+
+void AShooterCharacter::QueueStealthCooldownUIRefresh()
+{
+	if (!IsLocallyControlled() || GetWorldTimerManager().TimerExists(StealthCooldownUIRefreshTimer))
 	{
 		return;
 	}
-	RefreshShooterSuitCooldownUI();
+	// 제거/재부여 중간의 0초로 완료 연출이 켜지지 않도록 최종 상태만 전달한다.
+	StealthCooldownUIRefreshTimer = GetWorldTimerManager().SetTimerForNextTick(this,
+		&AShooterCharacter::RefreshShooterSuitCooldownUI);
 }
 
 void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
