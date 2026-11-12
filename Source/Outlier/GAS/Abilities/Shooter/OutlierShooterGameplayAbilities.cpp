@@ -826,8 +826,7 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		TEXT("Shooter stealth removal observers must bind to both AbilitySystemComponents."));
 
 	bAutomaticStealth = bRequestAutomaticStealth;
-	bPassiveStealth = bAutomaticStealth
-		&& ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	bPassiveStealth = bAutomaticStealth && bRequestPassiveStealth;
 	if (bAutomaticStealth)
 	{
 		// 처치형 은신은 실행 중인 다른 슈트와 병행하며 이후 입력도 막지 않는다.
@@ -903,7 +902,7 @@ bool UOutlierShooterStealthAbility::ApplyStealthEffects(float Duration)
 	return true;
 }
 
-bool UOutlierShooterStealthAbility::TriggerAutomaticStealth()
+bool UOutlierShooterStealthAbility::TriggerAutomaticStealth(bool bPassive)
 {
 	UOutlierAbilitySystemComponent* AbilitySystem = GetOutlierAbilitySystem();
 	if (!AbilitySystem || !CurrentActorInfo || !CurrentActorInfo->IsNetAuthority())
@@ -911,22 +910,27 @@ bool UOutlierShooterStealthAbility::TriggerAutomaticStealth()
 		return false;
 	}
 	bRequestAutomaticStealth = true;
+	bRequestPassiveStealth = bPassive;
 	if (!CanActivateAbility(CurrentSpecHandle, CurrentActorInfo))
 	{
 		bRequestAutomaticStealth = false;
+		bRequestPassiveStealth = false;
 		return false;
 	}
 	if (!IsActive())
 	{
 		const bool bActivated = AbilitySystem->TryActivateAbility(CurrentSpecHandle);
 		bRequestAutomaticStealth = false;
+		bRequestPassiveStealth = false;
 		return bActivated;
 	}
 	bRequestAutomaticStealth = false;
+	bRequestPassiveStealth = false;
 	const bool bWasAutomatic = bAutomaticStealth;
 	const bool bWasPassive = bPassiveStealth;
 	bAutomaticStealth = true;
-	bPassiveStealth = AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	// 암살 보상으로 갱신해도 이미 발동한 패시브 은신의 유지 속성은 약화하지 않는다.
+	bPassiveStealth = bWasPassive || bPassive;
 	if (!ApplyStealthEffects(1.5f))
 	{
 		bAutomaticStealth = bWasAutomatic;

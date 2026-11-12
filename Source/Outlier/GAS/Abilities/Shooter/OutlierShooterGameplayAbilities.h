@@ -175,7 +175,7 @@ class OUTLIER_API UOutlierShooterStealthAbility : public UOutlierShooterGameplay
 public:
 	UOutlierShooterStealthAbility();
 	bool EndStealth(bool bCommitCooldown);
-	bool TriggerAutomaticStealth();
+	bool TriggerAutomaticStealth(bool bPassive = false);
 	bool IsAutomaticStealth() const { return bAutomaticStealth; }
 	void NotifyOffensiveAction();
 	void NotifyIncomingDamage();
@@ -217,4 +217,5 @@ private:
 	bool bAutomaticStealth = false;
 	bool bPassiveStealth = false;
 	bool bRequestAutomaticStealth = false;
+	bool bRequestPassiveStealth = false;
 };

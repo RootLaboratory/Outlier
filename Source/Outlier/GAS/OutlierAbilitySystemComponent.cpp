@@ -1234,8 +1234,7 @@ bool UOutlierAbilitySystemComponent::EndActiveShooterWeaponOvercharge(bool bComm
 
 bool UOutlierAbilitySystemComponent::CommitShooterStealthCooldown()
 {
-	const float Duration = FMath::Max(0.0f, ShooterSuitConfig.Stealth.CooldownSeconds - PendingStealthCooldownReduction);
-	PendingStealthCooldownReduction = 0.0f;
+	const float Duration = ShooterSuitConfig.Stealth.CooldownSeconds;
 	if (Duration <= 0.0f)
 	{
 		return true;
@@ -1320,19 +1319,20 @@ void UOutlierAbilitySystemComponent::NotifyShooterStealthDamage()
 }
 
 void UOutlierAbilitySystemComponent::NotifyShooterStealthKill(
-	const TSharedPtr<FOutlierStealthSession>& Session, bool bDrone)
+	const TSharedPtr<FOutlierStealthSession>& Session)
 {
-	if (!IsOwnerActorAuthoritative() || !Session || Session->Shooter.Get() != GetAvatarActor()
-		|| Session->Generation != StealthGeneration || HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	if (!IsOwnerActorAuthoritative() || HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return;
+	}
+	if (Session && (Session->Shooter.Get() != GetAvatarActor() || Session->Generation != StealthGeneration))
 	{
 		return;
 	}
 
-	// 기존 은신의 첫 처치 보상을 먼저 소비한 뒤, 다섯 번째 처치의 새 은신을 발동한다.
-	if (!Session->bAssassinsStrikeConsumed
-		&& HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::AssassinsStrike()))
+	const bool bAssassination = Session.IsValid();
+	if (bAssassination && HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::AssassinsStrike()))
 	{
-		Session->bAssassinsStrikeConsumed = true;
 		const float Remaining = GetShooterStealthCooldownRemaining();
 		if (Remaining > 0.0f)
 		{
@@ -1343,22 +1343,26 @@ void UOutlierAbilitySystemComponent::NotifyShooterStealthKill(
 					OutlierGameplayTags::Cooldown::Shooter::Stealth(), Remaining - 5.0f, GetAvatarActor());
 			}
 		}
-		else
+	}
+	bool bTriggerPassiveStealth = false;
+	if (HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain()))
+	{
+		const int32 RequiredKills = FMath::Max(1, ShooterSuitConfig.Stealth.ShadowChainRequiredKills);
+		if (++StealthEnemyKillCount >= RequiredKills)
 		{
-			PendingStealthCooldownReduction += 5.0f;
+			StealthEnemyKillCount -= RequiredKills;
+			bTriggerPassiveStealth = true;
 		}
 	}
-
-	if (bDrone && HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ConcealmentProtocol()))
+	const bool bTriggerAutomaticStealth = bAssassination
+		&& HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ConcealmentProtocol());
+	// 암살과 누적 처치가 겹치면 쿨타임 감소/카운트를 각각 처리하고 패시브 은신 한 번을 적용한다.
+	if (bTriggerAutomaticStealth || bTriggerPassiveStealth)
 	{
-		if (++StealthDroneKillCount >= 5)
+		FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
+		if (UOutlierShooterStealthAbility* Ability = Spec ? Cast<UOutlierShooterStealthAbility>(Spec->GetPrimaryInstance()) : nullptr)
 		{
-			StealthDroneKillCount -= 5;
-			FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
-			if (UOutlierShooterStealthAbility* Ability = Spec ? Cast<UOutlierShooterStealthAbility>(Spec->GetPrimaryInstance()) : nullptr)
-			{
-				Ability->TriggerAutomaticStealth();
-			}
+			Ability->TriggerAutomaticStealth(bTriggerPassiveStealth);
 		}
 	}
 }
@@ -1386,8 +1390,7 @@ void UOutlierAbilitySystemComponent::ResetShooterStealthUpgradeState()
 	}
 	++StealthGeneration;
 	ShooterStealthSession.Reset();
-	StealthDroneKillCount = 0;
-	PendingStealthCooldownReduction = 0.0f;
+	StealthEnemyKillCount = 0;
 	RemoveActiveEffectFromSelf(StealthExitSpeedHandle);
 	StealthExitSpeedHandle.Invalidate();
 }

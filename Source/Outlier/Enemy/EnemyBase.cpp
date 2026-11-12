@@ -1241,6 +1241,7 @@ void AEnemyBase::ResetPoolRuntimeState()
 	bHasLastKnownPlayerLocation = false;
 	LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
 	LastAcceptedStealthSession.Reset();
+	LastAcceptedDirectShooter.Reset();
 	ResetPoolPresentationState();
 }
 
@@ -5741,13 +5742,15 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	const EOutlierAdaptationDamageCategory PreviousDamageCategory =
 		LastAcceptedAdaptationDamageCategory;
 	const TSharedPtr<FOutlierStealthSession> PreviousStealthSession = LastAcceptedStealthSession;
+	const TWeakObjectPtr<AShooterCharacter> PreviousDirectShooter = LastAcceptedDirectShooter;
 	const AWeaponBase* DirectWeapon = Cast<AWeaponBase>(Request.DamageCauser);
-	const AShooterCharacter* DirectShooter = DirectWeapon
+	AShooterCharacter* DirectShooter = DirectWeapon
 		? Cast<AShooterCharacter>(DirectWeapon->GetOwner()) : nullptr;
-	const bool bDirectStealthAttack = !Request.bReflectedDamage && !bIsPossessed
+	const bool bDirectShooterAttack = DirectShooter && !Request.bReflectedDamage && !bIsPossessed
+		&& GetGenericTeamId().GetId() == OutlierTeamIds::Enemy
 		&& (Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Ranged())
-			|| Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Melee()))
-		&& Request.StealthSession && DirectShooter
+			|| Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Melee()));
+	const bool bDirectStealthAttack = bDirectShooterAttack && Request.StealthSession
 		&& Request.StealthSession->Shooter.Get() == DirectShooter;
 	// GAS의 Health 변경 콜백은 ApplyDamageInternal 안에서 즉시 사망 처리를 호출한다.
 	// 이번 공격 분류를 먼저 기록해야 사망 경로가 정확한 최종 원인을 소비할 수 있다.
@@ -5755,6 +5758,7 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	// 사망 콜백이 동기 실행되므로 막타의 직접 공격 자격도 피해 적용 전에 교체한다.
 	// 환경/폭발/Partner 피해는 이전 공격의 자격을 상속하지 않는다.
 	LastAcceptedStealthSession = bDirectStealthAttack ? Request.StealthSession : nullptr;
+	LastAcceptedDirectShooter = bDirectShooterAttack ? DirectShooter : nullptr;
 	const bool bDamageApplied = ApplyDamageInternal(
 		FinalDamage,
 		Request.EventInstigator,
@@ -5764,11 +5768,13 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	{
 		LastAcceptedAdaptationDamageCategory = PreviousDamageCategory;
 		LastAcceptedStealthSession = PreviousStealthSession;
+		LastAcceptedDirectShooter = PreviousDirectShooter;
 	}
 	else if (!IsDead())
 	{
 		// 비치명타의 자격이 나중의 스크립트 사망이나 수명 종료에 재사용되지 않게 한다.
 		LastAcceptedStealthSession.Reset();
+		LastAcceptedDirectShooter.Reset();
 	}
 	const float AppliedDamage = bDamageApplied ? FinalDamage : 0.0f;
 	if (bAdaptationGunDamage)
@@ -8625,14 +8631,13 @@ void AEnemyBase::PerformDeathCleanup()
 	{
 		ReportFinalAdaptationResult();
 		const TSharedPtr<FOutlierStealthSession> KillingSession = MoveTemp(LastAcceptedStealthSession);
-		if (KillingSession && !bIsPossessed)
+		AShooterCharacter* KillingShooter = LastAcceptedDirectShooter.Get();
+		LastAcceptedDirectShooter.Reset();
+		if (KillingShooter && !bIsPossessed)
 		{
-			if (AShooterCharacter* Shooter = KillingSession->Shooter.Get())
+			if (UOutlierAbilitySystemComponent* AbilitySystem = KillingShooter->GetOutlierAbilitySystemComponent())
 			{
-				if (UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent())
-				{
-					AbilitySystem->NotifyShooterStealthKill(KillingSession, !IsA<AAutoTurret>());
-				}
+				AbilitySystem->NotifyShooterStealthKill(KillingSession);
 			}
 		}
 		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())

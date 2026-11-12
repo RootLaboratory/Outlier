@@ -191,7 +191,8 @@ public:
 	void BeginShooterStealthSession();
 	void FinishShooterStealthSession();
 	void NotifyShooterStealthDamage();
-	void NotifyShooterStealthKill(const TSharedPtr<FOutlierStealthSession>& Session, bool bDrone);
+	// 직접 처치마다 호출한다. 은신 밖에서 시작한 공격은 Session이 없어도 누적 처치에 포함된다.
+	void NotifyShooterStealthKill(const TSharedPtr<FOutlierStealthSession>& Session);
 	void ResetShooterStealthUpgradeState();
 	void ApplyShooterStealthExitSpeedBoost();
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
@@ -267,9 +268,8 @@ private:
 	FGameplayAbilitySpecHandle GrantedShooterStealthAbilityHandle;
 	bool bShooterSuitConfigured = false;
 	TSharedPtr<FOutlierStealthSession> ShooterStealthSession;
-	int32 StealthDroneKillCount = 0;
+	int32 StealthEnemyKillCount = 0;
 	uint32 StealthGeneration = 0;
-	float PendingStealthCooldownReduction = 0.0f;
 	FActiveGameplayEffectHandle StealthExitSpeedHandle;
 	// 능력 종료 후에도 유지되는 도약 무적과 실패 제한만 추적한다. 시전 중 무적은 능력이 관리한다.
 	FActiveGameplayEffectHandle QuantumLeapImmunityHandle;

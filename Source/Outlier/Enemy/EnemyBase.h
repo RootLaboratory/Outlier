@@ -1595,6 +1595,7 @@ protected:
 	EOutlierAdaptationDamageCategory LastAcceptedAdaptationDamageCategory =
 		EOutlierAdaptationDamageCategory::Ignore;
 	TSharedPtr<FOutlierStealthSession> LastAcceptedStealthSession;
+	TWeakObjectPtr<AShooterCharacter> LastAcceptedDirectShooter;
 	bool bDeathCleanupPerformed = false;
 #if WITH_DEV_AUTOMATION_TESTS
 	bool bPoolPresentationAutoCompleteForTesting = true;

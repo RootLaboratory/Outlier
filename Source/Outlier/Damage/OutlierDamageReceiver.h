@@ -10,12 +10,11 @@ class AController;
 class AShooterCharacter;
 
 // 한 은신에서 시작한 공격들이 공유하는 서버 전용 자격이다.
-// 공격 때문에 은신이 먼저 끝나도 막타까지 살아 있고, 첫 처치 보상은 한 번만 소비된다.
+// 공격 때문에 은신이 먼저 끝나도 막타까지 살아 있어 암살 처치를 판정할 수 있다.
 struct FOutlierStealthSession
 {
 	TWeakObjectPtr<AShooterCharacter> Shooter;
 	uint32 Generation = 0;
-	bool bAssassinsStrikeConsumed = false;
 };
 
 // Enemy 내성 시스템이 피해 감소와 최종 처치 결과를 같은 기준으로 판정할 수 있도록
