@@ -3,6 +3,8 @@
 #include "Audio/OutlierAbilityAudioSettings.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Engine/OverlapResult.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
@@ -11,6 +13,8 @@
 #include "Shooter/ShooterCharacter.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogQuantumLeap, Log, All);
 
 namespace
 {
@@ -99,10 +103,16 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 {
 	if (!PassesUpgradeGrantGate(ActorInfo, OutlierGameplayTags::Ability::Shooter::QuantumLeap()))
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Ability grant gate rejected. Avatar=%s"), *GetNameSafe(ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr));
 		return false;
 	}
-	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
+	FGameplayTagContainer FailureTags;
+	FGameplayTagContainer* RelevantTags = OptionalRelevantTags ? OptionalRelevantTags : &FailureTags;
+	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, RelevantTags))
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] GAS activation rejected (blocked tags, active ability, cooldown or cost). Avatar=%s RelevantTags=%s"),
+			*GetNameSafe(ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr),
+			*RelevantTags->ToStringSimple());
 		return false;
 	}
 
@@ -116,27 +126,34 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	const UAbilitySystemComponent* PartnerASC = Partner ? Partner->GetAbilitySystemComponent() : nullptr;
 	if (!Shooter || !AbilitySystem)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Missing Shooter or ASC. Shooter=%s ASC=%s"), *GetNameSafe(Shooter), *GetNameSafe(AbilitySystem));
 		return false;
 	}
 	if (!AbilitySystem->IsShooterSuitConfigured())
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Suit not configured. Shooter=%s"), *GetNameSafe(Shooter));
 		return false;
 	}
 	// 재충전 중이어도 남은 횟수로 도약할 수 있다. 실패 후 재시도 제한은 별도로 적용한다.
 	if (AbilitySystem->GetShooterQuantumLeapChargeState().CurrentCharges <= 0 || AbilitySystem->IsShooterQuantumLeapRetryActive())
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] No charge or failure retry delay active. Shooter=%s Charges=%d RetryActive=%d"),
+			*GetNameSafe(Shooter), AbilitySystem->GetShooterQuantumLeapChargeState().CurrentCharges, AbilitySystem->IsShooterQuantumLeapRetryActive());
 		return false;
 	}
 	if (!Shooter->IsSuitUsable())
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Suit unusable. Shooter=%s"), *GetNameSafe(Shooter));
 		return false;
 	}
 	if (!IsValid(Partner) || !PartnerASC)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Invalid Partner or missing Partner ASC. Shooter=%s Partner=%s ASC=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner), *GetNameSafe(PartnerASC));
 		return false;
 	}
 	if (PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting()))
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Partner rebooting. Partner=%s"), *GetNameSafe(Partner));
 		return false;
 	}
 
@@ -144,6 +161,7 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	const float MaxDistance = AbilitySystem->GetShooterSuitConfig().MaxPartnerDistance;
 	if (Distance > MaxDistance)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Partner out of range. Shooter=%s Distance=%.1f MaxDistance=%.1f"), *GetNameSafe(Shooter), Distance, MaxDistance);
 		return false;
 	}
 	return true;
@@ -164,12 +182,14 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
 	if (!Shooter || !Partner || !ShooterASC)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Activate] Missing required actor/ASC. Shooter=%s Partner=%s ASC=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner), *GetNameSafe(ShooterASC));
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
 
 	if (!TryResolveDestination(*Shooter, *Partner, Destination))
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Activate] Could not resolve destination. Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 		bCommitFailureCooldown = true;
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
@@ -178,6 +198,7 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 	DamageImmuneHandle = ShooterASC->ApplyDamageImmuneStateToSelf();
 	if (!DamageImmuneHandle.IsValid())
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Activate] Failed to apply damage immunity. Shooter=%s"), *GetNameSafe(Shooter));
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
@@ -188,6 +209,7 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 		Shooter);
 	if (!QuantumLeapStateHandle.IsValid())
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Activate] Failed to apply QuantumLeap state. Shooter=%s CastTime=%.3f"), *GetNameSafe(Shooter), ShooterASC->GetShooterSuitConfig().QuantumLeap.CastTimeSeconds);
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
@@ -212,6 +234,7 @@ bool UOutlierShooterQuantumLeapAbility::CancelQuantumLeap(bool bInCommitFailureC
 		return false;
 	}
 	bCommitFailureCooldown = bInCommitFailureCooldown;
+	UE_LOG(LogQuantumLeap, Warning, TEXT("[Cancel] External cancellation. Shooter=%s CommitFailureRetry=%d"), *GetNameSafe(GetShooterCharacter()), bInCommitFailureCooldown);
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 	return true;
 }
@@ -266,6 +289,7 @@ bool UOutlierShooterQuantumLeapAbility::TryResolveDestination(
 	UWorld* World = Shooter.GetWorld();
 	if (!ShooterASC || !Capsule || !World)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Resolve] Missing ASC, capsule or world. Shooter=%s ASC=%s Capsule=%s World=%s"), *GetNameSafe(&Shooter), *GetNameSafe(ShooterASC), *GetNameSafe(Capsule), *GetNameSafe(World));
 		return false;
 	}
 
@@ -281,23 +305,34 @@ bool UOutlierShooterQuantumLeapAbility::TryResolveDestination(
 	for (const FVector& Direction : Directions)
 	{
 		FVector Candidate = Partner.GetActorLocation() + Direction * Offset;
+		const FVector TraceStart = Candidate;
+		const FVector TraceEnd = TraceStart - FVector(0.0f, 0.0f, 100.0f);
 		FHitResult GroundHit;
-		if (World->LineTraceSingleByChannel(
+		const bool bGroundHit = World->LineTraceSingleByChannel(
 			GroundHit,
-			Candidate,
-			Candidate - FVector(0.0f, 0.0f, 100.0f),
+			TraceStart,
+			TraceEnd,
 			ECC_Visibility,
-			GroundParams))
+			GroundParams);
+		if (bGroundHit)
 		{
 			Candidate.Z = GroundHit.ImpactPoint.Z + CapsuleHalfHeight + 1.0f;
 		}
+		else
+		{
+			UE_LOG(LogQuantumLeap, Log, TEXT("[Resolve] No ground within 100cm below candidate; checking unadjusted position. Shooter=%s Candidate=%s Direction=%s"),
+				*GetNameSafe(&Shooter), *Candidate.ToString(), *Direction.ToString());
+		}
 
-		if (IsDestinationClear(Shooter, Partner, Candidate))
+		const bool bClear = IsDestinationClear(Shooter, Partner, Candidate);
+		if (bClear)
 		{
 			OutDestination = Candidate;
+			UE_LOG(LogQuantumLeap, Log, TEXT("[Resolve] Selected destination. Shooter=%s Destination=%s Direction=%s Offset=%.1f"), *GetNameSafe(&Shooter), *Candidate.ToString(), *Direction.ToString(), Offset);
 			return true;
 		}
 	}
+	UE_LOG(LogQuantumLeap, Warning, TEXT("[Resolve] All four candidates blocked. Shooter=%s PartnerLocation=%s Offset=%.1f"), *GetNameSafe(&Shooter), *Partner.GetActorLocation().ToString(), Offset);
 	return false;
 }
 
@@ -310,6 +345,7 @@ bool UOutlierShooterQuantumLeapAbility::IsDestinationClear(
 	UWorld* World = Shooter.GetWorld();
 	if (!Capsule || !World)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Destination] Missing capsule or world. Shooter=%s"), *GetNameSafe(&Shooter));
 		return false;
 	}
 
@@ -318,12 +354,30 @@ bool UOutlierShooterQuantumLeapAbility::IsDestinationClear(
 	const FCollisionShape CapsuleShape = FCollisionShape::MakeCapsule(
 		Capsule->GetScaledCapsuleRadius(),
 		Capsule->GetScaledCapsuleHalfHeight());
-	return !World->OverlapBlockingTestByProfile(
+	const bool bBlocked = World->OverlapBlockingTestByProfile(
 		InDestination,
 		Shooter.GetActorQuat(),
 		Capsule->GetCollisionProfileName(),
 		CapsuleShape,
 		Params);
+	if (bBlocked && UE_LOG_ACTIVE(LogQuantumLeap, Warning))
+	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Destination] Capsule blocked. Shooter=%s Destination=%s Profile=%s Radius=%.1f HalfHeight=%.1f"),
+			*GetNameSafe(&Shooter), *InDestination.ToString(), *Capsule->GetCollisionProfileName().ToString(), Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight());
+		// Preserve the original blocking test; this extra query only identifies blockers for diagnostics.
+		TArray<FOverlapResult> Overlaps;
+		World->OverlapMultiByProfile(Overlaps, InDestination, Shooter.GetActorQuat(), Capsule->GetCollisionProfileName(), CapsuleShape, Params);
+		for (const FOverlapResult& Overlap : Overlaps)
+		{
+			if (Overlap.bBlockingHit)
+			{
+				UE_LOG(LogQuantumLeap, Warning, TEXT("[Destination] Blocker Actor=%s Component=%s Profile=%s"),
+					*GetNameSafe(Overlap.GetActor()), *GetNameSafe(Overlap.GetComponent()),
+					Overlap.GetComponent() ? *Overlap.GetComponent()->GetCollisionProfileName().ToString() : TEXT("<none>"));
+			}
+		}
+	}
+	return !bBlocked;
 }
 
 void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
@@ -333,6 +387,7 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
 	if (!Shooter || !ShooterASC || Shooter->IsDead() || !IsValid(Partner))
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Complete] Missing actor/ASC or Shooter dead. Shooter=%s ASC=%s Dead=%d Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(ShooterASC), Shooter ? Shooter->IsDead() : false, *GetNameSafe(Partner));
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
 	}
@@ -340,6 +395,7 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	const UAbilitySystemComponent* PartnerASC = Partner->GetAbilitySystemComponent();
 	if (!PartnerASC)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Complete] Partner ASC missing. Partner=%s"), *GetNameSafe(Partner));
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
 	}
@@ -350,6 +406,9 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	const bool bDestinationBlocked = !IsDestinationClear(*Shooter, *Partner, Destination);
 	if (bSuitUnusable || bPartnerRebooting || bOutOfRange || bDestinationBlocked)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Complete] Revalidation failed. Shooter=%s SuitUnusable=%d PartnerRebooting=%d OutOfRange=%d DestinationBlocked=%d Distance=%.1f MaxDistance=%.1f Destination=%s"),
+			*GetNameSafe(Shooter), bSuitUnusable, bPartnerRebooting, bOutOfRange, bDestinationBlocked, Distance,
+			ShooterASC->GetShooterSuitConfig().MaxPartnerDistance, *Destination.ToString());
 		bCommitFailureCooldown = true;
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
@@ -359,6 +418,7 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	bTeleportSucceeded = Shooter->TeleportTo(Destination, PreservedRotation, false, true);
 	if (!bTeleportSucceeded)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Complete] TeleportTo returned false. Shooter=%s From=%s Destination=%s"), *GetNameSafe(Shooter), *Shooter->GetActorLocation().ToString(), *Destination.ToString());
 		bCommitFailureCooldown = true;
 	}
 	else
