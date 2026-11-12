@@ -6,6 +6,7 @@
 #include "Drone/Partner/PartnerCharacterComponentBase.h"
 #include "GameplayTagContainer.h"
 #include "HackType.h"
+#include "Interface/ActorBasedWidgetInterface.h"
 #include "UI/UILayerTypes.h"
 #include "PartnerHackComponent.generated.h"
 
@@ -37,7 +38,7 @@ struct OUTLIER_API FPartnerHackAbilityData
 };
 
 UCLASS()
-class OUTLIER_API UPartnerHackComponent : public UPartnerCharacterComponentBase
+class OUTLIER_API UPartnerHackComponent : public UPartnerCharacterComponentBase, public IActorBasedWidgetInterface
 {
 	GENERATED_BODY()
 
@@ -46,6 +47,7 @@ public:
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void DismissActorBasedWidgets_Implementation() override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Candidate", meta = (ClampMin = "0.0", ClampMax = "180.0"))

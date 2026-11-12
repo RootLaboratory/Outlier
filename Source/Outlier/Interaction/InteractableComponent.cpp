@@ -4,11 +4,14 @@
 
 #include "UI/TargetPointHudWidget.h"
 #include "Components/SceneComponent.h"
+#include "Components/PanelWidget.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "UI/ActorBasedWidgetSubsystem.h"
 #include "FirstPerson/FirstPersonCharacter.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -20,6 +23,30 @@
 #include "UI/InteractKeyWidget.h"
 #include "UI/InteractionLockedWidget.h"
 #include "UI/InteractionOutlineWidget.h"
+
+namespace
+{
+	TAutoConsoleVariable<int32> CVarDebugInteractionDismiss(
+		TEXT("outlier.UI.DebugInteractionDismiss"), 1,
+		TEXT("Log interaction widget dismissal and Locked/Outline visibility transitions. 0: off, 1: on."));
+
+	void LogInteractionWidgetState(const UInteractableComponent* Component, const TCHAR* Event,
+		bool bShown, const UUserWidget* Widget, const AFirstPersonCharacter* Interactor = nullptr)
+	{
+		if (!CVarDebugInteractionDismiss.GetValueOnGameThread()) return;
+		const AFirstPersonPlayerController* Controller = Interactor
+			? Cast<AFirstPersonPlayerController>(Interactor->GetController())
+			: (Widget ? Cast<AFirstPersonPlayerController>(Widget->GetOwningPlayer()) : nullptr);
+		UE_LOG(LogTemp, Warning,
+			TEXT("[InteractionWidgetDebug] %s World=%s NetMode=%d Owner=%s Component=%s Shown=%d Widget=%s Visibility=%d Parent=%s Interactor=%s Controller=%s HudHiddenForDeath=%d"),
+			Event, *GetNameSafe(Component->GetWorld()),
+			Component->GetWorld() ? static_cast<int32>(Component->GetWorld()->GetNetMode()) : -1,
+			*GetNameSafe(Component->GetOwner()), *GetNameSafe(Component), bShown ? 1 : 0,
+			*GetNameSafe(Widget), Widget ? static_cast<int32>(Widget->GetVisibility()) : -1,
+			*GetNameSafe(Widget ? Widget->GetParent() : nullptr), *GetNameSafe(Interactor),
+			*GetNameSafe(Controller), Controller && Controller->IsHudHiddenForDeath() ? 1 : 0);
+	}
+}
 
 namespace InteractableComponentTags
 {
@@ -136,11 +163,15 @@ void UInteractableComponent::OnOutlineRangeChanged_Implementation(
 
 void UInteractableComponent::DismissActorBasedWidgets_Implementation()
 {
+	LogInteractionWidgetState(this, TEXT("Dismiss.Begin.Locked"), bLockedShown, InteractionLockedWidget);
+	LogInteractionWidgetState(this, TEXT("Dismiss.Begin.Outline"), bOutlineShown, InteractionOutlineWidget);
 	DeactivateInteractionDesc();
 	InteractInfoWidgetDeactivate();
 	InteractKeyWidgetDeactivate();
 	InteractionLockedWidgetDeactivate();
 	InteractionOutlineWidgetDeactivate();
+	LogInteractionWidgetState(this, TEXT("Dismiss.End.Locked"), bLockedShown, InteractionLockedWidget);
+	LogInteractionWidgetState(this, TEXT("Dismiss.End.Outline"), bOutlineShown, InteractionOutlineWidget);
 }
 
 void UInteractableComponent::RefreshWidgetTick()
@@ -701,14 +732,18 @@ void UInteractableComponent::InteractionLockedWidgetActivate(AFirstPersonCharact
 	}
 	if (InteractionLockedHudWidget && InteractionLockedWidget)
 	{
+		const bool bLogTransition = !bLockedShown || !InteractionLockedWidget->IsVisible();
 		InteractionLockedWidget->ShowLockedPrompt();
 		bLockedShown = true;
+		if (bLogTransition)
+			LogInteractionWidgetState(this, TEXT("Locked.Activate"), bLockedShown, InteractionLockedWidget, Interactor);
 	}
 	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::InteractionLockedWidgetDeactivate()
 {
+	const bool bLogTransition = bLockedShown || (InteractionLockedWidget && InteractionLockedWidget->IsVisible());
 	if (InteractionLockedHudWidget)
 	{
 		bLockedShown = false;
@@ -718,6 +753,8 @@ void UInteractableComponent::InteractionLockedWidgetDeactivate()
 		InteractionLockedWidget->HideLockedPrompt();
 	}
 	UpdateWidgetPresentation();
+	if (bLogTransition)
+		LogInteractionWidgetState(this, TEXT("Locked.Deactivate"), bLockedShown, InteractionLockedWidget);
 }
 
 void UInteractableComponent::InteractionOutlineWidgetActivate(AFirstPersonCharacter* Interactor)
@@ -747,14 +784,18 @@ void UInteractableComponent::InteractionOutlineWidgetActivate(AFirstPersonCharac
 	}
 	if (InteractionOutlineHudWidget && InteractionOutlineWidget)
 	{
+		const bool bLogTransition = !bOutlineShown || !InteractionOutlineWidget->IsVisible();
 		InteractionOutlineWidget->SetLocked(bLocked);
 		bOutlineShown = true;
+		if (bLogTransition)
+			LogInteractionWidgetState(this, TEXT("Outline.Activate"), bOutlineShown, InteractionOutlineWidget, Interactor);
 	}
 	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::InteractionOutlineWidgetDeactivate()
 {
+	const bool bLogTransition = bOutlineShown || (InteractionOutlineWidget && InteractionOutlineWidget->IsVisible());
 	if (InteractionOutlineHudWidget)
 	{
 		bOutlineShown = false;
@@ -764,6 +805,8 @@ void UInteractableComponent::InteractionOutlineWidgetDeactivate()
 		InteractionOutlineWidget->HideIndicator();
 	}
 	UpdateWidgetPresentation();
+	if (bLogTransition)
+		LogInteractionWidgetState(this, TEXT("Outline.Deactivate"), bOutlineShown, InteractionOutlineWidget);
 }
 
 void UInteractableComponent::OnRep_InteractableTags()

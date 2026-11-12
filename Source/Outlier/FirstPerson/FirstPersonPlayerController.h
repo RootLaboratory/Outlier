@@ -432,7 +432,12 @@ protected:
 	// 숨김 사유(사망, Partner 빙의)를 합쳐 HUD 표시 여부를 다시 맞춘다. 사유가 바뀔 때마다 호출한다.
 	virtual void RefreshHudVisibility();
 	virtual bool ShouldShowMainWidget() const;
+
+public:
+	// 읽기 전용. 상호작용 위젯 디버그 로그(InteractableComponent)에서도 읽는다.
 	bool IsHudHiddenForDeath() const { return bHudHiddenForDeath; }
+
+protected:
 
 	// 사망 연출의 Black Noise 텍스처가 나타날 때 GameOverWidget을 띄운다.
 	void HandleDeathBlackNoiseStarted();

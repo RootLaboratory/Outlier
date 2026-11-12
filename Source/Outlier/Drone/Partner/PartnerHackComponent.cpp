@@ -9,6 +9,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
+#include "UI/ActorBasedWidgetSubsystem.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
@@ -32,6 +33,10 @@ UPartnerHackComponent::UPartnerHackComponent()
 void UPartnerHackComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->RegisterWidgetOwner(this);
+	}
 
 	CachedAbilityData.bRequireLineOfSight = bRequireLineOfSight;
 
@@ -43,6 +48,10 @@ void UPartnerHackComponent::BeginPlay()
 
 void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->UnregisterWidgetOwner(this);
+	}
 	if (GetOwner() && GetOwner()->HasAuthority() && IsValid(ActiveHackableComponent))
 	{
 		FHackResultContext ResultContext;
@@ -64,6 +73,13 @@ void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	DestroyCandidateLayerWidget();
 	ClearHackCandidates();
 	Super::EndPlay(EndPlayReason);
+}
+
+void UPartnerHackComponent::DismissActorBasedWidgets_Implementation()
+{
+	ResetLocalHackHoldProgress();
+	DestroyHackMiniGameWidget();
+	DestroyCandidateLayerWidget();
 }
 
 void UPartnerHackComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)

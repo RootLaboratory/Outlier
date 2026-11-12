@@ -919,6 +919,15 @@ void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 
 void AFirstPersonCharacter::UpdateInteractableFocus()
 {
+	const AFirstPersonPlayerController* PlayerController = Cast<AFirstPersonPlayerController>(GetController());
+	if (PlayerController && PlayerController->IsHudHiddenForDeath())
+	{
+		// GameOver dismiss 이후 탐색 타이머가 안내 UI를 다시 켜지 않도록 한다.
+		// 표시와 범위 캐시만 정리하고, 상호작용 취소는 기존 수명 주기에 맡긴다.
+		ClearInteractionDetection();
+		return;
+	}
+
 	NormalizeInteractionSphereRanges();
 	// Inner owns overlapping actors. Refresh its cache before querying the outer sphere.
 	TArray<AActor*> CurrentInteractables;
