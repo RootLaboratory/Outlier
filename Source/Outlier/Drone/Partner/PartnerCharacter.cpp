@@ -274,10 +274,10 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	}
 	const AOutlierPlayerState* PartnerState = GetPlayerState<AOutlierPlayerState>();
 	const TWeakObjectPtr<AShooterCharacter> ShooterAtHit = CachedShooterCharacter.Get();
-	const bool bTriggerPairGameOver = PartnerState && !PartnerState->IsPairSuitAcquired()
-		&& (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())
-			|| Request.DamageTag == OutlierDamage::InstantKillTag())
-		&& ShooterAtHit.IsValid();
+	const bool bTriggerPairGameOver = ShooterAtHit.IsValid()
+		&& (Request.DamageTag == OutlierDamage::InstantKillTag()
+			|| (PartnerState && !PartnerState->IsPairSuitAcquired()
+				&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())));
 	if (bTriggerPairGameOver && ShooterAtHit->IsDead())
 	{
 		return 0.0f;
@@ -285,7 +285,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	const float HealthBefore = OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
 	bool bApplied = false;
 	{
-		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 슈트 전 사격/즉사는 Reboot 대신 GameOver로 이어진다.
+		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 환경 즉사와 슈트 전 사격은 Reboot 대신 GameOver로 이어진다.
 		TGuardValue<bool> RebootGuard(PartnerVitalityComponent->bSuppressRebootForDamage, bTriggerPairGameOver);
 		bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
 			Request.DamageAmount,
@@ -1650,6 +1650,22 @@ void APartnerCharacter::StopActionsForReboot(bool bPreserveActionInput)
 	}
 }
 
+void APartnerCharacter::StopActionsForPairDeath()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// 재부팅과 달리 리스폰 시 새 Pawn으로 교체되므로 부스트 의도를 보존하지 않는다.
+	// Epoch 증가가 클라이언트에도 복제되어 로컬 부스트 입력 상태까지 리셋된다.
+	StopActionsForReboot(false);
+	if (UCharacterMovementComponent* PartnerCharacterMovement = GetCharacterMovement())
+	{
+		PartnerCharacterMovement->StopMovementImmediately();
+	}
+}
+
 void APartnerCharacter::RefreshEnemyDetectionForVitality()
 {
 	if (!HasAuthority())
@@ -1680,8 +1696,14 @@ bool APartnerCharacter::CanTrackActionInputIntent() const
 		return false;
 	}
 	return !IsSuitTransitionBlocked()
+		&& !IsPairShooterDead()
 		&& (!OutlierAbilitySystemComponent
 			|| !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
+}
+
+bool APartnerCharacter::IsPairShooterDead() const
+{
+	return IsValid(CachedShooterCharacter) && CachedShooterCharacter->IsDead();
 }
 
 void APartnerCharacter::FinishActionsAfterReboot()
@@ -1705,6 +1727,11 @@ void APartnerCharacter::FinishActionsAfterReboot()
 
 bool APartnerCharacter::CanResumeMovementAfterSuitTransition() const
 {
+	// CanAcceptInput의 기반이라 이동/부스트/능력/공격 입력이 모두 이 조건을 따른다.
+	if (IsPairShooterDead())
+	{
+		return false;
+	}
 	return !OutlierAbilitySystemComponent
 		|| (!OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting())
 			&& !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));

@@ -702,8 +702,12 @@ public:
 
 	void SetEnemyPossessionProtection(bool bEnabled);
 	void StopActionsForReboot(bool bPreserveActionInput = true);
+	// 페어 Shooter 사망 시 진행 중인 비행/부스트/능력을 의도까지 폐기하고 관성도 멈춘다. 서버 전용.
+	void StopActionsForPairDeath();
 	void FinishActionsAfterReboot();
 	bool CanTrackActionInputIntent() const;
+	// 페어 Shooter가 사망 상태면 리스폰으로 Pawn이 교체될 때까지 Partner 입력을 막는다.
+	bool IsPairShooterDead() const;
 	uint32 GetActionInputEpoch() const { return AccelerateInputEpoch; }
 	void RefreshEnemyDetectionForVitality();
 
