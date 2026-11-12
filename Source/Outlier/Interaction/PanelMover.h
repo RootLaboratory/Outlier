@@ -8,6 +8,24 @@
 class UCurveFloat;
 class UMaterialInterface;
 class UStaticMeshComponent;
+class UPrimitiveComponent;
+class ACharacter;
+
+/** 서버가 확정한 이동 기준점. 보류·재개와 늦은 관련성 진입도 같은 위치에서 이어받는다. */
+USTRUCT()
+struct FPanelMoverMotionState
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FVector Start = FVector::ZeroVector;
+	UPROPERTY() FVector Target = FVector::ZeroVector;
+	UPROPERTY() FVector Location = FVector::ZeroVector;
+	UPROPERTY() float Elapsed = 0.0f;
+	UPROPERTY() double ServerTime = 0.0;
+	UPROPERTY() uint32 Revision = 0;
+	UPROPERTY() bool bMoving = false;
+	UPROPERTY() bool bPaused = false;
+};
 
 /** 이동 중에만 지정 슬롯의 Material을 바꾼다. MovingMaterial이 비면 변경하지 않는다. */
 USTRUCT(BlueprintType)
@@ -41,7 +59,7 @@ struct FPanelMoverCachedMaterial
 /**
  * 스위치가 MoveToTarget을 부르면 TargetLocationActor 위치까지 한 번 이동하는 판넬(편도, 회전 없음).
  * 이동량은 MoveCurve를 MoveDuration 길이로 늘려 샘플링한다.
- * 복제는 문과 같다. 서버 Multicast로 각 머신이 로컬 보간을 시작하고, 놓친 경우는 bIsMoved RepNotify가 받는다.
+ * 접촉 안전과 완료는 서버가 결정하고, 클라이언트는 서버 이동 기준점을 받아 표시·이동 베이스를 추종한다.
  */
 UCLASS()
 class OUTLIER_API APanelMover : public AActor
@@ -105,18 +123,28 @@ protected:
 	FGameplayTag MovingAudioContextTag;
 
 private:
-	UPROPERTY(ReplicatedUsing = OnRep_IsMoved)
+	// 요청 수락 여부는 기존 MovedPanel 저장 의미를 유지한다. 실제 완료와 구분한다.
 	bool bIsMoved = false;
 
-	UFUNCTION()
-	void OnRep_IsMoved();
+	UPROPERTY(ReplicatedUsing = OnRep_Motion)
+	FPanelMoverMotionState ReplicatedMotion;
 
-	UFUNCTION(NetMulticast, Reliable)
-	void Multicast_StartMove();
+	UFUNCTION()
+	void OnRep_Motion();
 
 	void StartMove();
 	void SnapToTarget();
 	float EvaluateProgress(float TimeRatio) const;
+	void CacheMovingCollision();
+	void GatherPlayerCharacters(TArray<ACharacter*, TInlineAllocator<2>>& Characters) const;
+	bool TryMovePanel(const FVector& DesiredLocation, bool bCommit);
+	bool CanRestoreAt(const FVector& Location) const;
+	UPrimitiveComponent* FindSupport(ACharacter* Character) const;
+	void UpdatePredictedSupport();
+	void ReleaseFlyingSupports();
+	void PublishMotion(bool bMoving, bool bPaused);
+	void ApplyMotion(const FPanelMoverMotionState& Motion);
+	double GetServerTime() const;
 
 	void ApplyMovingMaterials();
 	void RestoreOriginalMaterials();
@@ -132,4 +160,18 @@ private:
 	float MoveElapsed = 0.0f;
 	bool bMoveStarted = false;
 	bool bProgressIdRegistered = false;
+	bool bPanelInitialized = false;
+	bool bRestorePending = false;
+	bool bPaused = false;
+	bool bMoveFinished = false;
+	bool bFinalPlacementPending = false;
+	uint32 LastAppliedRevision = 0;
+	double LastPublishedAt = 0.0;
+	UPROPERTY(Transient)
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> MovingCollision;
+	// 비행 플레이어에게 이 Panel이 설정한 임시 베이스만 정리한다. 영구 Attach는 하지 않는다.
+	TArray<TWeakObjectPtr<ACharacter>> FlyingSupports;
+	friend class FPanelPlayerCarryTest;
+	friend class FPanelCrushSafetyTest;
+	friend class FPanelMotionReplicationTest;
 };
