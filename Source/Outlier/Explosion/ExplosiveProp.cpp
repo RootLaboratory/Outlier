@@ -531,8 +531,12 @@ void AExplosiveProp::HandleHealthChanged(const FOnAttributeChangeData& ChangeDat
 
 	if (ExplosionComponent)
 	{
+		// 배치 피봇은 통 바닥에 둘 수 있다. 피해와 연출은 피봇 대신 현재 메시 중앙에서 시작한다.
+		const FVector ExplosionLocation = ExplosiveMesh && ExplosiveMesh->GetStaticMesh()
+			? ExplosiveMesh->CalcBounds(ExplosiveMesh->GetComponentTransform()).Origin
+			: GetActorLocation();
 		const bool bDetonationRequested = ExplosionComponent->DetonateAt(
-			GetActorLocation(),
+			ExplosionLocation,
 			PendingDamageInstigator.IsValid() ? PendingDamageInstigator.Get() : GetInstigatorController(),
 			PendingAdaptationDamageCategory);
 		if (!bDetonationRequested)

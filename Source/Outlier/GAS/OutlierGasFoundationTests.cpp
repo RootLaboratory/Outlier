@@ -7,6 +7,7 @@
 
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -18,6 +19,7 @@
 #include "Engine/DataTable.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
@@ -335,6 +337,48 @@ bool FOutlierGasExplosivePropVitalityTest::RunTest(const FString& Parameters)
 	Prop->ResetToInitialState();
 	TestFalse(TEXT("Reset clears exploded state"), Prop->IsExploded());
 	TestEqual(TEXT("Reset restores GAS Health from the row"), Prop->GetCurrentHP(), 30.0f);
+
+	// 바닥 피봇에서 메시를 위로 올린 배치와 승강기 이동 후 배치 모두 실제 폭발 피해로 확인한다.
+	UStaticMeshComponent* PropMesh = Prop->FindComponentByClass<UStaticMeshComponent>();
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	if (TestNotNull(TEXT("Explosive mesh component exists"), PropMesh)
+		&& TestNotNull(TEXT("Reference cube mesh exists"), Cube))
+	{
+		PropMesh->SetStaticMesh(Cube);
+		PropMesh->SetRelativeLocation(FVector(0, 0, 50));
+		ExplosionRow.MaxDamage = 10.0f;
+		ExplosionRow.OuterRadiusCm = 25.0f;
+		ExplosionTable->AddRow(TEXT("MeshCenter"), ExplosionRow);
+		UExplosionComponent* Explosion = Prop->FindComponentByClass<UExplosionComponent>();
+		if (TestNotNull(TEXT("Explosion component exists"), Explosion))
+		{
+			Explosion->SetExplosionProfileRow(MakeDataTableRowHandle(ExplosionTable, TEXT("MeshCenter")));
+			AExplosiveProp* Target = World->SpawnActor<AExplosiveProp>(
+				AExplosiveProp::StaticClass(), FTransform::Identity, SpawnParameters);
+			if (TestNotNull(TEXT("Explosion damage target spawns"), Target) && PropRowProperty)
+			{
+				*PropRowProperty->ContainerPtrToValuePtr<FDataTableRowHandle>(Target) = PropHandle;
+				Target->FinishSpawning(FTransform::Identity);
+				if (!Target->HasActorBegunPlay()) Target->DispatchBeginPlay();
+				for (const FVector& Pivot : {FVector(500, 200, 100), FVector(1500, -800, 350)})
+				{
+					Prop->ResetToInitialState();
+					Target->ResetToInitialState();
+					Prop->SetActorTransform(FTransform(FRotator(20, 60, 0), Pivot, FVector(1.2, 0.8, 1.6)));
+					const FVector MeshCenter = PropMesh->GetComponentTransform().TransformPosition(Cube->GetBoundingBox().GetCenter());
+					TestTrue(TEXT("Mesh center lies outside a pivot-centered explosion"),
+						FVector::Distance(Pivot, MeshCenter) > ExplosionRow.OuterRadiusCm);
+					Target->SetActorLocation(MeshCenter);
+					DamageRequest.DamageAmount = 30.0f;
+					OutlierDamage::Apply(Prop, DamageRequest);
+					TestTrue(TEXT("Offset mesh still detonates"), Prop->IsExploded());
+					TestEqual(TEXT("Explosion applies maximum damage at world mesh center"), Target->GetCurrentHP(), 20.0f);
+					TestTrue(TEXT("Explosion does not move the placement pivot"), Prop->GetActorLocation().Equals(Pivot));
+				}
+				Target->Destroy(true);
+			}
+		}
+	}
 
 	Prop->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);
