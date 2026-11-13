@@ -16,7 +16,7 @@ void UAnimNotify_ReloadCommit::Notify(USkeletalMeshComponent* MeshComp, UAnimSeq
 	}
 
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(MeshComp->GetOwner());
-	if (!Shooter)
+	if (!Shooter || !Shooter->IsCurrentWeaponActionNotify(MeshComp, EventReference))
 	{
 		return;
 	}

@@ -58,6 +58,7 @@ void UShooterCombatComponent::BeginPlay()
 void UShooterCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(OverchargeFireRecoveryTimerHandle);
+	ClearReloadRequest();
 	ClearPendingSprintExitFire();
 	UnbindReloadMontageEndedDelegates();
 	UnbindWeaponReuseCooldownObserver();
@@ -118,7 +119,8 @@ void UShooterCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType
 void UShooterCombatComponent::TryReload()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || !Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
+	if (!ShooterCharacter || ShooterCharacter->IsWeaponEquipInputBlocked()
+		|| !Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		return;
 	}
@@ -127,34 +129,28 @@ void UShooterCombatComponent::TryReload()
 
 	if (!ShooterCharacter->HasAuthority())
 	{
-		// 1인칭 반응성은 로컬에서 먼저 주고, 실제 상태 전이는 서버가 확정
-		if (ShooterCharacter->CanStartAction(EShooterActionLock::Reload))
-		{
-			ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon);
-			if (RangedWeapon && RangedWeapon->CanReload())
-			{
-				ShooterCharacter->StopLean();
-				SuspendAimInternal();
-
-				bIsReloading = true;
-				ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
-				ShooterCharacter->RefreshMovementState();
-				ShooterCharacter->CombatState = ECombatState::Reload;
-				ShooterCharacter->PlayFirstPersonMontage(ShooterCharacter->GetActionMontage(EShooterMontageAction::Reload, true));
-			}
-		}
-		else
-		{
-			UE_LOG(
-				LogTemp,
-				Warning,
-				TEXT("%s %s TryReload local prediction skipped ActionLock=%d"),
-				OutlierNet::GetNetPrefix(ShooterCharacter),
-				*ShooterCharacter->GetName(),
-				static_cast<int32>(ShooterCharacter->GetActionLock())
-			);
-		}
-		ShooterCharacter->ServerReload();
+		ARangedWeaponBase* Weapon = CastChecked<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon);
+		if (ActiveReloadRequest != 0 || !CanReloadInCurrentState() || !Weapon->CanReload()) return;
+		ReloadRequestSequence = (ReloadRequestSequence + 1) & ~ServerAutoReloadBit;
+		if (ReloadRequestSequence == 0) ++ReloadRequestSequence;
+		ActiveReloadRequest = ReloadRequestSequence;
+		ActiveReloadWeapon = Weapon;
+		ActiveReloadEquipGeneration = ShooterCharacter->GetEquipActionGeneration();
+		ShooterCharacter->StopLean();
+		SuspendAimInternal();
+		bIsReloading = true;
+		ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
+		ShooterCharacter->RefreshMovementState();
+		ShooterCharacter->CombatState = ECombatState::Reload;
+		BindReloadMontageEndedDelegates();
+		UAnimMontage* Montage = ActiveFirstPersonReloadMontage.Get();
+		ShooterCharacter->PlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
+		// 서버 응답이나 몽타주 종료가 누락되어도 예측 잠금은 유한 시간 안에 회수한다.
+		// 로컬 만료는 탄약을 커밋하거나 서버의 권위 리로드를 완료하지 않는다.
+		const float Timeout = FMath::Clamp((Montage ? Montage->GetPlayLength() : 0.0f) + 3.0f, 3.0f, 30.0f);
+		ShooterCharacter->GetWorldTimerManager().SetTimer(ReloadPredictionTimerHandle, this,
+			&UShooterCombatComponent::ExpireReloadPrediction, Timeout, false);
+		ShooterCharacter->ServerReloadRequest(Weapon, ActiveReloadRequest, ActiveReloadEquipGeneration);
 		return;
 	}
 
@@ -227,11 +223,134 @@ void UShooterCombatComponent::TryReload()
 	BeginReloadInternal();
 }
 
+void UShooterCombatComponent::HandleServerReloadRequest(AWeaponBase* Weapon, uint32 RequestId, uint32 EquipGeneration)
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter || !Shooter->HasAuthority()) return;
+	const bool bNewRequest = RequestId != 0 && !(RequestId & ServerAutoReloadBit) && (LastServerReloadGeneration != EquipGeneration
+		|| static_cast<int32>(RequestId - LastServerReloadRequest) > 0);
+	if (RequestId != 0 && RequestId == ActiveReloadRequest && Weapon == ActiveReloadWeapon.Get()
+		&& EquipGeneration == ActiveReloadEquipGeneration && bIsReloading)
+	{
+		Shooter->ClientReloadResult(Weapon, RequestId, EquipGeneration, true, false);
+		return;
+	}
+	if (bNewRequest && EquipGeneration == Shooter->GetEquipActionGeneration())
+	{
+		LastServerReloadGeneration = EquipGeneration;
+		LastServerReloadRequest = RequestId;
+	}
+	if (!bNewRequest || EquipGeneration != Shooter->GetEquipActionGeneration()
+		|| Weapon != Shooter->CurrentWeapon || !IsValid(Weapon) || !CanReloadInCurrentState())
+	{
+		Shooter->ClientReloadResult(Weapon, RequestId, EquipGeneration, false, false);
+		return;
+	}
+
+	ActiveReloadRequest = RequestId;
+	ActiveReloadWeapon = Weapon;
+	ActiveReloadEquipGeneration = EquipGeneration;
+	TryReload();
+	const bool bAccepted = bIsReloading && ActiveReloadWeapon.Get() == Weapon;
+	Shooter->ClientReloadResult(Weapon, RequestId, EquipGeneration, bAccepted, false);
+	if (!bAccepted) ClearReloadRequest();
+}
+
+void UShooterCombatComponent::HandleReloadResult(AWeaponBase* Weapon, uint32 RequestId,
+	uint32 EquipGeneration, bool bAccepted, bool bFinished)
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter || RequestId == 0) return;
+	const bool bServerAutoRequest = (RequestId & ServerAutoReloadBit) != 0;
+	const uint32 AutoSequence = RequestId & ~ServerAutoReloadBit;
+	if (!Shooter->HasAuthority() && bServerAutoRequest && bAccepted && !bFinished
+		&& Weapon == Shooter->CurrentWeapon && EquipGeneration == Shooter->GetEquipActionGeneration()
+		&& !Shooter->IsWeaponEquipInputBlocked())
+	{
+		// 서버 자동 요청은 상위 비트로 구분한다. 같은 무기/장착 세대의 이전 시작도 재생하지 않는다.
+		if (AutoSequence == 0 || static_cast<int32>(AutoSequence - LastReceivedAutoReloadSequence) <= 0) return;
+		LastReceivedAutoReloadSequence = AutoSequence;
+		if (ActiveReloadRequest != 0 && !(ActiveReloadRequest & ServerAutoReloadBit)) return;
+		if (ActiveReloadRequest != 0) CancelReloadInternal();
+		ActiveReloadRequest = RequestId;
+		ActiveReloadWeapon = Weapon;
+		ActiveReloadEquipGeneration = EquipGeneration;
+		bIsReloading = true;
+		Shooter->BeginActionLock(EShooterActionLock::Reload);
+		SuspendAimInternal();
+		BindReloadMontageEndedDelegates();
+		const UAnimMontage* Montage = ActiveFirstPersonReloadMontage.Get();
+		const float Timeout = FMath::Clamp((Montage ? Montage->GetPlayLength() : 0.0f) + 3.0f, 3.0f, 30.0f);
+		Shooter->GetWorldTimerManager().SetTimer(ReloadPredictionTimerHandle, this,
+			&UShooterCombatComponent::ExpireReloadPrediction, Timeout, false);
+		Shooter->RefreshMovementState();
+		return;
+	}
+	if (RequestId != ActiveReloadRequest
+		|| Weapon != ActiveReloadWeapon.Get() || Weapon != Shooter->CurrentWeapon
+		|| EquipGeneration != ActiveReloadEquipGeneration
+		|| EquipGeneration != Shooter->GetEquipActionGeneration()) return;
+	// bool 복제는 false->false 거절을 알리지 못한다. 일치하는 명시적 응답만 예측을 정리한다.
+	if (!bAccepted || bFinished) CancelReloadInternal();
+}
+
+void UShooterCombatComponent::ClearReloadRequest()
+{
+	if (UWorld* World = GetWorld()) World->GetTimerManager().ClearTimer(ReloadPredictionTimerHandle);
+	ActiveReloadRequest = 0;
+	ActiveReloadWeapon.Reset();
+	ActiveReloadEquipGeneration = 0;
+}
+
+void UShooterCombatComponent::ExpireReloadPrediction()
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter || Shooter->HasAuthority() || !ActiveReloadWeapon.IsValid()) return;
+	CancelReloadInternal();
+}
+
+void UShooterCombatComponent::SendReloadFinished()
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	AWeaponBase* Weapon = ActiveReloadWeapon.Get();
+	const uint32 Request = ActiveReloadRequest;
+	const uint32 Generation = ActiveReloadEquipGeneration;
+	// Listen server의 Client RPC는 즉시 실행될 수 있으므로 응답 전에 요청을 소비한다.
+	ClearReloadRequest();
+	if (Shooter && Shooter->HasAuthority() && Weapon)
+	{
+		Shooter->ClientReloadResult(Weapon, Request, Generation, true, true);
+	}
+}
+
+void UShooterCombatComponent::PrepareForWeaponEquip()
+{
+	bRequireFireRelease |= bFireInputHeld || bWantsToFire;
+	bRequireAimRelease |= bWantsToAim;
+	ClearInputIntent();
+	// 의도를 먼저 지워야 취소 콜백이 ADS나 자동 사격을 복원하지 않는다.
+	CancelReloadInternal();
+	ClearReloadRequest();
+	CancelMeleeAttack();
+	SuspendAimInternal();
+	if (AShooterCharacter* Shooter = GetShooterCharacter(); Shooter && Shooter->CurrentWeapon)
+	{
+		Shooter->CurrentWeapon->StopAttack();
+	}
+	RefreshCombatState();
+}
+
 void UShooterCombatComponent::HandleAimPressed()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
+		|| bRequireAimRelease)
 	{
+		return;
+	}
+	if (ShooterCharacter->IsWeaponEquipInputBlocked())
+	{
+		bRequireAimRelease = true;
 		return;
 	}
 
@@ -242,7 +361,7 @@ void UShooterCombatComponent::HandleAimPressed()
 	{
 		ShooterCharacter->ServerSetAimState(true, Movement->GetSprintInputIntent(),
 			InputSequence, Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId(),
-			Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent());
+			Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent(), ShooterCharacter->GetEquipActionGeneration());
 	}
 
 	ApplyAimInput(true);
@@ -325,6 +444,7 @@ void UShooterCombatComponent::HandleAimReleased()
 	{
 		return;
 	}
+	bRequireAimRelease = false;
 
 	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement());
 	const uint32 InputSequence = Movement->RecordActionInput(false);
@@ -332,7 +452,7 @@ void UShooterCombatComponent::HandleAimReleased()
 	{
 		ShooterCharacter->ServerSetAimState(false, Movement->GetSprintInputIntent(),
 			InputSequence, Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId(),
-			Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent());
+			Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent(), ShooterCharacter->GetEquipActionGeneration());
 	}
 
 	ApplyAimInput(false);
@@ -345,6 +465,10 @@ void UShooterCombatComponent::ApplyAimInput(bool bNewWantsToAim)
 	{
 		return;
 	}
+	// 로컬의 게임플레이 취소/보정 false는 물리 Release가 아니다. 실제 해제 핸들러에서만 재입력을 연다.
+	if (!bNewWantsToAim && !ShooterCharacter->IsLocallyControlled()) bRequireAimRelease = false;
+	if (bNewWantsToAim && ShooterCharacter->IsWeaponEquipInputBlocked()) bRequireAimRelease = true;
+	bNewWantsToAim &= !bRequireAimRelease;
 
 	if (!bNewWantsToAim || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
 	{
@@ -389,16 +513,27 @@ void UShooterCombatComponent::UpdateFireInput(bool bHeld)
 	// 원격 입력은 ApplyActionInput의 공통 순번 검증을 통과한 값만 적용한다.
 	if (!Shooter || !Shooter->IsLocallyControlled()) return;
 	const bool bChanged = bFireInputHeld != bHeld;
-	bFireInputHeld = bHeld;
-	if (!bChanged) return;
+	ApplyFireInput(bHeld);
+	bHeld = bFireInputHeld;
+	// 장착 정리가 held를 먼저 내려도 실제 Release는 서버에 새 순번으로 전달해야 한다.
+	if (!bChanged && bHeld) return;
 	auto* Input = CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
-	const uint32 Request = Input->RecordFireInput(bHeld);
+	const uint32 Request = Input->RecordFireInput(bHeld, !bHeld);
 	if (!Shooter->HasAuthority())
 	{
 		// 발사 대기는 소유자의 무기 복귀 연출을 기다린다. 그동안 서버도 Hold 의도를 지우지 않고 중지한다.
 		Shooter->ServerSetAimState(Shooter->WantsToAim(), Input->GetSprintInputIntent(), Request,
-			Input->GetMovementInputEpoch(), Input->GetAimInputSwitchId(), Input->IsLiveHoldSprintInput(), bHeld);
+			Input->GetMovementInputEpoch(), Input->GetAimInputSwitchId(), Input->IsLiveHoldSprintInput(), bHeld,
+			Shooter->GetEquipActionGeneration());
 	}
+}
+
+void UShooterCombatComponent::ApplyFireInput(bool bHeld)
+{
+	const AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!bHeld && (!Shooter || !Shooter->IsLocallyControlled())) bRequireFireRelease = false;
+	if (bHeld && Shooter && Shooter->IsWeaponEquipInputBlocked()) bRequireFireRelease = true;
+	bFireInputHeld = bHeld && !bRequireFireRelease;
 }
 
 bool UShooterCombatComponent::IsSprintBlockedByAttack() const
@@ -566,6 +701,12 @@ void UShooterCombatComponent::TryStartAttack()
 		return;
 	}
 	if (ShooterCharacter->IsDead()) return;
+	if (ShooterCharacter->IsWeaponEquipInputBlocked())
+	{
+		bRequireFireRelease = true;
+		return;
+	}
+	if (bRequireFireRelease) return;
 	if (ShooterCharacter->GetWeaponType() != EWeaponType::Melee) UpdateFireInput(true);
 	if (bPendingSprintExitFire) return;
 
@@ -583,12 +724,12 @@ void UShooterCombatComponent::TryStartAttack()
 void UShooterCombatComponent::StartAttackInternal()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter) return;
+	if (!ShooterCharacter || bRequireFireRelease || !CanFireInCurrentState()) return;
 
 	if (!ShooterCharacter->HasAuthority())
 	{
 		// 발사 판정은 서버가 하지만, 손맛을 위해 소유 클라이언트는 몽타주만 즉시 재생
-		ShooterCharacter->ServerStartAttack();
+		ShooterCharacter->ServerStartAttack(ShooterCharacter->CurrentWeapon, ShooterCharacter->GetEquipActionGeneration());
 		return;
 	}
 
@@ -654,6 +795,7 @@ void UShooterCombatComponent::TryStopAttack()
 		return;
 	}
 	UpdateFireInput(false);
+	bRequireFireRelease = false;
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 	// Release는 연사만 끝낸다. 이미 수락한 첫 발은 별도 슬롯에서 복귀를 기다린다.
@@ -663,7 +805,7 @@ void UShooterCombatComponent::TryStopAttack()
 	{
 		if (!ShooterCharacter->HasAuthority())
 		{
-			ShooterCharacter->ServerStopAttack();
+			ShooterCharacter->ServerStopAttack(ShooterCharacter->CurrentWeapon, ShooterCharacter->GetEquipActionGeneration());
 		}
 		else if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
 		{
@@ -683,7 +825,7 @@ void UShooterCombatComponent::TryStopAttack()
 	}
 	else
 	{
-		ShooterCharacter->ServerStopAttack();
+		ShooterCharacter->ServerStopAttack(ShooterCharacter->CurrentWeapon, ShooterCharacter->GetEquipActionGeneration());
 	}
 
 	RefreshCombatState();
@@ -759,7 +901,7 @@ void UShooterCombatComponent::HandleWeaponAttackStopped()
 void UShooterCombatComponent::HandleAutoReloadRequested()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority() || !CanReloadInCurrentState())
 	{
 		return;
 	}
@@ -993,6 +1135,16 @@ void UShooterCombatComponent::BeginReloadInternal()
 
 	// 리로드는 무기 내부 상태와 별개로 캐릭터 전투 상태도 함께 잠궈야 함
 	// 리로드 상태는 여기서 먼저 잠그고, 이후 RefreshCombatState에서 무기 상태와 다시 맞춤
+	const bool bServerAutoReload = ActiveReloadRequest == 0 && ShooterCharacter->HasAuthority();
+	if (bServerAutoReload)
+	{
+		ServerAutoReloadSequence = (ServerAutoReloadSequence + 1) & ~ServerAutoReloadBit;
+		if (ServerAutoReloadSequence == 0) ++ServerAutoReloadSequence;
+		ActiveReloadRequest = ServerAutoReloadBit | ServerAutoReloadSequence;
+	}
+	++ReloadActionSerial;
+	ActiveReloadWeapon = ShooterCharacter->CurrentWeapon;
+	ActiveReloadEquipGeneration = ShooterCharacter->GetEquipActionGeneration();
 	SuspendAimInternal();
 	bIsReloading = true;
 	ShooterCharacter->StopLean();
@@ -1001,6 +1153,11 @@ void UShooterCombatComponent::BeginReloadInternal()
 	ShooterCharacter->CombatState = ECombatState::Reload;
 	ShooterCharacter->ForceNetUpdate();
 	BindReloadMontageEndedDelegates();
+	if (bServerAutoReload && !ShooterCharacter->IsLocallyControlled())
+	{
+		ShooterCharacter->ClientReloadResult(ShooterCharacter->CurrentWeapon, ActiveReloadRequest,
+			ActiveReloadEquipGeneration, true, false);
+	}
 
 	UE_LOG(
 		LogTemp,
@@ -1015,6 +1172,7 @@ void UShooterCombatComponent::BeginReloadInternal()
 		ShooterCharacter->HasAuthority() ? 1 : 0);
 
 	ShooterCharacter->MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
+	BindAuthoritativeReloadEndDelegate();
 	if (ShooterCharacter->HasAuthority())
 	{
 		UAnimInstance* ReloadInstance = BoundThirdPersonReloadInstance.Get();
@@ -1035,14 +1193,16 @@ void UShooterCombatComponent::BeginReloadInternal()
 	}
 	else if (ShooterCharacter->HasAuthority())
 	{
-		ShooterCharacter->ClientPlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
+		ShooterCharacter->ClientPlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType(),
+			ShooterCharacter->CurrentWeapon, ShooterCharacter->GetEquipActionGeneration());
 	}
 }
 
 void UShooterCombatComponent::CancelReloadInternal()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || (!bIsReloading && ShooterCharacter->GetActionLock() != EShooterActionLock::Reload))
+	if (!ShooterCharacter || (!bIsReloading && ActiveReloadRequest == 0
+		&& ShooterCharacter->GetActionLock() != EShooterActionLock::Reload))
 	{
 		return;
 	}
@@ -1050,11 +1210,14 @@ void UShooterCombatComponent::CancelReloadInternal()
 	// 애니메이션 소유 반복음만 정리한다. 이동/LowHP 등 실제 상태가 소유한 소리는 유지한다.
 	if (ShooterCharacter->MovementAudioSubsystem) ShooterCharacter->MovementAudioSubsystem->StopAnimationAudioLoops(ShooterCharacter);
 	// 잠금 해제는 전투 상태를 다시 읽는다. 무기 Reload부터 내려 취소된 상태가 되살아나지 않게 한다.
-	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
+	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ActiveReloadWeapon.IsValid()
+		? ActiveReloadWeapon.Get() : ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->CancelReload();
 	}
 	bIsReloading = false;
+	++ReloadActionSerial;
+	SendReloadFinished();
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	UAnimMontage* FirstPersonMontage = ActiveFirstPersonReloadMontage.IsValid()
 		? ActiveFirstPersonReloadMontage.Get() : ShooterCharacter->GetFirstPersonReloadMontage();
@@ -1085,6 +1248,9 @@ void UShooterCombatComponent::FinishReloadInternal()
 	{
 		return;
 	}
+	if (ActiveReloadWeapon.Get() != ShooterCharacter->CurrentWeapon
+		|| ActiveReloadEquipGeneration != ShooterCharacter->GetEquipActionGeneration()
+		|| ShooterCharacter->IsWeaponEquipInputBlocked()) return;
 
 	UE_LOG(LogTemp, Warning, TEXT("Reload End"));
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
@@ -1098,6 +1264,8 @@ void UShooterCombatComponent::FinishReloadInternal()
 
 	if (ShooterCharacter->MovementAudioSubsystem) ShooterCharacter->MovementAudioSubsystem->StopAnimationAudioLoops(ShooterCharacter);
 	bIsReloading = false;
+	++ReloadActionSerial;
+	SendReloadFinished();
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	UnbindReloadMontageEndedDelegates();
 	RefreshCombatState();
@@ -1111,6 +1279,17 @@ void UShooterCombatComponent::OnRep_IsReloading()
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter)
 	{
+		return;
+	}
+	if (ShooterCharacter->IsWeaponEquipInputBlocked())
+	{
+		bIsReloading = false;
+		return;
+	}
+	// 소유자의 수명은 식별자가 있는 RPC가 관리한다. 늦은 bool 복제가 다음 요청을 바꾸지 않는다.
+	if (ShooterCharacter->IsLocallyControlled())
+	{
+		bIsReloading = ActiveReloadWeapon.IsValid();
 		return;
 	}
 
@@ -1148,15 +1327,22 @@ void UShooterCombatComponent::BindReloadMontageEndedDelegates()
 		? ShooterCharacter->GetFirstPersonMesh()->GetAnimInstance() : nullptr;
 	BoundThirdPersonReloadInstance = ShooterCharacter->GetMesh()
 		? ShooterCharacter->GetMesh()->GetAnimInstance() : nullptr;
-	if (UAnimInstance* ThirdPersonAnimInstance = BoundThirdPersonReloadInstance.Get())
-	{
-		ThirdPersonAnimInstance->OnMontageEnded.AddUniqueDynamic(this, &UShooterCombatComponent::HandleReloadMontageEnded);
-	}
+}
 
-	if (UAnimInstance* FirstPersonAnimInstance = BoundFirstPersonReloadInstance.Get())
+void UShooterCombatComponent::BindAuthoritativeReloadEndDelegate()
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	UAnimInstance* Instance = BoundThirdPersonReloadInstance.Get();
+	UAnimMontage* Montage = ActiveThirdPersonReloadMontage.Get();
+	if (!Shooter || !Shooter->HasAuthority() || !Instance || !Montage) return;
+	const uint32 Serial = ReloadActionSerial;
+	// 동일한 몽타주 에셋을 재사용해도 이전 재생 인스턴스의 종료는 새 리로드를 끝내지 못한다.
+	FOnMontageEnded EndDelegate;
+	EndDelegate.BindWeakLambda(this, [this, Serial](UAnimMontage* EndedMontage, bool bInterrupted)
 	{
-		FirstPersonAnimInstance->OnMontageEnded.AddUniqueDynamic(this, &UShooterCombatComponent::HandleReloadMontageEnded);
-	}
+		if (Serial == ReloadActionSerial) HandleReloadMontageEnded(EndedMontage, bInterrupted);
+	});
+	Instance->Montage_SetEndDelegate(EndDelegate, Montage);
 }
 
 void UShooterCombatComponent::UnbindReloadMontageEndedDelegates()
@@ -1199,7 +1385,9 @@ void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bo
 		bIsReloadMontage ? 1 : 0,
 		bIsReloading ? 1 : 0,
 		static_cast<int32>(ShooterCharacter->GetActionLock()));
-	if (!bIsReloadMontage)
+	if (!bIsReloadMontage || !bIsReloading || ActiveReloadWeapon.Get() != ShooterCharacter->CurrentWeapon
+		|| ActiveReloadEquipGeneration != ShooterCharacter->GetEquipActionGeneration()
+		|| ShooterCharacter->IsWeaponEquipInputBlocked())
 	{
 		return;
 	}
@@ -1216,7 +1404,10 @@ void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bo
 void UShooterCombatComponent::HandleReloadCommitNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->IsSuitTransitionBlocked())
+	if (!ShooterCharacter || ShooterCharacter->IsSuitTransitionBlocked()
+		|| ShooterCharacter->IsWeaponEquipInputBlocked() || !bIsReloading
+		|| ActiveReloadWeapon.Get() != ShooterCharacter->CurrentWeapon
+		|| ActiveReloadEquipGeneration != ShooterCharacter->GetEquipActionGeneration())
 	{
 		return;
 	}
@@ -1336,6 +1527,8 @@ bool UShooterCombatComponent::CanAimInCurrentState() const
 	return ShooterCharacter
 		&& !ShooterCharacter->IsDead()
 		&& !ShooterCharacter->IsSuitTransitionBlocked()
+		&& !ShooterCharacter->IsWeaponEquipInputBlocked()
+		&& !bRequireAimRelease
 		&& Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon)
 		&& !IsActionLockBlockingAimFire(*ShooterCharacter)
 		&& !ShooterCharacter->IsWeaponSwitchInProgress()
@@ -1346,7 +1539,8 @@ bool UShooterCombatComponent::CanAimInCurrentState() const
 bool UShooterCombatComponent::CanReloadInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
+		|| ShooterCharacter->IsWeaponEquipInputBlocked())
 	{
 		return false;
 	}
@@ -1363,6 +1557,7 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
+		|| ShooterCharacter->IsWeaponEquipInputBlocked() || bRequireFireRelease
 		|| ShooterCharacter->CurrentWeapon == nullptr)
 	{
 		return false;

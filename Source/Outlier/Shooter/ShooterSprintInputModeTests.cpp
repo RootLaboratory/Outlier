@@ -18,6 +18,7 @@
 #include "Misc/ScopeExit.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShooterSprintInputModeTest,
 	"Outlier.Shooter.SprintInputMode", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -43,6 +44,8 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 	}
 	World->AddToRoot();
 	Context.SetCurrentWorld(World);
+	// Reload/Equip의 multicast도 실제 호출되게 한다. enum만 쓰는 이동 fixture와 구분한다.
+	World->InitializeActorsForPlay(FURL());
 	APlayerController* Controller = nullptr;
 	ON_SCOPE_EXIT
 	{
@@ -76,13 +79,18 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 		|| !TestNotNull(TEXT("Combat intent"), Combat)) return false;
 	Shooter->AFirstPersonCharacter::EquipWeapon(Pistol);
 	Shooter->RefreshWeaponMode();
+	const auto* InfiniteAmmo = FindFProperty<FBoolProperty>(ARangedWeaponBase::StaticClass(), TEXT("bInfiniteAmmo"));
+	if (!TestNotNull(TEXT("Finite ammo fixture property"), InfiniteAmmo)) return false;
+	InfiniteAmmo->SetPropertyValue_InContainer(Pistol, false);
+	// 권총이 1발 탄창이어도 full magazine 거절이 아닌 실제 Reload를 검사한다.
+	const int32 ReloadStartAmmo = FMath::Max(0, Pistol->GetMagazineSize() - 1);
 
 	const auto Reset = [&](EOutlierSprintInputMode Mode)
 	{
 		Combat->ClearInputIntent();
 		Combat->bIsReloading = false;
 		Shooter->EndActionLock(EShooterActionLock::Reload);
-		Shooter->EndActionLock(EShooterActionLock::Equip);
+		Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 		Movement->ResetSlideForLifecycle();
 		Movement->SetSprintInputMode(Mode);
 		Movement->SetMovementMode(MOVE_Walking);
@@ -183,8 +191,9 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 	{
 		Reset(EOutlierSprintInputMode::Hold);
 		Press();
-		Combat->bIsReloading = true;
-		Shooter->BeginActionLock(EShooterActionLock::Reload);
+		Pistol->RestoreCheckpointAmmo(ReloadStartAmmo);
+		Combat->TryReload();
+		if (!TestTrue(TEXT("Hold fixture starts an actual tracked Reload"), Combat->IsReloading())) return false;
 		Input->RefreshMovementState();
 		TestTrue(TEXT("Reload preserves Hold Sprint intent"), Input->WantsToSprint());
 		TestTrue(TEXT("Reload preserves actual Hold Sprint"), Input->IsSprinting());
@@ -198,8 +207,9 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 	// Reload가 끝나도 Aim이 남아 있으면 제한 전체가 해소된 것이 아니다.
 	Reset(EOutlierSprintInputMode::Hold);
 	Press();
-	Combat->bIsReloading = true;
-	Shooter->BeginActionLock(EShooterActionLock::Reload);
+	Pistol->RestoreCheckpointAmmo(ReloadStartAmmo);
+	Combat->TryReload();
+	if (!TestTrue(TEXT("Aim fixture starts an actual tracked Reload"), Combat->IsReloading())) return false;
 	Combat->HandleAimPressed();
 	Movement->ApplyMovementInput();
 	Combat->FinishReloadInternal();
@@ -240,12 +250,12 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 	{
 		Reset(EOutlierSprintInputMode::Hold);
 		if (bSprintFirst) Press();
-		Shooter->BeginActionLock(EShooterActionLock::Equip);
+		Shooter->BeginWeaponEquip();
 		if (!bSprintFirst) Press();
-		TestTrue(TEXT("Hold Sprint and Equip work in both input orders"), Input->IsSprinting());
+		TestFalse(TEXT("Equip stops Hold Sprint in both input orders"), Input->IsSprinting());
 		Release();
 		TestFalse(TEXT("Release during Equip clears Hold intent"), Input->WantsToSprint());
-		Shooter->EndActionLock(EShooterActionLock::Equip);
+		Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 		TestFalse(TEXT("Equip completion cannot revive released Hold"), Input->IsSprinting());
 	}
 
@@ -273,6 +283,7 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 	FShooterMovementInput Sent;
 	Sent.Epoch = Movement->GetMovementInputEpoch();
 	Sent.ActionRequest = Movement->GetActionInputRequest() + 10;
+	Sent.EquipGeneration = Shooter->GetEquipActionGeneration();
 	Sent.bSprint = true;
 	Sent.bHoldSprint = true;
 	Sent.bFire = true;
@@ -315,15 +326,15 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 	const uint32 Epoch = Movement->GetMovementInputEpoch();
 	uint32 Request = Movement->GetActionInputRequest() + 10;
 	TestTrue(TEXT("Saved Hold policy is accepted under a current Toggle preference"),
-		Movement->ApplyActionInput(Request++, Epoch, true, true, 0, true));
+		Movement->ApplyActionInput(Request++, Epoch, true, true, 0, true, false, Shooter->GetEquipActionGeneration()));
 	TestTrue(TEXT("Saved Hold input preserves Sprint behind Aim"), Input->WantsToSprint());
 	TestFalse(TEXT("Saved Hold input cannot bypass Aim"), Input->IsSprinting());
-	TestTrue(TEXT("Saved Aim Release is accepted"), Movement->ApplyActionInput(Request++, Epoch, true, false, 0, true));
+	TestTrue(TEXT("Saved Aim Release is accepted"), Movement->ApplyActionInput(Request++, Epoch, true, false, 0, true, false, Shooter->GetEquipActionGeneration()));
 	TestTrue(TEXT("Saved Hold input resumes from the recorded result"), Input->IsSprinting());
-	TestTrue(TEXT("Saved Hold Release is accepted"), Movement->ApplyActionInput(Request++, Epoch, false, false, 0, true));
+	TestTrue(TEXT("Saved Hold Release is accepted"), Movement->ApplyActionInput(Request++, Epoch, false, false, 0, true, false, Shooter->GetEquipActionGeneration()));
 	TestFalse(TEXT("Saved Hold Release stops Sprint under the current Toggle preference"), Input->WantsToSprint());
 	TestFalse(TEXT("Older Hold ON cannot override the recorded Release"),
-		Movement->ApplyActionInput(Request - 2, Epoch, true, false, 0, true));
+		Movement->ApplyActionInput(Request - 2, Epoch, true, false, 0, true, false, Shooter->GetEquipActionGeneration()));
 	TestFalse(TEXT("Rejected old Hold input cannot revive Sprint"), Input->WantsToSprint());
 	Combat->ApplyFireInput(true);
 	const uint32 PreviousEpoch = Epoch;
@@ -331,7 +342,7 @@ bool FShooterSprintInputModeTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Lifecycle cleanup clears the physical Fire restriction"), Combat->IsFireInputHeld());
 	TestFalse(TEXT("Lifecycle correction cannot advertise an old held Fire"), Movement->CaptureSlideSnapshot().bFireHeld);
 	TestFalse(TEXT("Previous lifecycle Hold input is rejected"),
-		Movement->ApplyActionInput(Request++, PreviousEpoch, true, false, 0, true));
+		Movement->ApplyActionInput(Request++, PreviousEpoch, true, false, 0, true, false, Shooter->GetEquipActionGeneration()));
 	TestFalse(TEXT("Lifecycle cleanup cannot restore the old Hold intent"), Input->WantsToSprint());
 	// 설정 변경 알림부터 Controller의 실제 Press/Flush까지 연결한다.
 	// 사용자 설정은 소유 LocalPlayer 없이 생성해 실제 세이브 파일에 기록하지 않는다.

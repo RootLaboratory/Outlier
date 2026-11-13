@@ -15,7 +15,7 @@ void UAnimNotify_MagazineToHand::Notify(USkeletalMeshComponent* MeshComp, UAnimS
 	}
 
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(MeshComp->GetOwner());
-	if (!Shooter)
+	if (!Shooter || !Shooter->IsCurrentWeaponActionNotify(MeshComp, EventReference))
 	{
 		return;
 	}
