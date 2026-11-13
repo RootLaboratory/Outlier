@@ -330,6 +330,7 @@ FVector AAutoTurret::GetHackTargetLocation() const
 
 FVector AAutoTurret::GetCombatAimPoint(const AActor* TargetActor) const
 {
+	if (Cast<AAutoTurret>(TargetActor)) return Super::GetCombatAimPoint(TargetActor);
 	// 커밋 레이저는 기존 중앙/잠금 좌표를 유지한다. 일반 원거리는 공통 노출 조준 결과를 사용한다.
 	if (!Cast<ALaserWeapon>(GetCurrentWeapon())) return Super::GetCombatAimPoint(TargetActor);
 	if (const ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
@@ -343,6 +344,98 @@ FVector AAutoTurret::GetCombatAimPoint(const AActor* TargetActor) const
 	}
 
 	return Super::GetCombatAimPoint(TargetActor);
+}
+
+void AAutoTurret::ResolveSightPoints(TArray<FVector, TInlineAllocator<2>>& OutPoints) const
+{
+	// Head는 피해 메시 내부의 Bounds 중심을 사용한다. 총구/해킹 UI 위치는 전투 표본이 아니다.
+	const auto Append = [&](const FVector& Point)
+	{
+		if (!Point.ContainsNaN() && !OutPoints.ContainsByPredicate(
+			[&](const FVector& Existing) { return Existing.Equals(Point, 1.0); })) OutPoints.Add(Point);
+	};
+	if (TurretHeadMesh && TurretHeadMesh->IsRegistered() && TurretHeadMesh->GetSkeletalMeshAsset())
+	{
+		Append(TurretHeadMesh->Bounds.Origin);
+	}
+	else if (AutoAimBodyAnchor && AutoAimBodyAnchor->IsRegistered())
+	{
+		Append(GetAutoAimBodyLocation());
+	}
+	if (GetMesh() && GetMesh()->IsRegistered() && GetMesh()->GetSkeletalMeshAsset())
+	{
+		Append(GetMesh()->Bounds.Origin);
+	}
+	// 메시가 없는 배치는 명시적인 Head 피벗까지만 허용하고 Actor 원점을 추가하지 않는다.
+	if (OutPoints.IsEmpty() && TurretHeadPivot && TurretHeadPivot->IsRegistered()) Append(TurretHeadPivot->GetComponentLocation());
+}
+
+UAISense_Sight::EVisibilityResult AAutoTurret::CanBeSeenFrom(const FCanBeSeenFromContext& Context,
+	FVector& OutSeenLocation, int32& SyncChecks, int32& AsyncChecks, float& Strength,
+	int32* UserData, const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
+{
+	SyncChecks = AsyncChecks = 0;
+	Strength = 0.0f;
+	OutSeenLocation = FVector::ZeroVector;
+	for (auto It = SightSnapshots.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid()) It.RemoveCurrent();
+	}
+	FSightSnapshot* Snapshot = SightSnapshots.Find(Context.IgnoreActor);
+	if (Snapshot) Snapshot->bVisible = false;
+	if (!HasAuthority() || !IsCombatActive() || IsDead() || !GetWorld()
+		|| Context.ObserverLocation.ContainsNaN()) return UAISense_Sight::EVisibilityResult::NotVisible;
+
+	TArray<FVector, TInlineAllocator<2>> Points;
+	ResolveSightPoints(Points);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(OutlierTurretSight), true, Context.IgnoreActor);
+	for (const FVector& Point : Points)
+	{
+		FHitResult Hit;
+		++SyncChecks;
+		const bool bBlocked = GetWorld()->LineTraceSingleByChannel(Hit, Context.ObserverLocation, Point, ECC_Visibility, Params);
+		if (bBlocked && Hit.GetActor() != this) continue;
+		if (bBlocked && Hit.GetComponent() == GetMesh() && IsNoDamageBone(Hit.BoneName)) continue;
+		// 자기 표면에 먼저 닿았다면 실제 노출 표면을 기록한다. 그 뒤의 가려진 Body 중심을 조준하지 않는다.
+		OutSeenLocation = bBlocked ? Hit.ImpactPoint : Point;
+		Strength = 1.0f;
+		// 최대 2개 표본을 검사하고 첫 가시점을 그대로 조준에 전달한다. 가려진 Body로 교체하지 않는다.
+		if (IsValid(Context.IgnoreActor) && (Snapshot || SightSnapshots.Num() < 64))
+		{
+			if (!Snapshot) Snapshot = &SightSnapshots.Add(Context.IgnoreActor);
+			Snapshot->Point = OutSeenLocation;
+			Snapshot->ObservedAt = GetWorld()->GetTimeSeconds();
+			Snapshot->bVisible = true;
+			Snapshot->HeadAsset = TurretHeadMesh ? TurretHeadMesh->GetSkeletalMeshAsset() : nullptr;
+			Snapshot->BodyAsset = GetMesh() ? GetMesh()->GetSkeletalMeshAsset() : nullptr;
+			if (const AEnemyBase* Observer = Cast<AEnemyBase>(Context.IgnoreActor))
+			{
+				Snapshot->ObserverSerial = Observer->GetCombatAimObservationSerial();
+				Snapshot->ObserverTeam = Observer->GetGenericTeamId();
+			}
+		}
+		return UAISense_Sight::EVisibilityResult::Visible;
+	}
+	return UAISense_Sight::EVisibilityResult::NotVisible;
+}
+
+bool AAutoTurret::TryGetObservedSightPoint(const AActor* Observer, FVector& OutPoint, bool bRequireCurrentSight) const
+{
+	const FSightSnapshot* Snapshot = SightSnapshots.Find(Observer);
+	if (!Snapshot || !IsCombatActive() || IsDead() || !GetWorld()
+		|| Snapshot->HeadAsset.Get() != (TurretHeadMesh ? TurretHeadMesh->GetSkeletalMeshAsset() : nullptr)
+		|| Snapshot->BodyAsset.Get() != (GetMesh() ? GetMesh()->GetSkeletalMeshAsset() : nullptr)) return false;
+	if (const AEnemyBase* EnemyObserver = Cast<AEnemyBase>(Observer))
+	{
+		if (Snapshot->ObserverSerial != EnemyObserver->GetCombatAimObservationSerial()
+			|| Snapshot->ObserverTeam != EnemyObserver->GetGenericTeamId()
+			|| GetGenericTeamId() == EnemyObserver->GetGenericTeamId()) return false;
+	}
+	const double Age = GetWorld()->GetTimeSeconds() - Snapshot->ObservedAt;
+	// Sight budget에 따른 조회 간격을 임의 TTL로 줄이지 않는다. 최신 실제 판정과 발사 사선을 각각 검사한다.
+	if (bRequireCurrentSight && (!Snapshot->bVisible || Age < 0.0)) return false;
+	OutPoint = Snapshot->Point;
+	return true;
 }
 
 FRotator AAutoTurret::GetLocalHeadRotation() const
@@ -842,6 +935,7 @@ bool AAutoTurret::IsCombatActive() const
 
 void AAutoTurret::SetTurretLifecycleState(EAutoTurretLifecycleState NewState)
 {
+	if (TurretLifecycleState != NewState) SightSnapshots.Reset();
 	TurretLifecycleState = NewState;
 	// 상태와 식별자를 따로 복제하면 이전 활성화의 Active와 새 식별자가 섞일 수 있다.
 	// BP 호환용 상태 값은 유지하되 복제 수신은 이 스냅샷 한 경로에서만 적용한다.
@@ -1369,6 +1463,15 @@ bool AAutoTurret::IsTurretAimLocationReachable(const FVector& Location) const
 	return Pitch >= -DownLimit - KINDA_SMALL_NUMBER;
 }
 
+bool AAutoTurret::CanFireWithoutTurretAimAlignment(const FVector& AimPoint) const
+{
+	const float Distance = RuntimeTurretBehavior.CloseRangeFireDistance;
+	// 총구는 회전하며 이동하므로 근접 경계는 고정된 머리 피벗을 기준으로 한다. 팀 변경에도 같은 규칙이다.
+	return UsesNormalTurretAttackPolicy() && TurretHeadPivot && !AimPoint.ContainsNaN()
+		&& FMath::IsFinite(Distance) && Distance > 0.0f
+		&& FVector::DistSquared(AimPoint, TurretHeadPivot->GetComponentLocation()) <= FMath::Square(double(Distance));
+}
+
 bool AAutoTurret::TryGetAttackableVisibleTargetAim(const AActor* Target, FVector& OutAimPoint) const
 {
 	const AEnemyAIController* AI = Cast<AEnemyAIController>(GetController());
@@ -1379,7 +1482,13 @@ bool AAutoTurret::TryGetAttackableVisibleTargetAim(const AActor* Target, FVector
 	}
 
 	TArray<FVector, TInlineAllocator<16>> Points;
-	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(Target))
+	if (const AAutoTurret* TargetTurret = Cast<AAutoTurret>(Target))
+	{
+		FVector ObservedPoint;
+		if (!TargetTurret->TryGetObservedSightPoint(this, ObservedPoint, true)) return false;
+		Points.Add(ObservedPoint);
+	}
+	else if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(Target))
 	{
 		FOutlierSightObservation Observation;
 		if (!Shooter->GetObservedAimPoints(this, Observation))
@@ -1425,7 +1534,8 @@ bool AAutoTurret::TryGetAttackableVisibleTargetAim(const AActor* Target, FVector
 	int32 Checks = 16;
 	for (const FVector& Point : Points)
 	{
-		if (IsTurretAimLocationReachable(Point) && GetCurrentWeapon()->HasClearTargetAttackPath(Target, Point, Checks))
+		if ((CanFireWithoutTurretAimAlignment(Point) || IsTurretAimLocationReachable(Point))
+			&& GetCurrentWeapon()->HasClearTargetAttackPath(Target, Point, Checks))
 		{
 			OutAimPoint = Point;
 			return true;
@@ -1441,6 +1551,11 @@ bool AAutoTurret::IsTurretAttackAimReady(const AActor* Target) const
 		return false;
 	}
 	const FVector AimPoint = GetCombatAimPoint(Target);
+	// 근접은 조준 완료만 생략한다. 직접 감지/전조/회복/총구 사선은 공통 발사 경로에서 계속 검사한다.
+	if (CanFireWithoutTurretAimAlignment(AimPoint))
+	{
+		return true;
+	}
 	if (!IsTurretAimLocationReachable(AimPoint))
 	{
 		return false;
@@ -1741,6 +1856,7 @@ void AAutoTurret::RefreshTeammateOutline()
 
 void AAutoTurret::ApplyHackedTeamState()
 {
+	SightSnapshots.Reset();
 	// Controller가 아직 없거나 교체 중이어도 이전 팀의 단서·예약 회차는 이월하지 않는다.
 	ClearAlertClue();
 	ClearHitClues();
@@ -1749,7 +1865,9 @@ void AAutoTurret::ApplyHackedTeamState()
 	SetPlayerCurrentlyVisible(false);
 	RemoveRoomTargetObserver();
 	ClearSharedTargetContact();
-	ReleaseSearchDestinations();
+	EndSearchEpisode();
+	bHasLastKnownPlayerLocation = false;
+	LastKnownPlayerLocation = FVector::ZeroVector;
 	if (AEnemyAIController* EnemyController = Cast<AEnemyAIController>(GetController()))
 	{
 		EnemyController->RefreshTeamAndPerceptionFromPawn();
@@ -1757,6 +1875,8 @@ void AAutoTurret::ApplyHackedTeamState()
 
 	if (HasAuthority())
 	{
+		// Sight 대상의 TeamId는 등록 시 캐시된다. listener 갱신과 별도로 기존 source를 교체한다.
+		RefreshPerceptionTeamRegistration();
 		// 팀이 바뀐 액터를 기존 우호 대상으로 기억한 AI도 즉시 적대 대상으로 다시 평가한다.
 		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 		{

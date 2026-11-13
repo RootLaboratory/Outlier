@@ -67,6 +67,9 @@ struct FEnemyTurretSearchTaskInstanceData
 	TObjectPtr<AAutoTurret> Turret = nullptr;
 	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
 	FVector SearchCenter = FVector::ZeroVector;
+	// 활성 터렛의 비전투 대기는 탐색과 최초 인지 확정을 함께 처리한다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bMaintainNonCombatSearch = false;
 	float ElapsedTime = 0.0f;
 	FRotator CenterRotation = FRotator::ZeroRotator;
 };

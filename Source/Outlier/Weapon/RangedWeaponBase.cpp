@@ -3162,9 +3162,13 @@ void ARangedWeaponBase::PerformAttack()
 			{
 				continue;
 			}
-			if (const AAutoTurret* Turret = Cast<AAutoTurret>(Enemy))
+			// 근접 예외는 총구별 각도만 완화한다. 위의 사선 검사와 기존 총구 위치/머리 방향 발사는 유지한다.
+			if (const AAutoTurret* Turret = Cast<AAutoTurret>(Enemy);
+				Turret && !Turret->CanFireWithoutTurretAimAlignment(Enemy->GetCombatAimPoint(Enemy->GetTrackedTarget())))
 			{
-				const FVector Direction = Enemy->GetCombatAimPoint(Enemy->GetTrackedTarget()) - Shot.GetLocation();
+				// 평행한 복수 총열은 머리의 공통 조준 방향으로 정렬한다. 각 총구에서 한 점으로
+				// 수렴을 요구하면 근거리 시차만으로 모든 탄이 거절된다. 실제 탄도는 기존 머리 방향을 유지한다.
+				const FVector Direction = Enemy->GetCombatAimPoint(Enemy->GetTrackedTarget()) - Turret->GetPawnViewLocation();
 				const float Tolerance = FMath::Max(0.01f, Turret->GetTurretBehavior().AimToleranceDegrees);
 				if (Direction.IsNearlyZero() || FVector::DotProduct(Direction.GetSafeNormal(), Shot.GetUnitAxis(EAxis::X))
 					< FMath::Cos(FMath::DegreesToRadians(Tolerance)))

@@ -129,9 +129,24 @@ EStateTreeRunStatus FEnemyTurretSearchTask::Tick(FStateTreeExecutionContext& Con
 	{
 		return EStateTreeRunStatus::Failed;
 	}
+	if (Data.bMaintainNonCombatSearch)
+	{
+		// 공격 Task는 Combat 확정 후에만 선택한다. Alert 동안에도 기존 인지 시간을
+		// 누적해야 적을 뒤늦게 발견한 터렛이 발사 조건 앞에서 영구 대기하지 않는다.
+		if (AEnemyAIController* AI = Cast<AEnemyAIController>(Data.Turret->GetController()))
+		{
+			AI->ResolveInitialAwarenessAlert();
+		}
+	}
+	// 피격 확인은 회전만 소유한다. 인지/단서 만료까지 멈추면 Alert와 경계 회전이 서로 종료를 기다린다.
 	if (Data.Turret->IsHitDirectionConfirmationActive() || Data.Turret->IsTurretGuardRotationActive()) return EStateTreeRunStatus::Running;
+	if (Data.bMaintainNonCombatSearch && Data.Turret->IsPlayerCurrentlyVisible() && Data.Turret->HasTrackableTarget())
+	{
+		Data.Turret->UpdateTurretAimAtActor(Data.Turret->GetTrackedTarget(), DeltaTime, false);
+		return EStateTreeRunStatus::Running;
+	}
 	// 완료 직후에도 옛 탐색 중심이 기본 방향을 덮지 않도록 NonCombat에서는 탐색을 끝낸다.
-	if (Data.Turret->GetCombatState() == EEnemyCombatState::NonCombat) return EStateTreeRunStatus::Succeeded;
+	if (!Data.bMaintainNonCombatSearch && Data.Turret->GetCombatState() == EEnemyCombatState::NonCombat) return EStateTreeRunStatus::Succeeded;
 	Data.ElapsedTime += FMath::Max(DeltaTime, 0.0f);
 	const FAutoTurretBehaviorRow& Behavior = Data.Turret->GetTurretBehavior();
 	const float HalfCycle = FMath::Max(Behavior.SearchHalfCycleDuration, KINDA_SMALL_NUMBER);

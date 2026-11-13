@@ -1618,6 +1618,13 @@ FVector AEnemyBase::GetCombatAimPoint(const AActor* TargetActor) const
 		// Partner를 포함해 숨은 대상의 캡슐/본 좌표를 조준 갱신 목적으로 조회하지 않는다.
 		return GetCombatNavigationTargetLocation(TargetActor);
 	}
+	if (const AAutoTurret* TargetTurret = Cast<AAutoTurret>(TargetActor))
+	{
+		FVector ObservedPoint;
+		// 터렛은 Actor 원점/캡슐 대신 이 관측자가 실제로 본 표본을 사용한다.
+		// 관측이 사라진 뒤에는 숨은 Head의 새 위치를 읽지 않고 마지막 좌표를 유지한다.
+		return TargetTurret->TryGetObservedSightPoint(this, ObservedPoint) ? ObservedPoint : GetLastKnownPlayerLocation();
+	}
 	if (const ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
 	{
 		// 시점 높이 대신 실제 캡슐 중심을 겨냥해 작은 Partner도 몸체 안쪽으로 조준한다.
@@ -1735,8 +1742,9 @@ void AEnemyBase::RefreshCombatAimPoint()
 	const AAutoTurret* Turret = Cast<AAutoTurret>(this);
 	for (int32 Index = 0; Index < Points.Num(); ++Index)
 	{
-		// 터렛 후보 선택과 실제 조준이 같은 도달 각도를 사용해야 열린 다른 부위를 놓치지 않는다.
-		if ((Turret && Turret->UsesNormalTurretAttackPolicy() && !Turret->IsTurretAimLocationReachable(Points[Index]))
+		// 후보 선택과 실제 발사에 같은 근접 예외를 적용하되, 관측 부위와 총구 사선은 유지한다.
+		if ((Turret && Turret->UsesNormalTurretAttackPolicy()
+			&& !Turret->CanFireWithoutTurretAimAlignment(Points[Index]) && !Turret->IsTurretAimLocationReachable(Points[Index]))
 			|| !CurrentWeapon->HasClearTargetAttackPath(Target, Points[Index], Checks))
 		{
 			continue;
@@ -5008,7 +5016,9 @@ void AEnemyBase::EnterCombatFromRoom(
 	}
 
 	const FGameplayTag RoomTag = GetDefaultRoomTag();
-	if (bPropagateToRoom && RoomTag.IsValid())
+	const AAutoTurret* Turret = Cast<AAutoTurret>(this);
+	// 아군화된 터렛은 같은 감지 절차를 사용하되 적 Encounter의 시작 승인에는 참여하지 않는다.
+	if (bPropagateToRoom && RoomTag.IsValid() && !(Turret && Turret->IsHackedToPlayerTeam()))
 	{
 		// 합류가 실패했다면 최초 발각 Enemy도 Alert에 남겨 Room 전투보다 먼저 공격하지 않는다.
 		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
@@ -7171,6 +7181,15 @@ bool AEnemyBase::CanAttackTrackedTarget(const AActor* TargetActor) const
 		else if (!IsTargetAttackAimReady())
 		{
 			Reason = 4;
+		}
+	}
+	if (!Reason && Turret && Turret->UsesNormalTurretAttackPolicy())
+	{
+		if (const AAutoTurret* TargetTurret = Cast<AAutoTurret>(TargetActor))
+		{
+			FVector ObservedPoint;
+			// 자동 연사도 후보 선택 때와 같은 최신 터렛 관측을 요구한다. 마지막 조준점은 발사 허가가 아니다.
+			if (!TargetTurret->TryGetObservedSightPoint(this, ObservedPoint, true)) Reason = 5;
 		}
 	}
 	const bool bShooterObservationRequired = Cast<AShooterCharacter>(TargetActor)
