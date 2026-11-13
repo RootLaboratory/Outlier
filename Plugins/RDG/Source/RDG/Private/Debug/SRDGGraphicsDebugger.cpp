@@ -3964,6 +3964,15 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakePartnerKnockDownSection()
 	AddRow(ParameterRow(TEXT("Chromatic Start Offset (lens radius, 0 = center)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChromaticStartOffset; }));
 	AddRow(ParameterRow(TEXT("Chromatic Intensity"), 0.0f, 4.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChromaticIntensity; }));
 
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[Channel Recover] outside mask (1 - mask), gray -> R -> G -> B by progress"))));
+	AddRow(FlagRow(TEXT("Channel Recover"), [](FPartnerKnockDownParameters& P) -> int32& { return P.bChannelRecover; }));
+	AddRow(ParameterRow(TEXT("Channel Recover Amount (1 = full gray at start)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChannelRecoverAmount; }));
+	AddRow(ParameterRow(TEXT("Channel Recover Start R (progress)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChannelRecoverStartR; }));
+	AddRow(ParameterRow(TEXT("Channel Recover Start G (progress)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChannelRecoverStartG; }));
+	AddRow(ParameterRow(TEXT("Channel Recover Start B (progress)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChannelRecoverStartB; }));
+	AddRow(ParameterRow(TEXT("Channel Recover Blend (progress width per channel)"), 0.0f, 0.5f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChannelRecoverBlend; }));
+	AddRow(ParameterRow(TEXT("Channel Recover Ease Exponent (1 = linear, ease in-out)"), 1.0f, 8.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChannelRecoverEaseExponent; }));
+
 	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[DamageHud] not glitched, drawn on top (after Tonemap)"))));
 	AddRow(FlagRow(TEXT("DamageHud Blend: Add + Darken (off = Alpha Over)"), [](FPartnerKnockDownParameters& P) -> int32& { return P.DamageHud.BlendMode; }));
 	AddRow(ParameterRow(TEXT("DamageHud Opacity"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.Opacity; }));

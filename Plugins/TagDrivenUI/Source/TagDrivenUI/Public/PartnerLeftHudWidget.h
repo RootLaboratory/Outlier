@@ -8,6 +8,7 @@
 #include "PartnerLeftHudWidget.generated.h"
 
 class UImage;
+class URetainerBox;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 
@@ -29,8 +30,32 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI")
 	void UpdateDistanceRatio(float InRatio);
 
+	// 다운 상태: GrayoutRetainer 를 켜고, Partner 이미지는 같은 GrayAmount 로 시작해 Progress 에 따라 원본으로 복원된다.
+	void SetKnockedDown(bool bInKnockedDown, float InGrayoutAmount);
+	// StartWorldTime 은 World->GetTimeSeconds 기준. Duration 이 0 이면 Progress 0(회색 + 최대 왜곡)으로 유지한다.
+	void SetKnockDownTiming(float StartWorldTime, float Duration);
+
 protected:
 	virtual void NativeConstruct() override;
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+
+	// Partner Image 를 제외한 Left HUD 전체를 감싼다. Effect Material 의 GrayAmount 를 코드에서 넣는다.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<URetainerBox> GrayoutRetainer;
+
+	// GrayoutRetainer 밖에 둔다. Brush 의 Material(Glitch/CA/색 복원)에 Progress, GrayAmount 를 넣는다.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> Partner;
+
+	// 경과 비율(선형)을 EaseInOut 으로 바꿔 Progress 에 넣는다. 1 = 선형, 클수록 시작 / 끝이 느리고 가운데가 빠르다.
+	UPROPERTY(EditDefaultsOnly, Category = "KnockDown", meta = (ClampMin = "1.0", ClampMax = "8.0"))
+	float KnockDownProgressEaseExponent = 3.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "KnockDown")
+	FName KnockDownProgressParameterName = TEXT("Progress");
+
+	UPROPERTY(EditDefaultsOnly, Category = "KnockDown")
+	FName GrayAmountParameterName = TEXT("GrayAmount");
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UImage> ShooterConditionUI;
@@ -82,12 +107,22 @@ private:
 	float GetShooterConditionMaterialValue(const FGameplayTag& InConditionTag) const;
 	void UpdateDistanceTrianglePosition();
 	void UpdateDistanceLimitVisual(bool bOverLimit);
+	void ApplyKnockDownVisual();
+	void UpdateKnockDownProgress();
 
 	UPROPERTY(BlueprintReadOnly, Category = "Data", meta = (AllowPrivateAccess = "true", Categories = "UI.Condition.Shooter"))
 	FGameplayTag CurrentShooterConditionTag;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> DistanceLimitMID;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> PartnerImageMID;
+
+	bool bKnockedDown = false;
+	float KnockDownGrayoutAmount = 0.0f;
+	float KnockDownStartTime = 0.0f;
+	float KnockDownDuration = 0.0f;
 
 	FVector2D DistanceTriangleBasePosition = FVector2D::ZeroVector;
 	float CurrentDistanceRatio = 0.0f;

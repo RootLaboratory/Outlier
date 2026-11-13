@@ -505,9 +505,10 @@ struct FPartnerKnockDownDamageHudParameters
 };
 
 // Partner KnockDown. 로컬로 조종 중인 파트너가 다운(State.Rebooting)된 동안 Tonemap 이후(UI 제외)에 그린다.
-//  1. 마스크 패스(RDG.PartnerKnockDown.Mask): 마스크 값 × 회복 진행도로 글리치 가중치를 뷰 크기 R8에 굽는다.
+//  1. 마스크 패스(RDG.PartnerKnockDown.Mask): 마스크 값 × 회복 진행도로 글리치 가중치(R)를, 1 - 마스크 값으로 마스크 밖 가중치(G)를 뷰 크기 R8G8에 굽는다.
 //     진행도가 오를수록 마스크 값이 낮은 곳부터 글리치가 사라지고, 다운이 끝나면 전부 사라진다.
 //  2. 메인 패스(RDG.PartnerKnockDown): 사망 Noise와 같은 슬라이스 글리치에 가중치를 곱하고, 장면과 DamageHud에 같은 이동량을 적용한다.
+//     마스크 밖(G)은 흑백에서 시작해 진행도에 따라 R → G → B 순으로 색이 돌아온다(채널 순차 복구).
 struct FPartnerKnockDownParameters
 {
 	// ---- 런타임. 서브시스템이 채우고 튜닝값 setter는 건드리지 않는다. ----
@@ -544,6 +545,19 @@ struct FPartnerKnockDownParameters
 	float ChromaticIntensity = 0.4f;
 	// 켜면 글리치에 걸린 슬라이스에만 CA. 끄면 마스크 영역 전체.
 	int32 bChromaticGlitchOnly = false;
+
+	// ---- 채널 순차 복구. 마스크 밖(원본 마스크 값이 낮은 곳, 1 - W0)에만 걸린다. ----
+	// 다운 직후 흑백에서 시작해 진행도가 StartR / G / B를 지날 때 그 채널이 원래 값으로 돌아온다.
+	int32 bChannelRecover = true;
+	// 시작 시 흑백 정도. 1 = 완전 흑백.
+	float ChannelRecoverAmount = 1.0f;
+	float ChannelRecoverStartR = 0.25f;
+	float ChannelRecoverStartG = 0.5f;
+	float ChannelRecoverStartB = 0.75f;
+	// 채널 하나가 켜지는 데 걸리는 진행도 폭.
+	float ChannelRecoverBlend = 0.08f;
+	// 채널 복구에 쓰는 진행도만 EaseInOut으로 바꾼다(글리치 회복은 선형 그대로). 1 = 선형.
+	float ChannelRecoverEaseExponent = 3.0f;
 
 	// ---- 마스크 ----
 	// 기본은 흰색(1) = 글리치. 켜면 검은색이 글리치.

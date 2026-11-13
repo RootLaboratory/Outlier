@@ -18,7 +18,7 @@ float FTargetPointHudSettings::GetDistanceScale(float Distance) const
 }
 
 void FTargetPointHudSettings::CalculateLayout(FVector2D ScreenPoint, FVector2D ViewportSize,
-	FVector2D ContentSize, float Distance, FVector2D& OutPosition, float& OutScale) const
+	FVector2D ContentSize, float Distance, FVector2D& OutPosition, float& OutScale, FVector2D Pivot) const
 {
 	ViewportSize.X = FMath::Max(1.0, ViewportSize.X);
 	ViewportSize.Y = FMath::Max(1.0, ViewportSize.Y);
@@ -31,12 +31,12 @@ void FTargetPointHudSettings::CalculateLayout(FVector2D ScreenPoint, FVector2D V
 	OutScale = FMath::Min(GetDistanceScale(Distance),
 		float(FMath::Min(Available.X / ContentSize.X, Available.Y / ContentSize.Y)));
 	const FVector2D Size = ContentSize * OutScale;
-	OutPosition.X = FMath::Clamp(ScreenPoint.X - Size.X * 0.5, Padding.X, ViewportSize.X - Padding.X - Size.X);
-	OutPosition.Y = FMath::Clamp(ScreenPoint.Y - Size.Y * 0.5, Padding.Y, ViewportSize.Y - Padding.Y - Size.Y);
+	OutPosition.X = FMath::Clamp(ScreenPoint.X - Size.X * FMath::Clamp(Pivot.X, 0.0, 1.0), Padding.X, ViewportSize.X - Padding.X - Size.X);
+	OutPosition.Y = FMath::Clamp(ScreenPoint.Y - Size.Y * FMath::Clamp(Pivot.Y, 0.0, 1.0), Padding.Y, ViewportSize.Y - Padding.Y - Size.Y);
 }
 
 bool FTargetPointHudSettings::Project(APlayerController* Controller, const FVector& WorldPoint,
-	FVector2D ContentSize, FVector2D& OutPosition, float& OutScale) const
+	FVector2D ContentSize, FVector2D& OutPosition, float& OutScale, FVector2D Pivot) const
 {
 	if (!Controller || !Controller->IsLocalController()) return false;
 	FVector2D ScreenPoint;
@@ -47,7 +47,7 @@ bool FTargetPointHudSettings::Project(APlayerController* Controller, const FVect
 	FVector CameraLocation;
 	FRotator CameraRotation;
 	Controller->GetPlayerViewPoint(CameraLocation, CameraRotation);
-	CalculateLayout(ScreenPoint, ViewportSize, ContentSize, FVector::Distance(CameraLocation, WorldPoint), OutPosition, OutScale);
+	CalculateLayout(ScreenPoint, ViewportSize, ContentSize, FVector::Distance(CameraLocation, WorldPoint), OutPosition, OutScale, Pivot);
 	return true;
 }
 
@@ -101,6 +101,19 @@ void UTargetPointHudWidget::UpdateContent(UTargetPointWidget* Content, bool bSho
 	FVector2D FallbackSize)
 {
 	if (!Content) return;
+	Content->SetVisibility(bShown ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	if (!bShown) return;
+	Content->ForceLayoutPrepass();
+	FVector2D Size = Content->GetDesiredSize();
+	if (Size.X <= 0) Size.X = FMath::Max(1.0, FallbackSize.X);
+	if (Size.Y <= 0) Size.Y = FMath::Max(1.0, FallbackSize.Y);
+	UpdateContent(Content, true, WorldPoint, Size, Content->HudPresentation, FVector2D(0.5));
+}
+
+void UTargetPointHudWidget::UpdateContent(UUserWidget* Content, bool bShown, const FVector& WorldPoint,
+	FVector2D Size, const FTargetPointHudSettings& Settings, FVector2D Pivot)
+{
+	if (!Content) return;
 	if (!bShown)
 	{
 		Content->SetVisibility(ESlateVisibility::Collapsed);
@@ -120,14 +133,10 @@ void UTargetPointHudWidget::UpdateContent(UTargetPointWidget* Content, bool bSho
 		}
 	}
 	Content->SetVisibility(ESlateVisibility::HitTestInvisible);
-	Content->ForceLayoutPrepass();
-	FVector2D Size = Content->GetDesiredSize();
-	if (Size.X <= 0) Size.X = FMath::Max(1.0, FallbackSize.X);
-	if (Size.Y <= 0) Size.Y = FMath::Max(1.0, FallbackSize.Y);
 	FVector2D Position;
 	float Scale;
-	// 배율과 화면 여백은 표시할 위젯 BP의 기본값을 사용한다. 대상별 값은 전달받지 않는다.
-	if (!Content->HudPresentation.Project(GetOwningPlayer(), WorldPoint, Size, Position, Scale))
+	// Projection failure behind the camera hides the content.
+	if (!Settings.Project(GetOwningPlayer(), WorldPoint, Size, Position, Scale, Pivot))
 	{
 		Content->SetVisibility(ESlateVisibility::Collapsed);
 		return;

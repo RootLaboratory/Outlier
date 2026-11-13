@@ -69,6 +69,46 @@ void UGangTongMainUI::SetSuitGatedModulesEnabled(bool bEnabled)
 	ModulesControl(bEnabled);
 }
 
+void UGangTongMainUI::ModulesControl(bool Flag)
+{
+	Super::ModulesControl(Flag);
+	RefreshKnockDownVisibility();
+}
+
+void UGangTongMainUI::SetKnockedDown(bool bInKnockedDown)
+{
+	bKnockedDown = bInKnockedDown;
+	RefreshKnockDownVisibility();
+
+	// Partner Image 는 Left HUD 의 Grayout 밖에서 같은 GrayAmount 로 시작해 Progress 에 따라 원본으로 복원된다.
+	if (PartnerLeftHUD)
+	{
+		PartnerLeftHUD->SetKnockedDown(bKnockedDown, KnockDownGrayoutAmount);
+	}
+	if (PartnerRightHUD)
+	{
+		PartnerRightHUD->SetGrayout(bKnockedDown, KnockDownGrayoutAmount);
+	}
+}
+
+void UGangTongMainUI::SetKnockDownTiming(float StartWorldTime, float Duration)
+{
+	if (PartnerLeftHUD)
+	{
+		PartnerLeftHUD->SetKnockDownTiming(StartWorldTime, Duration);
+	}
+}
+
+void UGangTongMainUI::RefreshKnockDownVisibility()
+{
+	// 크로스헤어는 다운 중 항상 숨긴다.
+	if (CrossHairUI)
+	{
+		CrossHairUI->SetVisibility(bKnockedDown || !bModulesActive
+			? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
+	}
+}
+
 void UGangTongMainUI::ModuleDestruct()
 {
 }

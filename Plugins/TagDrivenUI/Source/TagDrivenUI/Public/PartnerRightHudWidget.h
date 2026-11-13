@@ -8,6 +8,7 @@
 
 class UAbilitySlotUI;
 class UInputAction;
+class URetainerBox;
 
 /** 모듈화된 Partner 오른쪽 HUD가 네 공용 능력 슬롯의 바인딩을 소유한다. */
 UCLASS(Blueprintable)
@@ -34,8 +35,18 @@ public:
 	UAbilitySlotUI* GetScanAbilitySlot() const { return ScanAbilitySlot; }
 	UAbilitySlotUI* GetEMPAbilitySlot() const { return EMPAbilitySlot; }
 
+	// Partner 다운 중 Right HUD 전체를 회색 처리한다. 해제 시 Retainer 를 꺼서 비용을 없앤다.
+	void SetGrayout(bool bEnabled, float InGrayoutAmount);
+
 protected:
 	virtual void NativeConstruct() override;
+
+	// Right HUD 전체를 감싼다. Effect Material 의 GrayAmount 를 코드에서 넣는다.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<URetainerBox> GrayoutRetainer;
+
+	UPROPERTY(EditDefaultsOnly, Category = "KnockDown")
+	FName GrayAmountParameterName = TEXT("GrayAmount");
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UAbilitySlotUI> ShieldAbilitySlot;
@@ -48,4 +59,10 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UAbilitySlotUI> EMPAbilitySlot;
+
+private:
+	void ApplyGrayout();
+
+	bool bGrayoutEnabled = false;
+	float GrayoutAmount = 0.0f;
 };

@@ -179,12 +179,14 @@ void UHintKeyDisplayWidget::EnsureWatchedKeyIsResolved()
 		return;
 	}
 
-	if (RefreshDisplayedKey() || !WatchedInputAction)
+	RefreshDisplayedKey();
+	if (!WatchedInputAction || !TextOverride.IsEmpty())
 	{
 		UnbindControlMappingsRebuiltDelegate();
 		return;
 	}
 
+	// 조회 성공 후에도 구독을 유지하여 이후 활성 매핑 변경을 반영한다.
 	BindControlMappingsRebuiltDelegate();
 }
 

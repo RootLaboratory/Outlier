@@ -24,9 +24,9 @@ struct OUTLIER_API FTargetPointHudSettings
 
 	float GetDistanceScale(float Distance) const;
 	void CalculateLayout(FVector2D ScreenPoint, FVector2D ViewportSize, FVector2D ContentSize,
-		float Distance, FVector2D& OutPosition, float& OutScale) const;
+		float Distance, FVector2D& OutPosition, float& OutScale, FVector2D Pivot = FVector2D(0.5)) const;
 	bool Project(APlayerController* Controller, const FVector& WorldPoint, FVector2D ContentSize,
-		FVector2D& OutPosition, float& OutScale) const;
+		FVector2D& OutPosition, float& OutScale, FVector2D Pivot = FVector2D(0.5)) const;
 };
 
 // 같은 위젯 BP를 쓰는 모든 대상이 표시 설정을 공유한다. Actor는 기준점 위치만 제공한다.
@@ -49,6 +49,9 @@ public:
 	void Release();
 	void AddContent(UUserWidget* Content);
 	void UpdateContent(UTargetPointWidget* Content, bool bShown, const FVector& WorldPoint, FVector2D FallbackSize);
+	// Fixed-size content also supports existing WorldGuide UserWidget blueprints.
+	void UpdateContent(UUserWidget* Content, bool bShown, const FVector& WorldPoint, FVector2D Size,
+		const FTargetPointHudSettings& Settings, FVector2D Pivot);
 protected:
 	virtual void NativeOnInitialized() override;
 private:

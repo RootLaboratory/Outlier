@@ -1013,6 +1013,13 @@ void ULocalPlayerPostProcessSubsystem::SetPartnerKnockDownParameters(const FPart
 	KnockDown.ChromaticStartOffset = FMath::Clamp(InParameters.ChromaticStartOffset, 0.0f, 1.0f);
 	KnockDown.ChromaticIntensity = FMath::Clamp(InParameters.ChromaticIntensity, 0.0f, 16.0f);
 	KnockDown.bChromaticGlitchOnly = InParameters.bChromaticGlitchOnly ? 1 : 0;
+	KnockDown.bChannelRecover = InParameters.bChannelRecover ? 1 : 0;
+	KnockDown.ChannelRecoverAmount = FMath::Clamp(InParameters.ChannelRecoverAmount, 0.0f, 1.0f);
+	KnockDown.ChannelRecoverStartR = FMath::Clamp(InParameters.ChannelRecoverStartR, 0.0f, 1.0f);
+	KnockDown.ChannelRecoverStartG = FMath::Clamp(InParameters.ChannelRecoverStartG, 0.0f, 1.0f);
+	KnockDown.ChannelRecoverStartB = FMath::Clamp(InParameters.ChannelRecoverStartB, 0.0f, 1.0f);
+	KnockDown.ChannelRecoverBlend = FMath::Clamp(InParameters.ChannelRecoverBlend, 0.0f, 1.0f);
+	KnockDown.ChannelRecoverEaseExponent = FMath::Clamp(InParameters.ChannelRecoverEaseExponent, 1.0f, 8.0f);
 	KnockDown.bMaskInvert = InParameters.bMaskInvert ? 1 : 0;
 	KnockDown.MaskBlackPoint = FMath::Clamp(InParameters.MaskBlackPoint, 0.0f, 1.0f);
 	KnockDown.MaskWhitePoint = FMath::Clamp(InParameters.MaskWhitePoint, 0.0f, 1.0f);

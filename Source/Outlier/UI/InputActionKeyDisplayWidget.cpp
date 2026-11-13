@@ -453,17 +453,15 @@ void UInputActionKeyDisplayWidget::EnsureWatchedKeyIsResolved()
 		return;
 	}
 
-	// WatchedInputAction이 아직 없으면 기다릴 이유가 없다 - SetWatchedInputAction이
-	// 호출될 때 다시 이 함수를 타게 된다.
-	if (RefreshDisplayedKey() || !WatchedInputAction)
+	RefreshDisplayedKey();
+	// 고정 키·고정 문구·액션 없음 상태에서는 매핑을 감시하지 않는다.
+	if (bUseExplicitKey || !WatchedInputAction || !TextOverride.IsEmpty())
 	{
 		UnbindControlMappingsRebuiltDelegate();
 		return;
 	}
 
-	// 액션은 있는데 아직 매핑을 못 찾았다 - Enhanced Input이 아직 IMC를
-	// 등록/재구성하기 전일 가능성이 크므로, 재구성이 실제로 끝나는 시점에
-	// 다시 시도하도록 예약해둔다.
+	// 조회 성공 후에도 구독을 유지하여 이후 활성 매핑 변경을 반영한다.
 	BindControlMappingsRebuiltDelegate();
 }
 

@@ -21,7 +21,7 @@ float2 ViewRectMaxUV;
 float2 ViewportUVOrigin;
 float2 ViewportUVSize;
 
-// 마스크 패스 결과(뷰 크기 R8). 값 = 글리치 가중치.
+// 마스크 패스 결과(뷰 크기 R8G8). R = 글리치 가중치, G = 마스크 밖 가중치(1 - 원본 마스크).
 Texture2D WeightTexture;
 SamplerState WeightSampler;
 int bMaskVisualize;
@@ -61,6 +61,13 @@ float ChromaticStartOffset;
 float2 ChromaticScale;
 int bChromaticGlitchOnly;
 
+// 채널 순차 복구. 마스크 밖(G)만 흑백에서 시작해 진행도가 각 채널의 시작점을 지날 때 그 채널이 원래 값으로 돌아온다.
+// Amount 0이면 꺼짐. Start = (R, G, B) 시작 진행도, Blend = 채널 하나가 켜지는 데 걸리는 진행도 폭.
+float ChannelRecoverProgress;
+float ChannelRecoverAmount;
+float3 ChannelRecoverStart;
+float ChannelRecoverBlend;
+
 float Hash11(float X)
 {
 	return frac(sin(X) * 43758.5453f);
@@ -70,6 +77,21 @@ float Hash11(float X)
 float3 ApplyMaskVisualize(float3 Color, float Weight)
 {
 	return bMaskVisualize != 0 ? lerp(Color, float3(1.0f, 0.0f, 0.0f), (1.0f - Weight) * 0.5f) : Color;
+}
+
+// 아직 켜지지 않은 채널은 휘도로 채운다. 해상도 / 위치는 건드리지 않아 마스크 밖은 선명한 채로 색만 돌아온다.
+float3 ApplyChannelRecover(float3 Color, float ClearWeight)
+{
+	const float Amount = saturate(ChannelRecoverAmount * ClearWeight);
+	if (Amount <= 0.0f)
+	{
+		return Color;
+	}
+
+	const float Luma = dot(Color, float3(0.2126f, 0.7152f, 0.0722f));
+	const float Blend = max(ChannelRecoverBlend, 1e-4f);
+	const float3 Online = smoothstep(ChannelRecoverStart, ChannelRecoverStart + Blend, ChannelRecoverProgress.xxx);
+	return lerp(Color, Luma.xxx, Amount * (1.0f - Online));
 }
 
 float3 ApplyDamageHud(float3 Color, float2 ViewUV)
@@ -110,11 +132,14 @@ void MainPS(
 	const float2 UV = (Input.UV - ViewportUVOrigin) / ViewportUVSize;
 
 	// 가중치 0인 픽셀은 슬라이스 탐색 루프 전에 원본 + HUD로 빠진다.
-	const float Weight = WeightTexture.SampleLevel(WeightSampler, saturate(UV), 0).r;
+	const float2 Weights = WeightTexture.SampleLevel(WeightSampler, saturate(UV), 0).rg;
+	const float Weight = Weights.r;
+	const float ClearWeight = Weights.g;
 	if (Weight <= 0.0f || Intensity <= 0.0f)
 	{
 		const float4 Original = InputTexture.Sample(InputSampler, clamp(Input.UV, ViewRectMinUV, ViewRectMaxUV));
-		OutColor = float4(ApplyDamageHud(ApplyMaskVisualize(Original.rgb, Weight), UV), Original.a);
+		const float3 Recovered = ApplyChannelRecover(Original.rgb, ClearWeight);
+		OutColor = float4(ApplyDamageHud(ApplyMaskVisualize(Recovered, Weight), UV), Original.a);
 		return;
 	}
 	const float WeightedIntensity = Intensity * Weight;
@@ -176,8 +201,10 @@ void MainPS(
 		SceneColor.g = InputTexture.Sample(InputSampler, clamp(SampleUV + Pull * ChromaticScale.y, ViewRectMinUV, ViewRectMaxUV)).g;
 	}
 
+	// 마스크 경계 그라데이션에서는 글리치와 채널 복구가 함께 걸린다. 복구 가중치는 밀리기 전 픽셀 기준.
+	const float3 Recovered = ApplyChannelRecover(SceneColor.rgb, ClearWeight);
 	const float Glow = saturate(GlitchGate * GlitchGlow * WeightedIntensity);
-	const float3 Color = ApplyMaskVisualize(SceneColor.rgb + Tint * Glow, Weight);
+	const float3 Color = ApplyMaskVisualize(Recovered + Tint * Glow, Weight);
 
 	// HUD는 뷰 영역 기준 UV에 장면과 같은 이동량을 적용해 색과 알파를 함께 이동한다.
 	const float2 HudUV = UV + float2(JitterX, 0.0f);

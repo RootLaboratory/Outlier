@@ -9,7 +9,7 @@
 
 class AOutlierWorldGuideManager;
 class UUserWidget;
-class UWidgetComponent;
+class UTargetPointHudWidget;
 
 /** 화면 공간 UI 마커용 월드 앵커. Tuto 액터를 포함한 모든 액터에 추가할 수 있다. */
 UCLASS(ClassGroup = (Tutorial), meta = (BlueprintSpawnableComponent))
@@ -87,7 +87,10 @@ private:
 	void OnRep_TargetCompleted();
 
 	UPROPERTY(Transient)
-	TObjectPtr<UWidgetComponent> DisplayComponent;
+	TObjectPtr<UUserWidget> DisplayWidget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTargetPointHudWidget> HudLayer;
 
 	TWeakObjectPtr<AOutlierWorldGuideManager> GuideManager;
 	bool bGuideVisible = false;

@@ -112,7 +112,8 @@ FRDGTextureRef FRDGPartnerKnockDownPass::AddMaskPass(
 {
 	const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
 		FIntPoint(FMath::Max(1, ViewSize.X), FMath::Max(1, ViewSize.Y)),
-		PF_R8,
+		// R = 글리치 가중치, G = 마스크 밖 가중치(채널 순차 복구).
+		PF_R8G8,
 		FClearValueBinding::Black,
 		TexCreate_ShaderResource | TexCreate_RenderTargetable);
 	FRDGTextureRef WeightTexture = GraphBuilder.CreateTexture(Desc, TEXT("RDG.PartnerKnockDown.Mask"));
@@ -268,6 +269,17 @@ FScreenPassTexture FRDGPartnerKnockDownPass::AddPass(
 		? FRDGUIChromaticAberrationPass::BuildChromaticScale(Parameters.ChromaticIntensity, ChromaticStartOffset)
 		: FVector2f::ZeroVector;
 	PassParameters->bChromaticGlitchOnly = Parameters.bChromaticGlitchOnly ? 1 : 0;
+
+	// 채널 순차 복구. 꺼져 있으면 Amount 0이라 셰이더가 바로 원본을 돌려준다.
+	const bool bChannelRecover = bEnabled && Parameters.bChannelRecover && Parameters.ChannelRecoverAmount > 0.0f;
+	PassParameters->ChannelRecoverProgress = FMath::InterpEaseInOut(
+		0.0f, 1.0f, GetProgress(Parameters), FMath::Clamp(Parameters.ChannelRecoverEaseExponent, 1.0f, 8.0f));
+	PassParameters->ChannelRecoverAmount = bChannelRecover ? FMath::Clamp(Parameters.ChannelRecoverAmount, 0.0f, 1.0f) : 0.0f;
+	PassParameters->ChannelRecoverStart = FVector3f(
+		FMath::Clamp(Parameters.ChannelRecoverStartR, 0.0f, 1.0f),
+		FMath::Clamp(Parameters.ChannelRecoverStartG, 0.0f, 1.0f),
+		FMath::Clamp(Parameters.ChannelRecoverStartB, 0.0f, 1.0f));
+	PassParameters->ChannelRecoverBlend = FMath::Clamp(Parameters.ChannelRecoverBlend, 0.0f, 1.0f);
 	PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());
