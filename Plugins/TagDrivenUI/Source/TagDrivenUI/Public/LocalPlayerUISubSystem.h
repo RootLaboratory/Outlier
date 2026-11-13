@@ -135,6 +135,9 @@ public:
 	void OnAbilityEnabledByDistance();
 	// 파트너 경계 이탈 복제 결과. MainUI가 늦게 생겨도 RegisterMainUI에서 재생한다.
 	void OnPartnerConnectionChanged(bool bLost);
+	void OnPartnerKnockDownChanged(bool bKnockedDown);
+	// 재부팅 GE의 전체 시간과 경과 시간. KnockDown 이미지 Effect의 Progress 기준이 된다.
+	void SetPartnerKnockDownTiming(float Duration, float ElapsedTime);
 
 private:
 	TWeakObjectPtr<UWorld> EndingWorld;
@@ -173,6 +176,11 @@ private:
 	bool bShooterSuitAcquired = false;
 
 	bool bPartnerConnectionLost = false;
+	bool bPartnerKnockedDown = false;
+	// MainUI가 늦게 생겨도 OnPartnerKnockDownChanged 재생 때 같은 진행도로 이어지게 한다.
+	TWeakObjectPtr<UWorld> PartnerKnockDownWorld;
+	float PartnerKnockDownStartTime = 0.0f;
+	float PartnerKnockDownDuration = 0.0f;
 
 	bool bTransientWidgetsSuppressed = false;
 };

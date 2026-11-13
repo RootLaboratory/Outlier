@@ -554,10 +554,22 @@ void APartnerCharacter::RefreshKnockDownPostProcess(bool bForceStop)
 		&& OutlierAbilitySystemComponent
 		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
 
+	if (LocalPlayer)
+	{
+		if (ULocalPlayerUISubSystem* UI = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			UI->OnPartnerKnockDownChanged(bRebooting);
+		}
+	}
+
 	// 다운이 풀렸거나 조종하는 로컬 플레이어가 바뀌었으면 이전 화면의 연출을 끈다.
 	if (ULocalPlayer* PreviousLocalPlayer = KnockDownPostProcessLocalPlayer.Get();
 		PreviousLocalPlayer && (!bRebooting || PreviousLocalPlayer != LocalPlayer))
 	{
+		if (ULocalPlayerUISubSystem* UI = PreviousLocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			UI->OnPartnerKnockDownChanged(false);
+		}
 		if (ULocalPlayerPostProcessSubsystem* PreviousSubsystem = PreviousLocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
 			PreviousSubsystem->StopPartnerKnockDown();
@@ -602,13 +614,16 @@ void APartnerCharacter::RefreshKnockDownPostProcess(bool bForceStop)
 		return;
 	}
 
-	Subsystem->StartPartnerKnockDown(RebootDuration, FMath::Max(0.0f, RebootDuration - RebootRemaining));
+	const float RebootElapsed = FMath::Max(0.0f, RebootDuration - RebootRemaining);
+	Subsystem->StartPartnerKnockDown(RebootDuration, RebootElapsed);
 	KnockDownPostProcessLocalPlayer = LocalPlayer;
 
 	// KnockDown 화면이 덮이므로 그 전에 떠 있던 피격 피드백(진행 중 + 대기 중)을 정리한다.
 	if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
 	{
 		UISubsystem->ClearDamageFeedback();
+		// 포스트프로세스와 같은 시간축으로 KnockDown 텍스트 Effect 진행도를 맞춘다.
+		UISubsystem->SetPartnerKnockDownTiming(RebootDuration, RebootElapsed);
 	}
 }
 

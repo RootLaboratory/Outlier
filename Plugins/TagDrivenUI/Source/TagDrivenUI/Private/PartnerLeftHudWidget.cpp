@@ -4,6 +4,7 @@
 
 #include "Components/Image.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/RetainerBox.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "TagDrivenUIGameplayTags.h"
@@ -42,6 +43,85 @@ void UPartnerLeftHudWidget::NativeConstruct()
 	bDistanceLimitVisualInitialized = false;
 	UpdateDistanceLimitVisual(bDistanceLimitOver);
 	UpdateDistanceTrianglePosition();
+
+	// Brush 가 Material 이면 MID 로 바꿔 캐싱한다. 이후 다운 상태(기본 해제)를 바로 반영한다.
+	PartnerImageMID = Partner->GetDynamicMaterial();
+	ApplyKnockDownVisual();
+}
+
+void UPartnerLeftHudWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+	if (bKnockedDown)
+	{
+		UpdateKnockDownProgress();
+	}
+}
+
+void UPartnerLeftHudWidget::SetKnockedDown(bool bInKnockedDown, float InGrayoutAmount)
+{
+	bKnockedDown = bInKnockedDown;
+	KnockDownGrayoutAmount = FMath::Clamp(InGrayoutAmount, 0.0f, 1.0f);
+	ApplyKnockDownVisual();
+}
+
+void UPartnerLeftHudWidget::SetKnockDownTiming(float StartWorldTime, float Duration)
+{
+	KnockDownStartTime = StartWorldTime;
+	KnockDownDuration = FMath::Max(0.0f, Duration);
+	if (bKnockedDown)
+	{
+		UpdateKnockDownProgress();
+	}
+}
+
+void UPartnerLeftHudWidget::ApplyKnockDownVisual()
+{
+	// 다운이 아니면 Retainer 를 꺼서 Effect 와 렌더 타깃 비용을 없앤다.
+	if (GrayoutRetainer)
+	{
+		GrayoutRetainer->SetRetainRendering(bKnockedDown);
+		if (UMaterialInstanceDynamic* GrayoutMID = GrayoutRetainer->GetEffectMaterial())
+		{
+			GrayoutMID->SetScalarParameterValue(GrayAmountParameterName, bKnockedDown ? KnockDownGrayoutAmount : 0.0f);
+		}
+	}
+
+	if (!PartnerImageMID)
+	{
+		return;
+	}
+	if (bKnockedDown)
+	{
+		PartnerImageMID->SetScalarParameterValue(GrayAmountParameterName, KnockDownGrayoutAmount);
+		// 표시되는 첫 프레임부터 올바른 진행도로 그린다.
+		UpdateKnockDownProgress();
+	}
+	else
+	{
+		// 해제(재부팅 완료 / 중간 해제) 시 원본 이미지 상태로 즉시 되돌린다.
+		PartnerImageMID->SetScalarParameterValue(GrayAmountParameterName, 0.0f);
+		PartnerImageMID->SetScalarParameterValue(KnockDownProgressParameterName, 1.0f);
+	}
+}
+
+void UPartnerLeftHudWidget::UpdateKnockDownProgress()
+{
+	if (!PartnerImageMID)
+	{
+		return;
+	}
+
+	// 0: 다운 직후(회색 + 왜곡 최대) -> 1: 재부팅 완료(원본 색, 왜곡 없음).
+	float Progress = 0.0f;
+	const UWorld* World = GetWorld();
+	if (World && KnockDownDuration > 0.0f)
+	{
+		const float Linear = FMath::Clamp((World->GetTimeSeconds() - KnockDownStartTime) / KnockDownDuration, 0.0f, 1.0f);
+		// 0과 1은 그대로라 재부팅 종료 시점에 정확히 1이 된다.
+		Progress = FMath::InterpEaseInOut(0.0f, 1.0f, Linear, FMath::Max(1.0f, KnockDownProgressEaseExponent));
+	}
+	PartnerImageMID->SetScalarParameterValue(KnockDownProgressParameterName, Progress);
 }
 
 void UPartnerLeftHudWidget::SetShooterCondition(FGameplayTag InConditionTag)

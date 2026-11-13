@@ -260,6 +260,7 @@ void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 	// 위젯이 신호보다 늦게 생겨도 게이트가 맞도록 하는 유일한 경로다.
 	OnShooterSuitAcquiredChanged(bShooterSuitAcquired);
 	OnPartnerConnectionChanged(bPartnerConnectionLost);
+	OnPartnerKnockDownChanged(bPartnerKnockedDown);
 	RefreshVitalityPresentation();
 	RefreshEventUI();
 }
@@ -797,6 +798,36 @@ void ULocalPlayerUISubSystem::OnPartnerConnectionChanged(bool bLost)
 	if (UMainUIBase* MainUI = GetMainUI())
 	{
 		MainUI->SetConnectionLost(bLost);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnPartnerKnockDownChanged(bool bKnockedDown)
+{
+	bPartnerKnockedDown = bKnockedDown;
+	if (!bKnockedDown)
+	{
+		PartnerKnockDownWorld.Reset();
+		PartnerKnockDownStartTime = 0.0f;
+		PartnerKnockDownDuration = 0.0f;
+	}
+	if (UGangTongMainUI* PartnerMainUI = Cast<UGangTongMainUI>(GetMainUI()))
+	{
+		// 다른 월드에서 받은 시간은 기준이 다르므로 넘기지 않는다.
+		const bool bTimingValid = PartnerKnockDownWorld.IsValid() && PartnerKnockDownWorld.Get() == GetWorld();
+		PartnerMainUI->SetKnockDownTiming(PartnerKnockDownStartTime, bTimingValid ? PartnerKnockDownDuration : 0.0f);
+		PartnerMainUI->SetKnockedDown(bKnockedDown);
+	}
+}
+
+void ULocalPlayerUISubSystem::SetPartnerKnockDownTiming(float Duration, float ElapsedTime)
+{
+	UWorld* World = GetWorld();
+	PartnerKnockDownWorld = World;
+	PartnerKnockDownDuration = World ? FMath::Max(0.0f, Duration) : 0.0f;
+	PartnerKnockDownStartTime = World ? World->GetTimeSeconds() - FMath::Max(0.0f, ElapsedTime) : 0.0f;
+	if (UGangTongMainUI* PartnerMainUI = Cast<UGangTongMainUI>(GetMainUI()))
+	{
+		PartnerMainUI->SetKnockDownTiming(PartnerKnockDownStartTime, PartnerKnockDownDuration);
 	}
 }
 
