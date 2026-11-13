@@ -1,6 +1,6 @@
 #include "Tutorial/WorldGuide/OutlierWorldGuideTargetComponent.h"
 
-#include "Components/WidgetComponent.h"
+#include "UI/TargetPointHudWidget.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "UI/ActorBasedWidgetSubsystem.h"
@@ -71,33 +71,20 @@ void UOutlierWorldGuideTargetComponent::ApplyGuide(const FOutlierWorldGuideConte
 {
 	if (!GetWorld() || GetWorld()->GetNetMode() == NM_DedicatedServer || Context.WidgetID != WidgetID) return;
 	bGuideVisible = true;
-	if (!DisplayComponent && WidgetClass && !WidgetClass->HasAnyClassFlags(CLASS_Abstract))
+	APlayerController* Controller = GEngine ? GEngine->GetFirstLocalPlayerController(GetWorld()) : nullptr;
+	if (!DisplayWidget && Controller && WidgetClass && !WidgetClass->HasAnyClassFlags(CLASS_Abstract))
 	{
-		DisplayComponent = NewObject<UWidgetComponent>(GetOwner(), NAME_None, RF_Transient);
-		DisplayComponent->SetupAttachment(this);
-		DisplayComponent->SetWidgetSpace(EWidgetSpace::Screen);
-		DisplayComponent->SetAbsolute(true, true, true);
-		DisplayComponent->SetDrawAtDesiredSize(false);
-		DisplayComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		DisplayComponent->SetGenerateOverlapEvents(false);
-		DisplayComponent->SetIsReplicated(false);
-		DisplayComponent->SetWindowFocusable(false);
-		DisplayComponent->SetWidgetClass(WidgetClass);
-		UpdateDisplayPlacement();
-		GetOwner()->AddInstanceComponent(DisplayComponent);
-		DisplayComponent->RegisterComponent();
-		DisplayComponent->InitWidget();
+		if (!HudLayer) HudLayer = UTargetPointHudWidget::CreateForPlayer(Controller, this);
+		if (HudLayer)
+		{
+			DisplayWidget = CreateWidget<UUserWidget>(Controller, WidgetClass);
+			if (DisplayWidget) HudLayer->AddContent(DisplayWidget);
+		}
 	}
-	if (DisplayComponent)
-	{
-		UpdateDisplayPlacement();
-		if (UUserWidget* Widget = DisplayComponent->GetUserWidgetObject())
-			Widget->SetVisibility(ESlateVisibility::HitTestInvisible);
-		if (UOutlierWorldGuideWidget* Widget = Cast<UOutlierWorldGuideWidget>(DisplayComponent->GetUserWidgetObject()))
-			Widget->SetGuideContext(Context);
-		DisplayComponent->SetVisibility(true);
-	}
-	SetComponentTickEnabled(DisplayComponent != nullptr);
+	if (UOutlierWorldGuideWidget* Widget = Cast<UOutlierWorldGuideWidget>(DisplayWidget))
+		Widget->SetGuideContext(Context);
+	UpdateDisplayPlacement();
+	SetComponentTickEnabled(DisplayWidget != nullptr);
 }
 
 void UOutlierWorldGuideTargetComponent::DismissActorBasedWidgets_Implementation()
@@ -111,36 +98,35 @@ void UOutlierWorldGuideTargetComponent::ClearGuide()
 	if (bGuideVisible) OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("HIDE %s ID=%s"), *GetPathName(), *WidgetID.ToString()));
 	bGuideVisible = false;
 	SetComponentTickEnabled(false);
-	if (DisplayComponent)
+	if (DisplayWidget)
 	{
-		DisplayComponent->DestroyComponent();
-		DisplayComponent = nullptr;
+		DisplayWidget->RemoveFromParent();
+		DisplayWidget = nullptr;
+	}
+	if (HudLayer)
+	{
+		HudLayer->Release();
+		HudLayer = nullptr;
 	}
 }
 
 void UOutlierWorldGuideTargetComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-	if (bGuideVisible && DisplayComponent) UpdateDisplayPlacement();
+	if (bGuideVisible && DisplayWidget) UpdateDisplayPlacement();
 }
 
 void UOutlierWorldGuideTargetComponent::UpdateDisplayPlacement()
 {
-	if (!DisplayComponent) return;
-	// 위젯은 뷰포트에 남고, 투영 앵커만 월드를 따라간다.
+	if (!DisplayWidget || !HudLayer) return;
 	const FVector2D Size(FMath::Max(1, FMath::RoundToInt(DrawSize.X)), FMath::Max(1, FMath::RoundToInt(DrawSize.Y)));
-	if (DisplayComponent->GetDrawSize() != Size) DisplayComponent->SetDrawSize(Size);
-	const FVector2D Alignment(FMath::Clamp(Pivot.X, 0.0, 1.0), FMath::Clamp(Pivot.Y, 0.0, 1.0));
-	if (DisplayComponent->GetPivot() != Alignment) DisplayComponent->SetPivot(Alignment);
-	APlayerController* Controller = GEngine && GetWorld() ? GEngine->GetFirstLocalPlayerController(GetWorld()) : nullptr;
-	if (Controller && Controller->GetLocalPlayer())
-	{
-		ULocalPlayer* LocalPlayer = Controller->GetLocalPlayer();
-		DisplayComponent->SetOwnerPlayer(LocalPlayer);
-		if (UUserWidget* Widget = DisplayComponent->GetUserWidgetObject())
-			if (Widget->GetOwningLocalPlayer() != LocalPlayer) Widget->SetOwningLocalPlayer(LocalPlayer);
-	}
-	WidgetPresentation.Apply(DisplayComponent, GetComponentLocation() + WorldOffset);
+	FTargetPointHudSettings Settings;
+	Settings.MinScale = WidgetPresentation.MinScale;
+	Settings.MaxScale = WidgetPresentation.MaxScale;
+	Settings.ReferenceDistance = WidgetPresentation.ReferenceDistance;
+	// Preserve existing BP size, pivot and offsets with the interaction HUD projection.
+	HudLayer->UpdateContent(DisplayWidget, bGuideVisible,
+		GetComponentLocation() + WorldOffset + WidgetPresentation.WidgetOffset, Size, Settings, Pivot);
 }
 
 bool UOutlierWorldGuideTargetComponent::CompleteGuide(FGameplayTag NextWidgetID)

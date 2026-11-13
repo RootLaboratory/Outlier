@@ -26,6 +26,12 @@ bool FTargetPointHudLayoutTest::RunTest(const FString& Parameters)
 	float Scale;
 	Settings.CalculateLayout(FVector2D(500, 400), FVector2D(1000, 800), FVector2D(100, 40), 200, Position, Scale);
 	TestEqual(TEXT("Unclamped widget centers on target"), Position, FVector2D(450, 380));
+	Settings.CalculateLayout(FVector2D(500, 400), FVector2D(1000, 800), FVector2D(100, 40),
+		200, Position, Scale, FVector2D(0, 1));
+	TestEqual(TEXT("WorldGuide pivot anchors the bottom left corner"), Position, FVector2D(500, 360));
+	Settings.CalculateLayout(FVector2D(2000, -200), FVector2D(1000, 800), FVector2D(100, 40),
+		200, Position, Scale, FVector2D(0, 1));
+	TestEqual(TEXT("WorldGuide pivot still keeps the full widget within screen padding"), Position, FVector2D(884, 16));
 	for (const FVector2D Point : { FVector2D(-200, -200), FVector2D(2000, 2000), FVector2D(0, 800) })
 	{
 		Settings.CalculateLayout(Point, FVector2D(1000, 800), FVector2D(400, 200), 1, Position, Scale);
