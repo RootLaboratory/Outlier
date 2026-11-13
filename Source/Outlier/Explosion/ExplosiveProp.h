@@ -10,6 +10,7 @@
 #include "ExplosiveProp.generated.h"
 
 class ASelfDestructDrone;
+class AElevatorShaftController;
 class UCapsuleComponent;
 class UExplosionComponent;
 class UNiagaraSystem;
@@ -59,6 +60,11 @@ public:
 	// 자폭 드론이 Owner로 지정된 경우에는 자체 HP 대신 드론 HP로 무기 피해를 전달한다.
 	UFUNCTION(BlueprintPure, Category = "Explosive Prop")
 	bool IsMountedOnSelfDestructDrone() const;
+
+	// 레벨에 등록된 통만 위치 복제를 사용하며, 여러 승강기의 중복 소유를 거부한다.
+	bool RegisterElevatorTransport(AElevatorShaftController* Controller);
+	void UnregisterElevatorTransport(const AElevatorShaftController* Controller);
+	virtual void OnRep_ReplicatedMovement() override;
 
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Explosive Prop|Charge")
@@ -115,6 +121,9 @@ protected:
 	virtual void HandleExplosionProcessed();
 
 private:
+	friend class FElevatorExplosiveTransportTest;
+	void PrepareTransportMobility();
+	TWeakObjectPtr<AElevatorShaftController> TransportController;
 	friend class FEnemyChargeEmissiveMaterialTest;
 	void SetupMountedPresentation();
 	void InitializeChargeEmissive();

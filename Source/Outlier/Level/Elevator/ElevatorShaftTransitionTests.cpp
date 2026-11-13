@@ -5,7 +5,13 @@
 #include "Components/BoxComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Engine/GameInstance.h"
+#include "Explosion/ExplosiveProp.h"
+#include "Explosion/ExplosionComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
+#include "Save/OutlierSaveSubSystem.h"
 
 namespace ElevatorTransitionTests
 {
@@ -232,6 +238,133 @@ bool FElevatorControllerTransportTest::RunTest(const FString& Parameters)
 	Controller->Motion.State = EElevatorShaftState::PreparingArrival;
 	Controller->OnRep_Motion();
 	TestTrue(TEXT("Replicated arrival also moves the entire controller"), Controller->GetActorTransform().Equals(Arrived, 0.001));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FElevatorExplosiveTransportTest,
+	"Outlier.Elevator.Transition.ExplosivePropTransport",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FElevatorExplosiveTransportTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	ElevatorTransitionTests::FWorldFixture Fixture;
+	if (!TestNotNull(TEXT("Transport world exists"), Fixture.World)) return false;
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	Fixture.World->SetGameInstance(GameInstance);
+	GameInstance->OnWorldChanged(nullptr, Fixture.World);
+	GameInstance->Init();
+	ON_SCOPE_EXIT
+	{
+		GameInstance->Shutdown();
+		Fixture.World->SetGameInstance(nullptr);
+	};
+	UOutlierSaveSubSystem* Save = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	if (!TestNotNull(TEXT("Checkpoint subsystem exists"), Save)) return false;
+	AElevatorShaftController* Controller = Fixture.World->SpawnActor<AElevatorShaftController>();
+	if (!TestNotNull(TEXT("Controller exists"), Controller)) return false;
+	const FTransform Departure(FRotator(0, -90, 0), FVector(10000, -7500, 1000));
+	Controller->SetActorTransform(Departure);
+	Controller->DepartureControllerTransform = Departure;
+	Controller->ControllerSectionOffset = FTransform::Identity;
+	Controller->Motion.ArrivalTransform = FTransform(FRotator(0, 90, 0), FVector(-500, 2000, 100));
+
+	UDataTable* Table = NewObject<UDataTable>();
+	Table->RowStruct = FExplosivePropRow::StaticStruct();
+	FExplosivePropRow Row;
+	Row.MaxHP = 30;
+	Table->AddRow(TEXT("Default"), Row);
+	const auto SpawnProp = [&](const FVector& Offset)
+	{
+		AExplosiveProp* Prop = Fixture.World->SpawnActor<AExplosiveProp>();
+		if (Prop)
+		{
+			Prop->ExplosivePropRow.DataTable = Table;
+			Prop->ExplosivePropRow.RowName = TEXT("Default");
+			Prop->SetActorTransform(FTransform(FRotator(15, 35, 5), Departure.GetLocation() + Offset, FVector(1.2, 0.8, 1.1)));
+		}
+		return Prop;
+	};
+	AExplosiveProp* Alive = SpawnProp(FVector(100, 30, 50));
+	AExplosiveProp* Exploded = SpawnProp(FVector(220, 30, 50));
+	AExplosiveProp* OtherAlive = SpawnProp(FVector(340, 30, 50));
+	AExplosiveProp* Unregistered = SpawnProp(FVector(460, 30, 50));
+	AExplosiveProp* Attached = SpawnProp(FVector(580, 30, 50));
+	if (!Alive || !Exploded || !OtherAlive || !Unregistered || !Attached) return false;
+	Attached->AttachToActor(Controller, FAttachmentTransformRules::KeepWorldTransform);
+	TestFalse(TEXT("Attached props cannot enter transport"), Controller->IsTransportPropValid(Attached));
+	Attached->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	Exploded->bSaveCheckpointState = true;
+	Exploded->ExplosivePropId = TEXT("ElevatorTransportExploded");
+	Save->SetWorldProgressState(EOutlierWorldProgressType::ExplodedProp, Exploded->ExplosivePropId, true);
+	Controller->TransportExplosiveProps = {Alive, Exploded, OtherAlive, Alive, nullptr};
+	AddExpectedError(TEXT("ignored invalid or duplicate transport prop"), EAutomationExpectedErrorFlags::Contains, 2);
+	Controller->InitializeTransportProps();
+	TestEqual(TEXT("Null and duplicate entries never enter cached transport list"), Controller->RegisteredTransportProps.Num(), 3);
+	TestFalse(TEXT("Checkpoint state must finish BeginPlay before transport"), Controller->AreTransportPropsReady());
+	for (AExplosiveProp* Prop : {Alive, Exploded, OtherAlive, Unregistered, Attached}) Prop->DispatchBeginPlay();
+	TestTrue(TEXT("Initialized checkpoint state permits transport"), Controller->AreTransportPropsReady());
+	TestTrue(TEXT("BeginPlay restores saved explosion before transport"), Exploded->IsExploded());
+	FOutlierDamageRequest Damage;
+	Damage.DamageAmount = 12;
+	Damage.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	Damage.DamageCauser = Alive;
+	TestEqual(TEXT("Live prop takes partial damage"), Alive->ReceiveOutlierDamage(Damage), 12.0f);
+	const FTransform AliveStart = Alive->GetActorTransform();
+	const FTransform OtherStart = OtherAlive->GetActorTransform();
+	const FTransform ExplodedStart = Exploded->GetActorTransform();
+	const FTransform UnregisteredStart = Unregistered->GetActorTransform();
+	TestTrue(TEXT("Only registered props enable movement replication"), Alive->IsReplicatingMovement());
+	TestFalse(TEXT("Unregistered prop keeps default replication policy"), Unregistered->IsReplicatingMovement());
+
+	AElevatorShaftController* OtherController = Fixture.World->SpawnActor<AElevatorShaftController>();
+	TestFalse(TEXT("One prop cannot belong to two controllers"), Alive->RegisterElevatorTransport(OtherController));
+	Controller->SetControllerAtArrival(true);
+	const FVector Translation = Controller->GetActorLocation() - Departure.GetLocation();
+	FTransform Expected = AliveStart;
+	Expected.AddToTranslation(Translation);
+	TestTrue(TEXT("Live prop translates with fixed walls, keeping rotation and scale"), Alive->GetActorTransform().Equals(Expected, 0.001));
+	TestEqual(TEXT("Partial HP survives transport"), Alive->GetCurrentHP(), 18.0f);
+	TestTrue(TEXT("Already exploded prop stays at departure"), Exploded->GetActorTransform().Equals(ExplodedStart, 0.001));
+	TestTrue(TEXT("Unregistered prop stays at departure"), Unregistered->GetActorTransform().Equals(UnregisteredStart, 0.001));
+	TestTrue(TEXT("Relative spacing between live props is preserved"),
+		(OtherAlive->GetActorLocation() - Alive->GetActorLocation()).Equals(OtherStart.GetLocation() - AliveStart.GetLocation(), 0.001));
+	TestEqual(TEXT("Only moved props have rollback records"), Controller->TransportedPropTransforms.Num(), 2);
+	Controller->SetControllerAtArrival(true);
+	TestTrue(TEXT("Repeated arrival never adds another offset"), Alive->GetActorTransform().Equals(Expected, 0.001));
+	TestEqual(TEXT("Repeated arrival never duplicates rollback records"), Controller->TransportedPropTransforms.Num(), 2);
+
+	// 도착 후 폭발한 통도 실패 복귀로 되살리지 않는다. 다음 시도부터는 이동 대상에서 제외한다.
+	OtherAlive->HandleExplosionProcessed();
+	Controller->SetControllerAtArrival(false);
+	TestTrue(TEXT("Rollback restores exact authored transform"), Alive->GetActorTransform().Equals(AliveStart, 0.001));
+	TestTrue(TEXT("Explosion after arrival also rolls back coordinates"), OtherAlive->GetActorTransform().Equals(OtherStart, 0.001));
+	TestTrue(TEXT("Rollback does not revive an exploded prop"), OtherAlive->IsExploded());
+	TestEqual(TEXT("Rollback retains damage"), Alive->GetCurrentHP(), 18.0f);
+	TestEqual(TEXT("Rollback clears transaction records"), Controller->TransportedPropTransforms.Num(), 0);
+	Controller->SetControllerAtArrival(true);
+	TestEqual(TEXT("Retry rechecks exploded state"), Controller->TransportedPropTransforms.Num(), 1);
+	TestTrue(TEXT("Retry does not move newly exploded prop"), OtherAlive->GetActorTransform().Equals(OtherStart, 0.001));
+	FRepMovement ReplicatedMovement;
+	ReplicatedMovement.Location = Expected.GetLocation();
+	ReplicatedMovement.Rotation = Expected.Rotator();
+	Alive->SetActorTransform(AliveStart);
+	Alive->SetRole(ROLE_SimulatedProxy);
+	Alive->SetReplicatedMovement(ReplicatedMovement);
+	Alive->GetRootComponent()->SetMobility(EComponentMobility::Static);
+	Alive->OnRep_ReplicatedMovement();
+	TestEqual(TEXT("Client movement application repairs static BP mobility"), Alive->GetRootComponent()->Mobility, EComponentMobility::Movable);
+	TestTrue(TEXT("Simulated proxy applies server position and rotation"), Alive->GetActorTransform().Equals(Expected, 0.001));
+	Alive->SetRole(ROLE_Authority);
+	Controller->ResetExecution(Controller->Motion.Generation);
+	TestTrue(TEXT("Reset restores the surviving prop"), Alive->GetActorTransform().Equals(AliveStart, 0.001));
+	TestTrue(TEXT("Reset keeps prop damage"), FMath::IsNearlyEqual(Alive->GetCurrentHP(), 18.0f));
+	Controller->SetControllerAtArrival(true);
+	const FTransform BeforeEndPlay = Alive->GetActorTransform();
+	Controller->EndPlay(EEndPlayReason::RemovedFromWorld);
+	TestTrue(TEXT("EndPlay does not move separate level props"), Alive->GetActorTransform().Equals(BeforeEndPlay, 0.001));
+	TestEqual(TEXT("EndPlay releases rollback records"), Controller->TransportedPropTransforms.Num(), 0);
+	TestTrue(TEXT("EndPlay releases transport ownership"), Alive->RegisterElevatorTransport(OtherController));
 	return true;
 }
 
