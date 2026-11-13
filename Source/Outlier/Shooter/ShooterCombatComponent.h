@@ -18,6 +18,7 @@ class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBas
 	friend class FShooterActionIntentTest;
 	friend class FShooterSprintInputModeTest;
 	friend class FShooterSprintReloadTest;
+	friend class FShooterEquipReloadTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -27,6 +28,8 @@ protected:
 	uint8 bWantsToFire : 1 = false;
 	// 발사 대기/연사 간격에도 유지한다. 실제 무기 발사 상태와 별개로 Hold Sprint를 차단한다.
 	bool bFireInputHeld = false;
+	bool bRequireFireRelease = false;
+	bool bRequireAimRelease = false;
 	void UpdateFireInput(bool bHeld);
 
 	UPROPERTY(ReplicatedUsing = OnRep_IsAiming, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -46,6 +49,20 @@ protected:
 
 	FTimerHandle PendingSprintExitFireTimerHandle;
 	FTimerHandle OverchargeFireRecoveryTimerHandle;
+	FTimerHandle ReloadPredictionTimerHandle;
+	TWeakObjectPtr<AWeaponBase> ActiveReloadWeapon;
+	uint32 ActiveReloadEquipGeneration = 0;
+	uint32 ReloadRequestSequence = 0;
+	uint32 ServerAutoReloadSequence = 0;
+	uint32 LastReceivedAutoReloadSequence = 0;
+	static constexpr uint32 ServerAutoReloadBit = 0x80000000u;
+	uint32 ActiveReloadRequest = 0;
+	uint32 LastServerReloadRequest = 0;
+	uint32 LastServerReloadGeneration = 0;
+	uint32 ReloadActionSerial = 0;
+	void ClearReloadRequest();
+	void ExpireReloadPrediction();
+	void SendReloadFinished();
 	FDelegateHandle WeaponReuseCooldownTagChangedHandle;
 	TWeakObjectPtr<UAnimInstance> BoundFirstPersonReloadInstance;
 	TWeakObjectPtr<UAnimInstance> BoundThirdPersonReloadInstance;
@@ -70,6 +87,7 @@ protected:
 	void ClearPendingSprintExitFire();
 	void StartAttackInternal();
 	void BindReloadMontageEndedDelegates();
+	void BindAuthoritativeReloadEndDelegate();
 	void UnbindReloadMontageEndedDelegates();
 	void BindWeaponReuseCooldownObserver();
 	void UnbindWeaponReuseCooldownObserver();
@@ -95,6 +113,9 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void TickComponent(float DeltaTime,ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	void TryReload();
+	void HandleServerReloadRequest(AWeaponBase* Weapon, uint32 RequestId, uint32 EquipGeneration);
+	void HandleReloadResult(AWeaponBase* Weapon, uint32 RequestId, uint32 EquipGeneration, bool bAccepted, bool bFinished = false);
+	void PrepareForWeaponEquip();
 	void HandleAimPressed();
 	void HandleAimReleased();
 	// 입력 수집/RPC와 분리해 승인된 의도를 적용한다. 서버와 보정 재생에서 입력을 새로 발급하지 않는다.
@@ -135,7 +156,7 @@ public:
 	void ClearInputIntent();
 	bool IsSprintBlockedByAttack() const;
 	bool IsFireInputHeld() const { return bFireInputHeld; }
-	void ApplyFireInput(bool bHeld) { bFireInputHeld = bHeld; }
+	void ApplyFireInput(bool bHeld);
 
 	bool WantsToAim() const { return bWantsToAim; }
 	bool WantsToFire() const { return bWantsToFire; }

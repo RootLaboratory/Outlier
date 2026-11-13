@@ -22,6 +22,7 @@
 #include "UObject/Package.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "Cinematic/OutlierCinematicSubsystem.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -43,6 +44,12 @@ namespace
 		{
 			for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
 			{
+				// 스트리밍 리로드는 LocalPlayer/World를 유지한다. 구 인트로의 상태와 숨긴 메시를 명시적으로 정리한다.
+				// 카메라 복구는 현재 로딩·사망 암전 사유를 보존하므로 새 Pawn이 준비되기 전에 화면을 열지 않는다.
+				if (UOutlierCinematicSubsystem* Cinematic = LocalPlayer->GetSubsystem<UOutlierCinematicSubsystem>())
+				{
+					Cinematic->ClearLevelCinematics();
+				}
 				if (ULocalPlayerPostProcessSubsystem* PP = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 				{
 					// 사망 암전은 새 Pawn을 확인할 때 해제한다.

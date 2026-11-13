@@ -19,7 +19,7 @@ void UAnimNotify_PlayWeaponAnimation::Notify(
 	}
 
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(MeshComp->GetOwner());
-	if (!Shooter)
+	if (!Shooter || !Shooter->IsCurrentWeaponActionNotify(MeshComp, EventReference))
 	{
 		return;
 	}

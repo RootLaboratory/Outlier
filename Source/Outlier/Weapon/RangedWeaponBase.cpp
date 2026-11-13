@@ -1642,15 +1642,21 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(const FWeaponShotSnap
 	}
 	if (Shot.bShooterWallShot)
 	{
-		// 월드 선분은 과거 발사의 스냅샷이다. 무기 교체/메시 갱신과 무관하게 한 번만 재생한다.
-		if (CachedVisualSubsystem && WeaponTrail)
-			CachedVisualSubsystem->SpawnBeamTrail(WeaponTrail, Shot.Start, Shot.End);
 		AShooterCharacter* Shooter = Cast<AShooterCharacter>(Shot.Shooter);
 		const bool bCurrentEquipment = IsValid(Shooter) && WeaponOwner == Shooter && IsEquipped()
 			&& !Shooter->IsDead() && Shooter->GetCurrentWeapon() == this
 			&& Shooter->GetWallShotEquipmentRevision() == Shot.EquipmentRevision;
+		// 원격 3인칭만 표시 중인 총구에서 시작한다. 1인칭/이전 장착 발사는 서버 스냅샷을 유지한다.
+		FVector TrailStart = Shot.Start;
+		if (bCurrentEquipment && !Shooter->IsLocallyControlled()
+			&& ThirdPersonWeaponMesh && ThirdPersonWeaponMesh->DoesSocketExist(MuzzleSocketName))
+		{
+			TrailStart = ThirdPersonWeaponMesh->GetSocketLocation(MuzzleSocketName);
+		}
+		if (CachedVisualSubsystem && WeaponTrail)
+			CachedVisualSubsystem->SpawnBeamTrail(WeaponTrail, TrailStart, Shot.End);
 		if (!bCurrentEquipment) return;
-		// 현재 장착에만 붙는 섬광/메시 반동은 세대를 확인한다. 월드 Trail은 소켓에서 다시 만들지 않는다.
+		// 현재 장착에만 붙는 섬광/메시 반동은 세대를 확인한다. Trail은 위에서 한 번만 재생한다.
 		if (UShooterAnimInstance* Anim = Cast<UShooterAnimInstance>(Shooter->GetMesh()->GetAnimInstance()))
 			Anim->AddThirdPersonRecoil(RecoilMultiplier * GetThirdPersonProceduralRecoilMultiplier()
 				* GetUpgradeRecoilMultiplier(), NormalizedShotDirection);
@@ -2830,6 +2836,20 @@ void ARangedWeaponBase::StopAttack()
 	CurrentBurstShotCount = 0;
 }
 
+void ARangedWeaponBase::CancelEnemyAttackCycle()
+{
+	if (!HasAuthority()) return;
+	// 가상 StopAttack으로 레이저 Charge/Trail도 먼저 닫고, 탄약과 GAS 재사용 제한은 유지한다.
+	StopAttack();
+	CancelReload();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(PostBurstCooldownTimerHandle);
+	}
+	bOnPostBurstCooldown = false;
+	CurrentBurstShotCount = 0;
+}
+
 void ARangedWeaponBase::ReleaseAttack()
 {
 	if (!HasAuthority()) return;
@@ -3162,9 +3182,13 @@ void ARangedWeaponBase::PerformAttack()
 			{
 				continue;
 			}
-			if (const AAutoTurret* Turret = Cast<AAutoTurret>(Enemy))
+			// 근접 예외는 총구별 각도만 완화한다. 위의 사선 검사와 기존 총구 위치/머리 방향 발사는 유지한다.
+			if (const AAutoTurret* Turret = Cast<AAutoTurret>(Enemy);
+				Turret && !Turret->CanFireWithoutTurretAimAlignment(Enemy->GetCombatAimPoint(Enemy->GetTrackedTarget())))
 			{
-				const FVector Direction = Enemy->GetCombatAimPoint(Enemy->GetTrackedTarget()) - Shot.GetLocation();
+				// 평행한 복수 총열은 머리의 공통 조준 방향으로 정렬한다. 각 총구에서 한 점으로
+				// 수렴을 요구하면 근거리 시차만으로 모든 탄이 거절된다. 실제 탄도는 기존 머리 방향을 유지한다.
+				const FVector Direction = Enemy->GetCombatAimPoint(Enemy->GetTrackedTarget()) - Turret->GetPawnViewLocation();
 				const float Tolerance = FMath::Max(0.01f, Turret->GetTurretBehavior().AimToleranceDegrees);
 				if (Direction.IsNearlyZero() || FVector::DotProduct(Direction.GetSafeNormal(), Shot.GetUnitAxis(EAxis::X))
 					< FMath::Cos(FMath::DegreesToRadians(Tolerance)))

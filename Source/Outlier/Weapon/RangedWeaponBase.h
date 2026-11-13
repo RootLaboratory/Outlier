@@ -372,6 +372,8 @@ public:
 	void ReleaseAttack();
 	virtual void StartAttack() override;
 	virtual void StopAttack() override;
+	// 해킹처럼 공격 수명을 끊는 경계에서는 이전 버스트의 회복까지 새 행동에 넘기지 않는다.
+	void CancelEnemyAttackCycle();
 	void PauseTargetAttack();
 	bool HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint) const;
 	AEnemyBase* FindTargetAttackBlockingAlly(const AActor* Target, const FVector& AimPoint,

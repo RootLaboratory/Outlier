@@ -25,6 +25,7 @@ class UEnhancedInputLocalPlayerSubsystem;
 class UEnhancedInputUserSettings;
 class ULocalPlayerSettingsSubsystem;
 struct FInputActionValue;
+struct FAnimNotifyEventReference;
 class AWeaponBase;
 class UShooterHealthComponent;
 class UShooterInventoryComponent;
@@ -258,6 +259,9 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend struct ShooterSlideSimulationTests::FFixture;
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
+	friend class FShooterEquipLifecycleTest;
+	friend class FShooterEquipReloadTest;
+	friend class FShooterWeaponActionNotifyTest;
 	friend class FShooterSprintInputModeTest;
 	friend class FShooterCoyoteTimeTest;
 	friend class FShooterSlidePredictionTest;
@@ -585,7 +589,20 @@ protected:
 	FTimerHandle LeanUpdateTimerHandle;
 
 	FTimerHandle ActionLockTimerHandle;
+	UPROPERTY(Replicated)
 	uint32 EquipActionGeneration = 0;
+	bool bPreparingWeaponEquip = false;
+	bool bAwaitingServerEquipCompletion = false;
+	struct FWeaponActionNotifyContext
+	{
+		TWeakObjectPtr<USkeletalMeshComponent> Mesh;
+		TWeakObjectPtr<AWeaponBase> Weapon;
+		int32 InstanceId = INDEX_NONE;
+		uint32 EquipGeneration = 0;
+	};
+	TArray<FWeaponActionNotifyContext> WeaponActionNotifyContexts;
+	void RecordWeaponActionMontage(USkeletalMeshComponent* Mesh, UAnimMontage* Montage);
+	void ResetWeaponEquipForLifecycle();
 	int32 FailedProceduralSwitchId = 0;
 	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> ActionInputSubsystem;
 	TWeakObjectPtr<ULocalPlayerSettingsSubsystem> SprintSettingsSubsystem;
@@ -1103,7 +1120,7 @@ protected:
 
 	// Server RPC
 	UFUNCTION(Server, Reliable)
-	void ServerStartAttack();
+	void ServerStartAttack(AWeaponBase* ExpectedWeapon = nullptr, uint32 EquipGeneration = 0);
 
 	UFUNCTION(Server, Reliable)
 	void ServerBeginSprintExitFire(AWeaponBase* Weapon, uint32 Request, uint32 Epoch);
@@ -1112,10 +1129,20 @@ protected:
 	void ServerResolveSprintExitFire(uint32 Request, uint32 Epoch, bool bFire);
 
 	UFUNCTION(Server, Reliable)
-	void ServerStopAttack();
+	void ServerStopAttack(AWeaponBase* ExpectedWeapon = nullptr, uint32 EquipGeneration = 0);
 
 	UFUNCTION(Server, Reliable)
 	void ServerReload();
+	UFUNCTION(Server, Reliable)
+	void ServerReloadRequest(AWeaponBase* Weapon, uint32 RequestId, uint32 EquipGeneration);
+	UFUNCTION(Client, Reliable)
+	void ClientReloadResult(AWeaponBase* Weapon, uint32 RequestId, uint32 EquipGeneration, bool bAccepted, bool bFinished = false);
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastPrepareWeaponEquip(uint32 Generation);
+	UFUNCTION(Client, Reliable)
+	void ClientFinishWeaponEquip(uint32 Generation);
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastCancelWeaponEquip(uint32 Generation);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSelectWeaponByIndex(int32 SlotIndex);
@@ -1124,7 +1151,7 @@ protected:
 	void ServerConfirmProceduralWeaponLowered(int32 SwitchId);
 
 	UFUNCTION(Client, Reliable)
-	void ClientBeginProceduralWeaponSwitch(int32 SwitchId);
+	void ClientBeginProceduralWeaponSwitch(int32 SwitchId, AWeaponBase* PreviousWeapon, uint32 Generation);
 
 	UFUNCTION(Client, Reliable)
 	void ClientCancelProceduralWeaponSwitch(int32 SwitchId);
@@ -1139,7 +1166,7 @@ protected:
 	void MulticastPlayThirdPersonSwitchRaise(EWeaponType WeaponType, FName SectionName);
 
 	UFUNCTION(Server, Reliable)
-	void ServerSetAimState(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId, bool bHoldSprint = false, bool bFireHeld = false);
+	void ServerSetAimState(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId, bool bHoldSprint = false, bool bFireHeld = false, uint32 EquipGeneration = 0);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetSprintState(bool bNewSprinting, uint32 InputRequest, uint32 InputEpoch);
@@ -1166,7 +1193,7 @@ protected:
 	void ServerUseSuitAbility(FGameplayTag AbilityTag);
 
 	UFUNCTION(Client, Reliable)
-	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType, AWeaponBase* ExpectedWeapon = nullptr, uint32 EquipGeneration = 0);
 
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot = false);
@@ -1189,6 +1216,12 @@ public:
 	void CancelReloadInternal();
 	void FinishReloadInternal();
 	bool CanStartAction(EShooterActionLock NextLock) const;
+	bool CanBeginWeaponEquip() const;
+	void BeginWeaponEquip();
+	uint32 GetEquipActionGeneration() const { return EquipActionGeneration; }
+	bool IsPreparingWeaponEquip() const { return bPreparingWeaponEquip; }
+	bool IsWeaponEquipInputBlocked() const;
+	bool IsCurrentWeaponActionNotify(USkeletalMeshComponent* Mesh, const FAnimNotifyEventReference& EventReference) const;
 	void BeginActionLock(EShooterActionLock NewLock);
 	void EndActionLock(EShooterActionLock LockToEnd);
 	int32 BeginProceduralWeaponSwitch();

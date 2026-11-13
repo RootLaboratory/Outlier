@@ -44,6 +44,8 @@ struct FShooterMovementInput
 	uint32 JumpCancelRequest = 0; // 기존 패킷 필드명 유지. Slide 종료와 점프를 함께 요청하는 Press다.
 	// Aim RPC와 이동 패킷이 같은 입력 순서를 공유한다. 최종 bool과 함께 중간 취소 결과도 보존한다.
 	uint32 ActionRequest = 0;
+	// 순번이 앞서도 장착 전에 수집한 행동 입력은 새 무기에 적용하지 않는다.
+	uint32 EquipGeneration = 0;
 	int32 AimSwitchId = 0;
 	bool bSprint = false;
 	// 이 이동을 수집할 때의 유지 정책이다. 서버/재생은 현재 사용자 설정을 조회하지 않는다.
@@ -177,9 +179,9 @@ public:
 	FVector GetSlideDirection() const { return SlideDirection; }
 	bool QueueMovementInput(EShooterMovementInput Input);
 	uint32 RecordActionInput(bool bAim);
-	uint32 RecordFireInput(bool bFire);
+	uint32 RecordFireInput(bool bFire, bool bForce = false);
 	void CancelActionInput(bool bCancelSprint, bool bCancelAim);
-	bool ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId = 0, bool bHoldSprint = false, bool bFire = false);
+	bool ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId = 0, bool bHoldSprint = false, bool bFire = false, uint32 EquipGeneration = 0);
 	void SetSprintInputMode(EOutlierSprintInputMode Mode);
 	void RequireFreshSprintPress();
 	void NotifyFreshSprintPress();

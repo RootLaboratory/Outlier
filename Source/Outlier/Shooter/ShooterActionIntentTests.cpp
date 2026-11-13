@@ -47,6 +47,8 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	}
 	World->AddToRoot();
 	Context.SetCurrentWorld(World);
+	// 실제 Equip 취소는 multicast 경계를 사용하므로 액터 RPC가 실행되는 월드를 준비한다.
+	World->InitializeActorsForPlay(FURL());
 	APlayerController* Controller = nullptr;
 	ON_SCOPE_EXIT
 	{
@@ -67,6 +69,11 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	auto* Movement = Cast<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
 	auto* Input = Shooter->MovementComponent.Get();
 	auto* Combat = Shooter->CombatComponent.Get();
+	auto ApplyAction = [Movement, Shooter](uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 SwitchId = 0,
+		bool bHoldSprint = false, bool bFire = false)
+	{
+		return Movement->ApplyActionInput(Request, Epoch, bSprint, bAim, SwitchId, bHoldSprint, bFire, Shooter->GetEquipActionGeneration());
+	};
 	if (!TestNotNull(TEXT("Movement simulation"), Movement)
 		|| !TestNotNull(TEXT("Movement intent"), Input)
 		|| !TestNotNull(TEXT("Combat intent"), Combat)) return false;
@@ -113,13 +120,14 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	{
 		Input->SetSprintIntent(false);
 		if (bSprintFirst) Input->HandleSprintPressed();
-		Shooter->BeginActionLock(EShooterActionLock::Equip);
+		Shooter->BeginWeaponEquip();
+		TestFalse(TEXT("Accepted Equip clears the previous Sprint before new input"), Input->WantsToSprint());
 		if (!bSprintFirst) Input->HandleSprintPressed();
 		Input->HandleSprintReleased();
-		TestTrue(TEXT("Equip and Sprint work in either input order"), Input->IsSprinting());
-		TestEqual(TEXT("Equip preserves the Sprint speed limit"), Movement->MaxWalkSpeed, Shooter->SprintSpeed);
+		TestFalse(TEXT("Equip stops Sprint in either input order"), Input->IsSprinting());
+		TestTrue(TEXT("Equip restores a non-Sprint speed limit"), Movement->MaxWalkSpeed < Shooter->SprintSpeed);
 		Input->HandleSprintPressed();
-		Shooter->EndActionLock(EShooterActionLock::Equip);
+		Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 		TestFalse(TEXT("Equip completion does not revive a toggle turned off during Equip"), Input->WantsToSprint());
 	}
 
@@ -134,39 +142,39 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	Input->RefreshMovementState();
 	TestTrue(TEXT("Sprint resumes when the temporary restriction ends"), Input->IsSprinting());
 
-	Shooter->BeginActionLock(EShooterActionLock::Equip);
+	Shooter->BeginWeaponEquip();
 	Combat->HandleAimPressed();
-	TestTrue(TEXT("Equip accepts held Aim intent"), Combat->WantsToAim());
+	TestFalse(TEXT("Equip discards held Aim intent"), Combat->WantsToAim());
 	TestFalse(TEXT("Equip defers actual ADS"), Combat->IsAiming());
 	TestFalse(TEXT("Deferred Aim cancels Sprint intent immediately"), Input->WantsToSprint());
-	Shooter->EndActionLock(EShooterActionLock::Equip);
-	TestTrue(TEXT("Successful Equip unlock restores ADS without another Aim press"), Combat->IsAiming());
+	Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
+	TestFalse(TEXT("Successful Equip does not restore a previous Aim press"), Combat->IsAiming());
 	Combat->HandleAimReleased();
 	TestFalse(TEXT("Aim release stops ADS"), Combat->IsAiming());
 
-	Shooter->BeginActionLock(EShooterActionLock::Equip);
+	Shooter->BeginWeaponEquip();
 	Combat->HandleAimPressed();
 	Combat->HandleAimReleased();
-	Shooter->EndActionLock(EShooterActionLock::Equip);
+	Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 	TestFalse(TEXT("Aim released during Equip is not restored"), Combat->WantsToAim() || Combat->IsAiming());
 
 	// 착지와 교체 완료는 별도 경계다. 먼저 끝난 쪽이 나머지 제한을 우회하면 안 된다.
 	for (bool bLandFirst : {false, true})
 	{
 		Movement->SetMovementMode(MOVE_Falling);
-		Shooter->BeginActionLock(EShooterActionLock::Equip);
+		Shooter->BeginWeaponEquip();
 		Combat->HandleAimPressed();
 		if (bLandFirst) Movement->SetMovementMode(MOVE_Walking);
-		else Shooter->EndActionLock(EShooterActionLock::Equip);
-		TestTrue(TEXT("The first completion boundary preserves held Aim"), Combat->WantsToAim());
+		else Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
+		TestFalse(TEXT("The first completion boundary discards held Aim"), Combat->WantsToAim());
 		TestFalse(TEXT("ADS waits for both landing and Equip completion"), Combat->IsAiming());
-		if (bLandFirst) Shooter->EndActionLock(EShooterActionLock::Equip);
+		if (bLandFirst) Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 		else Movement->SetMovementMode(MOVE_Walking);
-		TestTrue(TEXT("Both completion orders restore held Aim"), Combat->IsAiming());
+		TestFalse(TEXT("Neither completion order restores held Aim"), Combat->IsAiming());
 		Combat->HandleAimReleased();
 	}
 
-	// 공중에서 처음 켠 Toggle은 교체 순서와 무관하게 착지만 기다린다.
+	// 공중 Sprint도 장착 수락 시 종료한다. 착지/장착 완료 순서가 이전 의도를 복원하지 않는다.
 	for (bool bSprintFirst : {false, true})
 	for (bool bLandFirst : {false, true})
 	{
@@ -174,68 +182,69 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 		Movement->SetMovementMode(MOVE_Falling);
 		const FVector BeforeInput = Movement->Velocity;
 		if (bSprintFirst) Input->HandleSprintPressed();
-		Shooter->BeginActionLock(EShooterActionLock::Equip);
+		Shooter->BeginWeaponEquip();
 		if (!bSprintFirst) Input->HandleSprintPressed();
 		Input->HandleSprintReleased();
-		TestTrue(TEXT("Airborne Equip preserves the new Sprint toggle"), Input->WantsToSprint());
+		TestFalse(TEXT("Airborne Equip discards the Sprint toggle"), Input->WantsToSprint());
 		TestFalse(TEXT("Airborne Equip cannot activate Sprint"), Input->IsSprinting());
 		TestTrue(TEXT("Airborne Equip and Sprint cannot inject velocity"), Movement->Velocity.Equals(BeforeInput));
 		if (bLandFirst)
 		{
 			Movement->SetMovementMode(MOVE_Walking);
-			TestTrue(TEXT("Landing starts Sprint even while Equip remains active"), Input->IsSprinting());
-			Shooter->EndActionLock(EShooterActionLock::Equip);
+			TestFalse(TEXT("Landing cannot start Sprint during Equip"), Input->IsSprinting());
+			Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 		}
 		else
 		{
-			Shooter->EndActionLock(EShooterActionLock::Equip);
+			Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 			TestFalse(TEXT("Equip completion cannot activate airborne Sprint"), Input->IsSprinting());
 			Movement->SetMovementMode(MOVE_Walking);
 		}
-		TestTrue(TEXT("All airborne Sprint and Equip orders finish sprinting"), Input->IsSprinting());
-		TestEqual(TEXT("All completion orders use the configured Sprint limit"), Movement->MaxWalkSpeed, Shooter->SprintSpeed);
+		TestFalse(TEXT("No airborne Sprint and Equip order restores old Sprint"), Input->IsSprinting());
+		TestTrue(TEXT("Completion restores a non-Sprint speed limit"), Movement->MaxWalkSpeed < Shooter->SprintSpeed);
 		Input->SetSprintIntent(false);
 	}
 
 	// RPC와 이동 패킷이 역순으로 도착해도, 공통 입력 순번보다 오래된 의도는 적용하지 않는다.
 	const uint32 Epoch = Movement->GetMovementInputEpoch();
-	TestTrue(TEXT("Newer Aim request is accepted"), Movement->ApplyActionInput(20, Epoch, false, true));
-	TestFalse(TEXT("Older Sprint packet is rejected"), Movement->ApplyActionInput(19, Epoch, true, false));
+	TestTrue(TEXT("Newer Aim request is accepted"), ApplyAction(20, Epoch, false, true));
+	TestFalse(TEXT("Older Sprint packet is rejected"), ApplyAction(19, Epoch, true, false));
 	TestTrue(TEXT("Rejected Sprint packet leaves Aim intact"), Combat->WantsToAim());
 	TestFalse(TEXT("Rejected Sprint packet does not start Sprint"), Input->WantsToSprint());
-	TestTrue(TEXT("Newer Sprint request replaces Aim"), Movement->ApplyActionInput(21, Epoch, true, false));
+	TestTrue(TEXT("Newer Sprint request replaces Aim"), ApplyAction(21, Epoch, true, false));
 	TestFalse(TEXT("Accepted Sprint clears held Aim"), Combat->WantsToAim());
-	TestFalse(TEXT("Repeated action request is not consumed twice"), Movement->ApplyActionInput(21, Epoch, true, false));
+	TestFalse(TEXT("Repeated action request is not consumed twice"), ApplyAction(21, Epoch, true, false));
 	TestTrue(TEXT("Repeated request cannot invert the accepted toggle"), Input->WantsToSprint());
-	TestFalse(TEXT("Older Aim RPC cannot override newer Sprint"), Movement->ApplyActionInput(20, Epoch, false, true));
-	TestTrue(TEXT("Explicit Sprint OFF is accepted"), Movement->ApplyActionInput(22, Epoch, false, false));
+	TestFalse(TEXT("Older Aim RPC cannot override newer Sprint"), ApplyAction(20, Epoch, false, true));
+	TestTrue(TEXT("Explicit Sprint OFF is accepted"), ApplyAction(22, Epoch, false, false));
 	TestFalse(TEXT("Sprint OFF does not revive canceled Aim"), Combat->WantsToAim());
 	TestTrue(TEXT("New Sprint input is accepted before a delayed server cancel"),
-		Movement->ApplyActionInput(31, Epoch, true, false));
+		ApplyAction(31, Epoch, true, false));
 	Shooter->ServerSetSprintState_Implementation(false, 30, Epoch);
 	TestTrue(TEXT("Older server Sprint cancellation cannot override a newer ON"), Input->WantsToSprint());
 
 	Shooter->NextProceduralSwitchId = 5;
 	Shooter->FailedProceduralSwitchId = 5;
 	TestTrue(TEXT("Failed-switch Aim request consumes its action sequence"),
-		Movement->ApplyActionInput(32, Epoch, false, true, 5));
+		ApplyAction(32, Epoch, false, true, 5));
 	TestFalse(TEXT("Late Aim for the failed switch is discarded"), Combat->WantsToAim());
 	TestTrue(TEXT("Older-switch Aim request also consumes its action sequence"),
-		Movement->ApplyActionInput(33, Epoch, false, true, 4));
+		ApplyAction(33, Epoch, false, true, 4));
 	TestFalse(TEXT("Aim from a previous switch cannot survive a newer failed switch"), Combat->WantsToAim());
 	Shooter->NextProceduralSwitchId = 6;
-	Shooter->BeginActionLock(EShooterActionLock::Equip);
-	TestTrue(TEXT("Aim for the new switch is accepted"), Movement->ApplyActionInput(34, Epoch, false, true, 6));
-	TestTrue(TEXT("New-switch Aim remains pending during Equip"), Combat->WantsToAim());
+	Shooter->BeginWeaponEquip();
+	TestTrue(TEXT("Aim for the new switch is accepted"), ApplyAction(34, Epoch, false, true, 6));
+	TestFalse(TEXT("New-switch Aim is discarded during Equip"), Combat->WantsToAim());
 	TestFalse(TEXT("Accepted new-switch Aim does not bypass Equip"), Combat->IsAiming());
 	Combat->HandleAimReleased();
-	Shooter->EndActionLock(EShooterActionLock::Equip);
+	Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 	Shooter->NextProceduralSwitchId = 0;
 	Shooter->FailedProceduralSwitchId = 0;
 
 	FShooterMovementInput Sent;
 	Sent.Epoch = Epoch;
 	Sent.ActionRequest = 23;
+	Sent.EquipGeneration = Shooter->GetEquipActionGeneration();
 	Sent.bAim = true;
 	Sent.AimSwitchId = 6;
 	TArray<uint8> Bytes;
@@ -276,23 +285,23 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	// 서버 잠금과 소유자 Raise는 독립적으로 끝난다. 어느 쪽이 먼저 끝나도 ADS는 둘을 기다린다.
 	for (bool bUnlockFirst : {false, true})
 	{
-		Shooter->BeginActionLock(EShooterActionLock::Equip);
+		Shooter->BeginWeaponEquip();
 		Shooter->FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::Raising;
 		Shooter->FirstPersonSwitchVisualElapsed = 0.0f;
 		Shooter->FirstPersonSwitchRaiseStartAlpha = 1.0f;
 		Combat->HandleAimPressed();
 		if (bUnlockFirst)
 		{
-			Shooter->EndActionLock(EShooterActionLock::Equip);
+			Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 			TestFalse(TEXT("Server unlock cannot show ADS during local Raise"), Combat->IsAiming());
 		}
 		Shooter->UpdateLocalProceduralWeaponSwitch(Shooter->FirstPersonSwitchRaiseDuration + 0.1f);
 		if (!bUnlockFirst)
 		{
 			TestFalse(TEXT("Local Raise completion cannot bypass server Equip lock"), Combat->IsAiming());
-			Shooter->EndActionLock(EShooterActionLock::Equip);
+			Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 		}
-		TestTrue(TEXT("ADS restores after both completion boundaries in either order"), Combat->IsAiming());
+		TestFalse(TEXT("ADS requires a fresh press after both completion boundaries"), Combat->IsAiming());
 		Combat->HandleAimReleased();
 	}
 	Combat->bIsAiming = true;
@@ -346,7 +355,7 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 
 	const uint32 PreviousEpoch = Movement->GetMovementInputEpoch();
 	Movement->ResetSlideForLifecycle();
-	TestFalse(TEXT("Previous lifecycle request cannot start Sprint"), Movement->ApplyActionInput(24, PreviousEpoch, true, false));
+	TestFalse(TEXT("Previous lifecycle request cannot start Sprint"), ApplyAction(24, PreviousEpoch, true, false));
 	TestFalse(TEXT("Lifecycle cleanup leaves Sprint off"), Input->WantsToSprint());
 
 	// 달리기 복귀 대기는 아직 무기를 발사하지 않은 정상 상태다. 실제 이동 입력 적용이
@@ -431,6 +440,16 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 				TickFireTimers(Interval * 2.0f);
 				TestEqual(TEXT("Release stops later repeated shots"), Weapon->GetCurrentAmmo(), AfterRelease);
 
+				// 마지막 탄을 쏜 권총은 정상적으로 자동 장전 중이다. 독립된 다음 fixture를
+				// base EquipWeapon으로 준비하기 전에 기존 무기의 Reload 수명을 먼저 종료한다.
+				if (Combat->IsReloading())
+				{
+					TestTrue(TEXT("Automatic reload belongs to the fired weapon"), Weapon->IsReloading());
+					Combat->CancelReloadInternal();
+					TestFalse(TEXT("Fixture cleanup cancels both reload states"), Combat->IsReloading() || Weapon->IsReloading());
+					TestEqual(TEXT("Fixture cleanup releases automatic Reload lock"), Shooter->GetActionLock(), EShooterActionLock::None);
+				}
+
 				// 권총의 기존 재사용 쿨다운을 취소 테스트의 준비 조건과 섞지 않는다.
 				// 새 무기는 발사 전 상태이므로 대기 취소 자체만 검증할 수 있다.
 				Weapon = World->SpawnActor<ARangedWeaponBase>(WeaponClass, Spawn);
@@ -468,7 +487,7 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 					Combat->ResolveSprintExitFire(CancelRequest, CancelEpoch, true);
 					TestEqual(TEXT("Cancelled, expired, old-life or locked request cannot fire"), Weapon->GetCurrentAmmo(), BeforeCancel);
 					Shooter->ClearInputIntent();
-					if (CancelCase == 3) Shooter->EndActionLock(EShooterActionLock::Equip);
+					if (CancelCase == 3) Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 				}
 			}
 		}
@@ -488,7 +507,7 @@ bool FShooterActionIntentTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Remote authority has no local pose owner"), Shooter->IsLocallyControlled());
 	if (!TestTrue(TEXT("Server accepts the remote first-shot request"),
 		Combat->BeginSprintExitFire(RemoteWeapon, RemoteRequest, RemoteEpoch))) return false;
-	Movement->ApplyActionInput(RemoteRequest + 1, RemoteEpoch, false, false, 0, true, false);
+	ApplyAction(RemoteRequest + 1, RemoteEpoch, false, false, 0, true, false);
 	TickFireTimers(0.0f);
 	TickFireTimers(0.03f);
 	TestEqual(TEXT("Remote server waits for owner readiness"), RemoteWeapon->GetCurrentAmmo(), RemoteAmmo);

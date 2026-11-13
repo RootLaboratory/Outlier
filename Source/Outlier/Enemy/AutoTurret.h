@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Enemy/EnemyBase.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "Perception/AISightTargetInterface.h"
 #include "AutoTurret.generated.h"
 
 class USceneComponent;
@@ -11,6 +12,7 @@ class UPartnerShieldRecipientComponent;
 class UBoxComponent;
 class UAnimMontage;
 class USkeletalMeshComponent;
+class USkeletalMesh;
 struct FEnemyRecoverTurretImpactOffsetTask;
 
 UENUM(BlueprintType)
@@ -72,6 +74,10 @@ struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0"))
 	float AimToleranceDegrees = 1.0f;
 
+	// 머리 피벗에서 이 거리 안이면 정확한 정렬을 기다리지 않고 실제 총구 방향으로 발사한다. 0은 비활성화다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attack", meta = (ClampMin = "0.0", Units = "cm"))
+	float CloseRangeFireDistance = 150.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attack", meta = (ClampMin = "0.0"))
 	float TelegraphDuration = 1.0f;
 
@@ -112,10 +118,11 @@ struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 
 // Wave 시점에 활성화되는 맵 배치 전용 Enemy다. EnemyPool에는 등록하지 않는다.
 UCLASS()
-class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
+class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider, public IAISightTargetInterface
 {
 	GENERATED_BODY()
 	friend class FEnemyHackEffectGameplayTest;
+	friend class FAutoTurretHackingTest;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FEnemyHitClueLifecycleTest;
 	friend class FEnemyAdaptationGenerationDamageTest;
@@ -127,6 +134,20 @@ class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
 public:
 	AAutoTurret();
 	static bool IsTurretDiagnosticsEnabled();
+	virtual bool IsHackingInProgress() const override { return bHackingActive || bFinalizingHacking; }
+	// Task 식별자는 요청자의 RequestId와 별개다. 같은 대상 재사용에서도 옛 Exit를 구분한다.
+	uint32 GetHackingRequestId() const { return HackingEpisodeId; }
+	bool EnterHackingState(uint32 EpisodeId);
+	bool TryFinishHacking(uint32 EpisodeId);
+	void LeaveHackingState(uint32 EpisodeId);
+	virtual bool DeferHackCompletion(const FHackResultContext& Context,
+		TFunction<void(const FHackResultContext&)> Completion) override;
+	virtual void EnterStun() override;
+	virtual void RestoreStateAfterStun() override;
+	virtual void UnPossessed() override;
+	uint32 BeginTurretAttackExecution();
+	bool IsTurretAttackExecutionCurrent(uint32 ExecutionId) const;
+	void FinishTurretAttackExecution(uint32 ExecutionId);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
@@ -135,6 +156,11 @@ public:
 	virtual FVector GetHackTargetLocation() const override;
 	virtual EScanRevealCondition GetScanRevealCondition() const override { return EScanRevealCondition::RevealHackable; }
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const override;
+	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(const FCanBeSeenFromContext& Context,
+		FVector& OutSeenLocation, int32& OutNumberOfLoSChecksPerformed, int32& OutNumberOfAsyncLosCheckRequested,
+		float& OutSightStrength, int32* UserData = nullptr,
+		const FOnPendingVisibilityQueryProcessedDelegate* Delegate = nullptr) override;
+	bool TryGetObservedSightPoint(const AActor* Observer, FVector& OutPoint, bool bRequireCurrentSight = false) const;
 	virtual FRotator GetViewRotation() const override;
 	virtual void TickHitResponse(float DeltaTime) override;
 	virtual void ClearHitClues() override;
@@ -220,6 +246,7 @@ public:
 	bool UsesNormalTurretAttackPolicy() const;
 	bool TryGetAttackableVisibleTargetAim(const AActor* Target, FVector& OutAimPoint) const;
 	bool IsTurretAimLocationReachable(const FVector& Location) const;
+	bool CanFireWithoutTurretAimAlignment(const FVector& AimPoint) const;
 	bool IsTurretAttackAimReady(const AActor* Target) const;
 	bool UpdateTurretAimAtLocation(const FVector& TargetLocation, float DeltaTime,
 		bool bAttackRotation, bool bUseSearchPitch = false);
@@ -357,7 +384,8 @@ protected:
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayFireMontage();
 
-	UFUNCTION(NetMulticast, Unreliable)
+	// None 해킹은 속성 복제 전에 시작·종료될 수 있어 몽타주 중단도 확실히 전달한다.
+	UFUNCTION(NetMulticast, Reliable)
 	void MulticastStopFireMontage();
 
 	UFUNCTION(NetMulticast, Reliable)
@@ -367,10 +395,51 @@ protected:
 	void OnTurretDeathPresentationStarted(int32 GameplayGeneration, int32 ActivationSerial);
 
 private:
+	void RequestHackingStateEntry();
+	bool IsHackingLifecycleCurrent() const;
+	void FinishHacking(EHackResult Result, const TCHAR* Reason, bool bResumeAI = true);
+	void CancelHacking(const TCHAR* Reason, bool bResumeAI = true);
+	UFUNCTION()
+	void OnRep_HackingActive();
+	UPROPERTY(ReplicatedUsing = OnRep_HackingActive)
+	bool bHackingActive = false;
+	bool bHackingWasInCombat = false;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Turret|Hacking", meta = (ClampMin = "0.01"))
+	float HackingEntryTimeout = 1.0f;
+	bool bHackingStateEntered = false;
+	bool bHasHackingResult = false;
+	bool bFinalizingHacking = false;
+	uint32 HackingEpisodeId = 0;
+	uint32 HackingRequestId = 0;
+	uint32 TurretAttackExecution = 0;
+	TWeakObjectPtr<AActor> HackingInstigator;
+	TWeakObjectPtr<AController> HackingController;
+	int32 HackingGeneration = INDEX_NONE;
+	int32 HackingLease = INDEX_NONE;
+	int32 HackingWaveSerial = INDEX_NONE;
+	FHackResultContext PendingHackingResult;
+	TFunction<void(const FHackResultContext&)> HackingCompletion;
+	FTimerHandle HackingEntryTimer;
+
 	friend struct FEnemyRecoverTurretImpactOffsetTask;
 	friend class URoomCombatSubsystem;
 	friend class FAutoTurretDeploymentPresentationTest;
 	friend class FAutoTurretTargetLifecycleTest;
+	friend class FAutoTurretSightTest;
+
+	struct FSightSnapshot
+	{
+		FVector Point = FVector::ZeroVector;
+		double ObservedAt = -1.0;
+		uint32 ObserverSerial = 0;
+		FGenericTeamId ObserverTeam;
+		TWeakObjectPtr<USkeletalMesh> HeadAsset;
+		TWeakObjectPtr<USkeletalMesh> BodyAsset;
+		bool bVisible = false;
+	};
+	// 성공한 시야 좌표만 보관한다. 가림 이후 조준 조회에서 현재 Head 위치를 다시 읽지 않는다.
+	TMap<TWeakObjectPtr<const AActor>, FSightSnapshot> SightSnapshots;
+	void ResolveSightPoints(TArray<FVector, TInlineAllocator<2>>& OutPoints) const;
 
 	UPROPERTY(ReplicatedUsing = OnRep_TurretLifecycleState)
 	FAutoTurretLifecycleSnapshot ReplicatedLifecycle;

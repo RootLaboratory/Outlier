@@ -11,6 +11,8 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Misc/AutomationTest.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/HackGameplayTags.h"
+#include "Interface/HackableInterface.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Shooter/ShooterCharacter.h"
@@ -421,6 +423,179 @@ bool FEnemyF2TurretSelectionTest::RunTest(const FString& Parameters)
 		Fixture.AdvanceWorld(static_cast<float>(FMath::Max(0.0, PreservedReadyAt - Fixture.World->GetTimeSeconds()) + 0.05));
 		TestTrue(TEXT("Original shot interval eventually permits firing again"), Weapon->CanAttack());
 	}
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyTurretCloseRangeFireTest,
+	"Outlier.Enemy.Turret.CloseRangeFire",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyTurretCloseRangeFireTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Case : {TEXT("Enemy"), TEXT("Hacked"), TEXT("NormalDistance"), TEXT("Wall"),
+		TEXT("Tracking"), TEXT("ActualMuzzleDirection")})
+	{
+		Names.Add(Case);
+		Commands.Add(Case);
+	}
+}
+
+bool FEnemyTurretCloseRangeFireTest::RunTest(const FString& Parameters)
+{
+	FF2TurretSelectionWorld Fixture;
+	if (!Fixture.Initialize(*this)) return false;
+	AAutoTurret* Turret = Fixture.Turret;
+	ARangedWeaponBase* Weapon = Turret->GetCurrentWeapon();
+	USceneComponent* HeadPivot = Cast<USceneComponent>(FindFProperty<FObjectPropertyBase>(
+		AAutoTurret::StaticClass(), TEXT("TurretHeadPivot"))->GetObjectPropertyValue_InContainer(Turret));
+	USkeletalMeshComponent* HeadMesh = Cast<USkeletalMeshComponent>(FindFProperty<FObjectPropertyBase>(
+		AAutoTurret::StaticClass(), TEXT("TurretHeadMesh"))->GetObjectPropertyValue_InContainer(Turret));
+	if (!TestNotNull(TEXT("Saved turret owns its head rotation pivot"), HeadPivot)
+		|| !TestNotNull(TEXT("Saved turret owns its actual muzzle mesh"), HeadMesh)) return false;
+	FEnumProperty* Lifecycle = FindFProperty<FEnumProperty>(AAutoTurret::StaticClass(), TEXT("TurretLifecycleState"));
+	Lifecycle->GetUnderlyingProperty()->SetIntPropertyValue(Lifecycle->ContainerPtrToValuePtr<void>(Turret),
+		uint64(EAutoTurretLifecycleState::Active));
+	Turret->EnterCombatFromRoom(Fixture.Shooter->GetActorLocation(), false);
+	Fixture.StopAutomaticBehavior();
+	Fixture.Select(Fixture.Shooter);
+	if (!TestTrue(TEXT("Real Shooter pose supplies the initial observation"), Fixture.ObserveShooter())) return false;
+	Turret->RefreshCombatAimPoint();
+	const FVector ShooterAimOffset = Turret->GetCombatAimPoint(Fixture.Shooter) - Fixture.Shooter->GetActorLocation();
+	const bool bNormalDistance = Parameters == TEXT("NormalDistance");
+	const FVector DesiredAim = HeadPivot->GetComponentLocation()
+		+ (bNormalDistance ? FVector(600, 800, 0) : FVector(40, 80, 0));
+	AActor* Target = Fixture.Shooter;
+	if (Parameters == TEXT("Hacked"))
+	{
+		// 팀은 실제 해킹 성공 효과로 변경하고, 변경된 팀에서 적인 실제 Gun BP를 대상으로 삼는다.
+		FHackResultContext Result;
+		Result.TargetActor = Turret;
+		Result.Result = EHackResult::Success;
+		CastChecked<IHackableInterface>(Turret)->HandleHackEffect(HackGameplayTags::Effect::ChangeTeam(), Result);
+		UClass* GunClass = LoadClass<AEnemyBase>(nullptr,
+			TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AEnemyBase* Gun = Fixture.World->SpawnActor<AEnemyBase>(GunClass, DesiredAim, FRotator::ZeroRotator, Spawn);
+		if (!TestNotNull(TEXT("Hacked turret has an actual enemy target"), Gun)) return false;
+		Gun->GetStateTreeComponent()->StopLogic(TEXT("Controlled close-range target"));
+		Gun->SetActorTickEnabled(false);
+		Gun->GetCharacterMovement()->DisableMovement();
+		Gun->SetActorEnableCollision(false);
+		Target = Gun;
+		TestTrue(TEXT("Real hack changes the turret team"), Turret->IsHackedToPlayerTeam());
+	}
+	else
+	{
+		Fixture.Shooter->SetActorLocation(DesiredAim - ShooterAimOffset);
+		if (!TestTrue(TEXT("Near Shooter retains a real observer-specific pose sample"), Fixture.ObserveShooter())) return false;
+	}
+	Turret->EnterCombatFromRoom(Target->GetActorLocation(), false);
+	Fixture.StopAutomaticBehavior();
+	Fixture.Select(Target);
+	Turret->BeginTargetAttackPreparation(0.0f);
+	Turret->RefreshCombatAimPoint();
+	if (Target == Fixture.Shooter)
+	{
+		auto LogSelection = [&](const TCHAR* Stage)
+		{
+			uint32 SelectedEpoch = 0;
+			int32 SelectedBone = INDEX_NONE;
+			FVector SelectedPoint;
+			const bool bSelected = Turret->GetCombatAimSelectionForTesting(Target, SelectedEpoch, SelectedBone, SelectedPoint);
+			FOutlierSightObservation Observation;
+			const bool bObserved = Fixture.Shooter->GetObservedAimPoints(Turret, Observation);
+			AddInfo(FString::Printf(TEXT("Close selection stage=%s Selected=%d Epoch=%u Bone=%d Observed=%d ObservedEpoch=%u Path=%d CanAttack=%d Block=%s"),
+				Stage, bSelected, SelectedEpoch, SelectedBone, bObserved, Observation.Epoch,
+				Weapon->HasClearTargetAttackPath(Target, Turret->GetCombatAimPoint(Target)),
+				Turret->CanAttackTrackedTarget(Target), Weapon->GetAttackBlockReason()));
+		};
+		LogSelection(TEXT("BeforeRefreshWindow"));
+		// 선택 직후 이동한 포즈는 0.1초 조준 갱신 주기 뒤에 반영한다. 최신 관측/사선 조건은 그대로 검사한다.
+		Fixture.AdvanceWorld(0.11f);
+		if (!TestTrue(TEXT("Moved Shooter provides a fresh pose after the ordinary aim refresh interval"), Fixture.ObserveShooter())) return false;
+		Turret->RefreshCombatAimPoint();
+		LogSelection(TEXT("AfterRefreshWindow"));
+		uint32 Epoch = 0;
+		int32 Bone = INDEX_NONE;
+		FVector Point;
+		if (!TestTrue(TEXT("Close fixture uses a selected real Shooter bone rather than capsule fallback"),
+			Turret->GetCombatAimSelectionForTesting(Target, Epoch, Bone, Point))) return false;
+	}
+	FindFProperty<FBoolProperty>(ARangedWeaponBase::StaticClass(), TEXT("bInfiniteAmmo"))
+		->SetPropertyValue_InContainer(Weapon, false);
+	FindFProperty<FIntProperty>(ARangedWeaponBase::StaticClass(), TEXT("BurstShotCount"))
+		->SetPropertyValue_InContainer(Weapon, 0);
+	const FVector Aim = Turret->GetCombatAimPoint(Target);
+	const float AngularError = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(
+		(Aim - Turret->GetPawnViewLocation()).GetSafeNormal(), Turret->GetViewRotation().Vector()), -1.0, 1.0)));
+	AddInfo(FString::Printf(TEXT("Close fire case=%s pivotDistance=%.2f aimError=%.2f aim=%s view=%s"),
+		*Parameters, FVector::Distance(Aim, HeadPivot->GetComponentLocation()), AngularError,
+		*Aim.ToCompactString(), *Turret->GetPawnViewLocation().ToCompactString()));
+	if (!TestTrue(TEXT("Fixture is deliberately outside the ordinary aim tolerance"),
+		AngularError > Turret->GetTurretBehavior().AimToleranceDegrees + 5.0f)) return false;
+	const int32 AmmoBefore = Weapon->GetCurrentAmmo();
+	if (bNormalDistance)
+	{
+		TestFalse(TEXT("Normal distance still requires completed angular alignment"), Turret->IsTurretAttackAimReady(Target));
+		TestFalse(TEXT("Normal unaligned turret cannot begin target fire"), Turret->StartAttackTarget(Target));
+		TestEqual(TEXT("Normal unaligned request consumes no ammunition"), Weapon->GetCurrentAmmo(), AmmoBefore);
+		return !HasAnyErrors();
+	}
+	TestTrue(TEXT("Close target does not wait for exact angular alignment"), Turret->IsTurretAttackAimReady(Target));
+	if (Parameters == TEXT("Wall"))
+	{
+		if (!TestNotNull(TEXT("Actual cover exists between muzzles and target"), Fixture.BlockPath(Aim))) return false;
+		TestFalse(TEXT("Close-range aim exception cannot authorize an obstructed muzzle path"), Turret->CanAttackTrackedTarget(Target));
+		TestFalse(TEXT("Close-range aim exception cannot begin fire through cover"), Turret->StartAttackTarget(Target));
+		TestEqual(TEXT("Rejected covered fire consumes no ammunition"), Weapon->GetCurrentAmmo(), AmmoBefore);
+		return !HasAnyErrors();
+	}
+	AActor* ForwardWall = nullptr;
+	if (Parameters == TEXT("ActualMuzzleDirection"))
+	{
+		// 대상은 옆에 두고 총구 전방에만 벽을 둔다. 조준점으로 꺾지 않은 실제 탄도를 검사한다.
+		ForwardWall = Fixture.World->SpawnActor<AActor>();
+		UBoxComponent* Box = NewObject<UBoxComponent>(ForwardWall);
+		ForwardWall->SetRootComponent(Box);
+		Box->SetBoxExtent(FVector(10, 500, 500));
+		Box->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		Box->SetCollisionResponseToAllChannels(ECR_Block);
+		Box->SetWorldLocation(Turret->GetPawnViewLocation() + Turret->GetViewRotation().Vector() * 300.0f);
+		Box->RegisterComponent();
+	}
+	const FVector BeforeFireDirection = Turret->GetViewRotation().Vector();
+	TestTrue(TEXT("Unaligned close turret starts its actual target weapon"), Turret->StartAttackTarget(Target));
+	if (!TestTrue(TEXT("Independent real muzzle group consumes ammunition before exact alignment"), Weapon->GetCurrentAmmo() < AmmoBefore))
+		return false;
+	if (ForwardWall)
+	{
+		const FWeaponShotSnapshot& Shot = *FindFProperty<FStructProperty>(ARangedWeaponBase::StaticClass(), TEXT("LastResolvedShot"))
+			->ContainerPtrToValuePtr<FWeaponShotSnapshot>(Weapon);
+		const FTransform Muzzle = HeadMesh->GetSocketTransform(Shot.MuzzleSocket);
+		AddInfo(FString::Printf(TEXT("Actual close shot socketX=%s baseDirection=%s headForward=%s"),
+			*Muzzle.GetUnitAxis(EAxis::X).ToCompactString(), *FVector(Shot.BaseDirection).ToCompactString(),
+			*BeforeFireDirection.ToCompactString()));
+		TestTrue(TEXT("Actual close shot starts at its own muzzle"), FVector(Shot.Start).Equals(Muzzle.GetLocation(), 0.1));
+		// 라이플은 기존 ResolveShotTransform의 총구 위치 + 머리 전방 계약을 유지한다. 소켓의 FBX 축으로 교체하지 않는다.
+		TestTrue(TEXT("Close exception preserves the existing rifle head/muzzle fire axis"), FVector::DotProduct(
+			FVector(Shot.BaseDirection), BeforeFireDirection) > 0.999);
+		TestTrue(TEXT("Close shot does not snap its trajectory toward the nearby side target"), FVector::DotProduct(
+			FVector(Shot.Direction), (Aim - FVector(Shot.Start)).GetSafeNormal()) < 0.9);
+		TestEqual(TEXT("Actual forward projectile hits the wall rather than bending toward the nearby target"), Shot.HitActor.Get(), ForwardWall);
+	}
+	if (Parameters == TEXT("Tracking"))
+	{
+		const FRotator BeforeTurn = Turret->GetViewRotation();
+		Turret->UpdateTurretAimAtLocation(Aim, 0.1f, true);
+		TestFalse(TEXT("Close fire continues turning the head toward its target"), Turret->GetViewRotation().Equals(BeforeTurn, 0.01));
+		Fixture.AdvanceWorld(0.2f);
+		if (!TestTrue(TEXT("Tracking Shooter obtains a refreshed actual pose"), Fixture.ObserveShooter())) return false;
+		Turret->RefreshCombatAimPoint();
+		TestTrue(TEXT("Tracking target remains allowed before exact alignment"), Turret->IsTurretAttackAimReady(Target));
+		TestTrue(TEXT("Target weapon remains active while the head tracks"), Weapon->IsAttacking());
+	}
+	Turret->PauseTargetAttack();
 	return !HasAnyErrors();
 }
 

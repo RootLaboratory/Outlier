@@ -21,6 +21,10 @@ struct FEnemyStateTreeSyncTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	EEnemyCombatState CombatState = EEnemyCombatState::NonCombat;
 
+	// 실제 Stun이 우선하는 동안에도 해킹 회차의 재진입 조건은 유지한다.
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHackingInProgress = false;
+
 	// StateTree 바인딩 호환성을 위해 bool 
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bIsPossessed = false;

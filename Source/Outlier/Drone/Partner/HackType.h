@@ -17,6 +17,9 @@ struct FHackQueryContext
 {
 	GENERATED_BODY()
 
+	UPROPERTY()
+	uint32 RequestId = 0;
+
 	UPROPERTY(BlueprintReadWrite)
 	TObjectPtr<AActor> InstigatorActor = nullptr;
 
@@ -58,6 +61,9 @@ USTRUCT(BlueprintType)
 struct FHackResultContext
 {
 	GENERATED_BODY()
+
+	UPROPERTY()
+	uint32 RequestId = 0;
 
 	UPROPERTY(BlueprintReadWrite)
 	TObjectPtr<AActor> InstigatorActor = nullptr;

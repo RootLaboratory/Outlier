@@ -41,7 +41,8 @@ void UShooterMovementComponent::HandleSprintPressed()
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (ShooterCharacter && CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement())
 		->QueueMovementInput(EShooterMovementInput::SprintPressed)) return;
-	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
+		|| ShooterCharacter->IsWeaponEquipInputBlocked())
 	{
 		return;
 	}
@@ -62,7 +63,8 @@ void UShooterMovementComponent::SetSprintIntent(bool bSprint)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter) return;
-	bWantsToSprint = bSprint && !ShooterCharacter->IsDead() && !ShooterCharacter->IsSuitTransitionBlocked();
+	bWantsToSprint = bSprint && !ShooterCharacter->IsDead() && !ShooterCharacter->IsSuitTransitionBlocked()
+		&& !ShooterCharacter->IsWeaponEquipInputBlocked();
 	if (bWantsToSprint && CanSprint())
 	{
 		if (!bHoldSprintInput)
@@ -506,12 +508,12 @@ bool UShooterMovementComponent::CanSprint() const
 		&& !ShooterCharacter->IsSuitTransitionBlocked()
 		&& !ShooterCharacter->IsDead() && !ShooterCharacter->GetCharacterMovement()->IsCrouching()
 		&& !bWantsToCrouch && !bIsSliding
+		&& !ShooterCharacter->IsWeaponEquipInputBlocked()
 		&& !ShooterCharacter->WantsToAim()
 		&& (!bHoldSprintInput || (!ShooterCharacter->IsAiming()
 			&& (!ShooterCharacter->CombatComponent || !ShooterCharacter->CombatComponent->IsSprintBlockedByAttack())))
 		// Reload 잠금은 공격/ADS에 남겨 두고, 달리기 자격에만 예외를 둔다.
 		&& (!ShooterCharacter->IsActionLocked()
-			|| ShooterCharacter->GetActionLock() == EShooterActionLock::Equip
 			|| ShooterCharacter->GetActionLock() == EShooterActionLock::Reload);
 }
 

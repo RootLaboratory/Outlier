@@ -55,6 +55,7 @@ void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (GetOwner() && GetOwner()->HasAuthority() && IsValid(ActiveHackableComponent))
 	{
 		FHackResultContext ResultContext;
+		ResultContext.RequestId = ActiveHackRequestId;
 		ResultContext.TargetActor = ActiveHackableComponent->GetOwner();
 		ResultContext.InstigatorActor = PartnerCharacter;
 		ResultContext.Result = EHackResult::Cancelled;
@@ -225,6 +226,7 @@ void UPartnerHackComponent::CancelForReboot()
 	if (IsValid(ActiveHackableComponent))
 	{
 		FHackResultContext ResultContext;
+		ResultContext.RequestId = ActiveHackRequestId;
 		ResultContext.TargetActor = ActiveHackableComponent->GetOwner();
 		ResultContext.InstigatorActor = PartnerCharacter;
 		ResultContext.Result = EHackResult::Cancelled;
@@ -281,7 +283,7 @@ void UPartnerHackComponent::ClientStopCandidateSearch_Implementation()
 }
 
 void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* TargetActor, UHackableComponent* HackableComponent,
-	float ClickSuccessRangeMultiplier, float SpinningGapMultiplier)
+	float ClickSuccessRangeMultiplier, float SpinningGapMultiplier, uint32 RequestId)
 {
 	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled())
 	{
@@ -294,6 +296,7 @@ void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* Targe
 	bHackCandidateSearchActive = false;
 
 	SetActiveHackableComponent(HackableComponent);
+	ActiveHackRequestId = RequestId;
 	StartHackMiniGame(TargetActor, HackableComponent, ClickSuccessRangeMultiplier, SpinningGapMultiplier);
 
 	ClearHackCandidates();
@@ -337,31 +340,10 @@ void UPartnerHackComponent::CompleteActiveHack(
 	bool bNotifyClient)
 {
 	// 사망 취소 뒤 도착한 미니게임 결과는 완료/취소 이벤트를 다시 발생시키지 않는다.
-	if (!ActiveHackableComponent)
+	if (!ActiveHackableComponent || ResultContext.RequestId != ActiveHackRequestId)
 	{
 		return;
 	}
-
-	if (!IsValid(ActiveHackableComponent)
-		|| !IsValid(ActiveHackableComponent->GetOwner())
-		|| ActiveHackableComponent->GetOwner()->IsActorBeingDestroyed())
-	{
-		if (bDebugHack)
-		{
-			UE_LOG(LogTemp, Warning,
-				TEXT("[PartnerHackDebug] Hack failed: active target is no longer valid"));
-		}
-
-		ClearActiveHackableComponent();
-		if (bNotifyClient)
-		{
-			ClientAbortHackForInvalidTarget();
-			DefaultWidgetControl(false);
-		}
-		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
-		return;
-	}
-
 	if (ResultContext.TargetActor != ActiveHackableComponent->GetOwner())
 	{
 		if (bDebugHack)
@@ -371,6 +353,45 @@ void UPartnerHackComponent::CompleteActiveHack(
 				*GetNameSafe(ResultContext.TargetActor),
 				*GetNameSafe(ActiveHackableComponent->GetOwner()));
 		}
+		return;
+	}
+
+	if (!IsValid(ActiveHackableComponent)
+		|| !IsValid(ActiveHackableComponent->GetOwner())
+		|| ActiveHackableComponent->GetOwner()->IsActorBeingDestroyed())
+	{
+		// EndPlay 중에는 일반 완료 검증을 통과하지 못해도 대상의 대기 결과를 취소해야 한다.
+		if (bHackCompletionPending)
+		{
+			FHackResultContext CancelledContext = ResultContext;
+			CancelledContext.InstigatorActor = PartnerCharacter;
+			CancelledContext.Result = EHackResult::Cancelled;
+			if (IHackableInterface* Handler = Cast<IHackableInterface>(CancelledContext.TargetActor))
+			{
+				const TWeakObjectPtr<UPartnerHackComponent> WeakThis(this);
+				if (Handler->DeferHackCompletion(CancelledContext,
+					[WeakThis, bNotifyClient](const FHackResultContext& TerminalContext)
+					{
+						if (UPartnerHackComponent* Component = WeakThis.Get())
+							Component->FinishDeferredHack(TerminalContext, bNotifyClient);
+					})) return;
+			}
+		}
+		if (bDebugHack)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[PartnerHackDebug] Hack failed: active target is no longer valid"));
+		}
+
+		ClearActiveHackableComponent();
+		bHackCompletionPending = false;
+		ActiveHackRequestId = 0;
+		if (bNotifyClient)
+		{
+			ClientAbortHackForInvalidTarget();
+			DefaultWidgetControl(false);
+		}
+		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
 		return;
 	}
 
@@ -386,8 +407,30 @@ void UPartnerHackComponent::CompleteActiveHack(
 
 	UHackableComponent* CompletedHackableComponent = ActiveHackableComponent;
 	AActor* CompletedTargetActor = CompletedHackableComponent->GetOwner();
+	FHackResultContext MutableResultContext = ResultContext;
+	MutableResultContext.InstigatorActor = PartnerCharacter;
+	if (IHackableInterface* Handler = Cast<IHackableInterface>(CompletedTargetActor))
+	{
+		// 결과 대기 중에도 취소는 대상에 전달한다. 일반 결과의 중복 제출만 무시한다.
+		if (bHackCompletionPending && MutableResultContext.Result != EHackResult::Cancelled) return;
+		bHackCompletionPending = true;
+		const TWeakObjectPtr<UPartnerHackComponent> WeakThis(this);
+		if (Handler->DeferHackCompletion(MutableResultContext,
+			[WeakThis, bNotifyClient](const FHackResultContext& TerminalContext)
+			{
+				if (UPartnerHackComponent* Component = WeakThis.Get())
+				{
+					Component->FinishDeferredHack(TerminalContext, bNotifyClient);
+				}
+			}))
+		{
+			return;
+		}
+		bHackCompletionPending = false;
+	}
 	const bool bPossessionTarget = CompletedHackableComponent->SuccessEffectTags.HasTagExact(
 		HackGameplayTags::Effect::Possess());
+	ActiveHackRequestId = 0;
 	ClearActiveHackableComponent();
 
 	//possess 전, Input widget 정리. -> Enemy Widget이 생긴다면 수정 해야 할 부분.
@@ -397,9 +440,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 		DefaultWidgetControl(false);
 	}
 
-	FHackResultContext MutableResultContext = ResultContext;
 	MutableResultContext.TargetActor = CompletedTargetActor;
-	MutableResultContext.InstigatorActor = PartnerCharacter;
 
 	// 빙의 시작 시 Target 태그는 바뀔 수 있으므로 완료 시에는 차단 상태와 재사용 정책만 재검증한다.
 	FHackQueryContext CompletionQuery = BuildQueryContext();
@@ -424,6 +465,28 @@ void UPartnerHackComponent::CompleteActiveHack(
 
 	CompletedHackableComponent->CompleteHack(MutableResultContext);
 	OnHackFinished.Broadcast(MutableResultContext.Result, bPossessionTarget);
+}
+
+void UPartnerHackComponent::FinishDeferredHack(const FHackResultContext& ResultContext, bool bNotifyClient)
+{
+	if (!bHackCompletionPending || ResultContext.RequestId != ActiveHackRequestId
+		|| ResultContext.InstigatorActor != PartnerCharacter
+		|| !ActiveHackableComponent || ResultContext.TargetActor != ActiveHackableComponent->GetOwner())
+	{
+		return;
+	}
+	const bool bPossessionTarget = ActiveHackableComponent->SuccessEffectTags.HasTagExact(
+		HackGameplayTags::Effect::Possess());
+	// 대상은 이미 효과를 확정했다. 재진입 전에 완료 권한을 소모하고 UI/어빌리티만 끝낸다.
+	bHackCompletionPending = false;
+	ActiveHackRequestId = 0;
+	ClearActiveHackableComponent();
+	if (bNotifyClient)
+	{
+		ClientStopHackMiniGame();
+		DefaultWidgetControl(false);
+	}
+	OnHackFinished.Broadcast(ResultContext.Result, bPossessionTarget);
 }
 
 void UPartnerHackComponent::DefaultWidgetControl_Implementation(bool InFlag)
@@ -639,6 +702,7 @@ void UPartnerHackComponent::ClientCancelHackHold_Implementation(uint32 HoldId)
 
 void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActor, uint32 HoldId)
 {
+	if (ActiveHackableComponent || bHackCompletionPending) return;
 	// Only a target accepted when R was pressed may bypass viewport/angle/LOS checks.
 	if (!HoldId || HoldId != ServerHoldId || TargetActor != ServerHeldHackActor.Get()) return;
 	ServerHeldHackActor.Reset();
@@ -663,7 +727,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	}
 
 	FVector2D ScreenLocation = FVector2D::ZeroVector;
-	const FHackQueryContext Context = BuildQueryContext();
+	FHackQueryContext Context = BuildQueryContext();
 	// Locked holds use range and target state, even behind the camera or cover.
 	if (!CanMaintainHackHold(TargetActor, Context))
 	{
@@ -679,18 +743,24 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	DeactivateUnselectedCandidates(HackableComponent);
 	bHackCandidateSearchActive = false;
 	SetActiveHackableComponent(HackableComponent);
+	if (++NextHackRequestId == 0) ++NextHackRequestId;
+	ActiveHackRequestId = NextHackRequestId;
+	Context.RequestId = ActiveHackRequestId;
 
 	//Actor Override
 	if (IHackableInterface* Handler = Cast<IHackableInterface>(TargetActor))
 	{
 		Handler->HandleHackStarted(Context);
 	}
+	// 시작 콜백에서 사망/취소가 발생했다면 같은 호출 스택에서 완료를 다시 제출하지 않는다.
+	if (ActiveHackableComponent != HackableComponent || ActiveHackRequestId != Context.RequestId) return;
 
 	if (!HackableComponent->RequiresMiniGame())
 	{
 		ClientStopCandidateSearch();
 
 		FHackResultContext ResultContext;
+		ResultContext.RequestId = Context.RequestId;
 		ResultContext.TargetActor = TargetActor;
 		ResultContext.InstigatorActor = PartnerCharacter;
 		ResultContext.Result = EHackResult::Success;
@@ -708,7 +778,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 
 	// 시작 시 서버에서 고정한 배율을 전달한다. 클라이언트 Config/태그 복제 순서에 의존하지 않는다.
 	ClientStartHackMiniGame(TargetActor, HackableComponent,
-		ResolveMiniGameSuccessRangeMultiplier(false), ResolveMiniGameSuccessRangeMultiplier(true));
+		ResolveMiniGameSuccessRangeMultiplier(false), ResolveMiniGameSuccessRangeMultiplier(true), Context.RequestId);
 
 	if (bDebugHack)
 	{
@@ -1026,6 +1096,7 @@ bool UPartnerHackComponent::EnsureHackMiniGameWidget(AActor* TargetActor, UHacka
 
 	HackMiniGameWidget->InitializeHackMiniGame(TargetActor, HackableComponent, this,
 		ClickSuccessRangeMultiplier, SpinningGapMultiplier);
+	HackMiniGameWidget->SetHackRequestId(ActiveHackRequestId);
 	HackMiniGameWidget->SetMiniGameTimeLimit(CachedAbilityData.MiniGameTime);
 	HackMiniGameWidget->OnHackMiniGameFinished.AddDynamic(this, &UPartnerHackComponent::HandleHackMiniGameFinished);
 
@@ -1199,18 +1270,23 @@ void UPartnerHackComponent::DeactivateUnselectedCandidates(UHackableComponent* S
 void UPartnerHackComponent::CancelActiveHack()
 {
 	ResetLocalHackHoldProgress();
+	const uint32 RequestId = ActiveHackRequestId;
+	UHackableComponent* CancelledHackableComponent = ActiveHackableComponent;
 
 	if (HackMiniGameWidget)
 	{
 		HackMiniGameWidget->CancelHacking();
 	}
 
-	if (!ActiveHackableComponent)
+	// 위젯 취소가 완료 알림을 동기 호출한다. 그 안에서 시작한 새 요청은 취소하지 않는다.
+	if (!ActiveHackableComponent || ActiveHackableComponent != CancelledHackableComponent
+		|| ActiveHackRequestId != RequestId)
 	{
 		return;
 	}
 
 	FHackResultContext ResultContext;
+	ResultContext.RequestId = ActiveHackRequestId;
 	ResultContext.TargetActor = ActiveHackableComponent->GetOwner();
 	ResultContext.InstigatorActor = PartnerCharacter;
 	ResultContext.Result = EHackResult::Cancelled;
@@ -1273,6 +1349,7 @@ void UPartnerHackComponent::HandleHackTargetUnavailable(UHackableComponent* Unav
 	if (GetOwner() && GetOwner()->HasAuthority())
 	{
 		FHackResultContext CancelledContext;
+		CancelledContext.RequestId = ActiveHackRequestId;
 		CancelledContext.TargetActor = UnavailableComponent->GetOwner();
 		CancelledContext.Result = EHackResult::Cancelled;
 		CompleteActiveHack(CancelledContext, true);
@@ -1301,14 +1378,18 @@ void UPartnerHackComponent::HandleHackTargetInvalidated(
 	}
 
 	const bool bHasAuthority = GetOwner() && GetOwner()->HasAuthority();
-	AbortLocalHackForInvalidTarget();
-
 	if (bHasAuthority)
 	{
-		ClientAbortHackForInvalidTarget();
-		DefaultWidgetControl(false);
-		// 알리지 않으면 해킹 어빌리티가 끝나지 않아 시도 루프 사운드와 Partner 스킬 차단이 남는다.
-		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+		FHackResultContext CancelledContext;
+		CancelledContext.RequestId = ActiveHackRequestId;
+		CancelledContext.TargetActor = InvalidatedComponent->GetOwner();
+		CancelledContext.InstigatorActor = PartnerCharacter;
+		CancelledContext.Result = EHackResult::Cancelled;
+		CompleteActiveHack(CancelledContext, true);
+	}
+	else
+	{
+		AbortLocalHackForInvalidTarget();
 	}
 }
 
@@ -1326,6 +1407,7 @@ void UPartnerHackComponent::StartHackMiniGame(AActor* TargetActor, UHackableComp
 	}
 
 	FHackResultContext ResultContext;
+	ResultContext.RequestId = ActiveHackRequestId;
 	ResultContext.TargetActor = TargetActor;
 	ResultContext.InstigatorActor = PartnerCharacter;
 	ResultContext.Result = EHackResult::Fail;
@@ -1335,6 +1417,8 @@ void UPartnerHackComponent::StartHackMiniGame(AActor* TargetActor, UHackableComp
 
 void UPartnerHackComponent::HandleHackMiniGameFinished(const FHackResultContext& ResultContext)
 {
+	// 이전 위젯의 지연 알림은 현재 요청의 UI까지 닫지 않는다.
+	if (ResultContext.RequestId != ActiveHackRequestId) return;
 	DestroyHackMiniGameWidget();
 
 	ServerCompleteHack(ResultContext);
