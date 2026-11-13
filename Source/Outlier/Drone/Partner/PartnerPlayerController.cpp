@@ -5,6 +5,7 @@
 #include "InputKeyEventArgs.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
+#include "Cinematic/OutlierCinematicSubsystem.h"
 #include "FirstPerson/FirstPersonPlayerCameraManager.h"
 #include "Blueprint/UserWidget.h"
 #include "LocalPlayerUISubSystem.h"
@@ -647,6 +648,15 @@ bool APartnerPlayerController::ShouldShowMainWidget() const
 		return false;
 	}
 
+	// 준비 RPC부터 서버의 최종 Release까지 숨긴다. 복원/상대 준비 대기 중에도 HUD를 먼저 열지 않는다.
+	const UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr;
+	if (Cinematic && Cinematic->GetState() != EOutlierCinematicState::Idle
+		&& Cinematic->GetState() != EOutlierCinematicState::Failed)
+	{
+		return false;
+	}
+
 	switch (PartnerPossessionState)
 	{
 	case EPartnerPossessionState::PartnerControlled:
@@ -1130,6 +1140,8 @@ void APartnerPlayerController::BindMainUI()
 		return;
 	}
 
+	// 인트로 준비 뒤 늦게 생성돼도 첫 화면부터 현재 숨김 조건을 적용한다.
+	RefreshHudVisibility();
 	ShooterUIInstance->AddToViewport();
 	BindPlayerStateDelegates();
 	// RegisterMainUI가 이전 캐시를 적용하기 전에 현재 자기 PS 값으로 맞춘다.

@@ -1342,6 +1342,15 @@ void AFirstPersonPlayerController::ApplyCameraBlackout()
 	}
 }
 
+void AFirstPersonPlayerController::RestoreCameraAfterCinematic()
+{
+	if (!IsLocalController()) return;
+	// 시퀀스는 자체 Manual Fade를 남길 수 있다. 트랙 종료 후 지우고 다른 시스템의 암전 사유는 보존한다.
+	if (PlayerCameraManager) PlayerCameraManager->StopCameraFade();
+	ApplyCameraBlackout();
+	if (IsValid(GetPawn())) SetViewTarget(GetPawn());
+}
+
 void AFirstPersonPlayerController::ReleaseLevelLoadBlackoutIfNoIntroPending()
 {
 	if (!HasCameraBlackoutReason(ECameraBlackoutReason::LevelLoad))

@@ -367,6 +367,8 @@ public:
 	// 사유별로 카메라 암전을 켜고 끈다. 로컬 Controller에서만 동작한다.
 	void AddCameraBlackoutReason(ECameraBlackoutReason Reason);
 	void RemoveCameraBlackoutReason(ECameraBlackoutReason Reason);
+	// 인트로의 Fade/시점을 정리한 뒤 로딩·GameOver 등 현재 암전 사유를 다시 적용한다.
+	void RestoreCameraAfterCinematic();
 	bool HasCameraBlackoutReason(ECameraBlackoutReason Reason) const
 	{
 		return (CameraBlackoutReasons & static_cast<uint8>(Reason)) != 0;
@@ -441,11 +443,12 @@ protected:
 	void FailClientGameplayReload(const FString& Reason);
 	virtual void RefreshPostProcessState();
 
-	// 숨김 사유(사망, Partner 빙의)를 합쳐 HUD 표시 여부를 다시 맞춘다. 사유가 바뀔 때마다 호출한다.
-	virtual void RefreshHudVisibility();
 	virtual bool ShouldShowMainWidget() const;
 
 public:
+	// 숨김 사유(사망, Partner 빙의/인트로)를 합친다. 시네마틱 상태 전환에서도 갱신한다.
+	virtual void RefreshHudVisibility();
+
 	// 읽기 전용. 상호작용 위젯 디버그 로그(InteractableComponent)에서도 읽는다.
 	bool IsHudHiddenForDeath() const { return bHudHiddenForDeath; }
 
