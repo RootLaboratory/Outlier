@@ -1,6 +1,7 @@
 #include "EnemyStateTreeSyncTask.h"
 
 #include "AIController.h"
+#include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyAIController.h"
 #include "Outlier.h"
 
@@ -44,6 +45,8 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 	}
 
 	InstanceData.CombatState = InstanceData.Enemy->GetCombatState();
+	const AAutoTurret* Turret = Cast<AAutoTurret>(InstanceData.Enemy);
+	InstanceData.bHackingInProgress = Turret && Turret->IsHackingInProgress();
 	InstanceData.bIsPossessed = InstanceData.Enemy->IsEnemyPossessed();
 	InstanceData.bPossessionInProgress = InstanceData.Enemy->IsPossessionInProgress();
 	InstanceData.bPossessedAttackHeld = InstanceData.Enemy->IsPossessedAttackHeld();

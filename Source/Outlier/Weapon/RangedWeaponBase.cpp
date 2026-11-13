@@ -2830,6 +2830,20 @@ void ARangedWeaponBase::StopAttack()
 	CurrentBurstShotCount = 0;
 }
 
+void ARangedWeaponBase::CancelEnemyAttackCycle()
+{
+	if (!HasAuthority()) return;
+	// 가상 StopAttack으로 레이저 Charge/Trail도 먼저 닫고, 탄약과 GAS 재사용 제한은 유지한다.
+	StopAttack();
+	CancelReload();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(PostBurstCooldownTimerHandle);
+	}
+	bOnPostBurstCooldown = false;
+	CurrentBurstShotCount = 0;
+}
+
 void ARangedWeaponBase::ReleaseAttack()
 {
 	if (!HasAuthority()) return;

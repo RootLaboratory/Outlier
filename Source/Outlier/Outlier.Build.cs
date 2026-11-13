@@ -52,6 +52,9 @@ public class Outlier : ModuleRules
         {
             PrivateDependencyModuleNames.Add("AssetRegistry");
             PrivateDependencyModuleNames.Add("UnrealEd");
+            // 자동화에서 transient StateTree를 컴파일해 실제 해킹/공격 Task 경계를 검증한다.
+            PrivateDependencyModuleNames.Add("StateTreeEditorModule");
+            PrivateDependencyModuleNames.Add("PropertyBindingUtils");
         }
 
         PublicIncludePaths.AddRange(new string[] {

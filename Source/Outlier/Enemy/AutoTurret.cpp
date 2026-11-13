@@ -215,6 +215,7 @@ void AAutoTurret::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifet
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AAutoTurret, ReplicatedLifecycle);
 	DOREPLIFETIME(AAutoTurret, bHackedToPlayerTeam);
+	DOREPLIFETIME(AAutoTurret, bHackingActive);
 }
 
 float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
@@ -864,6 +865,7 @@ void AAutoTurret::ResetRoomWaveLifecycle(const TCHAR* ResetReason)
 		return;
 	}
 
+	CancelHacking(ResetReason, false);
 	const EAutoTurretLifecycleState PreviousState = TurretLifecycleState;
 	const int32 PreviousGeneration = RoomWaveGameplayGeneration;
 	const int32 PreviousSerial = RoomWaveActivationSerial;
@@ -1017,6 +1019,7 @@ void AAutoTurret::ApplyWaitingForWaveState()
 		return;
 	}
 
+	CancelHacking(TEXT("WaitingForWave"), false);
 	ClearHitClues();
 	bInCombat = false;
 	CombatState = EEnemyCombatState::NonCombat;
@@ -1396,6 +1399,7 @@ void AAutoTurret::MulticastBeginTurretDeployment_Implementation(
 
 void AAutoTurret::MulticastPlayFireMontage_Implementation()
 {
+	if (IsHackingInProgress() || IsDead()) return;
 	PlayMontageOnMesh(TurretHeadMesh, FireMontage);
 }
 
@@ -1569,8 +1573,13 @@ bool AAutoTurret::IsTurretAttackAimReady(const AActor* Target) const
 bool AAutoTurret::UpdateTurretAimAtLocation(
 	const FVector& TargetLocation, float DeltaTime, bool bAttackRotation, bool bUseSearchPitch)
 {
-	if (!HasAuthority() || !IsCombatActive() || !TurretHeadPivot || TargetLocation.ContainsNaN()) return false;
-	const FVector Direction = GetActorQuat().UnrotateVector(TargetLocation - GetPawnViewLocation());
+	if (!HasAuthority() || !IsCombatActive() || IsAIControlSuppressed()
+		|| HasActiveStunTag() || GetCombatState() == EEnemyCombatState::Stun
+		|| !TurretHeadPivot || TargetLocation.ContainsNaN()) return false;
+	// 총열 안쪽까지 붙은 대상도 추적하도록 근접 회전은 피벗을 기준으로 한다. 이동하는 총구를 쓰면 역회전할 수 있다.
+	const FVector AimOrigin = CanFireWithoutTurretAimAlignment(TargetLocation)
+		? TurretHeadPivot->GetComponentLocation() : GetPawnViewLocation();
+	const FVector Direction = GetActorQuat().UnrotateVector(TargetLocation - AimOrigin);
 	CurrentAimLocation = TargetLocation;
 	const double HorizontalDistance = FVector2D(Direction.X, Direction.Y).Size();
 	FRotator DesiredOffset = CurrentAimOffset;
@@ -1633,7 +1642,7 @@ void AAutoTurret::ApplyExplosionReaction(const FVector& ExplosionOrigin, float E
 	float TurretReactionScale, float EffectRatio)
 {
 	(void)EnemyImpulseScale;
-	if (!bEnableImpactReaction || !HasAuthority() || !IsCombatActive()
+	if (!bEnableImpactReaction || !HasAuthority() || !IsCombatActive() || IsHackingInProgress()
 		|| EffectRatio <= 0.0f || GetCurrentHealth() <= 0.0f)
 	{
 		return;
@@ -1710,7 +1719,7 @@ void AAutoTurret::StartImpactRecovery()
 
 void AAutoTurret::TickImpactRecovery()
 {
-	if (!HasAuthority() || GetCurrentHealth() <= 0.0f)
+	if (!HasAuthority() || GetCurrentHealth() <= 0.0f || IsHackingInProgress())
 	{
 		StopImpactRecovery();
 		return;
@@ -1791,21 +1800,62 @@ void AAutoTurret::ApplyHeadRotation()
 
 void AAutoTurret::HandleHackStarted(const FHackQueryContext& Context)
 {
-	(void)Context;
-	if (!HasAuthority() || !IsCombatActive() || bHackedToPlayerTeam)
+	if (!HasAuthority() || !IsCombatActive() || IsDead() || bHackedToPlayerTeam || IsHackingInProgress()
+		|| Context.RequestId == 0 || !IsValid(Context.InstigatorActor) || !HackableComponent
+		|| !HackableComponent->CanBeHackTarget(Context))
 	{
 		return;
 	}
-	if (CurrentWeapon && GetAttackPhase() == EEnemyAttackPhase::Firing)
-	{
-		CurrentWeapon->ForcePostBurstCooldown();
-	}
+	// 팀 변경은 대상 정보를 폐기하지만 이미 확보한 전투 준비도까지 낮추지는 않는다.
+	bHackingWasInCombat = IsInCombat() || CombatState == EEnemyCombatState::Combat
+		|| (CombatState == EEnemyCombatState::Stun && PreStunCombatState == EEnemyCombatState::Combat);
+	HackingRequestId = Context.RequestId;
+	if (++HackingEpisodeId == 0) ++HackingEpisodeId;
+	HackingInstigator = Context.InstigatorActor;
+	HackingController = GetController();
+	HackingGeneration = GetCombatGameplayGeneration();
+	HackingLease = GetPoolLeaseSerial();
+	HackingWaveSerial = RoomWaveActivationSerial;
+	bHackingActive = true;
+	bHackingStateEntered = false;
+	bHasHackingResult = false;
+	// 차단과 실행 세대를 먼저 바꾼다. 아직 Exit하지 않은 옛 Task도 공격을 재개할 수 없다.
+	if (++TurretAttackExecution == 0) ++TurretAttackExecution;
+	ResetTargetAttackContinuity();
+	if (CurrentWeapon) CurrentWeapon->CancelEnemyAttackCycle();
 	StopCurrentAttack();
-	EnterStun();
+	StopFireMontage();
+	StopImpactRecovery();
+	ClearTargetTracking();
+	ClearAlertClue();
+	ClearHitClues();
+	SightSnapshots.Reset();
+	SetPlayerCurrentlyVisible(false);
+	RemoveRoomTargetObserver();
+	ClearSharedTargetContact();
+	EndSearchEpisode();
+	bHasLastKnownPlayerLocation = false;
+	LastKnownPlayerLocation = FVector::ZeroVector;
+	bInCombat = false;
+	if (AEnemyAIController* AI = Cast<AEnemyAIController>(GetController())) AI->SetAttackAimActive(false);
+	// 해킹 차단과 옛 공격 정리를 먼저 끝낸 뒤 기존 스턴 GE를 제거한다.
+	// 마지막 태그 제거는 RestoreStateAfterStun을 동기 호출하므로 회차도 다시 확인한다.
+	const uint32 StartedEpisode = HackingEpisodeId;
+	ClearActiveStunEffects();
+	if (!bHackingActive || HackingEpisodeId != StartedEpisode || !IsHackingLifecycleCurrent()) return;
+	if (!HasActiveStunTag() && CombatState != EEnemyCombatState::Stun)
+	{
+		CombatState = EEnemyCombatState::Hacking;
+		RefreshCombatStatePresentation();
+		RequestHackingStateEntry();
+	}
+	ForceNetUpdate();
 }
 
 void AAutoTurret::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context)
 {
+	if (Context.RequestId != 0 && (!bFinalizingHacking || Context.RequestId != HackingRequestId
+		|| Context.InstigatorActor != HackingInstigator.Get())) return;
 	if (!HasAuthority() || EffectTag != HackGameplayTags::Effect::ChangeTeam()
 		|| Context.Result != EHackResult::Success || !IsCombatActive())
 	{
@@ -1813,20 +1863,34 @@ void AAutoTurret::HandleHackEffect(FGameplayTag EffectTag, const FHackResultCont
 	}
 
 	if (bHackedToPlayerTeam) return;
+	const uint32 EffectEpisodeId = HackingEpisodeId;
+	const bool bEpisodeEffect = Context.RequestId != 0;
+	auto IsEffectLifecycleCurrent = [this, EffectEpisodeId, bEpisodeEffect]()
+	{
+		return IsCombatActive() && !IsActorBeingDestroyed() && !IsDead()
+			&& (!bEpisodeEffect || (EffectEpisodeId == HackingEpisodeId && IsHackingLifecycleCurrent()));
+	};
 	bHackedToPlayerTeam = true;
 	ApplyHackedTeamState();
+	if (!IsEffectLifecycleCurrent()) return;
 	// 팀 전환이 적용된 뒤에만 시간을 시작한다. 시작이 거부되면 전환도 확정하지 않는다.
 	if (!BeginHackEffect())
 	{
-		bHackedToPlayerTeam = false;
-		ApplyHackedTeamState();
+		if (IsEffectLifecycleCurrent())
+		{
+			bHackedToPlayerTeam = false;
+			ApplyHackedTeamState();
+		}
 		return;
 	}
+	// 효과 시작 알림에서도 사망/리셋이 재진입할 수 있다. 새 생명에 진행·Room 성공을 쓰지 않는다.
+	if (!IsEffectLifecycleCurrent() || !IsHackEffectActive()) return;
 	OutlierAudioFeedback::World(this, *HackedAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
 	if (HackableComponent)
 	{
 		HackableComponent->MarkAsHackedOnce();
 	}
+	if (!IsEffectLifecycleCurrent() || !IsHackEffectActive()) return;
 	if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
 	{
 		Combat->NotifyEnemyAllied(this);
@@ -1835,14 +1899,261 @@ void AAutoTurret::HandleHackEffect(FGameplayTag EffectTag, const FHackResultCont
 
 void AAutoTurret::HandleHackCompleted(const FHackResultContext& Context)
 {
+	// 터렛 완료는 DeferHackCompletion -> Hacking Task 진입 확인에서만 확정한다.
+	// 일반 대상의 기존 완료 호출이나 지연된 옛 호출로 Stun/행동 상태를 복원하지 않는다.
 	(void)Context;
-	if (!HasAuthority() || !IsCombatActive())
+}
+
+bool AAutoTurret::IsHackingLifecycleCurrent() const
+{
+	return HasAuthority() && IsCombatActive() && !IsDead() && !IsActorBeingDestroyed()
+		&& IsValid(HackingInstigator.Get()) && HackingController.Get() == GetController()
+		&& HackingGeneration == GetCombatGameplayGeneration()
+		&& HackingLease == GetPoolLeaseSerial() && HackingWaveSerial == RoomWaveActivationSerial;
+}
+
+void AAutoTurret::RequestHackingStateEntry()
+{
+	if (!bHackingActive || HasActiveStunTag() || CombatState == EEnemyCombatState::Stun) return;
+	const uint32 EpisodeId = HackingEpisodeId;
+	const float Timeout = FMath::IsFinite(HackingEntryTimeout) && HackingEntryTimeout > 0.0f
+		? HackingEntryTimeout : 1.0f;
+	// 진입 누락만 감시한다. 실제 Stun과 미니게임 결과 대기에는 제한 시간을 적용하지 않는다.
+	if (!GetWorldTimerManager().IsTimerActive(HackingEntryTimer))
 	{
+		GetWorldTimerManager().SetTimer(HackingEntryTimer, FTimerDelegate::CreateWeakLambda(this, [this, EpisodeId]()
+		{
+			if (bHackingActive && HackingEpisodeId == EpisodeId && !bHackingStateEntered)
+			{
+				UE_LOG(LogOutlier, Warning, TEXT("[TurretHacking] Missing Hacking Task entry Turret=%s Episode=%u Request=%u"),
+					*GetNameSafe(this), EpisodeId, HackingRequestId);
+				CancelHacking(TEXT("EntryTimeout"));
+			}
+		}), Timeout, false);
+	}
+	SendEnemyStateTreeEvent(FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Hacking.Started")));
+}
+
+bool AAutoTurret::EnterHackingState(uint32 EpisodeId)
+{
+	if (!bHackingActive || EpisodeId != HackingEpisodeId) return false;
+	if (!IsHackingLifecycleCurrent())
+	{
+		CancelHacking(TEXT("InvalidEntry"), false);
+		return false;
+	}
+	if (HasActiveStunTag() || CombatState == EEnemyCombatState::Stun) return false;
+	bHackingStateEntered = true;
+	GetWorldTimerManager().ClearTimer(HackingEntryTimer);
+	CombatState = EEnemyCombatState::Hacking;
+	return true;
+}
+
+bool AAutoTurret::DeferHackCompletion(const FHackResultContext& Context,
+	TFunction<void(const FHackResultContext&)> Completion)
+{
+	if (!HasAuthority()) return true;
+	// 성공 효과가 대상 가용성 알림을 보낼 수 있다. 이미 소비한 회차를 취소로 덮어쓰지 않는다.
+	if (bFinalizingHacking) return true;
+	if (!bHackingActive || Context.RequestId != HackingRequestId
+		|| Context.TargetActor != this || Context.InstigatorActor != HackingInstigator.Get())
+	{
+		FHackResultContext Cancelled = Context;
+		Cancelled.Result = EHackResult::Cancelled;
+		if (Completion) Completion(Cancelled);
+		return true;
+	}
+	if (!HackingCompletion) HackingCompletion = MoveTemp(Completion);
+	if (Context.Result == EHackResult::Cancelled || !IsHackingLifecycleCurrent())
+	{
+		CancelHacking(TEXT("CancelledOrInvalid"));
+		return true;
+	}
+	if (bHasHackingResult) return true;
+	PendingHackingResult = Context;
+	bHasHackingResult = true;
+	const uint32 EpisodeId = HackingEpisodeId;
+	if (!TryFinishHacking(EpisodeId))
+	{
+		SendEnemyStateTreeEvent(FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Hacking.ResultReady")));
+	}
+	return true;
+}
+
+bool AAutoTurret::TryFinishHacking(uint32 EpisodeId)
+{
+	if (EpisodeId != HackingEpisodeId) return false;
+	if (!bHackingActive) return true;
+	if (!IsHackingLifecycleCurrent())
+	{
+		CancelHacking(TEXT("InvalidResult"), false);
+		return true;
+	}
+	if (!bHackingStateEntered || !bHasHackingResult
+		|| HasActiveStunTag() || CombatState == EEnemyCombatState::Stun) return false;
+	FHackQueryContext Query;
+	Query.InstigatorActor = HackingInstigator.Get();
+	Query.BlockedTags.AddTag(OutlierGameplayTags::State::Dead());
+	Query.BlockedTags.AddTag(OutlierGameplayTags::State::Locked());
+	const EHackResult Result = HackableComponent && HackableComponent->CanBeHackTarget(Query)
+		? PendingHackingResult.Result : EHackResult::Cancelled;
+	FinishHacking(Result, TEXT("TaskResult"));
+	return true;
+}
+
+void AAutoTurret::FinishHacking(EHackResult Result, const TCHAR* Reason, bool bResumeAI)
+{
+	if (!HasAuthority() || !bHackingActive) return;
+	const uint32 EpisodeId = HackingEpisodeId;
+	FHackResultContext Terminal = PendingHackingResult;
+	Terminal.RequestId = HackingRequestId;
+	Terminal.InstigatorActor = HackingInstigator.Get();
+	Terminal.TargetActor = this;
+	Terminal.Result = Result;
+	TFunction<void(const FHackResultContext&)> Completion = MoveTemp(HackingCompletion);
+	// 외부 효과/Partner 콜백보다 먼저 처리 권한을 소비한다. 재진입은 같은 회차를 다시 확정할 수 없다.
+	bHackingActive = false;
+	bHackingStateEntered = false;
+	bHasHackingResult = false;
+	bFinalizingHacking = true;
+	PendingHackingResult = FHackResultContext();
+	GetWorldTimerManager().ClearTimer(HackingEntryTimer);
+	if (Result == EHackResult::Success)
+	{
+		HandleHackEffect(HackGameplayTags::Effect::ChangeTeam(), Terminal);
+		if (!IsHackingLifecycleCurrent() || !bHackedToPlayerTeam || !IsHackEffectActive())
+			Terminal.Result = EHackResult::Cancelled;
+	}
+	if (Terminal.Result != EHackResult::Cancelled && IsValid(HackableComponent))
+	{
+		HackableComponent->CompleteHack(Terminal);
+	}
+	bFinalizingHacking = false;
+	const EEnemyCombatState ResumeState = bHackingWasInCombat ? EEnemyCombatState::Combat : EEnemyCombatState::NonCombat;
+	bHackingWasInCombat = false;
+	if (PreStunCombatState == EEnemyCombatState::Hacking) PreStunCombatState = ResumeState;
+	const bool bCanResume = bResumeAI && IsHackingLifecycleCurrent() && EpisodeId == HackingEpisodeId;
+	if (CombatState == EEnemyCombatState::Hacking)
+	{
+		CombatState = ResumeState;
+		bInCombat = ResumeState == EEnemyCombatState::Combat;
+	}
+	if (bCanResume && !HasActiveStunTag() && CombatState != EEnemyCombatState::Stun)
+	{
+		if (!ImpactRotationOffset.IsNearlyZero(0.01f)) StartImpactRecovery();
+		RefreshCombatStatePresentation();
+		RefreshPerceptionConfigForCurrentState();
+		// 팀 변경은 최종화 차단 중 감지를 끈다. 차단을 해제한 현재 lifecycle로
+		// listener도 다시 켜야 새 팀의 적을 인지하고 Battle을 깨울 수 있다.
+		if (AEnemyAIController* AI = Cast<AEnemyAIController>(GetController()))
+		{
+			AI->SetEnemyPerceptionEnabled(CanUseEnemyPerception());
+		}
+		RefreshTargetTracking();
+		SendEnemyStateTreeEvent(FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Hacking.Ended")));
+		// Task Enter 중 보낸 이벤트는 같은 StateTree 평가에서 소비될 수 있다.
+		// 효과는 이미 확정됐으므로 다음 월드 경계에는 Sync 갱신용 알림만 다시 보낸다.
+		SendEnemyStateTreeEventNextTick(FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Hacking.Ended")));
+	}
+	if (IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[TurretHacking] End Turret=%s Episode=%u Request=%u Generation=%d Lease=%d Controller=%s Attack=%u State=%d Result=%d Reason=%s"),
+			*GetNameSafe(this), EpisodeId, HackingRequestId, HackingGeneration, HackingLease,
+			*GetNameSafe(GetController()), TurretAttackExecution, static_cast<int32>(CombatState),
+			static_cast<int32>(Terminal.Result), Reason);
+	}
+	ForceNetUpdate();
+	// 이 호출이 대상의 사망/반환/새 요청으로 이어질 수 있어 이후 Pawn 상태는 변경하지 않는다.
+	if (Completion) Completion(Terminal);
+	else if (Terminal.Result == EHackResult::Cancelled && IsValid(HackableComponent))
+	{
+		// 결과 제출 전 StopLogic/사망도 Partner의 진행 UI와 충전 대기를 같은 경계에서 닫는다.
+		HackableComponent->NotifyHackTargetUnavailable();
+	}
+}
+
+void AAutoTurret::CancelHacking(const TCHAR* Reason, bool bResumeAI)
+{
+	FinishHacking(EHackResult::Cancelled, Reason, bResumeAI);
+}
+
+void AAutoTurret::LeaveHackingState(uint32 EpisodeId)
+{
+	if (!bHackingActive || EpisodeId != HackingEpisodeId) return;
+	bHackingStateEntered = false;
+	if (HasActiveStunTag() || CombatState == EEnemyCombatState::Stun)
+	{
+		GetWorldTimerManager().ClearTimer(HackingEntryTimer);
 		return;
 	}
-	if (GetCombatState() == EEnemyCombatState::Stun)
+	CancelHacking(TEXT("UnexpectedTaskExit"));
+}
+
+void AAutoTurret::EnterStun()
+{
+	if (HasAuthority() && bHackingActive)
 	{
-		RestoreStateAfterStun();
+		bHackingStateEntered = false;
+		GetWorldTimerManager().ClearTimer(HackingEntryTimer);
+	}
+	Super::EnterStun();
+}
+
+void AAutoTurret::RestoreStateAfterStun()
+{
+	Super::RestoreStateAfterStun();
+	if (!HasAuthority() || HasActiveStunTag() || CombatState == EEnemyCombatState::Stun) return;
+	if (!bHackingActive)
+	{
+		// Stun 중 해킹이 취소됐어도 멈춰 둔 머리 Offset을 영구 보관하지 않는다.
+		if (IsCombatActive() && !IsAIControlSuppressed() && !ImpactRotationOffset.IsNearlyZero(0.01f))
+			StartImpactRecovery();
+		return;
+	}
+	if (!IsHackingLifecycleCurrent())
+	{
+		CancelHacking(TEXT("InvalidStunResume"), false);
+		return;
+	}
+	CombatState = EEnemyCombatState::Hacking;
+	// Super가 복원한 스턴 전 전투 플래그는 해킹 대기 중에 유지하지 않는다.
+	bInCombat = false;
+	RequestHackingStateEntry();
+}
+
+void AAutoTurret::UnPossessed()
+{
+	CancelHacking(TEXT("UnPossessed"), false);
+	Super::UnPossessed();
+}
+
+void AAutoTurret::OnRep_HackingActive()
+{
+	if (bHackingActive)
+	{
+		StopMontageOnMesh(GetMesh(), FireMontage);
+		StopMontageOnMesh(TurretHeadMesh, FireMontage);
+	}
+}
+
+uint32 AAutoTurret::BeginTurretAttackExecution()
+{
+	if (!HasAuthority() || !IsCombatActive() || IsDead() || IsAIControlSuppressed()
+		|| HasActiveStunTag() || CombatState == EEnemyCombatState::Stun) return 0;
+	if (++TurretAttackExecution == 0) ++TurretAttackExecution;
+	return TurretAttackExecution;
+}
+
+bool AAutoTurret::IsTurretAttackExecutionCurrent(uint32 ExecutionId) const
+{
+	return ExecutionId != 0 && ExecutionId == TurretAttackExecution;
+}
+
+void AAutoTurret::FinishTurretAttackExecution(uint32 ExecutionId)
+{
+	if (IsTurretAttackExecutionCurrent(ExecutionId))
+	{
+		if (++TurretAttackExecution == 0) ++TurretAttackExecution;
 	}
 }
 
@@ -1901,6 +2212,7 @@ void AAutoTurret::HandleEMPStarted(FGameplayTag EffectTag)
 
 void AAutoTurret::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CancelHacking(TEXT("EndPlay"), false);
 	if (HasAuthority())
 	{
 		if (bWaveTurretRegistered)
@@ -2024,6 +2336,7 @@ EDataValidationResult AAutoTurret::IsDataValid(FDataValidationContext& Context) 
 
 void AAutoTurret::HandleDeath()
 {
+	CancelHacking(TEXT("Death"), false);
 	if (TurretLifecycleState == EAutoTurretLifecycleState::DeadPresentation
 		|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent)
 	{

@@ -8,6 +8,29 @@
 #include "EnemyStateTreeTurretTasks.generated.h"
 
 USTRUCT()
+struct FEnemyTurretHackingTaskInstanceData
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AAutoTurret> Turret = nullptr;
+	uint32 RequestId = 0;
+};
+
+USTRUCT(meta = (DisplayName = "Enemy Turret Hacking", Category = "Enemy|Turret"))
+struct OUTLIER_API FEnemyTurretHackingTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemyTurretHackingTaskInstanceData;
+	FEnemyTurretHackingTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+USTRUCT()
 struct FEnemyDeployTurretTaskInstanceData
 {
 	GENERATED_BODY()
@@ -102,6 +125,7 @@ struct FEnemyTurretBurstFireTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
 	TObjectPtr<AActor> TargetActor = nullptr;
 	TWeakObjectPtr<AActor> ActiveTarget;
+	uint32 AttackExecutionId = 0;
 	FVector LastValidAimLocation = FVector::ZeroVector;
 	EEnemyTurretBurstTaskPhase Phase = EEnemyTurretBurstTaskPhase::TelegraphAndTracking;
 	bool bAttackStarted = false;
@@ -139,6 +163,7 @@ struct FEnemyTurretSniperShotTaskInstanceData
 	// 중간에 CurrentWeapon이 바뀌어도 시작한 무기의 연출을 정리한다.
 	UPROPERTY(Transient)
 	TObjectPtr<ARangedWeaponBase> ActiveWeapon = nullptr;
+	uint32 AttackExecutionId = 0;
 	float ElapsedTime = 0.0f;
 	FVector LockedAimLocation = FVector::ZeroVector;
 	EEnemyTurretSniperTaskPhase Phase = EEnemyTurretSniperTaskPhase::LaserTelegraphAndTracking;

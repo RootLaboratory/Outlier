@@ -15,6 +15,63 @@ namespace
 	}
 }
 
+FEnemyTurretHackingTask::FEnemyTurretHackingTask()
+{
+	// 결과는 Pawn에 보관한다. 이벤트는 깨우기만 하므로 진입 전 도착한 None 결과도 잃지 않는다.
+	bShouldCallTick = false;
+	bShouldCallTickOnlyOnEvents = true;
+	bShouldStateChangeOnReselect = false;
+}
+
+EStateTreeRunStatus FEnemyTurretHackingTask::EnterState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	Data.RequestId = 0;
+	if (!IsValid(Data.Turret) || !Data.Turret->HasAuthority() || !Data.Turret->IsHackingInProgress())
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+	Data.RequestId = Data.Turret->GetHackingRequestId();
+	if (!Data.Turret->EnterHackingState(Data.RequestId))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+	// 같은 회차의 진입 확인 뒤에만 결과를 소비한다. 성공/실패/취소 모두 Task 완료다.
+	return Data.Turret->TryFinishHacking(Data.RequestId)
+		? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Running;
+}
+
+EStateTreeRunStatus FEnemyTurretHackingTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
+{
+	const FInstanceDataType& Data = Context.GetInstanceData(*this);
+	if (!IsValid(Data.Turret) || !Data.Turret->HasAuthority())
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+	if (!Data.Turret->IsHackingInProgress())
+	{
+		return EStateTreeRunStatus::Succeeded;
+	}
+	if (Data.RequestId != Data.Turret->GetHackingRequestId())
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+	return Data.Turret->TryFinishHacking(Data.RequestId)
+		? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Running;
+}
+
+void FEnemyTurretHackingTask::ExitState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	const FInstanceDataType& Data = Context.GetInstanceData(*this);
+	if (IsValid(Data.Turret) && Data.Turret->HasAuthority() && Data.RequestId != 0)
+	{
+		// 실제 Stun이면 진입 확인만 반납하고, 예기치 않은 이탈이면 회차를 취소한다.
+		Data.Turret->LeaveHackingState(Data.RequestId);
+	}
+}
+
 FEnemyDeployTurretTask::FEnemyDeployTurretTask()
 {
 	bShouldStateChangeOnReselect = false;
@@ -165,9 +222,12 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::EnterState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	Data.AttackExecutionId = 0;
 	AActor* Target = Data.Turret ? Data.Turret->GetTrackedTarget() : nullptr;
 	if (!Data.Turret || !Data.Turret->HasAuthority() || !IsValid(Target)
-		|| !Data.Turret->UsesNormalTurretAttackPolicy())
+		|| !Data.Turret->UsesNormalTurretAttackPolicy() || !IsValid(Data.Turret->GetCurrentWeapon())
+		|| Data.Turret->IsDead() || Data.Turret->GetCombatState() == EEnemyCombatState::Stun
+		|| Data.Turret->IsAIControlSuppressed() || Data.Turret->IsHackingInProgress())
 	{
 		if (AAutoTurret::IsTurretDiagnosticsEnabled())
 		{
@@ -178,6 +238,11 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::EnterState(
 				*GetNameSafe(Data.TargetActor), *GetNameSafe(Target),
 				*GetNameSafe(Data.Turret ? Data.Turret->GetCurrentWeapon() : nullptr));
 		}
+		return EStateTreeRunStatus::Failed;
+	}
+	Data.AttackExecutionId = Data.Turret->BeginTurretAttackExecution();
+	if (Data.AttackExecutionId == 0)
+	{
 		return EStateTreeRunStatus::Failed;
 	}
 	Data.TargetActor = Target;
@@ -195,8 +260,16 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::Tick(FStateTreeExecutionContext& 
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	AAutoTurret* Turret = Data.Turret;
+	// 해킹이 무효화한 옛 Task는 새 공격의 무기나 몽타주를 정리할 권한도 없다.
+	if (!IsValid(Turret) || !Turret->HasAuthority()
+		|| !Turret->IsTurretAttackExecutionCurrent(Data.AttackExecutionId))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
 	ARangedWeaponBase* Weapon = Turret ? Turret->GetCurrentWeapon() : nullptr;
-	if (!Turret || !Turret->HasAuthority() || !Weapon || !Turret->UsesNormalTurretAttackPolicy())
+	if (!IsValid(Weapon) || !Turret->UsesNormalTurretAttackPolicy() || Turret->IsDead()
+		|| Turret->GetCombatState() == EEnemyCombatState::Stun || Turret->IsAIControlSuppressed()
+		|| Turret->IsHackingInProgress())
 	{
 		return EStateTreeRunStatus::Failed;
 	}
@@ -314,15 +387,12 @@ void FEnemyTurretBurstFireTask::ExitState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	const FInstanceDataType& Data = Context.GetInstanceData(*this);
-	if (!Data.Turret)
+	if (!IsValid(Data.Turret) || !Data.Turret->HasAuthority()
+		|| !Data.Turret->IsTurretAttackExecutionCurrent(Data.AttackExecutionId))
 	{
 		return;
 	}
-	if (Data.ActiveTarget.Get() != Data.Turret->GetTrackedTarget())
-	{
-		// 늦게 끝난 이전 대상의 Task는 새 대상의 예외 구간/무기 회복을 정리하지 않는다.
-		return;
-	}
+	// 대상이 먼저 해제돼도 현재 실행의 몽타주는 닫는다. 새 실행 보호는 대상 대신 세대로 판정한다.
 	Data.Turret->FinishTargetAttackAttempt();
 	ARangedWeaponBase* Weapon = Data.Turret->GetCurrentWeapon();
 	if (Data.bAttackStarted && Weapon
@@ -334,6 +404,7 @@ void FEnemyTurretBurstFireTask::ExitState(
 	Data.Turret->PauseTargetAttack();
 	Data.Turret->SetAttackPhase(EEnemyAttackPhase::Idle);
 	Data.Turret->StopFireMontage();
+	Data.Turret->FinishTurretAttackExecution(Data.AttackExecutionId);
 }
 
 FEnemyTurretSniperShotTask::FEnemyTurretSniperShotTask()
@@ -345,10 +416,11 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::EnterState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	Data.AttackExecutionId = 0;
 	AActor* Target = ResolveTrackedTarget(Data.Turret, Data.TargetActor);
 	if (!IsValid(Data.Turret) || !Data.Turret->HasAuthority() || !IsValid(Target)
 		|| Data.Turret->IsDead() || Data.Turret->GetCombatState() == EEnemyCombatState::Stun
-		|| Data.Turret->IsAIControlSuppressed()
+		|| Data.Turret->IsAIControlSuppressed() || Data.Turret->IsHackingInProgress()
 		|| !IsValid(Data.Turret->GetCurrentWeapon()))
 	{
 		if (AAutoTurret::IsTurretDiagnosticsEnabled())
@@ -360,6 +432,11 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::EnterState(
 				*GetNameSafe(Data.TargetActor), *GetNameSafe(Target),
 				*GetNameSafe(Data.Turret ? Data.Turret->GetCurrentWeapon() : nullptr));
 		}
+		return EStateTreeRunStatus::Failed;
+	}
+	Data.AttackExecutionId = Data.Turret->BeginTurretAttackExecution();
+	if (Data.AttackExecutionId == 0)
+	{
 		return EStateTreeRunStatus::Failed;
 	}
 	Data.TargetActor = Target;
@@ -390,10 +467,17 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	AAutoTurret* Turret = Data.Turret;
+	// Abort 경로의 StopAttack보다 먼저 검사한다. 같은 무기의 새 Charge도 옛 Task가 멈추면 안 된다.
+	if (!IsValid(Turret) || !Turret->HasAuthority()
+		|| !Turret->IsTurretAttackExecutionCurrent(Data.AttackExecutionId))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
 	ARangedWeaponBase* Weapon = Turret ? Turret->GetCurrentWeapon() : nullptr;
 	if (!IsValid(Turret) || !Turret->HasAuthority() || !IsValid(Weapon)
 		|| Weapon != Data.ActiveWeapon || Turret->IsDead()
-		|| Turret->GetCombatState() == EEnemyCombatState::Stun || Turret->IsAIControlSuppressed())
+		|| Turret->GetCombatState() == EEnemyCombatState::Stun || Turret->IsAIControlSuppressed()
+		|| Turret->IsHackingInProgress())
 	{
 		if (AAutoTurret::IsTurretDiagnosticsEnabled())
 		{
@@ -496,6 +580,11 @@ void FEnemyTurretSniperShotTask::ExitState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	const FInstanceDataType& Data = Context.GetInstanceData(*this);
+	if (!IsValid(Data.Turret) || !Data.Turret->HasAuthority()
+		|| !Data.Turret->IsTurretAttackExecutionCurrent(Data.AttackExecutionId))
+	{
+		return;
+	}
 	if (AAutoTurret::IsTurretDiagnosticsEnabled())
 	{
 		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Laser] TaskExit Turret=%s Weapon=%s Phase=%d Elapsed=%.3f AttackStarted=%d"),
@@ -517,6 +606,7 @@ void FEnemyTurretSniperShotTask::ExitState(
 		}
 		Data.Turret->StopFireMontage();
 	}
+	Data.Turret->FinishTurretAttackExecution(Data.AttackExecutionId);
 }
 
 FEnemyRecoverTurretImpactOffsetTask::FEnemyRecoverTurretImpactOffsetTask()
@@ -529,6 +619,7 @@ EStateTreeRunStatus FEnemyRecoverTurretImpactOffsetTask::EnterState(
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	if (!Data.Turret || !Data.Turret->HasAuthority()
+		|| Data.Turret->IsHackingInProgress()
 		|| Data.Turret->ImpactReactionMode != EAutoTurretImpactReactionMode::StateTreeInterrupt)
 	{
 		return EStateTreeRunStatus::Failed;
@@ -544,7 +635,7 @@ EStateTreeRunStatus FEnemyRecoverTurretImpactOffsetTask::Tick(
 	FStateTreeExecutionContext& Context, float DeltaTime) const
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
-	if (!Data.Turret || !Data.Turret->HasAuthority())
+	if (!Data.Turret || !Data.Turret->HasAuthority() || Data.Turret->IsHackingInProgress())
 	{
 		return EStateTreeRunStatus::Failed;
 	}
@@ -562,8 +653,11 @@ void FEnemyRecoverTurretImpactOffsetTask::ExitState(
 	const FInstanceDataType& Data = Context.GetInstanceData(*this);
 	if (IsValid(Data.Turret) && Data.Turret->HasAuthority())
 	{
-		// Death나 Stun으로 중단돼도 머리 Offset이 남아 있지 않도록 종료 시 정리한다.
 		Data.Turret->StopImpactRecovery();
-		Data.Turret->ResetTurretImpactRecovery();
+		// 해킹은 현재 머리 자세를 유지한다. 늦은 이전 Task Exit가 Offset을 지워 머리를 튀게 하지 않는다.
+		if (!Data.Turret->IsHackingInProgress())
+		{
+			Data.Turret->ResetTurretImpactRecovery();
+		}
 	}
 }

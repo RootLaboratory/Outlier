@@ -95,7 +95,7 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientStartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent,
-		float ClickSuccessRangeMultiplier = 1.0f, float SpinningGapMultiplier = 1.0f);
+		float ClickSuccessRangeMultiplier = 1.0f, float SpinningGapMultiplier = 1.0f, uint32 RequestId = 0);
 
 	UFUNCTION(Client, Reliable)
 	void ClientStopHackMiniGame();
@@ -166,6 +166,7 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
 	// 네트워크 검증은 실제 검색·RPC 결과를 관측한다. 테스트를 위한 판정 우회 API는 노출하지 않는다.
 	friend class AHackTargetPointNetworkProbe;
+	friend class FAutoTurretHackingTest;
 #endif
 	UPROPERTY(VisibleInstanceOnly, Category = "Hack")
 	FPartnerHackAbilityData CachedAbilityData;
@@ -189,6 +190,9 @@ private:
 	TWeakObjectPtr<AActor> ServerHeldHackActor;
 	uint32 LocalHoldId = 0;
 	uint32 ServerHoldId = 0;
+	uint32 NextHackRequestId = 0;
+	uint32 ActiveHackRequestId = 0;
+	bool bHackCompletionPending = false;
 	float HackHoldStartTime = 0.0f;
 	float HackHoldDuration = 0.0f;
 	void UpdateLocalHackHold();
@@ -211,6 +215,7 @@ private:
 	void DeactivateUnselectedCandidates(UHackableComponent* SelectedComponent);
 	void CancelActiveHack();
 	void CompleteActiveHack(const FHackResultContext& ResultContext, bool bNotifyClient);
+	void FinishDeferredHack(const FHackResultContext& ResultContext, bool bNotifyClient);
 	void SetActiveHackableComponent(UHackableComponent* HackableComponent);
 	void ClearActiveHackableComponent();
 	void AbortLocalHackForInvalidTarget();

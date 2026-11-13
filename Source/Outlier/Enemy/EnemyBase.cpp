@@ -5633,7 +5633,14 @@ void AEnemyBase::ClearStunForCommittedPossession()
 		return;
 	}
 
-	// 성공 시점의 스턴만 수집한다. 제거 콜백에서 새로 적용된 스턴까지 지우지 않는다.
+	ClearActiveStunEffects();
+}
+
+void AEnemyBase::ClearActiveStunEffects()
+{
+	if (!HasAuthority() || IsDead() || !OutlierAbilitySystemComponent) return;
+
+	// 호출 시점의 스턴만 수집한다. 제거 콜백에서 새로 적용된 스턴까지 지우지 않는다.
 	FGameplayEffectQuery StunQuery;
 	StunQuery.CustomMatchDelegate.BindLambda([](const FActiveGameplayEffect& Effect)
 	{
@@ -5651,7 +5658,7 @@ void AEnemyBase::ClearStunForCommittedPossession()
 
 	// 마지막 태그 제거 콜백이 먼저 복구했으면 아무 일도 하지 않는다.
 	// 이미 태그가 없고 CombatState만 남은 경우도 같은 복구 경로로 정리한다.
-	RestoreStateAfterStun();
+	if (CombatState == EEnemyCombatState::Stun) RestoreStateAfterStun();
 }
 
 void AEnemyBase::RestoreStateAfterStun()
@@ -5667,6 +5674,9 @@ void AEnemyBase::RestoreStateAfterStun()
 	}
 
 	// 빙의 중에는 스턴 전 AI 전투 상태를 되살리지 않는다.
+	// 스턴 중 취소된 해킹 회차도 옛 PreStun 값으로 재개하지 않는다.
+	if (PreStunCombatState == EEnemyCombatState::Hacking && !IsHackingInProgress())
+		PreStunCombatState = EEnemyCombatState::NonCombat;
 	CombatState = bIsPossessed ? EEnemyCombatState::NonCombat : PreStunCombatState;
 	bInCombat = CombatState == EEnemyCombatState::Combat;
 	RefreshCombatStatePresentation();

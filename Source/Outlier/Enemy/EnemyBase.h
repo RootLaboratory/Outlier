@@ -166,7 +166,9 @@ enum class EEnemyCombatState : uint8
 	Combat,
 	Stun,
 	// 저장된 기존 enum 값은 유지한다. 원래 방 복귀를 마쳐야 NonCombat으로 넘어간다.
-	Returning
+	Returning,
+	// 해킹 행동 중단은 실제 GAS Stun과 별도로 관리한다. 기존 직렬화 값은 유지한다.
+	Hacking
 };
 
 struct OUTLIER_API FEnemyAdaptationBreakApplicationResult
@@ -199,6 +201,7 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 	friend class FOutlierSightBoneTargetsTest;
 	friend class FEnemyAdaptationCombatPresentationTest;
 	friend class FEnemyAdaptationGenerationDamageTest;
+	friend class FAutoTurretHackingTest;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FEnemyHitClueLifecycleTest;
 #endif
@@ -341,6 +344,9 @@ public:
 	void SendEnemyStateTreeEvent(FGameplayTag Tag);
 
 protected:
+	// 현재 스턴 부여 효과만 제거하고 기존 태그 변경/상태 복구 경로를 따른다.
+	void ClearActiveStunEffects();
+
 	// 빙의 여부는 기존 팀 판정이 결정한다. 이 목록은 유형별 월드 메시의 신체 설정만 담당한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")
 	TArray<FName> SightBones;
@@ -714,8 +720,9 @@ public:
 
 	bool IsAIControlSuppressed() const
 	{
-		return bIsPossessed || IsPossessionInProgress() || bImpactReactionActive;
+		return bIsPossessed || IsPossessionInProgress() || bImpactReactionActive || IsHackingInProgress();
 	}
+	virtual bool IsHackingInProgress() const { return false; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsInCombat() const { return bInCombat; }
@@ -1060,14 +1067,14 @@ public:
 	void EnterAlertFromPerception(const FVector& PlayerLocation);
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
-	void EnterStun();
+	virtual void EnterStun();
 
 	// 권총 스턴이 처음 적용될 때만 게임 플로우당 한 번 보낸다. EMP/내성 파괴 스턴은 제외한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Event", meta = (Categories = "Event"))
 	FGameplayTag StunEventTag;
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
-	void RestoreStateAfterStun();
+	virtual void RestoreStateAfterStun();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Possession")
 	AController* GetCachedAIController() const { return CachedAIController.IsValid() ? CachedAIController.Get() : nullptr; }
