@@ -1,11 +1,12 @@
 #include "/Engine/Private/Common.ush"
 #include "/Engine/Private/ScreenPass.ush"
 
-// Partner KnockDown 글리치 가중치 굽기(RDG.PartnerKnockDown.Mask, 뷰 크기 R8).
+// Partner KnockDown 글리치 가중치 굽기(RDG.PartnerKnockDown.Mask, 뷰 크기 R8G8).
 // 1. 마스크 텍스처 R(0~1)을 반전 / 레벨 / 감마로 다듬어 기본 가중치 W0를 만든다. 흰색(1) = 글리치.
 // 2. 회복 진행도(Progress 0 → 1)가 W0를 아래에서부터 쓸어 올라가며 지운다. 값이 낮은 곳부터 글리치가 사라지고
 //    Progress 1에서 전부 사라진다. 경계는 RecoverSoftness만큼 부드럽다.
-// 결과 = W0 × 남은 정도. 메인 패스가 뷰 UV로 읽어 글리치 세기에 곱한다.
+// R = W0 × 남은 정도. 메인 패스가 뷰 UV로 읽어 글리치 세기에 곱한다.
+// G = 1 - W0. 진행도와 무관한 "마스크 밖" 가중치. 메인 패스가 채널 순차 복구를 여기에만 건다.
 
 Texture2D MaskTexture;
 SamplerState MaskSampler;
@@ -36,5 +37,5 @@ void MainPS(
 	const float Cutoff = lerp(-Soft, 1.0f + Soft, saturate(Progress));
 	const float Remain = smoothstep(Cutoff - Soft, Cutoff + Soft, Weight);
 
-	OutColor = float4(Weight * Remain, 0.0f, 0.0f, 1.0f);
+	OutColor = float4(Weight * Remain, 1.0f - Weight, 0.0f, 1.0f);
 }

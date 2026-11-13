@@ -4,7 +4,7 @@
 #include "GlobalShader.h"
 #include "ShaderParameterStruct.h"
 
-// 마스크 텍스처 + 회복 진행도 → 글리치 가중치(R8).
+// 마스크 텍스처 + 회복 진행도 → 글리치 가중치(R) + 마스크 밖 가중치(G). R8G8.
 class FRDGPartnerKnockDownMaskPS : public FGlobalShader
 {
 public:
@@ -71,6 +71,10 @@ public:
 		SHADER_PARAMETER(float, ChromaticStartOffset)
 		SHADER_PARAMETER(FVector2f, ChromaticScale)
 		SHADER_PARAMETER(int32, bChromaticGlitchOnly)
+		SHADER_PARAMETER(float, ChannelRecoverProgress)
+		SHADER_PARAMETER(float, ChannelRecoverAmount)
+		SHADER_PARAMETER(FVector3f, ChannelRecoverStart)
+		SHADER_PARAMETER(float, ChannelRecoverBlend)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 };
