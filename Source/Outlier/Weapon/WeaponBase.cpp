@@ -13,6 +13,7 @@
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "GameFramework/Character.h"
 #include "OutlierNetUtils.h"
@@ -249,6 +250,14 @@ const UProceduralAnimValues* AWeaponBase::ResolveProceduralValues() const
 	return FirstPersonProceduralValues;
 }
 
+void AWeaponBase::NotifyOutlinePresentationChanged()
+{
+	if (UOutlierStencilSubsystem* Outlines = CachedOutlineSubsystem.Get())
+	{
+		Outlines->MarkTeammatesDirty();
+	}
+}
+
 void AWeaponBase::RefreshProceduralPresentation()
 {
 	if (!bProceduralOwnerInitialized || CachedProceduralOwner.Get() != WeaponOwner.Get())
@@ -294,6 +303,8 @@ const UProceduralAnimValues* AWeaponBase::GetFirstPersonProceduralValues() const
 
 void AWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	NotifyOutlinePresentationChanged();
+	CachedOutlineSubsystem.Reset();
 	if (AShooterCharacter* Shooter = CachedProceduralShooter.Get())
 	{
 		Shooter->OnPresentationChanged.RemoveAll(this);
@@ -365,6 +376,7 @@ void AWeaponBase::SetEquippedCollisionEnabled(bool bEnabled)
 
 void AWeaponBase::SetPickupPresentation()
 {
+	NotifyOutlinePresentationChanged();
 	FirstPersonWeaponMesh->SetHiddenInGame(true);
 	FirstPersonWeaponMesh->SetCastShadow(false);
 	FirstPersonWeaponMesh->SetCastHiddenShadow(false);
@@ -385,6 +397,7 @@ void AWeaponBase::SetPickupPresentation()
 
 void AWeaponBase::SetStowedPresentation()
 {
+	NotifyOutlinePresentationChanged();
 	if (FirstPersonWeaponMesh)
 	{
 		FirstPersonWeaponMesh->SetHiddenInGame(true);
@@ -411,6 +424,7 @@ void AWeaponBase::SetStowedPresentation()
 
 void AWeaponBase::SetEquippedPresentation()
 {
+	NotifyOutlinePresentationChanged();
 	FirstPersonWeaponMesh->SetHiddenInGame(false);
 	FirstPersonWeaponMesh->SetCastShadow(false);
 	FirstPersonWeaponMesh->SetCastHiddenShadow(false);
@@ -554,6 +568,11 @@ void AWeaponBase::OnRep_EquippedState()
 void AWeaponBase::BeginPlay()
 {
 	Super::BeginPlay();
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		CachedOutlineSubsystem = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>();
+		NotifyOutlinePresentationChanged();
+	}
 
 	EnsureWeaponDataInitialized();
 	CachedAudioSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr;
@@ -779,6 +798,8 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 	{
 		return;
 	}
+	// 실제 재수집은 다음 subsystem 갱신에서 수행하므로 부착 중간 상태를 렌더러에 넘기지 않는다.
+	Weapon->NotifyOutlinePresentationChanged();
 
 	if (APartnerCharacter* Partner = Cast<APartnerCharacter>(NewOwner))
 	{

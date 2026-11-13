@@ -22,6 +22,13 @@ class AEnemyBase;
 class UEnemyRoomSubsystem;
 struct FOutlierStealthSession;
 
+// 같은 차단 조건의 시도 사용 기록을 비교할 실제 환경 접촉이다. 관측/발사 권한은 보관하지 않는다.
+struct FTargetAttemptPathEvidence
+{
+	TWeakObjectPtr<UPrimitiveComponent> Blocker;
+	FVector ImpactPoint = FVector::ZeroVector;
+};
+
 // 서버에서 확정한 한 탄의 결과다. 수신 시점의 총구로 월드 탄도를 다시 만들지 않는다.
 USTRUCT()
 struct FWeaponShotSnapshot
@@ -361,18 +368,33 @@ public:
 	virtual void RefreshShadowWeaponPresentation() override;
 
 	virtual bool CanAttack() const override;
+	// 입력을 놓은 뒤 보존된 첫 발만 실행할 때 연사만 끝내고 이미 시작한 쿨다운은 유지한다.
+	void ReleaseAttack();
 	virtual void StartAttack() override;
 	virtual void StopAttack() override;
 	void PauseTargetAttack();
 	bool HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint) const;
+	AEnemyBase* FindTargetAttackBlockingAlly(const AActor* Target, const FVector& AimPoint,
+		int32& RemainingChecks, FVector& OutOrigin) const;
+	bool HasClearTargetAttackPath(const AActor* Target, const FVector& AimPoint, int32& RemainingChecks) const;
+	bool HasClearTargetAttackPathFrom(const AActor* Target, const FVector& AimPoint,
+		const FVector& ShotOrigin, int32& RemainingChecks) const;
+	// 환경 차단만 허용하는 별도 검사다. 벽 뒤 동료까지 확인하며 조회 상한 소진은 실패다.
+	bool HasTargetAttemptPath(const AActor* Target, const FVector& AimPoint,
+		FTargetAttemptPathEvidence* Evidence = nullptr) const;
+	bool HasTargetAttemptPathFrom(const AActor* Target, const FVector& AimPoint,
+		const FVector& ShotOrigin, int32& RemainingChecks, FTargetAttemptPathEvidence* Evidence = nullptr) const;
 	bool IsOutsideEffectiveRange(const FVector& AimPoint) const;
 	float GetEffectiveRange() const { return EffectiveRange; }
 	virtual void PerformAttack() override;
 	bool HasFixedBurst() const { return BurstShotCount > 0; }
+	float GetTargetBurstRemainingSeconds() const;
 	int32 GetCurrentBurstShotCount() const { return CurrentBurstShotCount; }
 	bool IsOnPostBurstCooldown() const { return bOnPostBurstCooldown; }
 	// 공격이 중간에 취소돼도 정상 버스트와 같은 후딜레이를 적용한다.
 	void ForcePostBurstCooldown();
+	// 대상 교체로 버스트를 닫을 때 기존 연사 기한과 이미 시작한 회복을 유지한다.
+	void ForceTargetAttackPostBurstCooldown();
 
 	virtual bool CanReload() const;
 	virtual void Reload();

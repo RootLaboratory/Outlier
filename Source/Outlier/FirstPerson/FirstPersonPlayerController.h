@@ -96,6 +96,7 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 {
 	GENERATED_BODY()
 	friend class FOutlierSuitTransitionTest;
+	friend class FOutlierClientReloadRecoveryTest;
 	friend struct FUpgradeNodeInteractionTestAccess;
 	
 public:
@@ -165,7 +166,7 @@ public:
 	void ClientStopResolvedAudio(int32 AudioInstanceId);
 
 	UFUNCTION(Client, Reliable)
-	void ClientArenaLoad(FVector InSpawnLocation, uint32 ReconnectRequestId);
+	void ClientArenaLoad(FVector InSpawnLocation, uint32 ReconnectRequestId, uint32 GameplayGeneration = 0);
 
 	UFUNCTION(Client, Reliable)
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
@@ -237,10 +238,13 @@ public:
 	void ClientUpgradePurchaseResult(uint32 RequestId, AActor* UpgradeOwner, FName RowName, bool bSucceeded);
 
 	UFUNCTION(Server, Reliable)
-	void ServerNotifyArenaReady(uint32 GameplayGeneration);
+	void ServerNotifyArenaReady(uint32 GameplayGeneration, uint32 ReconnectRequestId = 0);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaGameplayUnloaded(uint32 GameplayGeneration);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyArenaGameplayReloadFailed(uint32 GameplayGeneration);
 
 	UFUNCTION(Client, Reliable)
 	void ClientActivateArenaGameplayLevels(uint32 GameplayGeneration);
@@ -277,6 +281,9 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForArenaExit();
+
+	UFUNCTION(Client, Reliable)
+	void ClientArenaRecoveryFailed(bool bReturnToLobby, const FString& Reason);
 
 	UFUNCTION(Client, Reliable)
 	void ClientConfigureListenReconnect(FGuid ReconnectToken);
@@ -400,6 +407,7 @@ protected:
 
 	virtual void BeginPlay() override;
 	virtual void Destroyed() override;
+	virtual void PawnLeavingGame() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void AcknowledgePossession(APawn* P) override;
 
@@ -427,6 +435,10 @@ protected:
 	void ApplyServerArenaSpawnLocation(const FVector& InSpawnLocation);
 	bool TickClientArenaContentReady(float DeltaTime);
 	void ClearClientArenaContentWait();
+	void ContinueClientGameplayReload();
+	bool TickClientGameplayReloadWatchdog(float DeltaTime);
+	void ClearClientGameplayReloadWatchdog();
+	void FailClientGameplayReload(const FString& Reason);
 	virtual void RefreshPostProcessState();
 
 	// 숨김 사유(사망, Partner 빙의)를 합쳐 HUD 표시 여부를 다시 맞춘다. 사유가 바뀔 때마다 호출한다.
@@ -558,7 +570,14 @@ protected:
 
 	bool bHasPendingArenaRequest = false;
 	uint32 PendingGameplayGeneration = 0;
+	uint32 PendingArenaReconnectRequestId = 0;
 	double ClientGameplayReloadStartedAt = 0.0;
+	bool bClientReloadBootstrapPending = false;
+	bool bClientGameplayLoadAuthorized = false;
+	bool bClientArenaReadyReported = false;
+	bool bClientGameplayReloadFailed = false;
+	bool bClientArenaExitPrepared = false;
+	FTSTicker::FDelegateHandle ClientGameplayReloadWatchdogHandle;
 	// 서버가 계산한 실제 스폰 위치. 클라이언트 준비 진단에도 사용한다.
 	FVector PendingArenaSpawnLocation = FVector::ZeroVector;
 	bool bWaitingForArenaStart = false;

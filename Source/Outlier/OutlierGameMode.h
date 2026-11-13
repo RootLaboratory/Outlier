@@ -103,6 +103,10 @@ public:
 		bool bEncounterCleared, int32 GameplayGeneration);
 	// 레벨 로드뿐 아니라 현재 페어의 Possess/재접속 대기까지 끝난 서버 준비 상태다.
 	bool IsPairGameplayReady() const;
+	bool IsGameplayReloadInProgress(uint32 Generation) const
+	{
+		return bArenaReloadInProgress && Generation != 0 && Generation == PendingGameplayGeneration;
+	}
 	FOnPairGameplayReady OnPairGameplayReady;
 	bool IsRestoringClearedEncounter(FGameplayTag RoomTag) const;
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
@@ -138,7 +142,9 @@ public:
 		ActiveMatchSaveContext = Context;
 	}
 
-	void OnClientArenaReady(APlayerController* PC, uint32 GameplayGeneration);
+	void OnClientArenaReady(APlayerController* PC, uint32 GameplayGeneration, uint32 ReconnectRequestId = 0);
+	void OnClientArenaGameplayReloadFailed(APlayerController* PC, uint32 GameplayGeneration);
+	bool PreserveGameplayPawnForReconnect(APlayerController* PlayerController);
 	void HandleCinematicContext(AFirstPersonPlayerController* PC, const FOutlierCinematicContext& Context);
 	void OnClientArenaGameplayUnloaded(APlayerController* PC, uint32 GameplayGeneration);
 
@@ -170,10 +176,14 @@ public:
 
 private:
 	bool BuildFixedRestoreLoadout(FOutlierLoadoutSnapshot& Snapshot) const;
+	friend class FOutlierGenerationNetworkProbe;
 	friend class FOutlierGameOverPendingFailureTest;
+	friend class FOutlierArenaGenerationTransitionTest;
 	friend class FOutlierSettingsPauseTest;
 	friend class FOutlierDirectPairTest;
 	friend class FElevatorCheckpointIntegrationTest;
+	friend class FRoomCheckpointSaveIntegrationTest;
+	friend class FOutlierPresetGuideLifecycleTest;
 	void TryStartDirectPairTest();
 	bool ResolveDirectPairTestSpawns(FTransform& ShooterSpawn, FTransform& PartnerSpawn) const;
 	TArray<TWeakObjectPtr<APlayerController>> DirectPairTestPlayers;
@@ -213,6 +223,13 @@ private:
 		uint32 GameplayGeneration,
 		EOutlierGameplayReloadFailure Failure);
 	void HandleArenaWorkerReloadStallTimeout();
+	bool StartGameOverCheckpointFallback(AController* Controller);
+	void EnsureArenaRecoveryWatchdog();
+	bool TickArenaRecovery(float DeltaTime);
+	void MarkArenaReloadProgress();
+	void RetryArenaReload();
+	void TryCompleteArenaPossessions();
+	bool bDispatchingArenaPossessions = false;
 	void BeginArenaWorkerReleaseShutdown(
 		AFirstPersonPlayerController* ExitRequester = nullptr, bool bQuitAfterLeave = false);
 	void ClearArenaGameplayReloadDelegates();
@@ -230,7 +247,11 @@ private:
 	void CancelCheckpointRestartVoteForDisconnect(APlayerController* ExitingPlayer);
 
 	bool bArenaReloadInProgress = false;
+	bool bCheckpointCommitInProgress = false;
 	bool bServerArenaReloadReady = false;
+	bool bClearPresetGuidesAfterReload = false;
+	bool bPresetGuideCleanupDeferred = false;
+	FTimerHandle PresetGuideCleanupTimerHandle;
 	bool bCheckpointRestartInProgress = false;
 	bool bResumeRoomPhasesAfterReload = false;
 	FDelegateHandle GameplayReadyHandle;
@@ -244,6 +265,15 @@ private:
 	// TMap<TWeakObjectPtr<APlayerController>, double> ClientUnloadRequestedAt;
 	// TMap<TWeakObjectPtr<APlayerController>, double> ClientLoadAuthorizedAt;
 	double ArenaReloadStartedAt = 0.0;
+	double ArenaReloadLastProgressAt = 0.0;
+	double ArenaReloadLastRecoveryAt = 0.0;
+	double ArenaReconnectDeadline = 0.0;
+	int32 ArenaReloadRecoveryAttempts = 0;
+	EOutlierGameplayReloadPhase LastObservedReloadPhase{};
+	FTSTicker::FDelegateHandle ArenaRecoveryTickerHandle;
+	bool bArenaRecoveryEnding = false;
+	friend class FOutlierArenaRecoveryWatchdogTest;
+	friend class FOutlierReconnectPawnTeardownTest;
 	FTimerHandle ArenaWorkerReloadFailureTimerHandle;
 	FOutlierCheckpointRestartVote CheckpointRestartVote;
 	TWeakObjectPtr<AActor> CheckpointRestartVoteLayerOwner;
@@ -324,7 +354,7 @@ protected:
 		const FTransform& ShooterSpawn,
 		const FTransform& PartnerSpawn,
 		bool bRestoreCheckpointSnapshot = false, int32 PresetNodeCount = INDEX_NONE,
-		TFunction<bool()> BeforeRespawn = {});
+		TFunction<bool()> BeforeRespawn = {}, TFunction<void()> ApplyRestore = {});
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;

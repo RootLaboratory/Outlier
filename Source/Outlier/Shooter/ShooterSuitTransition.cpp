@@ -2,8 +2,8 @@
 
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
-#include "CollisionQueryParams.h"
-#include "Components/CapsuleComponent.h"
+#include "FirstPerson/PlayerRelocationEQS.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/World.h"
@@ -19,7 +19,7 @@
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
 
-// 서버 전환 흐름: 검증/예약 -> 두 Pawn 차단 -> FadingOut -> commit -> Applying -> FadingIn -> 종료.
+// 서버 전환 흐름: 검증/예약 -> 두 Pawn 차단 -> FadingOut -> EQS/안전 이동 -> commit -> Applying -> FadingIn -> 종료.
 // 각 단계는 두 소유 Controller의 해당 단계 완료 응답과 서버 최소 시간이 모두 충족되어야 진행한다.
 // commit 전 취소는 예약만 되돌리고, commit 후 취소는 지급/획득을 유지한 채 전환 차단만 해제한다.
 // Interaction은 commit 후 제거될 수 있으므로 남은 응답 대기와 타이머의 수명은 Shooter가 소유한다.
@@ -61,6 +61,8 @@ bool AShooterCharacter::BeginSuitTransition(ASuitInteraction* Interaction,
 	}
 	// 3. 예약을 획득한 뒤 전환 ID와 이탈 감시를 먼저 준비하고, 같은 ID로 두 Pawn을 차단한다.
 	// 이 시점의 성공 반환은 요청 수락일 뿐이다. 획득 성공 통지는 이후 commit에서만 보낸다.
+	SuitTransitionArena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	SuitTransitionGameplayGeneration = SuitTransitionArena.IsValid() ? SuitTransitionArena->GetGameplayGeneration() : 0;
 	SuitTransitionInteraction = Interaction;
 	SuitTransitionConfiguration = Configuration;
 	ActiveSuitTransitionId = FGuid::NewGuid();
@@ -187,47 +189,98 @@ bool AShooterCharacter::CanCommitSuitTransition() const
 		&& Configuration.ThirdPersonAnimClass == SuitTransitionConfiguration.ThirdPersonAnimClass;
 }
 
-bool AShooterCharacter::TeleportSuitTransitionPartner()
+bool AShooterCharacter::IsSuitTransitionRelocationCurrent(const FGuid& TransitionId) const
 {
-	APartnerCharacter* Partner = SuitTransitionPartner.Get();
-	const ASuitInteraction* Interaction = SuitTransitionInteraction.Get();
-	if (!IsValid(Partner) || !IsValid(Interaction) || Interaction->PartnerTeleportOffset.ContainsNaN())
+	return HasAuthority() && TransitionId.IsValid() && ActiveSuitTransitionId == TransitionId
+		&& SuitTransitionPhase == ESuitTransitionPhase::FadingOut && !bSuitTransitionCommitted
+		&& !bSuitTransitionCancelRequested && ValidateSuitTransitionParticipants(false)
+		&& IsSuitTransitionBlocked() && SuitTransitionPartner->IsSuitTransitionBlocked()
+		&& SuitTransitionInteraction.IsValid() && SuitTransitionInteraction->IsReservedFor(this)
+		&& (!SuitTransitionArena.IsValid()
+			|| SuitTransitionArena->GetGameplayGeneration() == SuitTransitionGameplayGeneration);
+}
+
+void AShooterCharacter::StartSuitTransitionPartnerQuery()
+{
+	// 1. 두 암전 응답과 최소 시간이 충족된 뒤 기준을 저장한다. 대기 중 재호출로 탐색/timeout을 다시 시작하지 않는다.
+	if (SuitTransitionPartnerQuery) return;
+	const FGuid Id = ActiveSuitTransitionId;
+	if (!IsSuitTransitionRelocationCurrent(Id) || !CanCommitSuitTransition())
 	{
-		return false;
+		CancelSuitTransition();
+		return;
+	}
+	const FVector Offset = SuitTransitionInteraction->PartnerTeleportOffset;
+	const TWeakObjectPtr<AShooterCharacter> WeakThis(this);
+	FPlayerRelocationRequest Request;
+	Request.MovingCharacter = SuitTransitionPartner.Get();
+	Request.Anchor = this;
+	Request.Reference = FTransform(FRotator(0, GetActorRotation().Yaw, 0), GetActorLocation());
+	Request.Mode = EPlayerRelocationMode::Flight;
+	Request.bPreferOffset = true;
+	Request.bRequireAnchorSweep = true;
+	Request.PreferredLocalOffset = Offset;
+	// 슈트는 양자도약의 0.5초 제한을 사용하지 않는다. 기존 암전 timeout을 연장하지 않고 남은 시간만 쓴다.
+	Request.TimeoutSeconds = SuitTransitionResponseTimeout
+		- (GetWorld()->GetTimeSeconds() - SuitTransitionPhaseStartedAt);
+	// 기본 2m/3m를 사용하되 기존 커스텀 옆 배치도 최초 범위에 포함한다. 큰 설정도 후보/검사 예산은 늘리지 않는다.
+	Request.InitialRadius = FMath::Max(Request.InitialRadius, float(Offset.Size2D()));
+	Request.ExpandedRadius = FMath::Max(Request.ExpandedRadius, Request.InitialRadius + 100.0f);
+	Request.GridSpacing = FMath::Max(Request.GridSpacing, Request.ExpandedRadius / 6.0f);
+	Request.IsContextCurrent = [WeakThis, Id]
+	{
+		return WeakThis.IsValid() && WeakThis->IsSuitTransitionRelocationCurrent(Id);
+	};
+	SuitTransitionPartnerQuery = NewObject<UPlayerRelocationQuery>(this);
+	SuitTransitionPartnerQuery->Start(Request, [WeakThis, Id](const FPlayerRelocationResult& Result)
+	{
+		if (WeakThis.IsValid()) WeakThis->CompleteSuitTransitionPartnerQuery(Id, Result);
+	});
+}
+
+void AShooterCharacter::CompleteSuitTransitionPartnerQuery(const FGuid& TransitionId, const FPlayerRelocationResult& Result)
+{
+	// 2. 취소/새 전환 뒤 늦은 결과는 현재 전환을 정리하지도 않는다. 현재 요청의 실패만 기존 취소 경로로 보낸다.
+	if (ActiveSuitTransitionId != TransitionId || SuitTransitionPhase != ESuitTransitionPhase::FadingOut) return;
+	if (Result.Status != EPlayerRelocationStatus::Success || !IsSuitTransitionRelocationCurrent(TransitionId)
+		|| !CanCommitSuitTransition() || !SuitTransitionPartnerQuery || !SuitTransitionPartnerQuery->Revalidate())
+	{
+		CancelSuitTransition();
+		return;
 	}
 
-	// 1. 화면이 가려진 시점의 Shooter 위치/Yaw로 목적지를 정한다. Pitch/Roll은 높이에 영향을 주지 않는다.
-	const FRotator ShooterYaw(0.0f, GetActorRotation().Yaw, 0.0f);
-	const FVector Destination = GetActorLocation() + ShooterYaw.RotateVector(Interaction->PartnerTeleportOffset);
-	const FRotator PartnerRotation = Partner->GetActorRotation();
-	// 2. Pawn끼리 충돌을 무시하는 설정에서도 두 캡슐이 겹친 위치는 사용하지 않는다.
-	const UCapsuleComponent* ShooterCapsule = GetCapsuleComponent();
-	const UCapsuleComponent* PartnerCapsule = Partner->GetCapsuleComponent();
-	const float CombinedRadius = ShooterCapsule->GetScaledCapsuleRadius() + PartnerCapsule->GetScaledCapsuleRadius();
-	const float CombinedHalfHeight = ShooterCapsule->GetScaledCapsuleHalfHeight() + PartnerCapsule->GetScaledCapsuleHalfHeight();
-	if (FVector::DistSquared2D(Destination, GetActorLocation()) < FMath::Square(CombinedRadius)
-		&& FMath::Abs(Destination.Z - GetActorLocation().Z) < CombinedHalfHeight)
+	// 3. EQS 수락은 지급 성공이 아니다. 실제 이동부터 지급까지의 짧은 구간만 재진입 가드로 보호한다.
+	APartnerCharacter* Partner = SuitTransitionPartner.Get();
+	const FVector Destination = Result.Location;
+	const FTransform PreviousPartnerTransform = Partner->GetActorTransform();
+	bSuitTransitionCommitInProgress = true;
+	const bool bPartnerMoved = Partner->TeleportTo(Destination, Partner->GetActorRotation(), false, true);
+	if (bPartnerMoved && IsSuitTransitionRelocationCurrent(TransitionId) && CanCommitSuitTransition()
+		&& SuitTransitionPartnerQuery->Revalidate() && Partner->GetActorLocation().Equals(Destination, 0.1f))
 	{
-		return false;
+		// 공통 TeleportTo가 이동 차단과 최초 Flying 복원 정보를 유지한다.
+		Partner->SetBase(nullptr);
+		Partner->GetCharacterMovement()->StopMovementImmediately();
+		SuitTransitionPartnerDestination = Partner->GetActorLocation();
+		Partner->ForceNetUpdate();
+		bSuitTransitionCommitted = SuitTransitionInteraction->CommitReservedSuit(this);
 	}
-	// 3. 실제 캡슐/충돌 응답으로 목적지를 검사한다. 막힌 곳을 엔진이 멀리 보정하면 '옆으로 합류'가 아니므로 취소한다.
-	const FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SuitPartnerTeleport), false, Partner);
-	const FCollisionResponseParams ResponseParams(PartnerCapsule->GetCollisionResponseToChannels());
-	if (GetWorld()->OverlapBlockingTestByChannel(Destination, PartnerRotation.Quaternion(),
-		PartnerCapsule->GetCollisionObjectType(), PartnerCapsule->GetCollisionShape(), QueryParams, ResponseParams))
+	// 4. 지급 전 취소만 이전 위치로 복구한다. Pawn/Pair/세대가 교체됐다면 이전 문맥으로 추가 이동하지 않는다.
+	const bool bSameGeneration = !SuitTransitionArena.IsValid()
+		|| SuitTransitionArena->GetGameplayGeneration() == SuitTransitionGameplayGeneration;
+	if (bPartnerMoved && !bSuitTransitionCommitted && bSameGeneration && ValidateSuitTransitionParticipants(false))
 	{
-		return false;
+		Partner->TeleportTo(PreviousPartnerTransform.GetLocation(), PreviousPartnerTransform.Rotator(), false, true);
+		Partner->ForceNetUpdate();
 	}
-	// 4. 검증한 좌표로만 이동한다. 공통 TeleportTo 경로가 이동 정지와 최초 Flying 복원 정보를 유지한다.
-	if (!Partner->TeleportTo(Destination, PartnerRotation, false, true))
+	bSuitTransitionCommitInProgress = false;
+	if (!bSuitTransitionCommitted || bSuitTransitionCancelRequested)
 	{
-		return false;
+		CancelSuitTransition();
+		return;
 	}
-	Partner->SetBase(nullptr);
-	Partner->GetCharacterMovement()->StopMovementImmediately();
-	SuitTransitionPartnerDestination = Partner->GetActorLocation();
-	Partner->ForceNetUpdate();
-	return true;
+	// 지급 이후의 Applying/FadingIn은 기존 응답·최소 시간·timeout 정책을 그대로 사용한다.
+	EnterSuitTransitionPhase(ESuitTransitionPhase::Applying);
 }
 
 float AShooterCharacter::GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase) const
@@ -419,43 +472,7 @@ void AShooterCharacter::AdvanceSuitTransition()
 	}
 	if (SuitTransitionPhase == ESuitTransitionPhase::FadingOut)
 	{
-		// 두 화면의 암전 완료가 확인된 유일한 지급 구간이다. Applying 응답을 기다리기 전에 서버 commit을 끝낸다.
-		if (bSuitTransitionCommitted)
-		{
-			return;
-		}
-		// 기존 Rifle을 제거하기 직전에 예약/설정/획득 여부를 다시 검사한다. 검증 이후 바뀐 설정은 거부한다.
-		if (!CanCommitSuitTransition())
-		{
-			CancelSuitTransition();
-			return;
-		}
-		// 이동의 Overlap 이벤트도 Pair 변경/취소로 재진입할 수 있다. 이동부터 지급까지 같은 가드로 보호한다.
-		APartnerCharacter* Partner = SuitTransitionPartner.Get();
-		const FTransform PreviousPartnerTransform = Partner->GetActorTransform();
-		bSuitTransitionCommitInProgress = true;
-		const bool bPartnerMoved = TeleportSuitTransitionPartner();
-		if (bPartnerMoved && !bSuitTransitionCancelRequested && ValidateSuitTransitionParticipants(false)
-			&& CanCommitSuitTransition())
-		{
-			bSuitTransitionCommitted = SuitTransitionInteraction->CommitReservedSuit(this);
-		}
-		// 지급 전 실패는 원래 위치로 돌린 뒤 예약을 해제한다. 지급 후 취소는 획득과 이동 결과를 유지한다.
-		if (bPartnerMoved && !bSuitTransitionCommitted && IsValid(Partner) && !Partner->IsActorBeingDestroyed())
-		{
-			Partner->TeleportTo(PreviousPartnerTransform.GetLocation(), PreviousPartnerTransform.Rotator(), false, true);
-			Partner->ForceNetUpdate();
-		}
-		bSuitTransitionCommitInProgress = false;
-		if (!bSuitTransitionCommitted || bSuitTransitionCancelRequested)
-		{
-			CancelSuitTransition();
-			return;
-		}
-		if (ActiveSuitTransitionId.IsValid())
-		{
-			EnterSuitTransitionPhase(ESuitTransitionPhase::Applying);
-		}
+		StartSuitTransitionPartnerQuery();
 	}
 	else if (SuitTransitionPhase == ESuitTransitionPhase::Applying)
 	{
@@ -511,6 +528,14 @@ void AShooterCharacter::FinishSuitTransition()
 	GetWorldTimerManager().ClearTimer(SuitTransitionTimeoutTimer);
 	// ID를 먼저 무효화하여 해제 중 생긴 이벤트/늦은 응답이 이전 전환을 다시 진행하지 못하게 한다.
 	ActiveSuitTransitionId.Invalidate();
+	// ID 무효화 후 Abort해야 동기 완료 콜백도 이전 전환을 다시 진행하지 못한다.
+	if (SuitTransitionPartnerQuery)
+	{
+		SuitTransitionPartnerQuery->Cancel();
+		SuitTransitionPartnerQuery = nullptr;
+	}
+	SuitTransitionArena.Reset();
+	SuitTransitionGameplayGeneration = 0;
 	SuitTransitionPhase = ESuitTransitionPhase::Idle;
 	OnSuitTransitionParticipantInvalidated.RemoveAll(this);
 	if (AOutlierPlayerState* PS = SuitTransitionShooterPlayerState.Get())

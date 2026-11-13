@@ -164,12 +164,14 @@ void ULocalPlayerPostProcessSubsystem::SetUIEffectsSuspended(bool bSuspended)
 		return;
 	}
 	bUIEffectsSuspended = bSuspended;
+	if (ViewExtension.IsValid()) ViewExtension->SetTeammateOutlineSuppressed(bSuspended || IsEndingPresentationActive());
 	MarkDirty();
 	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTransition)
 {
+	ClearTeammateOutlineData();
 	bGameOverBlackoutActive = bPreserveDeathTransition && bGameOverBlackoutActive;
 	PlayerState = FPPGameplayState();
 	bOverlayRequested = false;
@@ -239,6 +241,23 @@ void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTr
 			});
 	}
 	UE_LOG(LogTemp, Log, TEXT("[PostProcessReset][RDG] PreserveDeathTransition=%d"), bPreserveDeathTransition);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetTeammateOutlineData(const FTeammateOutlineViewData& Data, UWorld* SourceWorld)
+{
+	if (!ViewExtension.IsValid()) return;
+	if (SourceWorld && SourceWorld != GetWorld()) return;
+	TeammateOutlineSourceWorld = SourceWorld ? SourceWorld : GetWorld();
+	ViewExtension->UpdateTeammateOutlineData(Data, TeammateOutlineSourceWorld.Get());
+	ViewExtension->SetTeammateOutlineSuppressed(bUIEffectsSuspended || IsEndingPresentationActive());
+}
+
+void ULocalPlayerPostProcessSubsystem::ClearTeammateOutlineData(UWorld* SourceWorld)
+{
+	// LocalPlayer는 월드를 넘어 생존한다. 이전 월드의 종료가 새 월드 데이터를 지우지 않게 한다.
+	if (SourceWorld && TeammateOutlineSourceWorld.Get() != SourceWorld) return;
+	TeammateOutlineSourceWorld.Reset();
+	if (ViewExtension.IsValid()) ViewExtension->UpdateTeammateOutlineData(FTeammateOutlineViewData());
 }
 
 void ULocalPlayerPostProcessSubsystem::ActivateSlideState()

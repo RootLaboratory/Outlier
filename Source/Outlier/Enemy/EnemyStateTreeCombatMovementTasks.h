@@ -33,6 +33,9 @@ struct FEnemyCombatDestinationGuardTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bShouldReselect = false;
 	bool bStartedOutsideWeaponRange = false;
+	// 같은 lease라도 종료된 전술 회차의 목적지를 계속 따라가지 않는다.
+	uint64 CapturedTacticalSerial = 0;
+	bool bStartedForSightReposition = false;
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AEnemyAIController> CachedController;
 };
@@ -64,6 +67,17 @@ struct FEnemyCombatAssessmentTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01"))
 	float UpdateInterval = 0.2f;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float CloseRetreatEnterDistance = 300.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float CloseRetreatReleaseDistance = 500.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bCloseRangeRetreatRequired = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bCloseRangeRetreatStarted = false;
+	bool bCloseRangeRetreatActive = false;
+	// 진단은 상태가 바뀔 때만 남긴다. 기절 유지 중 같은 보류 로그를 반복하지 않는다.
+	bool bCloseRetreatDiagnosticSuppressed = false;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
 	float WallCheckDistance = 300.0f;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (Units = "cm"))
 	float WallCheckHeightOffset = 0.0f;
@@ -73,6 +87,12 @@ struct FEnemyCombatAssessmentTaskInstanceData
 	bool bHasValidTarget = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bTargetOutsideWeaponRange = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNeedsReposition = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bCombatObservationWaiting = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bRepositionResolved = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	float HorizontalDistance = 0.0f;
 	UPROPERTY(EditAnywhere, Category = Output)

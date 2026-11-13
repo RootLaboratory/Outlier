@@ -1,8 +1,11 @@
-#if WITH_DEV_AUTOMATION_TESTS
+﻿#if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
 #include "Conditions/StateTreeCommonConditions.h"
 #include "Enemy/EnemyStateTreeCombatMovementTasks.h"
+#include "Enemy/EnemyEnvQuery.h"
+#include "Engine/Engine.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EnvironmentQuery/EnvQuery.h"
 #include "EnvironmentQuery/EnvQueryOption.h"
 #include "EnvironmentQuery/Tests/EnvQueryTest_Distance.h"
@@ -16,6 +19,8 @@
 #include "StateTreeState.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -77,10 +82,12 @@ int32 CountRangeTransitions(const UStateTreeEditorData& Data, const UStateTreeSt
 	{
 		if (Transition.Trigger != EStateTreeTransitionTrigger::OnTick
 			|| Transition.State.ID != Decision.ID || Transition.Priority != EStateTreeTransitionPriority::High
-			|| Transition.Conditions.Num() != 1) continue;
-		const FStateTreeEditorNode& Condition = Transition.Conditions[0];
+			|| Transition.Conditions.IsEmpty()) continue;
+		for (const FStateTreeEditorNode& Condition : Transition.Conditions)
+		{
 		const auto* Instance = Condition.Instance.GetPtr<FStateTreeCompareBoolConditionInstanceData>();
 		if (Instance && Instance->bRight && HasRangeBinding(Data, Assessment, Condition.ID)) ++Count;
+		}
 	}
 	return Count;
 }
@@ -213,6 +220,13 @@ bool FEnemyCombatRangeStateBindingsTest::RunTest(const FString& Parameters)
 		{
 			const FStateTreeTransition& Transition = Branches[0]->Transitions[Index];
 			if (Transition.Trigger != EStateTreeTransitionTrigger::OnTick || Transition.State.ID != Decision->ID) continue;
+			// Slice 4의 사선 해제 인계는 거리 구간 진입 취소와 다르다. 기존 거리 전이만 제거한다.
+			bool bSightResolved = false;
+			for (const auto& Condition : Transition.Conditions)
+				for (const auto& Binding : Data->EditorBindings.GetBindings())
+					bSightResolved |= (Binding.GetSourcePath().ToString() == TEXT("bRepositionResolved") || Binding.GetSourcePath().ToString() == TEXT("bCloseRangeRetreatRequired"))
+						&& Binding.GetTargetPath().GetStructID() == Condition.ID;
+			if (bSightResolved) continue;
 			Tree->Modify();
 			Data->Modify();
 			Branches[0]->Modify();
@@ -221,8 +235,20 @@ bool FEnemyCombatRangeStateBindingsTest::RunTest(const FString& Parameters)
 		}
 	}
 	for (const FStateTreeTransition& Transition : Branches[0]->Transitions)
-		TestFalse(TEXT("Approach is not canceled solely by entering the tactical distance band"),
-			Transition.Trigger == EStateTreeTransitionTrigger::OnTick && Transition.State.ID == Decision->ID);
+	{
+		if (Transition.Trigger != EStateTreeTransitionTrigger::OnTick || Transition.State.ID != Decision->ID) continue;
+		bool bSightResolved = false;
+		bool bCloseRetreat = false;
+		for (const auto& Condition : Transition.Conditions)
+			for (const auto& Binding : Data->EditorBindings.GetBindings())
+			{
+				bSightResolved |= (Binding.GetSourcePath().ToString() == TEXT("bRepositionResolved") || Binding.GetSourcePath().ToString() == TEXT("bCloseRangeRetreatRequired"))
+					&& Binding.GetTargetPath().GetStructID() == Condition.ID;
+				bCloseRetreat |= Binding.GetSourcePath().ToString() == TEXT("bCloseRangeRetreatRequired")
+					&& Binding.GetTargetPath().GetStructID() == Condition.ID;
+			}
+		TestTrue(TEXT("Approach reselects for reopened sight or close emergency, not ordinary distance bands"), bSightResolved || bCloseRetreat);
+	}
 	if (HasAnyErrors()) return false;
 	if (bChanged)
 	{
@@ -242,6 +268,93 @@ bool FEnemyCombatRangeStateBindingsTest::RunTest(const FString& Parameters)
 		if (!TestTrue(TEXT("Save only canonical linked Gun tree"), UPackage::SavePackage(Tree->GetOutermost(), Tree, *Filename, Args))) return false;
 	}
 	TestTrue(TEXT("Gun range tree compiled data is ready"), Tree->IsReadyToRun());
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyExposedAimQueryBindingsTest,
+	"Outlier.Enemy.Combat.ExposedAim.SavedQueryBindings", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyExposedAimQueryBindingsTest::RunTest(const FString& Parameters)
+{
+	const bool bInstall = FParse::Param(FCommandLine::Get(), TEXT("OutlierInstallExposedAimQueries"));
+	for (const TCHAR* Name : { TEXT("Approach"), TEXT("Retreat") })
+	{
+		const FString Path = FString::Printf(TEXT("/Game/Blueprints/AI/VECDrone/EQS/EQS_Drone_%s.EQS_Drone_%s"), Name, Name);
+		UEnvQuery* Query = LoadObject<UEnvQuery>(nullptr, *Path);
+		if (!TestNotNull(TEXT("Canonical combat query loads"), Query)) return false;
+		bool bChanged = false;
+		int32 SightTests = 0;
+		UEnemyEnvQueryTest_CombatSight* CombatSight = nullptr;
+		if (bInstall && !TestFalse(TEXT("Migration does not overwrite a dirty query"), Query->GetOutermost()->IsDirty())) return false;
+		for (UEnvQueryOption* Option : Query->GetOptions())
+		{
+			for (TObjectPtr<UEnvQueryTest>& Test : Option->Tests)
+			{
+				if (!Cast<UEnvQueryTest_Trace>(Test)) continue;
+				++SightTests;
+				if (bInstall && !Cast<UEnemyEnvQueryTest_CombatSight>(Test))
+				{
+					Query->Modify();
+					Option->Modify();
+					auto* Replacement = NewObject<UEnemyEnvQueryTest_CombatSight>(Option);
+					// 기존 채널/컨텍스트/필터 설정을 보존한다. Shooter만 Task 사선 검사로 인계한다.
+					UEngine::CopyPropertiesForUnrelatedObjects(Test, Replacement);
+					Test = Replacement;
+					bChanged = true;
+				}
+				TestNotNull(TEXT("Central trace cannot reject exposed Shooter candidates before path validation"),
+					Cast<UEnemyEnvQueryTest_CombatSight>(Test));
+				CombatSight = Cast<UEnemyEnvQueryTest_CombatSight>(Test);
+			}
+		}
+		// Approach의 기존 중앙 Trace만 교체한다. Retreat는 완료 callback에서 사선을 검사한다.
+		TestEqual(TEXT("Saved query retains its original sight filter count"), SightTests,
+			FCString::Strcmp(Name, TEXT("Approach")) == 0 ? 1 : 0);
+		if (SightTests > 1 || (SightTests == 1 && !CombatSight)) return false;
+		// EQS 편집기는 그래프의 NodeInstance로 런타임 Tests를 다시 만든다. 이미 Tests만
+		// 교체한 에셋도 복구해야 다음 편집/저장 때 중앙 Trace로 되돌아가지 않는다.
+		TArray<UObject*> Objects;
+		GetObjectsWithOuter(Query, Objects, true);
+		int32 GraphSightTests = 0;
+		for (UObject* Object : Objects)
+		{
+			UEdGraphNode* Node = Cast<UEdGraphNode>(Object);
+			FObjectPropertyBase* InstanceProperty = Node
+				? FindFProperty<FObjectPropertyBase>(Node->GetClass(), TEXT("NodeInstance")) : nullptr;
+			if (!InstanceProperty || !Cast<UEnvQueryTest_Trace>(InstanceProperty->GetObjectPropertyValue_InContainer(Node))) continue;
+			const FBoolProperty* Enabled = FindFProperty<FBoolProperty>(Node->GetClass(), TEXT("bTestEnabled"));
+			if (Enabled && !Enabled->GetPropertyValue_InContainer(Node)) continue;
+			++GraphSightTests;
+			if (!CombatSight) continue;
+			if (bInstall && InstanceProperty->GetObjectPropertyValue_InContainer(Node) != CombatSight)
+			{
+				Node->Modify();
+				InstanceProperty->SetObjectPropertyValue_InContainer(Node, CombatSight);
+				// 편집기 모듈 의존성을 추가하지 않고 저장된 클래스 정보도 함께 갱신한다.
+				FStructProperty* ClassData = FindFProperty<FStructProperty>(Node->GetClass(), TEXT("ClassData"));
+				FStrProperty* ClassName = ClassData
+					? FindFProperty<FStrProperty>(ClassData->Struct, TEXT("ClassName")) : nullptr;
+				if (!TestNotNull(TEXT("Graph class metadata is available"), ClassName)) return false;
+				void* Data = ClassData->ContainerPtrToValuePtr<void>(Node);
+				ClassData->Struct->DestroyStruct(Data);
+				ClassData->Struct->InitializeStruct(Data);
+				ClassName->SetPropertyValue_InContainer(Data, CombatSight->GetClass()->GetName());
+				bChanged = true;
+			}
+			TestTrue(TEXT("Editor graph rebuild preserves the same combat sight instance"),
+				InstanceProperty->GetObjectPropertyValue_InContainer(Node) == CombatSight);
+		}
+		TestEqual(TEXT("Editor graph and runtime retain the same sight filter count"), GraphSightTests, SightTests);
+		if (bChanged)
+		{
+			Query->MarkPackageDirty();
+			FSavePackageArgs Args;
+			Args.TopLevelFlags = RF_Public | RF_Standalone;
+			Args.SaveFlags = SAVE_NoError;
+			const FString Filename = FPackageName::LongPackageNameToFilename(Query->GetOutermost()->GetName(), FPackageName::GetAssetPackageExtension());
+			if (!TestTrue(TEXT("Save only the canonical combat query"), UPackage::SavePackage(Query->GetOutermost(), Query, *Filename, Args))) return false;
+		}
+	}
 	return !HasAnyErrors();
 }
 

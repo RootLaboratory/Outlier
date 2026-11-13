@@ -118,6 +118,8 @@ class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
 	friend class FEnemyHackEffectGameplayTest;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FEnemyHitClueLifecycleTest;
+	friend class FEnemyAdaptationGenerationDamageTest;
+	friend class FOutlierGasShooterStealthUpgradeTest;
 	// 격리 네트워크 검증에서 실제 전개 시작·완료 경로를 호출한다.
 	friend class AHackTargetPointNetworkProbe;
 #endif
@@ -198,6 +200,8 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FAutoTurretAimPolicyTest;
+	friend class FEnemyVisibleTurretTargetTest;
+	friend class FEnemyF2TurretSelectionTest;
 	void ConfigureWaveRegistrationForTesting(
 		FGameplayTag InRoomTag,
 		int32 InCombatPhaseIndex,
@@ -212,6 +216,11 @@ public:
 	void NotifyDeathSequenceFinished(int32 GameplayGeneration, int32 ActivationSerial);
 
 	bool UpdateTurretAimAtActor(AActor* TargetActor, float DeltaTime, bool bAttackRotation);
+	// 후보 평가는 추적 대상/관측 조준점을 바꾸지 않는다. 선택 후 발사 허가는 다시 검사한다.
+	bool UsesNormalTurretAttackPolicy() const;
+	bool TryGetAttackableVisibleTargetAim(const AActor* Target, FVector& OutAimPoint) const;
+	bool IsTurretAimLocationReachable(const FVector& Location) const;
+	bool IsTurretAttackAimReady(const AActor* Target) const;
 	bool UpdateTurretAimAtLocation(const FVector& TargetLocation, float DeltaTime,
 		bool bAttackRotation, bool bUseSearchPitch = false);
 	virtual bool UpdateAttackLocation(const FVector& TargetLocation) override;
@@ -361,6 +370,7 @@ private:
 	friend struct FEnemyRecoverTurretImpactOffsetTask;
 	friend class URoomCombatSubsystem;
 	friend class FAutoTurretDeploymentPresentationTest;
+	friend class FAutoTurretTargetLifecycleTest;
 
 	UPROPERTY(ReplicatedUsing = OnRep_TurretLifecycleState)
 	FAutoTurretLifecycleSnapshot ReplicatedLifecycle;

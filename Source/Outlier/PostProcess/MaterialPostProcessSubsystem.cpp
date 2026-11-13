@@ -10,6 +10,11 @@
 #include "Components/MeshComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Engine/World.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
+#include "GameFramework/PlayerController.h"
+#include "LocalPlayerPostProcessSubsystem.h"
+#include "TeammateOutlineRendering.h"
 #include "TimerManager.h"
 #include "GameFramework/Pawn.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -37,11 +42,38 @@ void UMaterialPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collect
 {
 	Collection.InitializeDependency<UOutlierStencilSubsystem>();
 	Super::Initialize(Collection);
+	if (UWorld* World = GetWorld(); World && World->GetNetMode() != NM_DedicatedServer)
+	{
+		OutlineStencils = World->GetSubsystem<UOutlierStencilSubsystem>();
+		if (UOutlierStencilSubsystem* Stencils = OutlineStencils.Get())
+		{
+			OutlineMeshesChangedHandle = Stencils->OnTeammateMeshesChanged.AddUObject(
+				this, &UMaterialPostProcessSubsystem::RefreshIndependentTeammateOutline);
+		}
+		OutlineGameInstance = World->GetGameInstance();
+		if (UGameInstance* GameInstance = OutlineGameInstance.Get())
+		{
+			OutlineLocalPlayerAddedHandle = GameInstance->OnLocalPlayerAddedEvent.AddUObject(
+				this, &UMaterialPostProcessSubsystem::HandleOutlineLocalPlayerAdded);
+			OutlineLocalPlayerRemovedHandle = GameInstance->OnLocalPlayerRemovedEvent.AddUObject(
+				this, &UMaterialPostProcessSubsystem::HandleOutlineLocalPlayerRemoved);
+		}
+		CacheOutlineViews();
+	}
 	Refresh();
 }
 
 void UMaterialPostProcessSubsystem::Deinitialize()
 {
+	if (UOutlierStencilSubsystem* Stencils = OutlineStencils.Get())
+	{
+		Stencils->OnTeammateMeshesChanged.Remove(OutlineMeshesChangedHandle);
+	}
+	if (UGameInstance* GameInstance = OutlineGameInstance.Get())
+	{
+		GameInstance->OnLocalPlayerAddedEvent.Remove(OutlineLocalPlayerAddedHandle);
+		GameInstance->OnLocalPlayerRemovedEvent.Remove(OutlineLocalPlayerRemovedHandle);
+	}
 	for (const TPair<TWeakObjectPtr<UOutlierAbilitySystemComponent>, FOutlierStealthSourceState>& Pair
 		: StealthSources)
 	{
@@ -53,6 +85,9 @@ void UMaterialPostProcessSubsystem::Deinitialize()
 	}
 	StealthSources.Reset();
 	ResetAllPostProcess(false);
+	OutlineViews.Reset();
+	OutlineStencils.Reset();
+	OutlineGameInstance.Reset();
 
 	Super::Deinitialize();
 }
@@ -103,7 +138,8 @@ void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProces
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerShield)
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic)
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline)
-		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Readability))
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Readability)
+		&& !InPostProcessVolume->bEnableIndependentTeammateOutline)
 	{
 		return;
 	}
@@ -111,8 +147,21 @@ void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProces
 	if (IsValid(BoundPostProcessVolume) && BoundPostProcessVolume != InPostProcessVolume)
 		BoundPostProcessVolume->SetPartnerShieldPostProcessEnabled(false);
 	BoundPostProcessVolume = InPostProcessVolume;
+	CacheOutlineViews();
 	BoundPostProcessVolume->SetPartnerShieldPostProcessEnabled(PartnerShieldSource.IsValid());
 	ApplyAlwaysOnPostProcess();
+}
+
+void UMaterialPostProcessSubsystem::UnregisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume)
+{
+	if (BoundPostProcessVolume != InPostProcessVolume) return;
+	ClearIndependentTeammateOutline();
+	BoundPostProcessVolume = nullptr;
+}
+
+void UMaterialPostProcessSubsystem::SuspendIndependentTeammateOutline(AOutlierPostProcessVolume* InPostProcessVolume)
+{
+	if (BoundPostProcessVolume == InPostProcessVolume) ClearIndependentTeammateOutline();
 }
 
 void UMaterialPostProcessSubsystem::SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bEnabled)
@@ -149,6 +198,7 @@ void UMaterialPostProcessSubsystem::BeginEndingPresentation()
 
 void UMaterialPostProcessSubsystem::ResetAllPostProcess(bool bRestoreAlwaysOnPostProcess)
 {
+	ClearIndependentTeammateOutline();
 	PartnerShieldSource.Reset();
 	ClearMeleeOutlineTarget();
 	if (UWorld* World = GetWorld())
@@ -985,12 +1035,142 @@ void UMaterialPostProcessSubsystem::ClearScanStencil(AActor* Actor, UObject* Sou
 		Actor, Source ? Source : Actor, EOutlierStencilEffect::Scan);
 }
 
+void UMaterialPostProcessSubsystem::CacheOutlineViews()
+{
+	UGameInstance* GameInstance = OutlineGameInstance.Get();
+	if (!GameInstance) return;
+	for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+	{
+		if (ULocalPlayerPostProcessSubsystem* View = LocalPlayer
+			? LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr)
+		{
+			OutlineViews.AddUnique(View);
+		}
+	}
+}
+
+void UMaterialPostProcessSubsystem::HandleOutlineLocalPlayerAdded(ULocalPlayer* LocalPlayer)
+{
+	if (ULocalPlayerPostProcessSubsystem* View = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr)
+	{
+		OutlineViews.AddUnique(View);
+	}
+	RefreshIndependentTeammateOutline();
+}
+
+void UMaterialPostProcessSubsystem::HandleOutlineLocalPlayerRemoved(ULocalPlayer* LocalPlayer)
+{
+	for (auto It = OutlineViews.CreateIterator(); It; ++It)
+	{
+		ULocalPlayerPostProcessSubsystem* View = It->Get();
+		if (!View || View->GetLocalPlayer() == LocalPlayer)
+		{
+			if (View) View->ClearTeammateOutlineData(GetWorld());
+			It.RemoveCurrent();
+		}
+	}
+	RefreshIndependentTeammateOutline();
+}
+
+void UMaterialPostProcessSubsystem::ClearIndependentTeammateOutline()
+{
+	bIndependentOutlineRequested = false;
+	RefreshIndependentTeammateOutline();
+}
+
+void UMaterialPostProcessSubsystem::HandleTeammateOutlineMasksQueued(bool bMasksQueued)
+{
+	if (UOutlierStencilSubsystem* Stencils = OutlineStencils.Get())
+	{
+		Stencils->SetIndependentPairOutlineEnabled(bMasksQueued && bIndependentOutlineRequested
+			&& !ShouldSkipRenderingWork() && IsValid(BoundPostProcessVolume)
+			&& BoundPostProcessVolume->bEnabled && BoundPostProcessVolume->bEnableIndependentTeammateOutline);
+	}
+}
+
+void UMaterialPostProcessSubsystem::RefreshIndependentTeammateOutline()
+{
+	// pair 비트 전환은 스텐실 재조정을 일으킨다. 그 과정의 변경 통보가 이 갱신으로
+	// 되돌아와도 같은 View 데이터를 중복해서 만들지 않는다.
+	if (bUpdatingIndependentOutline) return;
+	TGuardValue<bool> UpdatingGuard(bUpdatingIndependentOutline, true);
+	UOutlierStencilSubsystem* Stencils = OutlineStencils.Get();
+	const bool bEnabled = bIndependentOutlineRequested && !ShouldSkipRenderingWork()
+		&& IsValid(BoundPostProcessVolume) && BoundPostProcessVolume->bEnabled
+		&& BoundPostProcessVolume->bEnableIndependentTeammateOutline && Stencils;
+	// 중단은 즉시 복원한다. 활성 전환은 View에서 마스크 등록에 성공했을 때 처리한다.
+	if (Stencils && !bEnabled) Stencils->SetIndependentPairOutlineEnabled(false);
+
+	FTeammateOutlineViewData Data;
+	Data.bEnabled = bEnabled;
+	Data.OnMasksQueued.BindUObject(this, &UMaterialPostProcessSubsystem::HandleTeammateOutlineMasksQueued);
+	if (bEnabled)
+	{
+		Data.Color = BoundPostProcessVolume->TeammateOutlineColor;
+		if (BoundPostProcessVolume->bUseExistingTeammateOutlineColor)
+		{
+			const auto* Material = BoundPostProcessVolume->PostProcessMaterials.Find(
+				EOutlierPostProcessMaterialType::PartnerOutline);
+			if (Material && Material->Get())
+			{
+				FLinearColor ExistingColor;
+				if (Material->Get()->GetVectorParameterValue(FMaterialParameterInfo(TEXT("TeammateColor")), ExistingColor))
+				{
+					Data.Color = ExistingColor;
+				}
+			}
+		}
+		Data.VisibleThickness = FMath::Clamp(BoundPostProcessVolume->TeammateVisibleThickness, 0.0f, 4.0f);
+		Data.OccludedThickness = FMath::Min(FMath::Clamp(BoundPostProcessVolume->TeammateOccludedThickness, 0.0f, 4.0f),
+			Data.VisibleThickness);
+		Data.VisibleStrength = FMath::Clamp(BoundPostProcessVolume->TeammateVisibleStrength, 0.0f, 1.0f);
+		Data.OccludedStrength = FMath::Min(FMath::Clamp(BoundPostProcessVolume->TeammateOccludedStrength, 0.0f, 1.0f),
+			Data.VisibleStrength);
+	}
+
+	TArray<UMeshComponent*> TeammateMeshes;
+	TArray<UMeshComponent*> FirstPersonMeshes;
+	for (auto It = OutlineViews.CreateIterator(); It; ++It)
+	{
+		ULocalPlayerPostProcessSubsystem* View = It->Get();
+		if (!View)
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+		ULocalPlayer* LocalPlayer = View->GetLocalPlayer();
+		APlayerController* Viewer = LocalPlayer ? LocalPlayer->GetPlayerController(GetWorld()) : nullptr;
+		if (!bEnabled || !Viewer || Viewer->GetWorld() != GetWorld())
+		{
+			// LocalPlayer는 월드보다 오래 산다. 이전 월드의 종료 통보가 이미 등록된
+			// 새 월드의 마스크를 지우지 않도록 데이터의 출처 월드를 함께 전달한다.
+			View->ClearTeammateOutlineData(GetWorld());
+			continue;
+		}
+
+		// 구성 요소 조회는 장착/pair 변경 통보와 기존 저빈도 보정에서만 수행한다.
+		// 렌더링은 이때 전달한 약한 메시 참조를 재사용하므로 매 프레임 월드를 찾지 않는다.
+		TeammateMeshes.Reset();
+		FirstPersonMeshes.Reset();
+		Stencils->GatherOutlineMeshes(Viewer, TeammateMeshes, FirstPersonMeshes);
+		Data.TargetMeshes.Reset();
+		Data.FirstPersonMeshes.Reset();
+		for (UMeshComponent* Mesh : TeammateMeshes) Data.TargetMeshes.Add(Mesh);
+		for (UMeshComponent* Mesh : FirstPersonMeshes) Data.FirstPersonMeshes.Add(Mesh);
+		View->SetTeammateOutlineData(Data, GetWorld());
+	}
+}
+
 void UMaterialPostProcessSubsystem::ApplyAlwaysOnPostProcess()
 {
 	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
 	{
 		return;
 	}
+	// hard reset은 독립 마스크도 내린다. 상시 효과를 복원하는 이 경로에서만 다시 켠다.
+	bIndependentOutlineRequested = true;
+	RefreshIndependentTeammateOutline();
 
 	// Readability also survives normal PP resets; hard disables still turn every blendable off.
 	if (BoundPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Readability))
@@ -1031,6 +1211,7 @@ void UMaterialPostProcessSubsystem::ClearAllScanStencils()
 
 void UMaterialPostProcessSubsystem::DisableAllBoundPostProcessMaterials()
 {
+	ClearIndependentTeammateOutline();
 	if (!BoundPostProcessVolume)
 	{
 		return;

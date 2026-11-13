@@ -839,6 +839,81 @@ bool FFlightResumableSchedulerTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightResumableExecutionGrantTest,
+	"Outlier.Flight.Pathfinding.Resumable.ExecutionGrantIsNotCompletion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlightResumableExecutionGrantTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!TestTrue(TEXT("Scheduler grant runs on the game thread"), IsInGameThread())) return false;
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FScopedFlightSearchCVar CheckBudget(TEXT("outlier.Flight.SearchFrameChecks"), TEXT("68"));
+	FScopedFlightSearchCVar TimeBudget(TEXT("outlier.Flight.SearchFrameMs"), TEXT("10000"));
+	FScopedFlightSearchWorld Fixture;
+	if (!TestNotNull(TEXT("Execution grant world exists"), Fixture.World)) return false;
+
+	bool bCancel = false;
+	FFlightPathRequest Request = MakeRequest();
+	Request.ShouldCancel = [&bCancel]() { return bCancel; };
+	const FBox Barrier(FVector(-50, -1000, -1000), FVector(50, 1000, 1000));
+	const auto Search = FlightPathfinding::BeginSearchWithChecks(Request,
+		[&Barrier](const FVector& Point) { return !Barrier.IsInsideOrOn(Point); },
+		[&Barrier](const FVector& From, const FVector& To)
+		{
+			return !FMath::LineBoxIntersection(Barrier, From, To, To - From);
+		});
+	if (!TestTrue(TEXT("Execution grant search exists"), Search.IsValid())) return false;
+
+	bool bGranted = true;
+	TestFalse(TEXT("Insufficient slice allowance remains pending"),
+		FlightPathfinding::AdvanceSearch(*Fixture.World, *Search, 67, 10000.0, &bGranted));
+	TestFalse(TEXT("An unfunded call clears the previous grant"), bGranted);
+	TestEqual(TEXT("Unfunded call performs no checks"), Search->GetResult().CollisionChecks, 0);
+
+	TestFalse(TEXT("A funded slice need not finish the search"),
+		FlightPathfinding::AdvanceSearch(*Fixture.World, *Search, 68, 10000.0, &bGranted));
+	TestTrue(TEXT("A real funded slice reports its execution grant"), bGranted);
+	const int32 ChecksAfterGrant = Search->GetResult().CollisionChecks;
+	TestTrue(TEXT("Funded slice actually advances collision work"), ChecksAfterGrant > 0);
+	bGranted = true;
+	TestFalse(TEXT("Repeated same-frame call remains pending"),
+		FlightPathfinding::AdvanceSearch(*Fixture.World, *Search, 68, 10000.0, &bGranted));
+	TestFalse(TEXT("Polling does not report another execution grant"), bGranted);
+	TestEqual(TEXT("Polling performs no extra work"), Search->GetResult().CollisionChecks, ChecksAfterGrant);
+	Request.ShouldCancel = {};
+	const auto QueuedSearch = FlightPathfinding::BeginSearchWithChecks(Request,
+		[&Barrier](const FVector& Point) { return !Barrier.IsInsideOrOn(Point); },
+		[&Barrier](const FVector& From, const FVector& To)
+		{
+			return !FMath::LineBoxIntersection(Barrier, From, To, To - From);
+		});
+	if (!TestTrue(TEXT("Waiting search exists"), QueuedSearch.IsValid())) return false;
+	bGranted = true;
+	TestFalse(TEXT("Another queued search waits for its funded turn"),
+		FlightPathfinding::AdvanceSearch(*Fixture.World, *QueuedSearch, 68, 10000.0, &bGranted));
+	TestFalse(TEXT("Queue admission alone is not an execution grant"), bGranted);
+	TestEqual(TEXT("Queued search performs no checks"), QueuedSearch->GetResult().CollisionChecks, 0);
+
+	// 취소는 예산을 기다리지 않고 관찰하되, 완료 신호를 복구용 실행 배정으로 사용하지 않는다.
+	bCancel = true;
+	bGranted = true;
+	TestTrue(TEXT("Cancellation completes even in an exhausted frame"),
+		FlightPathfinding::AdvanceSearch(*Fixture.World, *Search, 68, 10000.0, &bGranted));
+	TestFalse(TEXT("Cancellation is not a funded recovery grant"), bGranted);
+	TestEqual(TEXT("Cancelled result is preserved"), Search->GetResult().Status, EFlightPathStatus::Cancelled);
+	bGranted = true;
+	TestTrue(TEXT("Already finished query still reports completion"),
+		FlightPathfinding::AdvanceSearch(*Fixture.World, *Search, 68, 10000.0, &bGranted));
+	TestFalse(TEXT("Already finished query never grants new work"), bGranted);
+	++GFrameCounter;
+	TestFalse(TEXT("Waiting search advances without necessarily finishing"),
+		FlightPathfinding::AdvanceSearch(*Fixture.World, *QueuedSearch, 68, 10000.0, &bGranted));
+	TestTrue(TEXT("Scheduler reports the waiting search's actual funded turn"), bGranted);
+	TestTrue(TEXT("Granted waiting search now performs checks"), QueuedSearch->GetResult().CollisionChecks > 0);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightResumableChangedObstacleTest,
 	"Outlier.Flight.Pathfinding.Resumable.ChangedObstacleBeforeCompletion",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

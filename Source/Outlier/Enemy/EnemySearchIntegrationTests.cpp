@@ -40,6 +40,7 @@
 #include "EnvironmentQuery/Items/EnvQueryItemType_Point.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/WorldSettings.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformMemory.h"
 #include "HAL/PlatformTime.h"
@@ -86,7 +87,7 @@ struct FProbe
 		return !Output.IsEmpty() && World->IsGameWorld() && World->HasBegunPlay()
 			&& (Role == TEXT("Server") ? World->GetNetMode() == NM_DedicatedServer : World->GetNetMode() == NM_Client);
 	}
-	void Before(UWorld* World, ELevelTick, float)
+	void Before(UWorld* World, ELevelTick, float DeltaTime)
 	{
 		if (!Enabled(World)) return;
 		if (Started < 0) Started = FPlatformTime::Seconds();
@@ -146,10 +147,11 @@ struct FProbe
 			const int32 Step = int32(Elapsed / 4) % 3;
 			for (auto& Weak : Drones) if (AVECDrone* Drone = Weak.Get())
 			{
-				auto* Controller = Cast<AEnemyAIController>(Drone->GetController());
-				Controller->SetAttackAimActive(Step == 1);
+				// 외형 Phase만 순환한다. 조준권과 제한 회전은 실제 서버 Controller 경로가 결정한다.
+				Drone->BeginTargetAttackPreparation(0.25f);
+				Drone->AdvanceTargetAttackPreparation(DeltaTime);
+				Drone->SetCombatAimPresentationOwned(true);
 				Drone->SetAttackPhase(Step == 0 ? EEnemyAttackPhase::Telegraph : Step == 1 ? EEnemyAttackPhase::Firing : EEnemyAttackPhase::Recover);
-				if (Step == 1) Drone->UpdateAttackLocation(Drone->GetLastKnownPlayerLocation());
 			}
 			if (Elapsed > 25) FPlatformMisc::RequestExit(false);
 		}
@@ -164,7 +166,7 @@ struct FProbe
 		if (!Enabled(World) || World->GetTimeSeconds() - LastSample < .1f) return;
 		LastSample = World->GetTimeSeconds();
 		FString Rows;
-		if (!bHeader) { Rows = TEXT("time,netMode,case,phase,expected,baseAim,facing,tilt,actor,body,shooter\n"); bHeader = true; }
+		if (!bHeader) { Rows = TEXT("time,netMode,case,phase,expected,baseAim,facing,tilt,actor,body,shooter,aimOwned\n"); bHeader = true; }
 		for (TActorIterator<AVECDrone> It(World); It; ++It)
 		{
 			AVECDrone* Drone = *It;
@@ -181,9 +183,9 @@ struct FProbe
 				const FVector Forward = Ref.GetRotation().UnrotateVector(DefaultMesh->GetRelativeRotation().UnrotateVector(FVector::ForwardVector));
 				BodyPitch = Mesh->GetBoneTransform(Bone).GetRotation().RotateVector(Forward).Rotation().Pitch;
 			}
-			Rows += FString::Printf(TEXT("%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n"), World->GetTimeSeconds(), int32(World->GetNetMode()), FMath::RoundToInt(Drone->GetActorLocation().Y / 1000), int32(Drone->GetAttackPhase()),
+			Rows += FString::Printf(TEXT("%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d\n"), World->GetTimeSeconds(), int32(World->GetNetMode()), FMath::RoundToInt(Drone->GetActorLocation().Y / 1000), int32(Drone->GetAttackPhase()),
 				(Drone->GetLastKnownPlayerLocation() - Drone->GetCombatShotOrigin()).Rotation().Pitch, Drone->GetBaseAimRotation().Pitch,
-				Drone->GetAIFacingPitchRoot()->GetRelativeRotation().Pitch, Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().Pitch, Drone->GetActorRotation().Pitch, BodyPitch, Drone->IsAimingAtShooter());
+				Drone->GetAIFacingPitchRoot()->GetRelativeRotation().Pitch, Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().Pitch, Drone->GetActorRotation().Pitch, BodyPitch, Drone->IsAimingAtShooter(), Drone->IsCombatAimPresentationOwned());
 		}
 		FFileHelper::SaveStringToFile(Rows, *Output, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
 	}
@@ -384,6 +386,27 @@ bool BeginSearch(FAutomationTestBase& Test, AEnemyBase* Enemy, const FVector& Ce
 	Test.TestTrue(TEXT("Search episode begins"), Enemy->BeginSearchEpisode());
 	return Enemy->GetSearchEpisode().bActive;
 }
+
+bool RediscoverSearchTarget(FAutomationTestBase& Test, AEnemyBase& Enemy, AEnemyAIController& Controller)
+{
+	UClass* TargetClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!Test.TestNotNull(TEXT("Rediscovery has a concrete player class"), TargetClass)) return false;
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AShooterCharacter* Target = Enemy.GetWorld()->SpawnActor<AShooterCharacter>(TargetClass,
+		FTransform(Enemy.GetActorLocation() + FVector(1000, 0, 0)), Spawn);
+	if (!Test.TestNotNull(TEXT("Rediscovered player exists"), Target)) return false;
+	Target->SetActorEnableCollision(false);
+	Target->GetCharacterMovement()->SetComponentTickEnabled(false);
+	// 시야 플래그만 켜면 실제 대상이 없는 관측으로 판단되어 즉시 해제된다.
+	// 감지 결과만 주입하고, 추적 확정과 이전 수색 중단은 실제 갱신 경로가 수행하게 한다.
+	Controller.SetCachedVisibleTargetForTesting(Target);
+	Enemy.SetPlayerCurrentlyVisible(true);
+	return Test.TestTrue(TEXT("Rediscovery retains valid direct sight"), Enemy.IsPlayerCurrentlyVisible()
+		&& Controller.IsTargetDirectlyVisible(Target))
+		&& Test.TestEqual(TEXT("Rediscovery tracks the observed player"), Enemy.GetTrackedTarget(), static_cast<AActor*>(Target));
+}
 }
 
 IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseFlightIntegrationTest,
@@ -393,7 +416,8 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseFlightIntegrationTest,
 void FEnemyNoiseFlightIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
 	for (const TCHAR* Scenario : { TEXT("Arrival"), TEXT("Detour"), TEXT("NoPath"),
-		TEXT("BudgetExceeded"), TEXT("DirectReacquire"), TEXT("TimedSearch"), TEXT("RetargetDuringSearch") })
+		TEXT("BudgetExceeded"), TEXT("DirectReacquire"), TEXT("TimedSearch"), TEXT("RetargetDuringSearch"),
+		TEXT("RetargetBeforeCompletion"), TEXT("GeneralSearchRetarget") })
 	{
 		Names.Add(Scenario);
 		Commands.Add(Scenario);
@@ -445,6 +469,34 @@ bool FEnemyNoiseFlightIntegrationTest::RunTest(const FString& Parameters)
 		FVector::ZeroVector, FVector(40, bSealed ? 800 : 180, 500)))) return false;
 	Fixture.Tick(1.0f / 32.0f);
 	Start = Enemy->GetActorLocation();
+	if (Parameters == TEXT("GeneralSearchRetarget"))
+	{
+		FEnemySearchSessionTaskInstanceData Search;
+		Search.Enemy = Enemy;
+		if (!TestEqual(TEXT("General lost-contact search enters"),
+			EnemySearchTesting::EnterSession(Search), EStateTreeRunStatus::Running)) return false;
+		const uint64 OldSearchSerial = Enemy->GetSearchEpisode().Serial;
+		Fixture.Tick(1.0f / 32.0f);
+		if (!TestTrue(TEXT("A new sound is admitted during general search"), Enemy->RecordHeardNoise(
+			Source, HeardLocation, Fixture.World->GetTimeSeconds()))) return false;
+		EnemySearchTesting::RefreshSessionTransitions(Search);
+		TestTrue(TEXT("General search exposes hearing handoff without finishing its children"), Search.bShouldInvestigateNoise);
+		TestFalse(TEXT("Hearing handoff never requests shared-hint restart"), Search.bShouldRestart);
+		FVector Destination;
+		if (!TestTrue(TEXT("Handoff starts the sound investigation"), Enemy->BeginNoiseInvestigation(Destination))) return false;
+		const uint64 NoiseSerial = Enemy->GetNoiseInvestigationSerial();
+		Enemy->SetActorLocation(Destination);
+		if (!TestTrue(TEXT("Replacement investigation can reach its search"),
+			Enemy->BeginNoiseInvestigationSearch(NoiseSerial, Enemy->GetActorLocation()))) return false;
+		const uint64 NewSearchSerial = Enemy->GetSearchEpisode().Serial;
+		TestTrue(TEXT("Replacement search owns a different episode"), NewSearchSerial != OldSearchSerial);
+		EnemySearchTesting::RefreshSessionTransitions(Search);
+		TestEqual(TEXT("Late old Tick cannot capture replacement ownership"), Search.CapturedSearchSerial, OldSearchSerial);
+		EnemySearchTesting::ExitSession(Search);
+		TestTrue(TEXT("Late general-search Exit preserves replacement search"), Enemy->GetSearchEpisode().bActive);
+		TestEqual(TEXT("Late Exit cannot change replacement ownership"), Enemy->GetSearchEpisode().Serial, NewSearchSerial);
+		return true;
+	}
 	if (!TestTrue(TEXT("Flight hears a fixed player-side occurrence"), Enemy->RecordHeardNoise(
 		Source, HeardLocation, Fixture.World->GetTimeSeconds()))) return false;
 
@@ -523,7 +575,8 @@ bool FEnemyNoiseFlightIntegrationTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Retries obey the configured attempt bound"), Data.RepathAttempts <= Data.MaxRepathAttempts);
 		TestTrue(TEXT("Fallback search does not adopt the unreached sound position"), !Enemy->GetSearchEpisode().Center.Equals(HeardLocation, 1.0));
 	}
-	if (Parameters == TEXT("TimedSearch") || Parameters == TEXT("RetargetDuringSearch"))
+	if (Parameters == TEXT("TimedSearch") || Parameters == TEXT("RetargetDuringSearch")
+		|| Parameters == TEXT("RetargetBeforeCompletion"))
 	{
 		FEnemySearchSessionTaskInstanceData Search;
 		Search.Enemy = Enemy;
@@ -548,9 +601,13 @@ bool FEnemyNoiseFlightIntegrationTest::RunTest(const FString& Parameters)
 		}
 		else
 		{
-			Search.NoiseSearchDuration = 0.5f;
-			EnemySearchTesting::TickSession(Search);
-			TestTrue(TEXT("Completion is published before newer evidence arrives"), Search.bNoiseSearchComplete);
+			if (Parameters == TEXT("RetargetDuringSearch"))
+			{
+				Search.NoiseSearchDuration = 0.5f;
+				EnemySearchTesting::TickSession(Search);
+				TestTrue(TEXT("Completion is published before newer evidence arrives"), Search.bNoiseSearchComplete);
+			}
+			else TestFalse(TEXT("New sound arrives before the five-second search completes"), Search.bNoiseSearchComplete);
 			for (int32 Frame = 0; Frame < 16; ++Frame) Fixture.Tick(Step);
 			// 위치 변경과 새 발생 시각으로 수색에서 새 이동으로 인계한다. 수색 단계에는 거리 이득을 요구하지 않는다.
 			const FVector SearchCenter = Enemy->GetSearchEpisode().Center;
@@ -798,7 +855,7 @@ bool FEnemySearchSelectionResumeIntegrationTest::RunTest(const FString& Paramete
 	const bool bStale = Parameters == TEXT("Stale") || Parameters == TEXT("SightRegained")
 		|| Parameters == TEXT("ControllerLost") || Parameters == TEXT("SessionEnded");
 	if (Parameters == TEXT("Stale")) ++Data.CapturedSearchSerial;
-	if (Parameters == TEXT("SightRegained")) Enemy->SetPlayerCurrentlyVisible(true);
+	if (Parameters == TEXT("SightRegained") && !RediscoverSearchTarget(*this, *Enemy, *Controller)) return false;
 	if (Parameters == TEXT("ControllerLost")) Controller->UnPossess();
 	if (Parameters == TEXT("SessionEnded")) Enemy->EndSearchEpisode();
 	if (Parameters == TEXT("Timeout")) Data.QueryStartedAt = Fixture.World->GetTimeSeconds() - Data.QueryTimeout;
@@ -924,8 +981,8 @@ bool FEnemySearchAssetQueryIntegrationTest::RunTest(const FString& Parameters)
 		FEnemyRunEnvQueryTaskInstanceData Data = MakeSearchData(Enemy, Fixture.Room, EEnemySearchQueryMode::Points);
 		TestTrue(TEXT("Real points EQS result passes actual path selection"),
 			EnemySearchTesting::SelectDestinations(Data, *PointsResult));
-		TestTrue(TEXT("Real EQS selects one or two reachable search points"),
-			Data.SelectedSearchPoints.Num() >= 1 && Data.SelectedSearchPoints.Num() <= 2);
+		TestTrue(TEXT("Real EQS selects reachable search points within the episode limit"),
+			Data.SelectedSearchPoints.Num() >= 1 && Data.SelectedSearchPoints.Num() <= Enemy->GetSearchPointLimit());
 	}
 	return true;
 }
@@ -963,7 +1020,10 @@ bool FEnemySearchQueryCompletionTest::RunTest(const FString& Parameters)
 	if (Parameters == TEXT("Success")) Expected = EEnemyEnvQueryResult::Success;
 	else if (Parameters == TEXT("FreshHint")) Enemy->ApplySharedTargetContact(FVector(100.0, 200.0, 0.0), true, 10);
 	else if (Parameters == TEXT("NewEpisode")) Enemy->BeginSearchEpisode();
-	else if (Parameters == TEXT("Rediscovery")) Enemy->SetPlayerCurrentlyVisible(true);
+	else if (Parameters == TEXT("Rediscovery"))
+	{
+		if (!RediscoverSearchTarget(*this, *Enemy, *Controller)) return false;
+	}
 	else if (Parameters == TEXT("LocalGuard")) Enemy->EnterSearchLocalGuard();
 	else if (Parameters == TEXT("Stun")) Enemy->EnterStun();
 	else if (Parameters == TEXT("Impact"))
@@ -1290,6 +1350,10 @@ bool FEnemySearchWorldLifecycleTest::RunTest(const FString& Parameters)
 		if (!TestEqual(TEXT("Point fixture has a reverse grid route before tree execution"), Path.Status, EFlightPathStatus::Success)) return false;
 	}
 	Tree->StopLogic(TEXT("Controlled search lifecycle setup"));
+	// 기존 우회/지점 완료 검증은 두 지점의 경로 기하를 고정한다. 기본 4지점/12초는 별도 deadline 테스트가 검증한다.
+	FEnemyStat& GeometryStat = const_cast<FEnemyStat&>(Enemy->GetRuntimeStat());
+	GeometryStat.SearchMaxPoints = 2;
+	GeometryStat.SearchMaxSeconds = 60.0f;
 	Tree->StartLogic();
 
 	// 실제 월드가 Timer / EQS callback / StateTree / Movement를 순서대로 진행한다.
@@ -1385,12 +1449,26 @@ bool FEnemySearchWorldLifecycleTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	// 한 회차가 끝난 후에도 월드를 진행시켜 같은 정보로 수색을 다시 시작하지 않는지 확인한다.
+	// 유한 경계가 끝나기 전에는 같은 정보로 수색을 다시 시작하거나 이동하지 않는다.
 	const FVector GuardLocation = Enemy->GetActorLocation();
-	for (int32 Frame = 0; Frame < 150; ++Frame) Fixture.Tick(Step);
+	const double GuardEndsAt = Enemy->GetSearchEpisode().GuardEndsAt;
+	const double GuardRemaining = GuardEndsAt - Fixture.World->GetTimeSeconds();
+	if (!TestTrue(TEXT("GuardWait is reached before the finite guard deadline"), GuardRemaining > 2.0 * Step))
+	{
+		return false;
+	}
+	// GuardWait에 도달하기 전의 두리번도 3초 경계를 소비한다.
+	// 실제 남은 시간의 절반을 남겨 아래의 새 단서가 귀환 전에 선점하도록 한다.
+	const double ObserveUntil = Fixture.World->GetTimeSeconds() + FMath::Min(1.0, GuardRemaining * 0.5);
+	while (Fixture.World->GetTimeSeconds() + Step < ObserveUntil)
+	{
+		Fixture.Tick(Step);
+	}
 	TestEqual(TEXT("No new information keeps the same episode"), Enemy->GetSearchEpisode().Serial, EpisodeSerial);
 	TestTrue(TEXT("Guard remains active"), Enemy->GetSearchEpisode().bLocalGuard);
 	TestTrue(TEXT("Guard does not move"), Enemy->GetActorLocation().Equals(GuardLocation, 10));
+	TestEqual(TEXT("Guard observation does not restart its deadline"), Enemy->GetSearchEpisode().GuardEndsAt, GuardEndsAt);
+	TestEqual(TEXT("Fresh-clue fixture remains in combat before guard completion"), Enemy->GetCombatState(), EEnemyCombatState::Combat);
 
 	if (Scenario == TEXT("NewHint"))
 	{
@@ -1410,11 +1488,18 @@ bool FEnemySearchWorldLifecycleTest::RunTest(const FString& Parameters)
 		// 네이티브 Shooter는 추상 클래스다. 실제 플레이어 BP로 시야 재발견 입력을 구성한다.
 		UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
 			TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
-		if (!TestNotNull(TEXT("Visible target BP loads"), ShooterClass)) return false;
+		if (!TestNotNull(TEXT("Visible target BP loads"), ShooterClass))
+		{
+			return false;
+		}
 		AShooterCharacter* Target = Fixture.World->SpawnActor<AShooterCharacter>(ShooterClass,
 			FTransform(Enemy->GetActorLocation() + FVector(1500, 0, 0)), Spawn);
-		if (!TestNotNull(TEXT("Visible target fixture exists"), Target)) return false;
+		if (!TestNotNull(TEXT("Visible target fixture exists"), Target))
+		{
+			return false;
+		}
 		Target->SetActorEnableCollision(false);
+		Target->GetCharacterMovement()->SetComponentTickEnabled(false);
 		// 시야 플래그만 바꾸면 Sync의 TargetActor가 비어 있다. 실제 Sight 캐시에 자극을 전달한다.
 		Controller->EnemyPerceptionComponent->RegisterStimulus(Target, FAIStimulus(
 			*GetDefault<UAISense_Sight>(), 1.0f, Target->GetActorLocation(), Enemy->GetActorLocation()));
@@ -1424,7 +1509,9 @@ bool FEnemySearchWorldLifecycleTest::RunTest(const FString& Parameters)
 		// 실제 Tree가 다음 프레임에서 전투 상태를 선택할 때까지 기다린다.
 		for (int32 Frame = 0; Frame < 60
 			&& !Tree->GetActiveStateNames().Contains(FName(TEXT("DirectCombat"))); ++Frame)
+		{
 			Fixture.Tick(Step);
+		}
 		AddInfo(FString::Printf(TEXT("[SearchWorld] SightRegained FinalStates=%s SearchActive=%d"),
 			*FString::JoinBy(Tree->GetActiveStateNames(), TEXT(" > "),
 				[](FName Name) { return Name.ToString(); }), Enemy->GetSearchEpisode().bActive));
@@ -1433,6 +1520,197 @@ bool FEnemySearchWorldLifecycleTest::RunTest(const FString& Parameters)
 	}
 	Tree->StopLogic(TEXT("Search lifecycle test complete"));
 	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemySearchDeadlineWorldTest,
+	"Outlier.Enemy.Search.Integration.DeadlineWorld",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemySearchDeadlineWorldTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Type : { TEXT("Gun"), TEXT("Melee") })
+	{
+		for (const TCHAR* Scenario : { TEXT("Move15"), TEXT("Move30"), TEXT("Move60"),
+			TEXT("LookLargeDelta"), TEXT("SightAtDeadline") })
+		{
+			const FString Name = FString(Type) + TEXT(".") + Scenario;
+			Names.Add(Name);
+			Commands.Add(Name);
+		}
+	}
+}
+
+bool FEnemySearchDeadlineWorldTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemySearchIntegrationWorld Fixture(true);
+	if (!TestTrue(TEXT("Deadline world begins play"), Fixture.World && Fixture.World->HasBegunPlay())
+		|| !TestTrue(TEXT("Deadline room registers"), Fixture.CreateRoom()))
+	{
+		return false;
+	}
+	if (!TestNotNull(TEXT("Deadline floor exists"), Fixture.SpawnBlockingBox(FVector(0, 0, -150), FVector(1800, 1800, 40))))
+	{
+		return false;
+	}
+	const bool bMelee = Parameters.StartsWith(TEXT("Melee."));
+	const bool bLook = Parameters.EndsWith(TEXT("LookLargeDelta"));
+	const bool bSight = Parameters.EndsWith(TEXT("SightAtDeadline"));
+	const float Step = Parameters.EndsWith(TEXT("Move15")) ? 1.0f / 15.0f
+		: Parameters.EndsWith(TEXT("Move60")) ? 1.0f / 60.0f : 1.0f / 30.0f;
+	UClass* EnemyClass = LoadClass<AEnemyBase>(nullptr, bMelee
+		? TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Explosion.BP_VECDrone_Explosion_C")
+		: TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	if (!TestNotNull(TEXT("Deadline enemy BP loads"), EnemyClass))
+	{
+		return false;
+	}
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	// 회전 선점 fixture는 단서 XY에서 시작해 불필요한 앵커 접근 시간을 없앤다. 실제 지점 이동과 Look 진입은 Tree가 수행한다.
+	const FVector Start = bLook ? FVector(600, 0, 200) : FVector(-600, 0, 200);
+	AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>(EnemyClass, FTransform(Start), Spawn);
+	if (!TestNotNull(TEXT("Deadline enemy spawns"), Enemy))
+	{
+		return false;
+	}
+	UStateTreeComponent* Tree = Enemy->GetStateTreeComponent();
+	AEnemyAIController* Controller = Cast<AEnemyAIController>(Enemy->GetController());
+	if (!TestNotNull(TEXT("Deadline tree component exists"), Tree) || !TestNotNull(TEXT("Deadline controller exists"), Controller))
+	{
+		return false;
+	}
+	Controller->SetEnemyPerceptionEnabled(false);
+	Enemy->GetRoomTagComp()->AssignDefaultRoomTag(Fixture.SearchRoomTag);
+	const FVector Clue(600, 0, 500);
+	Enemy->SetPlayerCurrentlyVisible(false);
+	Enemy->EnterCombatFromRoom(Clue, false);
+	Controller->SetEnemyPerceptionEnabled(false);
+	Enemy->UpdateLastKnownPlayerLocation(Clue);
+	Enemy->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	FEnemyStat& Stat = const_cast<FEnemyStat&>(Enemy->GetRuntimeStat());
+	TestEqual(TEXT("Default general search point limit is four"), Stat.SearchMaxPoints, 4);
+	TestEqual(TEXT("Default general search deadline is twelve seconds"), Stat.SearchMaxSeconds, 12.0f);
+	// 이동은 계속 진행하되 12초 안에 앵커에 도착하지 않는 속도다. 정체/이동 timeout으로 끝나는 회귀와 구분한다.
+	Stat.MoveSpeed = bLook ? 600.0f : 50.0f;
+	Tree->StopLogic(TEXT("Controlled deadline setup"));
+	Tree->StartLogic();
+	const FName ExpectedStep = bLook ? FName(TEXT("PointLookAround")) : FName(TEXT("MoveAnchor"));
+	bool bSawExpectedStep = false;
+	FString LastStepPath;
+	for (int32 Frame = 0; Frame < FMath::CeilToInt(11.5f / Step); ++Frame)
+	{
+		Fixture.Tick(Step);
+		const TArray<FName> ActiveStates = Tree->GetActiveStateNames();
+		const FString StepPath = FString::JoinBy(ActiveStates, TEXT(" > "), [](const FName Name) { return Name.ToString(); });
+		if (bLook && LastStepPath != StepPath)
+		{
+			AddInfo(FString::Printf(TEXT("[SearchDeadlineApproach] Time=%.3f Location=%s States=%s"),
+				Fixture.World->GetTimeSeconds(), *Enemy->GetActorLocation().ToCompactString(), *StepPath));
+			LastStepPath = StepPath;
+		}
+		if (ActiveStates.Contains(ExpectedStep))
+		{
+			bSawExpectedStep = true;
+			break;
+		}
+		if (Enemy->GetSearchEpisode().bLocalGuard)
+		{
+			break;
+		}
+	}
+	if (!TestTrue(ExpectedStep.ToString() + TEXT(" executes in the actual saved tree"), bSawExpectedStep))
+	{
+		return false;
+	}
+	const FEnemySearchEpisode Initial = Enemy->GetSearchEpisode();
+	TestTrue(TEXT("Episode starts with its fixed twelve-second window"), FMath::IsNearlyEqual(Initial.EndsAt - Initial.StartedAt, 12.0));
+	TestEqual(TEXT("Saved search captures the four-point limit"), Initial.MaxPoints, 4);
+	const int32 CheckedBeforeDeadline = Initial.CheckedPoints.Num();
+	if (bLook)
+	{
+		float CluePitch = 0.0f;
+		TestTrue(TEXT("Actual search provides its frozen height clue"), Enemy->GetSearchLookPitch(CluePitch));
+		const float BeforeError = FMath::Abs(FMath::FindDeltaAngleDegrees(Controller->GetControlRotation().Pitch, CluePitch));
+		Fixture.Tick(Step);
+		const float AfterError = FMath::Abs(FMath::FindDeltaAngleDegrees(Controller->GetControlRotation().Pitch, CluePitch));
+		TestTrue(TEXT("Saved LookAround tick turns pitch toward the clue"), AfterError < BeforeError || AfterError <= 1.0f);
+		// 큰 Delta에서도 회전 자식의 완료를 기다리지 않고 같은 고정 기한을 처리한다.
+		// WorldSettings의 기본 프레임 제한이 입력 Delta를 줄이지 않게 이 임시 월드에서만 허용한다.
+		const float LargeDelta = static_cast<float>(Initial.EndsAt - Fixture.World->GetTimeSeconds()) + 0.05f;
+		AWorldSettings* Settings = Fixture.World->GetWorldSettings();
+		if (!TestNotNull(TEXT("Large-delta fixture has world settings"), Settings))
+		{
+			return false;
+		}
+		TGuardValue<float> FrameLimitGuard(Settings->MaxUndilatedFrameTime, FMath::Max(Settings->MaxUndilatedFrameTime, LargeDelta));
+		Fixture.Tick(LargeDelta);
+		TestTrue(TEXT("Large-delta tick actually crosses the fixed deadline"), Fixture.World->GetTimeSeconds() >= Initial.EndsAt);
+	}
+	else if (bSight)
+	{
+		while (Fixture.World->GetTimeSeconds() + Step < Initial.EndsAt)
+		{
+			Fixture.Tick(Step);
+		}
+		if (!RediscoverSearchTarget(*this, *Enemy, *Controller))
+		{
+			return false;
+		}
+		// 직접 재발견과 기한 종료가 같은 평가에 겹쳐도 새 전투 의도가 먼저 반영되어야 한다.
+		Fixture.Tick(Step);
+	}
+	else
+	{
+		while (Fixture.World->GetTimeSeconds() < Initial.EndsAt + Step)
+		{
+			Fixture.Tick(Step);
+		}
+	}
+	// 전이 트리거와 자식 선택을 한 프레임 더 허용하되 수색 기한을 늘리지 않는다.
+	Fixture.Tick(Step);
+	const TArray<FName> States = Tree->GetActiveStateNames();
+	AddInfo(FString::Printf(TEXT("[SearchDeadlineWorld] Case=%s Time=%.3f Started=%.3f Ends=%.3f States=%s Checked=%d"),
+		*Parameters, Fixture.World->GetTimeSeconds(), Initial.StartedAt, Initial.EndsAt,
+		*FString::JoinBy(States, TEXT(" > "), [](const FName Name) { return Name.ToString(); }),
+		Enemy->GetSearchEpisode().CheckedPoints.Num()));
+	if (bSight)
+	{
+		TestTrue(TEXT("Same-evaluation direct sight selects combat before deadline guard"), States.Contains(FName(TEXT("DirectCombat"))));
+		TestFalse(TEXT("Direct sight leaves search ownership"), Enemy->GetSearchEpisode().bActive);
+	}
+	else
+	{
+		TestTrue(TEXT("Deadline enters LocalGuard"), Enemy->GetSearchEpisode().bLocalGuard);
+		TestFalse(TEXT("Expired search stops its finite child immediately"), States.Contains(ExpectedStep));
+		TestTrue(TEXT("Actual saved tree selects local guard"), States.Contains(FName(TEXT("GuardLookAround")))
+			|| States.Contains(FName(TEXT("GuardWait"))) || States.Contains(FName(TEXT("EnterLocalGuard"))));
+		TestEqual(TEXT("Deadline does not mark an unfinished point as checked"), Enemy->GetSearchEpisode().CheckedPoints.Num(), CheckedBeforeDeadline);
+		TestEqual(TEXT("Deadline preserves the episode identity"), Enemy->GetSearchEpisode().Serial, Initial.Serial);
+		const FVector GuardPosition = Enemy->GetActorLocation();
+		const double GuardEndsAt = Enemy->GetSearchEpisode().GuardEndsAt;
+		const double GuardObserveUntil = FMath::Min(Fixture.World->GetTimeSeconds() + 1.0, GuardEndsAt - Step);
+		while (Fixture.World->GetTimeSeconds() + Step < GuardObserveUntil)
+		{
+			Fixture.Tick(Step);
+		}
+		TestTrue(TEXT("Guard remains stationary before its finite deadline"), Enemy->GetActorLocation().Equals(GuardPosition, 10.0f));
+		TestTrue(TEXT("Guard wait remains reachable without per-tick guard reentry"), Tree->GetActiveStateNames().Contains(FName(TEXT("GuardWait")))
+			|| Tree->GetActiveStateNames().Contains(FName(TEXT("GuardLookAround"))));
+		TestEqual(TEXT("Guard ticking cannot refill the deadline"), Enemy->GetSearchEpisode().EndsAt, Initial.EndsAt);
+		TestEqual(TEXT("Guard ticking cannot refill the three-second deadline"), Enemy->GetSearchEpisode().GuardEndsAt, GuardEndsAt);
+		while (Fixture.World->GetTimeSeconds() < GuardEndsAt + 2.0 * Step)
+		{
+			Fixture.Tick(Step);
+		}
+		TestFalse(TEXT("Finite guard releases expired search ownership"), Enemy->GetSearchEpisode().bActive);
+		TestTrue(TEXT("Finite guard hands off to return or completed home guard"),
+			Enemy->GetCombatState() == EEnemyCombatState::Returning || Enemy->GetCombatState() == EEnemyCombatState::NonCombat);
+		TestFalse(TEXT("Completed deadline cannot remain in the old combat search"),
+			Tree->GetActiveStateNames().Contains(FName(TEXT("Search"))));
+	}
+	Tree->StopLogic(TEXT("Search deadline integration complete"));
+	return !HasAnyErrors();
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySearchBudgetIsolationTest,
@@ -1990,6 +2268,27 @@ struct FEnemyCombatIntegrationWorld : FEnemySearchIntegrationWorld
 		Observe();
 	}
 
+	void Tick(float DeltaTime) const
+	{
+		if (IsValid(Controller) && IsValid(Enemy) && IsValid(Target) && Controller->IsTargetDirectlyVisible(Target))
+		{
+			// 이 fixture는 감지/Actor Tick을 통제한다. 시야 캐시만으로 사격을 허용하지 않도록
+			// 실제 관측자 원점에서 TP 본을 검사하고 완료된 포즈로 관측을 갱신한다.
+			FCanBeSeenFromContext Context;
+			Context.IgnoreActor = Enemy;
+			Context.ObserverLocation = Enemy->GetPawnViewLocation();
+			FVector Seen;
+			int32 Sync = 0, Async = 0;
+			float Strength = 0.0f;
+			Target->CanBeSeenFrom(Context, Seen, Sync, Async, Strength, nullptr, nullptr);
+			Target->GetMesh()->RefreshBoneTransforms();
+			Target->CanBeSeenFrom(Context, Seen, Sync, Async, Strength, nullptr, nullptr);
+			// Controller 회전을 멈춘 테스트에서도 관측 좌표 갱신은 따로 진행한다. 기존 갱신 주기는 지킨다.
+			Enemy->RefreshCombatAimPoint();
+		}
+		FEnemySearchIntegrationWorld::Tick(DeltaTime);
+	}
+
 	void Observe()
 	{
 		// Snapshot의 인스턴스 뷰는 다음 Tick까지만 유효하다. 비교할 값은 Tick 전에 복사한다.
@@ -2096,16 +2395,51 @@ bool CheckGunMovingFire(FEnemyCombatIntegrationWorld& Fixture)
 	// 접근 이동 구간을 충분히 남긴 채 사격 가능 조건만 고정한다. Firing 표시 대신 실제 탄약 소비를 검사한다.
 	InfiniteAmmo->SetPropertyValue_InContainer(Weapon, false);
 	Range->SetPropertyValue_InContainer(Weapon, 5000.0f);
-	const int32 InitialAmmo = Weapon->GetCurrentAmmo();
+	int32 InitialAmmo = Weapon->GetCurrentAmmo();
+	const bool bRestoreSharedInput = !Fixture.Enemy->IsPlayerCurrentlyVisible();
+	// 공유는 접근 단서만 제공한다. 실제 첫 탄은 자신의 직접 시야가 유지되는 동안 검증한다.
+	if (bRestoreSharedInput)
+	{
+		Fixture.SetSight(true);
+	}
 	Fixture.Start();
 	for (int32 Frame = 0; Frame < 180; ++Frame)
 	{
-		if (!Fixture.Advance()) break;
-		if (Weapon->GetCurrentAmmo() >= InitialAmmo) continue;
+		if (!Fixture.Advance())
+		{
+			break;
+		}
+		if (Weapon->GetCurrentAmmo() >= InitialAmmo)
+		{
+			continue;
+		}
 		const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
-		return Fixture.Test.TestTrue(TEXT("Actual first shot happens before approach arrival"),
+		if (!Fixture.Test.TestTrue(TEXT("Actual first shot happens before approach arrival"),
 			Fly && Fixture.Enemy->GetVelocity().SizeSquared() > 1.0f
-			&& FVector::Dist(Fixture.Enemy->GetActorLocation(), Fly->Destination) > 100.0f);
+			&& FVector::Dist(Fixture.Enemy->GetActorLocation(), Fly->Destination) > 100.0f))
+		{
+			return false;
+		}
+		if (bRestoreSharedInput)
+		{
+			const int32 DirectAmmo = Weapon->GetCurrentAmmo();
+			Fixture.SetSight(false);
+			for (int32 HiddenFrame = 0; HiddenFrame < 3; ++HiddenFrame)
+			{
+				if (!Fixture.Advance())
+				{
+					return false;
+				}
+				if (!Fixture.Test.TestEqual(TEXT("Shared contact retains tracking without granting another hidden shot"),
+					Fixture.Enemy->GetTrackedTarget(), static_cast<AActor*>(Fixture.Target))
+					|| !Fixture.Test.TestEqual(TEXT("Losing own sight immediately prevents new ammunition consumption"),
+						Weapon->GetCurrentAmmo(), DirectAmmo))
+				{
+					return false;
+				}
+			}
+		}
+		return true;
 	}
 	Fixture.Test.AddError(TEXT("No actual gun shot during the live approach movement"));
 	return false;
@@ -2535,6 +2869,194 @@ bool CheckCommittedCharge(FEnemyCombatIntegrationWorld& Fixture, const FString& 
 }
 }
 
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyCloseRetreatIntegrationTest, "Outlier.Enemy.Combat.CloseRetreat.Integration",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyCloseRetreatIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("ApproachInterrupted"), TEXT("OrbitInterrupted"), TEXT("PrecisionInterrupted"),
+		TEXT("HoldInterrupted"), TEXT("BlockedLongShortMovingFire"), TEXT("Short200Arrival"), TEXT("Short100Arrival"),
+		TEXT("StunReleased"), TEXT("BoundaryContinuity")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyCloseRetreatIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	const bool bMovingFire = Parameters == TEXT("BlockedLongShortMovingFire");
+	const bool bShort = bMovingFire || Parameters.StartsWith(TEXT("Short"));
+	const bool bPrecision = Parameters == TEXT("PrecisionInterrupted");
+	const bool bBoundary = Parameters == TEXT("BoundaryContinuity");
+	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
+	const float InitialRange = bShort ? 200.0f : Parameters == TEXT("ApproachInterrupted") ? 3500.0f : 1500.0f;
+	if (!Fixture.Initialize(false, FVector(InitialRange, 0, 0))) return false;
+
+	// 후보 생성은 그대로 실행하고, 벽의 앞면만 옮겨 3m -> 2m -> 1m 대체 선택을 만든다.
+	if (bShort)
+	{
+		// 1m 목적지는 실제 캡슐 반경 + 경로 여유 5cm를 확보한다.
+		// 이 앞면에서도 2m의 ±30도 후보는 캡슐과 겹치므로 긴 후보 차단은 유지된다.
+		const float Short100WallFront = -100.0f - Fixture.Enemy->GetCapsuleComponent()->GetScaledCapsuleRadius() - 5.0f - 10.0f;
+		const float WallExtent = Parameters == TEXT("Short100Arrival") ? 1200.0f + Short100WallFront
+			: Parameters == TEXT("Short200Arrival") ? 955.0f : 500.0f;
+		if (!TestNotNull(TEXT("Longer retreat endpoints are physically blocked"), Fixture.SpawnBlockingBox(
+			FVector(-1200, 0, 1000), FVector(WallExtent, 2000, 3000)))) return false;
+	}
+	if (bPrecision)
+	{
+		// 양쪽 선회 후보를 막아 실제 후보 실패를 거쳐 정밀 사격 상태에 진입한다.
+		const FVector Start = Fixture.Enemy->GetActorLocation();
+		const double InnerEdge = Fixture.Enemy->GetCapsuleComponent()->GetScaledCapsuleRadius() + 15.0;
+		for (const double Sign : {-1.0, 1.0})
+		{
+			if (!TestNotNull(TEXT("Orbit side is blocked"), Fixture.SpawnBlockingBox(
+				Start + FVector(0, Sign * (InnerEdge + 300.0), 0), FVector(600, 300, 2500)))) return false;
+		}
+	}
+
+	Fixture.Start();
+	if (bShort)
+	{
+		ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+		if (!TestNotNull(TEXT("Real retreat weapon exists"), Weapon)) return false;
+		FBoolProperty* InfiniteAmmo = FindFProperty<FBoolProperty>(Weapon->GetClass(), TEXT("bInfiniteAmmo"));
+		if (!TestNotNull(TEXT("Real ammunition consumption can be observed"), InfiniteAmmo)) return false;
+		InfiniteAmmo->SetPropertyValue_InContainer(Weapon, false);
+
+		const FVector Start = Fixture.Enemy->GetActorLocation();
+		const FVector TargetLocation = Fixture.Target->GetActorLocation();
+		const float InitialDistance = FVector::Dist2D(Start, TargetLocation);
+		const float ExpectedLength = Parameters == TEXT("Short100Arrival") ? 100.0f
+			: Parameters == TEXT("Short200Arrival") ? 200.0f : 300.0f;
+		FVector SelectedDestination = FVector::ZeroVector;
+		float Acceptance = 0.0f;
+		bool bSelectedShort = false;
+		bool bArrived = false;
+		bool bGainedDistance = false;
+		bool bFiredWhileMoving = false;
+		int32 PreviousAmmo = Weapon->GetCurrentAmmo();
+		for (int32 Frame = 0; Frame < 600; ++Frame)
+		{
+			if (!Fixture.Advance()) break;
+			const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+			if (!bSelectedShort && Fly && Fly->bConstrainRetreatPath
+				&& FMath::Abs(FVector::Dist2D(Fly->Destination, Start) - ExpectedLength) <= 1.0)
+			{
+				bSelectedShort = true;
+				SelectedDestination = Fly->Destination;
+				Acceptance = Fly->AcceptanceRadius;
+			}
+			if (bSelectedShort)
+			{
+				// 정지 타겟에 대한 실제 도착과 거리 증가를 같은 프레임에서 확인한다.
+				const bool bAtDestination = FVector::Dist(Fixture.Enemy->GetActorLocation(), SelectedDestination) <= Acceptance + 1.0f;
+				bArrived |= bAtDestination;
+				bGainedDistance |= bAtDestination
+					&& FVector::Dist2D(Fixture.Enemy->GetActorLocation(), TargetLocation) >= InitialDistance + 50.0f;
+				bFiredWhileMoving |= Fly && Fly->bConstrainRetreatPath
+					&& Weapon->GetCurrentAmmo() < PreviousAmmo && Fixture.Enemy->GetVelocity().SizeSquared() > 1.0f;
+			}
+			PreviousAmmo = Weapon->GetCurrentAmmo();
+			if (bArrived && bGainedDistance && (!bMovingFire || bFiredWhileMoving)) break;
+		}
+		TestTrue(TEXT("Real EQS and path validation select the expected short retreat length"), bSelectedShort);
+		TestTrue(TEXT("The enemy physically reaches the selected short destination"), bArrived);
+		TestTrue(TEXT("Short arrival gains at least fifty centimetres from the stationary target"), bGainedDistance);
+		if (bMovingFire)
+			TestTrue(TEXT("Actual ammunition is consumed while short retreat physically moves"), bFiredWhileMoving);
+		return bSelectedShort && bArrived && bGainedDistance && (!bMovingFire || bFiredWhileMoving);
+	}
+
+	// 먼저 기존 행동이 실제 실행 중임을 확인한 뒤 타겟을 급접근시킨다.
+	if (bPrecision)
+	{
+		for (int32 Frame = 0; Frame < 360 && !Fixture.Snapshot.HasState(TEXT("PrecisionFire")); ++Frame)
+			if (!Fixture.Advance()) return false;
+		if (!TestTrue(TEXT("Real failed orbit selection enters PrecisionFire"), Fixture.Snapshot.HasState(TEXT("PrecisionFire")))) return false;
+	}
+	else if (Parameters == TEXT("HoldInterrupted"))
+	{
+		if (!Fixture.WaitForTask<FEnemyStationaryFireTask>()) return false;
+		const auto* Hold = Fixture.Data<FEnemyStationaryFireTask>();
+		if (!TestTrue(TEXT("Stationary fire still has time remaining before close entry"), Hold->SelectedDuration - Hold->Elapsed > 0.25f)) return false;
+	}
+	else
+	{
+		if (!Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+		if (Parameters != TEXT("ApproachInterrupted")
+			&& !TestTrue(TEXT("Existing orbit follows its real planned arc"), Fixture.Data<FEnemyFlyToLocationTask>()->bUsePlannedPath)) return false;
+	}
+
+	const bool bStun = Parameters == TEXT("StunReleased");
+	if (bStun) Fixture.Enemy->EnterStun();
+	if (bBoundary)
+	{
+		// 경계 왕복만 분리한다. 이동을 고정하되 실제 트리, EQS, 주기 판단은 계속 실행한다.
+		Fixture.Enemy->GetCharacterMovement()->StopMovementImmediately();
+		Fixture.Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	}
+	Fixture.Target->SetActorLocation(Fixture.Enemy->GetActorLocation() + FVector(bBoundary ? 300.0f : 200.0f, 0, 0));
+	Fixture.SetSight(true);
+	if (bStun)
+	{
+		// 초근접 입력이 들어와도 상위 기절을 끊지 않고, 해제된 현재 거리로 재판단해야 한다.
+		for (int32 Frame = 0; Frame < 18; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			if (!TestEqual(TEXT("Close entry cannot preempt stun"), Fixture.Enemy->GetCombatState(), EEnemyCombatState::Stun)
+				|| !TestNull(TEXT("Stun keeps combat flight inactive"), Fixture.Data<FEnemyFlyToLocationTask>())) return false;
+		}
+		Fixture.Enemy->RestoreStateAfterStun();
+		Fixture.SetSight(true);
+	}
+
+	bool bInterrupted = false;
+	for (int32 Frame = 0; Frame < 15; ++Frame)
+	{
+		if (!Fixture.Advance()) return false;
+		if (Fixture.Snapshot.HasState(TEXT("RetreatFire")))
+		{
+			bInterrupted = true;
+			break;
+		}
+	}
+	if (!TestTrue(TEXT("Close entry selects retreat within the assessment interval plus transition ticks"), bInterrupted)) return false;
+	if (!bBoundary) return true;
+
+	for (int32 Frame = 0; Frame < 180; ++Frame)
+	{
+		const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+		if (Fly && Fly->bConstrainRetreatPath) break;
+		if (!Fixture.Advance()) return false;
+	}
+	const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+	if (!TestTrue(TEXT("Close boundary selects an actual retreat flight"), Fly && Fly->bConstrainRetreatPath)) return false;
+	const FVector Destination = Fly->Destination;
+	const TArray<FVector> Route = Fly->PathWaypoints;
+	const uint64 Episode = Fixture.Enemy->GetCombatTacticalEpisodeSerial();
+	const FVector FixedStart = Fixture.Enemy->GetActorLocation();
+	// 3~5m 완충 구간에서 작은 왕복은 유효한 후퇴와 후보 예산을 새로 시작하지 않는다.
+	for (const float Distance : {400.0f, 499.0f, 400.0f, 300.0f})
+	{
+		Fixture.Target->SetActorLocation(FixedStart + FVector(Distance, 0, 0));
+		Fixture.SetSight(true);
+		// 각 입력은 판단 주기 0.2초를 넘기되, 고정 이동의 총 관찰은 무진행 제한 1초 전에 끝낸다.
+		for (int32 Frame = 0; Frame < 13; ++Frame)
+		{
+			if (!Fixture.Advance()) return false;
+			Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+			if (!TestTrue(TEXT("Buffer oscillation preserves active retreat and destination"),
+				Fly && Fly->bConstrainRetreatPath && Fly->Destination.Equals(Destination, 1.0f) && Fly->PathWaypoints == Route)
+				|| !TestEqual(TEXT("Buffer oscillation preserves the tactical episode"),
+					Fixture.Enemy->GetCombatTacticalEpisodeSerial(), Episode)) return false;
+		}
+	}
+	return true;
+}
+
 IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyCombatWorldTest, "Outlier.Enemy.Combat.Integration",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter)
 
@@ -2734,7 +3256,7 @@ bool CheckSharedTrackingExpiry(FEnemyRoomCombatIntegrationWorld& Fixture, bool b
 	bool bReachedSearch = false;
 	for (int32 Frame = 0; Frame < FMath::CeilToInt((Grace + 0.5f) / Fixture.Step); ++Frame)
 	{
-		// 유예 중에는 움직이는 실제 위치를 따라가되 만료 후 새 위치는 수색 중심에 섞지 않는다.
+		// 숨은 대상은 이동시켜도 마지막 관측 단서만 유지한다. 만료 후에도 실시간 좌표를 수색 중심에 섞지 않는다.
 		Fixture.Target->AddActorWorldOffset(FVector(0, 1, 0));
 		if (!Fixture.Advance()) return false;
 		const double SinceReport = Fixture.World->GetTimeSeconds() - ReportedAt;
@@ -2772,6 +3294,26 @@ bool CheckSharedTrackingExpiry(FEnemyRoomCombatIntegrationWorld& Fixture, bool b
 	if (!bReacquire) return true;
 	const float RecoveryRemaining = Fixture.Enemy->GetTargetAttackRecoveryRemaining();
 	Fixture.Rooms->ReportRoomTargetContact(Fixture.Observer, Fixture.Target, Fixture.Target->GetActorLocation());
+	const int32 SharedAmmo = Fixture.Enemy->GetCurrentWeapon()->GetCurrentAmmo();
+	for (int32 Frame = 0; Frame < 3; ++Frame)
+	{
+		if (!Fixture.Advance())
+		{
+			return false;
+		}
+		if (!Fixture.Test.TestEqual(TEXT("Shared reacquisition resumes tracking without fabricating own sight"),
+			Fixture.Enemy->GetTrackedTarget(), static_cast<AActor*>(Fixture.Target))
+			|| !Fixture.Test.TestEqual(TEXT("A new room report cannot grant hidden firing"),
+				Fixture.Enemy->GetCurrentWeapon()->GetCurrentAmmo(), SharedAmmo)
+			|| !Fixture.Test.TestFalse(TEXT("Shared reacquisition cannot authorize a target shot"),
+				Fixture.Enemy->CanAttackTrackedTarget(Fixture.Target))
+			|| !Fixture.Test.TestFalse(TEXT("Room report leaves receiver sight false"), Fixture.Enemy->IsPlayerCurrentlyVisible()))
+		{
+			return false;
+		}
+	}
+	// 공유 재획득은 수색만 끝낸다. 자신의 재노출 뒤에만 기존 준비와 회복을 이어 사격한다.
+	Fixture.SetSight(true);
 	for (int32 Frame = 0; Frame < FMath::CeilToInt((RecoveryRemaining + 0.5f) / Fixture.Step); ++Frame)
 	{
 		if (!Fixture.Advance()) return false;
@@ -2781,10 +3323,155 @@ bool CheckSharedTrackingExpiry(FEnemyRoomCombatIntegrationWorld& Fixture, bool b
 		if (Attack && Attack->bAttackStarted && Fixture.Enemy->GetTrackedTarget() == Fixture.Target)
 		{
 			Fixture.Test.TestFalse(TEXT("Shared reacquisition leaves the real search episode"), Fixture.Enemy->GetSearchEpisode().bActive);
-			return Fixture.Test.TestFalse(TEXT("Shared reacquisition resumes fire without fabricating sight"), Fixture.Enemy->IsPlayerCurrentlyVisible());
+			return Fixture.Test.TestTrue(TEXT("Actual reacquisition resumes fire only after own direct exposure"), Fixture.Enemy->IsPlayerCurrentlyVisible());
 		}
 	}
 	Fixture.Test.AddError(TEXT("A new direct report did not resume fire within the remaining recovery window"));
+	return false;
+}
+
+bool CheckGunBurstActiveTime(FEnemyRoomCombatIntegrationWorld& Fixture)
+{
+	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+	FFloatProperty* Interval = Weapon ? FindFProperty<FFloatProperty>(Weapon->GetClass(), TEXT("AttackInterval")) : nullptr;
+	if (!Fixture.Test.TestNotNull(TEXT("Burst-clock test has a configurable real gun"), Interval)) return false;
+	// 탄 사이에 여러 Task 평가가 들어가도록 실제 무기 cadence만 늘린다. 저장 Tree의 버스트 길이는 그대로 둔다.
+	Interval->SetPropertyValue_InContainer(Weapon, 1.0f);
+	// 공유 준비 인계 뒤의 두 번째 탄은 버스트 끝에 걸칠 수 있다. 이 검사는 첫 버스트의 첫 탄부터 시간을 잰다.
+	Fixture.SetSight(true);
+	if (!CheckGunMovingFire(Fixture)) return false;
+	const auto* Attack = Fixture.Data<FEnemyAttackTargetTask>();
+	if (!Fixture.Test.TestNotNull(TEXT("Saved Tree starts the live target attack task"), Attack)) return false;
+	const float Duration = Attack->SelectedAttackDuration;
+	const float FirstElapsed = Attack->ElapsedTime;
+	const int32 FirstAmmo = Weapon->GetCurrentAmmo();
+	if (!Fixture.Advance()) return false;
+	Attack = Fixture.Data<FEnemyAttackTargetTask>();
+	if (!Fixture.Test.TestNotNull(TEXT("Normal cadence keeps the original attack task"), Attack)) return false;
+	Fixture.Test.TestTrue(TEXT("Normal inter-shot cooldown still consumes active burst time"), Attack->ElapsedTime > FirstElapsed);
+	Fixture.Test.TestEqual(TEXT("Active burst time advances without requiring a new ammunition frame"), Weapon->GetCurrentAmmo(), FirstAmmo);
+	Fixture.Test.TestFalse(TEXT("The cadence assertion is made during the real weapon cooldown"), Weapon->CanAttack());
+	float HeldElapsed = Attack->ElapsedTime;
+	const FVector Origin = Fixture.Enemy->GetCombatShotOrigin();
+	const FVector CurrentDirection = (Fixture.Target->GetActorLocation() - Origin).GetSafeNormal();
+	const FVector SideDirection(-CurrentDirection.Y, CurrentDirection.X, CurrentDirection.Z);
+	Fixture.Target->SetActorLocation(Origin + SideDirection * 3500.0f);
+	// 조준 입력만 멈춰 회전 지연을 만든다. Tree/무기 Timer는 계속 실행하므로 실제 보류 연결을 검증한다.
+	Fixture.Controller->SetActorTickEnabled(false);
+	Fixture.Enemy->GetCharacterMovement()->DisableMovement();
+	// 조준은 숨은 Actor 좌표를 즉시 읽지 않는다. 실제 TP 관측의 0.1초 갱신 경계를 지난 뒤 보류 시간을 잰다.
+	for (int32 Frame = 0; Frame < 12 && Fixture.Enemy->IsTargetAttackAimReady(); ++Frame)
+	{
+		if (!Fixture.Advance())
+		{
+			return false;
+		}
+	}
+	Attack = Fixture.Data<FEnemyAttackTargetTask>();
+	if (!Fixture.Test.TestNotNull(TEXT("Observation refresh retains the original burst task"), Attack))
+	{
+		return false;
+	}
+	HeldElapsed = Attack->ElapsedTime;
+	if (!Fixture.Test.TestFalse(TEXT("Sudden target motion exceeds the firing angle"), Fixture.Enemy->IsTargetAttackAimReady()))
+	{
+		return false;
+	}
+	for (int32 Frame = 0; Frame < FMath::CeilToInt((Duration + 0.25f) / Fixture.Step); ++Frame)
+	{
+		if (!Fixture.Advance()) return false;
+		Attack = Fixture.Data<FEnemyAttackTargetTask>();
+		if (!Fixture.Test.TestNotNull(TEXT("Angle hold retains the live saved-Tree attack task"), Attack)) return false;
+		if (!Fixture.Test.TestEqual(TEXT("Angle hold preserves accumulated active burst time"), Attack->ElapsedTime, HeldElapsed)
+			|| !Fixture.Test.TestEqual(TEXT("Angle hold preserves the selected burst duration"), Attack->SelectedAttackDuration, Duration)
+			|| !Fixture.Test.TestEqual(TEXT("Angle hold does not consume ammunition"), Weapon->GetCurrentAmmo(), FirstAmmo)
+			|| !Fixture.Test.TestEqual(TEXT("Angle hold cannot begin burst recovery"), Fixture.Enemy->GetTargetAttackRecoveryRemaining(), 0.0f)) return false;
+	}
+	Fixture.Controller->SetActorTickEnabled(true);
+	bool bResumed = false;
+	for (int32 Frame = 0; Frame < 120; ++Frame)
+	{
+		if (!Fixture.Advance()) return false;
+		Attack = Fixture.Data<FEnemyAttackTargetTask>();
+		if (!Fixture.Test.TestNotNull(TEXT("Bounded rotation resumes the same attack task"), Attack)) return false;
+		if (!Attack->bAttackStarted || Weapon->GetCurrentAmmo() >= FirstAmmo) continue;
+		Fixture.Test.TestEqual(TEXT("Resumed burst retains its original duration"), Attack->SelectedAttackDuration, Duration);
+		bResumed = true;
+		break;
+	}
+	if (!Fixture.Test.TestTrue(TEXT("Actual bounded Controller rotation resumes a real shot"), bResumed)) return false;
+	const float ResumedElapsed = Attack->ElapsedTime;
+	const int32 ResumedAmmo = Weapon->GetCurrentAmmo();
+	if (!Fixture.Advance()) return false;
+	Attack = Fixture.Data<FEnemyAttackTargetTask>();
+	if (!Fixture.Test.TestNotNull(TEXT("Resumed burst remains active between shots"), Attack)) return false;
+	Fixture.Test.TestTrue(TEXT("Resumed cadence continues consuming active burst time"), Attack->ElapsedTime > ResumedElapsed);
+	Fixture.Test.TestEqual(TEXT("Resumed inter-shot frame does not need another bullet"), Weapon->GetCurrentAmmo(), ResumedAmmo);
+	return !Fixture.Test.HasAnyErrors();
+}
+
+bool CheckGunTargetSwitchRecovery(FEnemyRoomCombatIntegrationWorld& Fixture)
+{
+	if (!CheckGunMovingFire(Fixture)) return false;
+	Fixture.SetSight(true);
+	bool bRecovering = false;
+	for (int32 Frame = 0; Frame < 180; ++Frame)
+	{
+		const auto* Wait = Fixture.Data<FEnemyAttackPhaseWaitTask>();
+		if (Wait && Wait->Phase == EEnemyAttackPhase::Recover
+			&& Fixture.Enemy->GetTargetAttackRecoveryRemaining() > 0.3f)
+		{
+			bRecovering = true;
+			break;
+		}
+		if (!Fixture.Advance()) return false;
+	}
+	if (!Fixture.Test.TestTrue(TEXT("The saved FireCycle begins actual burst recovery"), bRecovering)) return false;
+	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
+	const double Deadline = Fixture.World->GetTimeSeconds() + Fixture.Enemy->GetTargetAttackRecoveryRemaining();
+	const int32 RecoveryAmmo = Weapon->GetCurrentAmmo();
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	auto* NextTarget = Fixture.World->SpawnActor<AShooterCharacter>(Fixture.Target->GetClass(),
+		FTransform(Fixture.Target->GetActorLocation() + FVector(0, 200, 0)), Spawn);
+	if (!Fixture.Test.TestNotNull(TEXT("New hostile target spawns during recovery"), NextTarget)) return false;
+	NextTarget->SetActorEnableCollision(false);
+	NextTarget->SetCanBeDamaged(false);
+	NextTarget->GetCharacterMovement()->DisableMovement();
+	NextTarget->SetActorTickEnabled(false);
+	// 대상 입력만 교체한다. 새 전조 완료와 회복 종료는 저장 Tree의 실제 Task가 처리한다.
+	Fixture.SetSight(false);
+	Fixture.Target = NextTarget;
+	Fixture.SetSight(true);
+	// 직접 발견과 전투 목표 선택은 별도다. 기존 대상 유지 정책을 우회하지 않고 선택 입력만 명시한다.
+	Fixture.Enemy->ObserveTrackedTarget(NextTarget);
+	Fixture.Enemy->GetCharacterMovement()->DisableMovement();
+	bool bPreparedDuringRecovery = false;
+	for (int32 Frame = 0; Frame < 120; ++Frame)
+	{
+		if (!Fixture.Advance()) return false;
+		const double Now = Fixture.World->GetTimeSeconds();
+		if (Now < Deadline - Fixture.Step)
+		{
+			if (!Fixture.Test.TestEqual(TEXT("Recovery keeps the newly visible target"), Fixture.Enemy->GetTrackedTarget(), static_cast<AActor*>(NextTarget))
+				|| !Fixture.Test.TestEqual(TEXT("New-target preparation never skips the original burst recovery"), Weapon->GetCurrentAmmo(), RecoveryAmmo)
+				|| !Fixture.Test.TestTrue(TEXT("Target replacement and reselection preserve the original recovery deadline"),
+					FMath::IsNearlyEqual(Now + Fixture.Enemy->GetTargetAttackRecoveryRemaining(), Deadline, 0.01))) return false;
+			bPreparedDuringRecovery |= Fixture.Enemy->IsTargetAttackPreparationComplete();
+			if (Frame == 2)
+			{
+				// 같은 대상의 감지 재선택도 준비·회복을 재시작하지 않아야 한다.
+				Fixture.SetSight(false);
+				Fixture.SetSight(true);
+			}
+		}
+		if (Weapon->GetCurrentAmmo() < RecoveryAmmo)
+		{
+			Fixture.Test.TestTrue(TEXT("Recover Task advances new-target telegraph before recovery finishes"), bPreparedDuringRecovery);
+			return Fixture.Test.TestTrue(TEXT("The actual new-target shot respects the original recovery deadline"), Now >= Deadline - Fixture.Step);
+		}
+	}
+	Fixture.Test.AddError(TEXT("New-target preparation did not resume a real shot after the original recovery deadline"));
 	return false;
 }
 
@@ -2795,15 +3482,22 @@ bool CheckSharedAttackContinuity(FEnemyRoomCombatIntegrationWorld& Fixture)
 	if (!Fixture.Test.TestNotNull(TEXT("Real parallel fire task is active after the first shot"), Attack)) return false;
 	float Elapsed = Attack->ElapsedTime;
 	const float Duration = Attack->SelectedAttackDuration;
+	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
 	for (int32 Transition = 0; Transition < 2; ++Transition)
 	{
+		const int32 AmmoBefore = Weapon->GetCurrentAmmo();
 		Fixture.SetSight(Transition == 0);
 		if (!Fixture.Advance()) return false;
 		Attack = Fixture.Data<FEnemyAttackTargetTask>();
 		if (!Fixture.Test.TestNotNull(TEXT("Same-target sight change keeps the parallel fire task"), Attack)) return false;
 		Fixture.Test.TestTrue(TEXT("Same-target source change does not reset firing elapsed time"), Attack->ElapsedTime >= Elapsed);
 		Fixture.Test.TestEqual(TEXT("Same-target source change preserves the attack duration"), Attack->SelectedAttackDuration, Duration);
-		Fixture.Test.TestTrue(TEXT("Same-target source change does not repeat preparation"), Attack->bAttackStarted);
+		Fixture.Test.TestTrue(TEXT("Same-target source change preserves completed preparation"), Fixture.Enemy->IsTargetAttackPreparationComplete());
+		if (Transition == 1)
+		{
+			Fixture.Test.TestFalse(TEXT("Shared-only tracking pauses the actual target attack"), Attack->bAttackStarted);
+			Fixture.Test.TestEqual(TEXT("Sight loss does not consume new ammunition"), Weapon->GetCurrentAmmo(), AmmoBefore);
+		}
 		Elapsed = Attack->ElapsedTime;
 	}
 	return true;
@@ -2888,7 +3582,7 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyRoomCombatWorldTest, "Outlier.Enemy.Room
 
 void FEnemyRoomCombatWorldTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
-	for (const TCHAR* Scenario : {TEXT("Gun.MovingFire"), TEXT("Gun.SourceContinuity"), TEXT("Gun.AttackContinuity"),
+	for (const TCHAR* Scenario : {TEXT("Gun.MovingFire"), TEXT("Gun.SourceContinuity"), TEXT("Gun.AttackContinuity"), TEXT("Gun.BurstActiveTime"), TEXT("Gun.TargetSwitchRecovery"),
 		TEXT("Gun.ObserverHandoff"), TEXT("Gun.Expiry"), TEXT("Gun.Alternative"), TEXT("Gun.SearchReacquire"),
 		TEXT("Gun.ForcedHintOnly"), TEXT("Gun.NoiseAttackContinuity"), TEXT("Melee.Expiry"), TEXT("Melee.ChargeEntry"),
 		TEXT("Melee.BlockedChargeEntry"), TEXT("Melee.ChargeSourceContinuity"), TEXT("Melee.ChargeWallTimeout")})
@@ -2910,6 +3604,8 @@ bool FEnemyRoomCombatWorldTest::RunTest(const FString& Parameters)
 	if (!Fixture.InitializeShared(bMelee, FVector(Distance, 0, 0), Scenario != TEXT("ForcedHintOnly"))) return false;
 	if (Scenario == TEXT("MovingFire")) return CheckGunMovingFire(Fixture);
 	if (Scenario == TEXT("AttackContinuity")) return CheckSharedAttackContinuity(Fixture);
+	if (Scenario == TEXT("BurstActiveTime")) return CheckGunBurstActiveTime(Fixture);
+	if (Scenario == TEXT("TargetSwitchRecovery")) return CheckGunTargetSwitchRecovery(Fixture);
 	if (Scenario == TEXT("NoiseAttackContinuity")) return CheckNoiseAttackContinuity(Fixture);
 	if (Scenario == TEXT("SourceContinuity") || Scenario == TEXT("ObserverHandoff"))
 		return CheckSharedSourceContinuity(Fixture, Scenario == TEXT("ObserverHandoff"));
@@ -3074,15 +3770,24 @@ bool CheckSearchSightHandoff(FEnemyRoomCombatIntegrationWorld& Fixture, bool bNo
 	return false;
 }
 
-bool CheckSavedNoiseFarRetarget(FEnemyRoomCombatIntegrationWorld& Fixture)
+bool CheckSavedNoiseFarRetarget(FEnemyRoomCombatIntegrationWorld& Fixture, const bool bGeneralSearch = false)
 {
 	if (!CheckGunMovingFire(Fixture)) return false;
 	Fixture.Rooms->RemoveRoomTargetObserver(Fixture.Observer);
-	if (!HearInvestigationNoise(Fixture, Fixture.Enemy->GetActorLocation() + FVector(0, 700, 0))
+	if (bGeneralSearch)
+	{
+		if (!Fixture.WaitForTask<FEnemyLookAroundTask>(1800)) return false;
+		if (!Fixture.Test.TestTrue(TEXT("New hearing starts during general lost-contact search"),
+			Fixture.Enemy->GetSearchEpisode().bActive && !Fixture.Enemy->IsLocationInvestigationActive())) return false;
+	}
+	else if (!HearInvestigationNoise(Fixture, Fixture.Enemy->GetActorLocation() + FVector(0, 700, 0))
 		|| !WaitForNoiseState(Fixture, true)) return false;
 	const uint64 PreviousSerial = Fixture.Enemy->GetNoiseInvestigationSerial();
-	for (int32 Frame = 0; Frame < 60; ++Frame) if (!Fixture.Advance()) return false;
-	if (!Fixture.Test.TestTrue(TEXT("Retarget begins during the actual search"), Fixture.Enemy->IsNoiseSearchActive())) return false;
+	if (!bGeneralSearch)
+	{
+		for (int32 Frame = 0; Frame < 60; ++Frame) if (!Fixture.Advance()) return false;
+		if (!Fixture.Test.TestTrue(TEXT("Retarget begins during the actual search"), Fixture.Enemy->IsNoiseSearchActive())) return false;
+	}
 	const FVector NewLocation = Fixture.Enemy->GetActorLocation() + FVector(0, -1200, 0);
 	UAIPerceptionComponent* Perception = Fixture.Controller->GetPerceptionComponent();
 	FAIStimulus Stimulus(*GetDefault<UAISense_Hearing>(), 1.0f, NewLocation, Fixture.Enemy->GetActorLocation());
@@ -3090,7 +3795,8 @@ bool CheckSavedNoiseFarRetarget(FEnemyRoomCombatIntegrationWorld& Fixture)
 	Perception->ProcessStimuli();
 	if (!Fixture.Test.TestTrue(TEXT("Search accepts a farther new occurrence"), Fixture.Enemy->GetPerceptionGoal().Location.Equals(NewLocation))) return false;
 	// 실제 저장된 트리가 수색에서 조사 이동으로 빠져나와야 한다. BeginNoiseInvestigation을 직접 호출하지 않는다.
-	for (int32 Frame = 0; Frame < 60; ++Frame)
+	const double HandoffDeadline = Fixture.World->GetTimeSeconds() + 0.5;
+	while (Fixture.World->GetTimeSeconds() < HandoffDeadline)
 	{
 		if (!Fixture.Advance()) return false;
 		const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
@@ -3146,6 +3852,7 @@ void FEnemyNoiseStateTreeIntegrationTest::GetTests(TArray<FString>& Names, TArra
 	for (const TCHAR* Scenario : {TEXT("Gun.SoundToSearch"), TEXT("Melee.SoundToSearch"), TEXT("Gun.SharedExpiry"),
 		TEXT("Gun.DirectReacquire"), TEXT("Gun.SearchSightClear"), TEXT("Gun.SearchSightBlocked"),
 		TEXT("Gun.NoiseSearchSightClear"), TEXT("Gun.NoiseSearchSightBlocked"), TEXT("Gun.SearchFarRetarget"),
+		TEXT("Gun.GeneralSearchNoiseHandoff"),
 		TEXT("Alert.SoundToReturn"), TEXT("Melee.CommittedNoise")})
 	{
 		Names.Add(Scenario);
@@ -3172,6 +3879,7 @@ bool FEnemyNoiseStateTreeIntegrationTest::RunTest(const FString& Parameters)
 	if (Scenario == TEXT("SoundToSearch")) return CheckSavedNoiseFlow(Fixture, false);
 	if (Scenario == TEXT("DirectReacquire")) return CheckSavedNoiseReacquire(Fixture);
 	if (Scenario == TEXT("SearchFarRetarget")) return CheckSavedNoiseFarRetarget(Fixture);
+	if (Scenario == TEXT("GeneralSearchNoiseHandoff")) return CheckSavedNoiseFarRetarget(Fixture, true);
 	if (Scenario == TEXT("SearchSightClear") || Scenario == TEXT("SearchSightBlocked")
 		|| Scenario == TEXT("NoiseSearchSightClear") || Scenario == TEXT("NoiseSearchSightBlocked"))
 		return CheckSearchSightHandoff(Fixture, Scenario.StartsWith(TEXT("Noise")), Scenario.EndsWith(TEXT("Blocked")));
@@ -3834,6 +4542,23 @@ bool ReadCombatShotDistance(FEnemyCombatIntegrationWorld& Fixture, FVector& OutM
 	return true;
 }
 
+bool WaitForObservedRangeExit(FEnemyCombatIntegrationWorld& Fixture)
+{
+	// 대상 이동은 새 TP 관측과 기존 조준점 갱신 주기를 거쳐 사거리 판정에 반영된다.
+	for (int32 Frame = 0; Frame < 12; ++Frame)
+	{
+		if (Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))
+		{
+			return true;
+		}
+		if (!Fixture.Advance())
+		{
+			return false;
+		}
+	}
+	return Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target);
+}
+
 bool WaitForRangeApproach(FEnemyCombatIntegrationWorld& Fixture, int32 MaxFrames = 90)
 {
 	for (int32 Frame = 0; Frame < MaxFrames; ++Frame)
@@ -3866,6 +4591,17 @@ bool FEnemyRangeResponseIntegrationTest::RunTest(const FString& Parameters)
 	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
 	if (!Fixture.Initialize(false, FVector(1500, 0, 0))) return false;
 	const bool bShortRange = Parameters.StartsWith(TEXT("ShortRange"));
+	if (Parameters == TEXT("VerticalRangeReselect"))
+	{
+		// 이 검사는 같은 조준점의 수직 사거리 이탈을 분리한다. 더 가까운 다른 노출 부위로
+		// 정상 대체되는 경우는 ExposedAim 회귀가 검사하므로 여기서는 실제 head 본 하나만 등록한다.
+		FArrayProperty* Bones = FindFProperty<FArrayProperty>(Fixture.Target->GetClass(), TEXT("SightBones"));
+		if (!TestNotNull(TEXT("Vertical range fixture can register a single actual TP bone"), Bones))
+		{
+			return false;
+		}
+		*Bones->ContainerPtrToValuePtr<TArray<FName>>(Fixture.Target) = {TEXT("head")};
+	}
 	Fixture.Enemy->FlightHeightSettings.bEnabled = Parameters != TEXT("ShortRangeLegacy");
 	if (!SetCombatTestRange(Fixture, bShortRange ? 700.0f : Parameters == TEXT("MidBandApproach") ? 1200.0f : 5000.0f)) return false;
 	ARangedWeaponBase* Weapon = Fixture.Enemy->GetCurrentWeapon();
@@ -3919,7 +4655,10 @@ bool FEnemyRangeResponseIntegrationTest::RunTest(const FString& Parameters)
 		const FVector Previous = Fixture.Target->GetActorLocation();
 		Fixture.Target->SetActorLocation(Previous + (Previous - Muzzle).GetSafeNormal() * 100.0f);
 		if (!TestTrue(TEXT("A small retreat crosses the weapon range during precision fire"),
-			Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
+			WaitForObservedRangeExit(Fixture)))
+		{
+			return false;
+		}
 		// 공격 Task가 Running으로 대기하더라도 전술 분기는 접근을 다시 선택해야 한다.
 		return WaitForRangeApproach(Fixture);
 	}
@@ -3937,11 +4676,27 @@ bool FEnemyRangeResponseIntegrationTest::RunTest(const FString& Parameters)
 		if (!TestTrue(TEXT("Retreat input is below the old 200cm destination threshold"),
 			FVector::Dist(Previous, Fixture.Target->GetActorLocation()) < 200.0f)
 			|| !TestTrue(TEXT("The short retreat crosses the actual weapon range boundary"),
-				Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
-		for (int32 Frame = 0; Frame < 3; ++Frame) if (!Fixture.Advance()) return false;
+				WaitForObservedRangeExit(Fixture)))
+		{
+			return false;
+		}
+		// EQS가 세 프레임 안에 끝나도 실제 접근 쿼리 선택을 놓치지 않는다.
+		bool bSawApproachQuery = false;
+		for (int32 Frame = 0; Frame < 3; ++Frame)
+		{
+			if (!Fixture.Advance())
+			{
+				return false;
+			}
+			const auto* Query = Fixture.Data<FEnemyRunEnvQueryTask>();
+			bSawApproachQuery |= Query && Query->SearchMode == EEnemySearchQueryMode::None && Query->bValidateReachability;
+		}
 		if (!TestNull(TEXT("Range loss interrupts the selected stationary hold without waiting for its duration"),
-			Fixture.Data<FEnemyStationaryFireTask>())) return false;
-		return WaitForRangeApproach(Fixture);
+			Fixture.Data<FEnemyStationaryFireTask>()))
+		{
+			return false;
+		}
+		return bSawApproachQuery || WaitForRangeApproach(Fixture);
 	}
 	if (Parameters == TEXT("VerticalRangeReselect"))
 	{
@@ -3960,10 +4715,16 @@ bool FEnemyRangeResponseIntegrationTest::RunTest(const FString& Parameters)
 		const float Sign = Fixture.Enemy->GetCombatAimPoint(Fixture.Target).Z >= Muzzle.Z ? 1.0f : -1.0f;
 		const FVector Changed = Captured + FVector(0, 0, Sign * 150.0f);
 		Fixture.Target->SetActorLocation(Changed);
+		AddInfo(FString::Printf(TEXT("[RangeObservedVertical] Captured=%s Changed=%s Muzzle=%s Aim=%s BeforeDistance=%.3f"),
+			*Captured.ToCompactString(), *Changed.ToCompactString(), *Muzzle.ToCompactString(),
+			*Fixture.Enemy->GetCombatAimPoint(Fixture.Target).ToCompactString(), Distance));
 		if (!TestTrue(TEXT("Vertical input preserves XY and remains below the old movement threshold"),
 			FVector::Dist2D(Captured, Changed) == 0.0f && FVector::Dist(Captured, Changed) < Guard->TargetChangeDistance)
 			|| !TestTrue(TEXT("Vertical movement crosses the actual three-dimensional weapon range boundary"),
-				Fixture.Enemy->IsTargetOutsideWeaponRange(Fixture.Target))) return false;
+				WaitForObservedRangeExit(Fixture)))
+		{
+			return false;
+		}
 		for (int32 Frame = 0; Frame < 90; ++Frame)
 		{
 			if (!Fixture.Advance()) return false;
@@ -4139,7 +4900,7 @@ bool FEnemyGunAimPresentationDiagnostic::RunTest(const FString& Parameters)
 		FEnemyCombatIntegrationWorld Fixture(*this, Case.Name);
 		if (!Fixture.Initialize(false, Case.Offset)) return false;
 		AVECDrone* Drone = CastChecked<AVECDrone>(Fixture.Enemy);
-		if (!TestTrue(TEXT("Observed Shooter enables downward body pitch scaling"), Drone->IsAimingAtShooter())) return false;
+		if (!TestTrue(TEXT("Production fixture observes the Shooter target"), Drone->IsAimingAtShooter())) return false;
 		ARangedWeaponBase* Weapon = Drone->GetCurrentWeapon();
 		if (!TestNotNull(TEXT("Production gun is equipped"), Weapon)) return false;
 		if (!TestTrue(TEXT("Visual tick requires a non-dedicated world"), Drone->GetNetMode() != NM_DedicatedServer)) return false;
@@ -4183,6 +4944,13 @@ bool FEnemyGunAimPresentationDiagnostic::RunTest(const FString& Parameters)
 		{
 			// 이동만 고정하고 BP 무기 설정과 실제 발사 타이머는 유지한다.
 			Drone->GetCharacterMovement()->SetComponentTickEnabled(false);
+			// 이 진단은 정렬 후의 외형/탄도를 비교한다. 즉시 회전시키지 않고 실제 최초 전조와 제한 회전을 먼저 거친다.
+			Drone->BeginTargetAttackPreparation(0.25f);
+			for (int32 Frame = 0; Frame < 30; ++Frame)
+			{
+				Drone->AdvanceTargetAttackPreparation(FEnemyCombatIntegrationWorld::Step);
+				Fixture.Tick(FEnemyCombatIntegrationWorld::Step);
+			}
 			if (!TestTrue(TEXT("Production attack starts"), Drone->StartAttackTarget(Fixture.Target))) return false;
 		}
 		for (int32 Frame = 0; Frame < 240; ++Frame)
@@ -4199,7 +4967,6 @@ bool FEnemyGunAimPresentationDiagnostic::RunTest(const FString& Parameters)
 			{
 				++FiringFrames;
 				double ExpectedBodyPitch = FMath::ClampAngle(Drone->GetBaseAimRotation().Pitch, -89.0f, 89.0f);
-				if (Drone->IsAimingAtShooter() && ExpectedBodyPitch < 0.0) ExpectedBodyPitch *= 0.5;
 				const double BodyError = FMath::FindDeltaAngleDegrees(ExpectedBodyPitch,
 					Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch);
 				MaxFiringExtra = FMath::Max(MaxFiringExtra, FMath::Abs(BodyError));
@@ -4218,11 +4985,19 @@ bool FEnemyGunAimPresentationDiagnostic::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Production visual muzzle socket exists"), bExists);
 			if (!bExists) continue;
 			const FTransform Muzzle = Drone->GetMesh()->GetSocketTransform(Socket);
-			AddInfo(FString::Printf(TEXT("[AimModel] Case=%s Socket=%s Position=%s Forward=%s TargetFromSocket=%s MeshRelative=%s"),
+			const FVector BaseDirection = Drone->GetBaseAimRotation().Vector();
+			const auto AxisError = [&](EAxis::Type Axis)
+			{
+				return FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(
+					FVector::DotProduct(Muzzle.GetUnitAxis(Axis), BaseDirection), -1.0, 1.0)));
+			};
+			// 소켓 X축을 실제 총열 정면이라고 가정하지 않는다. 모델 축을 확인할 수 있게 세 축을 함께 기록한다.
+			AddInfo(FString::Printf(TEXT("[AimModel] Case=%s Socket=%s Position=%s Forward=%s TargetFromSocket=%s MeshRelative=%s Base=%s AxisErrorXYZ=(%.3f,%.3f,%.3f) AimOwned=%d"),
 				Case.Name, *Socket.ToString(), *Muzzle.GetLocation().ToCompactString(),
 				*Muzzle.GetUnitAxis(EAxis::X).Rotation().ToCompactString(),
 				*(Drone->GetCombatAimPoint(Fixture.Target) - Muzzle.GetLocation()).Rotation().ToCompactString(),
-				*Drone->GetMesh()->GetRelativeTransform().ToString()));
+				*Drone->GetMesh()->GetRelativeTransform().ToString(), *BaseDirection.ToCompactString(),
+				AxisError(EAxis::X), AxisError(EAxis::Y), AxisError(EAxis::Z), Drone->IsCombatAimPresentationOwned()));
 		}
 		const auto ObserveBodyPose = [&](const TCHAR* Stage)
 		{
@@ -4247,15 +5022,21 @@ bool FEnemyGunAimPresentationDiagnostic::RunTest(const FString& Parameters)
 		};
 		ObserveBodyPose(TEXT("Firing"));
 		TestTrue(TEXT("Actual production shots observed"), Shots > 0);
-		TestTrue(TEXT("Base shots point at capsule center"), MaxBaseError < 0.1);
+		// 정지 상태는 중심 정렬을 유지하고, 이동 중에는 현재 서버 조준의 승인된 허용각을 검사한다.
+		const double AllowedBaseError = Case.bMoving ? Drone->GetRuntimeStat().AttackAimTolerance + 0.01 : 0.1;
+		TestTrue(TEXT("Base shots respect capsule-center aiming tolerance"), MaxBaseError < AllowedBaseError);
 		TestTrue(TEXT("Firing presentation frames were observed"), FiringFrames > 0);
-		TestTrue(TEXT("Firing body applies 50 percent downward pitch for Shooter targets without additional tilt"), MaxFiringExtra < 0.25);
+		TestTrue(TEXT("Firing body follows full server aim without additional flight pitch"), MaxFiringExtra < 0.25);
 		AddInfo(FString::Printf(TEXT("[AimAlignment] Case=%s FiringFrames=%d MaxError=%.4f"), Case.Name, FiringFrames, MaxFiringExtra));
 		if (Case.bMoving)
 		{
 			// 사격 외형만 제한했는지 양성 대조한다. 같은 드론의 비사격 이동 기울기는 다시 나타나야 한다.
 			Fixture.Tree->StopLogic(TEXT("Check presentation after firing"));
 			Drone->StopCurrentAttack();
+			// 공격 Phase 종료만으로 유효 목표의 조준권을 뺏지 않는다. 비전투 양성 대조는 추적도 종료한다.
+			Fixture.Controller->SetCachedVisibleTargetForTesting(nullptr);
+			Drone->SetPlayerCurrentlyVisible(false);
+			Drone->ClearTargetTracking();
 			Drone->SetAttackPhase(EEnemyAttackPhase::Idle);
 			Drone->GetCharacterMovement()->SetComponentTickEnabled(false);
 			Drone->GetCharacterMovement()->Velocity = Drone->GetActorForwardVector() * 300.0f;
@@ -4324,6 +5105,47 @@ bool FEnemyGunBodyOriginContractTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Possessed weapon retains viewpoint origin"), Shot.GetLocation().Equals(View, 0.001));
 	Drone->SetEnemyPossessed(false);
 	TestTrue(TEXT("Returning to AI immediately restores body origin"), Drone->GetCombatShotOrigin().Equals(Root->GetComponentLocation(), 0.001));
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyGunPausedAimPresentationTest,
+	"Outlier.Enemy.Combat.GunAimPresentation.PausedBurst",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyGunPausedAimPresentationTest::RunTest(const FString& Parameters)
+{
+	FEnemyCombatIntegrationWorld Fixture(*this, TEXT("PausedAimPresentation"));
+	if (!Fixture.Initialize(false, FVector(400, 0, -200))) return false;
+	AVECDrone* Drone = CastChecked<AVECDrone>(Fixture.Enemy);
+	Drone->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Drone->GetCharacterMovement()->Velocity = FVector(300, 0, 0);
+	Drone->BeginTargetAttackPreparation(0.25f);
+	for (int32 Frame = 0; Frame < 60; ++Frame)
+	{
+		Drone->GetMesh()->SetLastRenderTime(Fixture.World->GetTimeSeconds());
+		Drone->AdvanceTargetAttackPreparation(Fixture.Step);
+		Fixture.Tick(Fixture.Step);
+	}
+	if (!TestTrue(TEXT("Real controller owns aligned combat aim"), Drone->IsCombatAimPresentationOwned())
+		|| !TestTrue(TEXT("Aligned production burst starts"), Drone->StartAttackTarget(Fixture.Target))) return false;
+	Drone->PauseTargetAttack();
+	if (!TestEqual(TEXT("Paused firing uses the existing Idle phase"), Drone->GetAttackPhase(), EEnemyAttackPhase::Idle)) return false;
+	for (int32 Frame = 0; Frame < 30; ++Frame)
+	{
+		Drone->GetMesh()->SetLastRenderTime(Fixture.World->GetTimeSeconds());
+		Fixture.Tick(Fixture.Step);
+		if (!TestTrue(TEXT("Fire pause preserves valid combat aim ownership"), Drone->IsCombatAimPresentationOwned())
+			|| !TestTrue(TEXT("Idle pause cannot reapply flight pitch"),
+				FMath::Abs(Drone->GetThirdPersonTiltRoot()->GetRelativeRotation().Pitch) < 0.25)) return false;
+		const double PitchError = FMath::Abs(FMath::FindDeltaAngleDegrees(Drone->GetBaseAimRotation().Pitch,
+			Drone->GetThirdPersonTiltRoot()->GetComponentRotation().Pitch));
+		if (!TestTrue(TEXT("Idle pause follows the full downward server pitch"), PitchError < 0.25)) return false;
+	}
+	Fixture.SetSight(false);
+	Drone->ClearTargetTracking();
+	TestFalse(TEXT("Tracking cleanup immediately releases visual aim ownership"), Drone->IsCombatAimPresentationOwned());
+	Drone->SetEnemyPossessed(true);
+	TestFalse(TEXT("Possession cannot inherit AI visual aim ownership"), Drone->IsCombatAimPresentationOwned());
 	return !HasAnyErrors();
 }
 
@@ -4408,7 +5230,7 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNoiseFacingIntegrationTest,
 
 void FEnemyNoiseFacingIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
-	for (const TCHAR* Scenario : {TEXT("MovementControl"), TEXT("RealSightHandoff"), TEXT("PitchPresentation")})
+	for (const TCHAR* Scenario : {TEXT("MovementControl"), TEXT("ReturnToInvestigation"), TEXT("RealSightHandoff"), TEXT("PitchPresentation")})
 	{
 		Names.Add(Scenario);
 		Commands.Add(Scenario);
@@ -4427,7 +5249,7 @@ bool FEnemyNoiseFacingIntegrationTest::RunTest(const FString& Parameters)
 		// 더 가까운 기존 이동 후보와 별개로 짧은 방향 확인 후보가 저장됐는지 검사한다.
 		return TestTrue(TEXT("Secondary hearing stores a direction candidate"), Setup.Enemy->TryGetDirectionConfirmationNoise(Candidate));
 	};
-	if (Parameters == TEXT("MovementControl"))
+	if (Parameters == TEXT("MovementControl") || Parameters == TEXT("ReturnToInvestigation"))
 	{
 		FVector Results[2];
 		for (int32 Run = 0; Run < 2; ++Run)
@@ -4454,6 +5276,34 @@ bool FEnemyNoiseFacingIntegrationTest::RunTest(const FString& Parameters)
 			{
 				TestTrue(TEXT("Actual saved tree/controller executed facing"), bSawFacing);
 				TestTrue(TEXT("Body turns while flying forward"), Fixture.Enemy->GetActorRotation().Yaw > 10.0);
+				if (Parameters == TEXT("ReturnToInvestigation"))
+				{
+					bool bRestoredDirection = false;
+					double PreviousYaw = Fixture.Enemy->GetActorRotation().Yaw;
+					// Wait for the existing one-second rotation cap/hold, then allow normal
+					// 180-degree-per-second travel rotation to return from the 60-degree sector.
+					for (int32 Frame = 0; Frame < 120; ++Frame)
+					{
+						if (!Fixture.Advance())
+						{
+							return false;
+						}
+						const double CurrentYaw = Fixture.Enemy->GetActorRotation().Yaw;
+						TestTrue(TEXT("Direction handoff does not snap body rotation"),
+							FMath::Abs(FMath::FindDeltaAngleDegrees(PreviousYaw, CurrentYaw)) <= 180.0 * FEnemyCombatIntegrationWorld::Step + 0.1);
+						PreviousYaw = CurrentYaw;
+						const double TravelYaw = (Goal - Fixture.Enemy->GetActorLocation()).Rotation().Yaw;
+						if (!Fixture.Enemy->IsNoiseDirectionFacing()
+							&& FMath::Abs(FMath::FindDeltaAngleDegrees(CurrentYaw, TravelYaw)) < 5.0)
+						{
+							bRestoredDirection = true;
+							break;
+						}
+					}
+					TestFalse(TEXT("Short sound ownership ends"), Fixture.Enemy->IsNoiseDirectionFacing());
+					TestTrue(TEXT("Existing movement smoothly restores investigation direction"), bRestoredDirection);
+					TestTrue(TEXT("Returning orientation preserves destination"), Fixture.Enemy->GetActiveNoiseInvestigationClue().Location.Equals(Goal));
+				}
 			}
 		}
 		AddInfo(FString::Printf(TEXT("[NoiseFacingMovement] Control=%s Facing=%s"), *Results[0].ToCompactString(), *Results[1].ToCompactString()));
@@ -4643,6 +5493,173 @@ bool FEnemyNoiseBoundaryIntegrationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Door plus fresh cue creates a new investigation"), Fixture.Enemy->GetNoiseInvestigationSerial() != MoveSerial);
 	if (!WaitForNoiseState(Fixture, true)) return false;
 	return TestTrue(TEXT("Reopened route reaches fresh sound point"), Fixture.Enemy->GetSearchEpisode().Center.Equals(Goal + FVector(20, 0, 0), 120.0));
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyCombatTacticalSelectionIntegrationTest,
+	"Outlier.Enemy.Combat.Tactical.Selection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyCombatTacticalSelectionIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("CandidateProgress"), TEXT("DeferredBudget"), TEXT("EndedEpisodeCallback"),
+		TEXT("BudgetRecovery"), TEXT("VerticalGoalChange")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyCombatTacticalSelectionIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
+	if (!Fixture.Initialize(false, FVector(800, 0, 0))) return false;
+	AEnemyBase* Enemy = Fixture.Enemy;
+	const FVector Start = Enemy->GetActorLocation();
+	auto Prepare = [&]()
+	{
+		FEnemyRunEnvQueryTaskInstanceData Data;
+		Data.Enemy = Enemy;
+		Data.bValidateReachability = true;
+		Data.RunMode = EEnvQueryRunMode::AllMatching;
+		Data.MaxPathCandidates = 1;
+		Data.MaxSearchMilliseconds = 100.0f;
+		EnemySearchTesting::CaptureQuery(Data);
+		TestTrue(TEXT("Gun captures one persistent combat episode"), Data.CapturedCombatSerial != 0);
+		TestTrue(TEXT("Actual request consumes the shared episode budget"), Enemy->TryBeginCombatTacticalRequest());
+		return Data;
+	};
+	FEnemyRunEnvQueryTaskInstanceData Data = Prepare();
+	const FVector Blocked = Start + FVector(0, 400, 0);
+	const FVector Clear = Start + FVector(300, 0, 0);
+	if (Parameters == TEXT("VerticalGoalChange"))
+	{
+		Enemy->EnterCombatObservationWait();
+		EnemySearchTesting::ResumeCombatSelection(Data);
+		TestTrue(TEXT("Old goal is held in observation"), Data.bCombatObservationWaiting);
+		const uint64 OldSerial = Enemy->GetCombatTacticalEpisodeSerial();
+		Fixture.Target->AddActorWorldOffset(FVector(0, 0, 250));
+		TestEqual(TEXT("A meaningful vertical target change invalidates the old observation snapshot"),
+			EnemySearchTesting::ResumeCombatSelection(Data), EStateTreeRunStatus::Failed);
+		Data = Prepare();
+		TestTrue(TEXT("The newly adopted vertical goal starts a different episode"), Data.CapturedCombatSerial != OldSerial);
+		return TestFalse(TEXT("The new vertical goal has its own finite budget"), Enemy->IsCombatObservationWaiting());
+	}
+	if (Parameters == TEXT("EndedEpisodeCallback"))
+	{
+		Data.RequestId = 71;
+		Data.QueryResult = EEnemyEnvQueryResult::Running;
+		FEnvQueryInstance Result = MakePointResult(Enemy, {Clear});
+		Result.QueryID = 71;
+		Enemy->EnterCombatObservationWait();
+		TestFalse(TEXT("Same lease callback from the ended episode is rejected before output mutation"),
+			EnemySearchTesting::CompletePendingQuery(Data, Result));
+		return TestFalse(TEXT("Late completion cannot publish a destination"), Data.bHasDestination);
+	}
+	IConsoleVariable* FrameChecks = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Flight.SearchFrameChecks"));
+	if (!TestNotNull(TEXT("Production world shared budget exists"), FrameChecks)) return false;
+	const int32 OriginalChecks = FrameChecks->GetInt();
+	ON_SCOPE_EXIT { FrameChecks->Set(OriginalChecks, ECVF_SetByCode); };
+	if (Parameters == TEXT("DeferredBudget") || Parameters == TEXT("BudgetRecovery"))
+	{
+		FrameChecks->Set(0, ECVF_SetByCode);
+		EnemySearchTesting::CompleteQuery(Data, MakePointResult(Enemy, {Clear}));
+		TestTrue(TEXT("EQS completion defers combat path work"), Data.bCombatSelectionPending);
+		TestEqual(TEXT("Starved candidate keeps the selection pending"),
+			EnemySearchTesting::ResumeCombatSelection(Data), EStateTreeRunStatus::Running);
+		TestFalse(TEXT("No destination is fabricated without a scheduler grant"), Data.bHasDestination);
+		if (!TestTrue(TEXT("The suspended candidate retains its resumable search"), Data.CombatPathSearch.IsValid())) return false;
+		TestEqual(TEXT("An ungranted candidate performs no path or sight collision checks"),
+			Data.CombatPathSearch->GetResult().CollisionChecks, 0);
+		TestFalse(TEXT("Budget wait is not cached as a physical obstruction"),
+			Enemy->IsCombatTacticalCandidateFailure(TEXT("Approach"), Clear));
+		if (Parameters == TEXT("DeferredBudget"))
+		{
+			FrameChecks->Set(OriginalChecks, ECVF_SetByCode);
+			for (int32 Frame = 0; Frame < 90 && Data.bCombatSelectionPending; ++Frame)
+			{
+				++GFrameCounter;
+				EnemySearchTesting::ResumeCombatSelection(Data);
+			}
+			return TestTrue(TEXT("Same pending candidate completes after an actual grant"), Data.bHasDestination);
+		}
+		// 대기 회차 종료와 복구 배정은 실제 Task의 공통 Tick 경로를 통과한다.
+		Enemy->EnterCombatObservationWait(true);
+		EnemySearchTesting::ResumeCombatSelection(Data);
+		TestTrue(TEXT("Spent selection enters observation"), Data.bCombatObservationWaiting);
+		const uint64 WaitingSerial = Enemy->GetCombatTacticalEpisodeSerial();
+		for (int32 Frame = 0; Frame < 4; ++Frame)
+		{
+			++GFrameCounter;
+			EnemySearchTesting::ResumeCombatSelection(Data);
+		}
+		TestEqual(TEXT("Repeated budget polls do not create a recovery interval"), Enemy->GetCombatTacticalEpisodeSerial(), WaitingSerial);
+		FrameChecks->Set(OriginalChecks, ECVF_SetByCode);
+		++GFrameCounter;
+		EnemySearchTesting::ResumeCombatSelection(Data);
+		TestFalse(TEXT("Real allocation opens the single bounded recovery interval"), Enemy->IsCombatObservationWaiting());
+		TestFalse(TEXT("Recovery probe never supplies a movement destination"), Data.bHasDestination);
+		return TestFalse(TEXT("The granted interval cannot be granted again"), Enemy->CanResumeCombatTacticalBudget());
+	}
+	Fixture.SpawnBlockingBox(Blocked, FVector(100));
+	EnemySearchTesting::CompleteQuery(Data, MakePointResult(Enemy, {Blocked, Clear}));
+	for (int32 Frame = 0; Frame < 90 && Data.bCombatSelectionPending; ++Frame)
+	{
+		++GFrameCounter;
+		EnemySearchTesting::ResumeCombatSelection(Data);
+	}
+	TestEqual(TEXT("One candidate cap does not prove every destination unreachable"), Data.QueryResult, EEnemyEnvQueryResult::CandidateLimitReached);
+	TestTrue(TEXT("Physical failed candidate is retained across Task instances"),
+		Enemy->IsCombatTacticalCandidateFailure(TEXT("Approach"), Blocked));
+	Data = Prepare();
+	EnemySearchTesting::CompleteQuery(Data, MakePointResult(Enemy, {Blocked, Clear}));
+	for (int32 Frame = 0; Frame < 90 && Data.bCombatSelectionPending; ++Frame)
+	{
+		++GFrameCounter;
+		EnemySearchTesting::ResumeCombatSelection(Data);
+	}
+	TestTrue(TEXT("The next request skips the proven failed prefix and reaches the later candidate"), Data.bHasDestination);
+	TestEqual(TEXT("Only the newly inspected candidate spends this request's candidate cap"), Data.CheckedPathCandidates, 1);
+	return TestTrue(TEXT("The later valid position is selected"), Data.Destination.Equals(Clear));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCombatTacticalSavedTreeIntegrationTest,
+	"Outlier.Enemy.Combat.Tactical.SavedTreeObservationAndReopenedFire",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyCombatTacticalSavedTreeIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemyCombatIntegrationWorld Fixture(*this, TEXT("TacticalObservation"));
+	if (!Fixture.Initialize(false, FVector(1800, 0, 0))) return false;
+	IConsoleVariable* FrameChecks = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Flight.SearchFrameChecks"));
+	if (!TestNotNull(TEXT("Shared path scheduler can be controlled in this test"), FrameChecks)) return false;
+	const int32 OriginalChecks = FrameChecks->GetInt();
+	ON_SCOPE_EXIT { FrameChecks->Set(OriginalChecks, ECVF_SetByCode); };
+	AActor* Cover = Fixture.SpawnBlockingBox(
+		(Fixture.Enemy->GetActorLocation() + Fixture.Target->GetActorLocation()) * 0.5, FVector(25, 6000, 2500));
+	if (!TestNotNull(TEXT("Real full-height cover exists"), Cover)) return false;
+	FrameChecks->Set(0, ECVF_SetByCode);
+	Fixture.Start();
+	for (int32 Frame = 0; Frame < 360 && !Fixture.Enemy->IsCombatObservationWaiting(); ++Frame)
+		if (!Fixture.Advance()) return TestTrue(TEXT("Actual Gun tree remains running until observation"), false);
+	if (!TestTrue(TEXT("The actual saved Gun tree reaches bounded observation"), Fixture.Enemy->IsCombatObservationWaiting())) return false;
+	const double LastRequestAt = Fixture.Enemy->GetNextEnvQueryRequestTime();
+	const uint64 WaitingSerial = Fixture.Enemy->GetCombatTacticalEpisodeSerial();
+	for (int32 Frame = 0; Frame < 240; ++Frame)
+		if (!Fixture.Advance()) return TestTrue(TEXT("Observation keeps the actual combat tree running"), false);
+	TestEqual(TEXT("Observation does not repeatedly issue EQS while the scheduler is starved"),
+		Fixture.Enemy->GetNextEnvQueryRequestTime(), LastRequestAt);
+	TestEqual(TEXT("Polling does not mint recovery episodes"), Fixture.Enemy->GetCombatTacticalEpisodeSerial(), WaitingSerial);
+	TestTrue(TEXT("No old destination keeps moving the observed enemy"),
+		Fixture.Enemy->GetCharacterMovement()->Velocity.IsNearlyZero(1.0f));
+	TestEqual(TEXT("Observation preserves the directly observed target"), Fixture.Enemy->GetTrackedTarget(), static_cast<AActor*>(Fixture.Target));
+	Cover->SetActorEnableCollision(false);
+	Fixture.bSawFiring = false;
+	for (int32 Frame = 0; Frame < 180 && !Fixture.bSawFiring; ++Frame)
+		if (!Fixture.Advance()) return TestTrue(TEXT("Reopening keeps the actual combat tree running"), false);
+	TestTrue(TEXT("Parallel real FireCycle can fire after reopening without a new path budget"), Fixture.bSawFiring);
+	return !HasAnyErrors();
 }
 #endif
 

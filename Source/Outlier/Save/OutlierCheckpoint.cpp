@@ -234,6 +234,15 @@ bool AOutlierCheckpoint::RefreshSnapshot(AController* Controller)
 	return true;
 }
 
+bool AOutlierCheckpoint::CanCaptureSnapshot(AController* Controller, bool bRefreshSnapshot) const
+{
+	const AOutlierPlayerState* Player = Controller ? Controller->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	return HasAuthority() && !IsActorBeingDestroyed() && bCheckpointIdRegistered
+		&& bActivationConditionSatisfied && Player && Player->GetPairId() != INDEX_NONE
+		&& (bRefreshSnapshot || (!bCheckpointCommitted && bShooterPassed && bPartnerPassed
+			&& OverlappingPairId == Player->GetPairId()));
+}
+
 bool AOutlierCheckpoint::TryCommit()
 {
 	if (!HasAuthority() || !bActivationConditionSatisfied || bCheckpointCommitted

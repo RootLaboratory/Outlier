@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Enemy/EnemyAdaptationDefinition.h"
+#include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyAdaptationShieldComponent.h"
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyBase.h"
@@ -14,6 +15,7 @@
 #include "Misc/AutomationTest.h"
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
+
 #endif
 #include "Network/OutlierArenaSubsystem.h"
 #include "Room/RoomTagComponent.h"
@@ -101,18 +103,23 @@ bool FEnemyAdaptationRuntimeRegistrationTest::RunTest(const FString& Parameters)
 	Adaptation->UnregisterEnemy(RoomlessEnemy);
 	TestEqual(TEXT("Repeated unregister is safe"), Adaptation->GetRegisteredEnemyCount(), 1);
 
+	// 이 테스트는 스트리밍 대신 확정 세대와 수명 이벤트만 진행한다. 예약/확정은 Arena 테스트에서 검증한다.
+	Arena->GameplayGeneration = 42;
 	Arena->OnArenaGameplayReloadStarted.Broadcast(42);
 	TestEqual(TEXT("Reload start clears active Enemy registrations"),
 		Adaptation->GetRegisteredEnemyCount(), 0);
 	TestFalse(TEXT("Reloading rejects a late registration"),
 		Adaptation->RegisterEnemy(RoomlessEnemy));
 	Arena->OnArenaGameplayGCReady.Broadcast(42);
-	TestTrue(TEXT("GC verification opens registration for the new Gameplay sublevel"),
+	TestFalse(TEXT("GC verification cannot relabel an old placed Actor as the new generation"),
 		Adaptation->RegisterEnemy(RoomlessEnemy));
-	Adaptation->UnregisterEnemy(RoomlessEnemy);
+	AEnemyBase* NewGenerationEnemy = World->SpawnActor<AEnemyBase>();
+	TestTrue(TEXT("GC verification accepts a newly initialized Actor"),
+		Adaptation->RegisterEnemy(NewGenerationEnemy));
+	Adaptation->UnregisterEnemy(NewGenerationEnemy);
 	Arena->OnArenaGameplayReady.Broadcast(42);
 	TestTrue(TEXT("Gameplay ready accepts the new generation"),
-		Adaptation->RegisterEnemy(RoomlessEnemy));
+		Adaptation->RegisterEnemy(NewGenerationEnemy));
 	// GameplayReady는 프로젝트 설정의 Definition을 다시 읽으므로 런타임 수명 검증 직전에
 	// 자동화 전용 Definition을 주입한다.
 	Adaptation->SetDefinitionForTesting(NewObject<UEnemyAdaptationDefinition>(World));
@@ -841,6 +848,147 @@ bool FEnemyAdaptationCombatPresentationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Combat replication reveals the latest replicated resistance"), Shield->IsShieldActive());
 
 	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FEnemyAdaptationGenerationDamageTest,
+	"Outlier.Enemy.Adaptation.GenerationDamage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyAdaptationGenerationDamageTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Generation damage world"), World)) return false;
+	World->AddToRoot();
+	Context.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	World->SetGameMode(FURL());
+	World->InitializeActorsForPlay(FURL());
+	UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
+	UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+	Adaptation->OnWorldBeginPlay(*World);
+	UEnemyAdaptationDefinition* Definition = NewObject<UEnemyAdaptationDefinition>(World);
+	Definition->ShieldBreakDamage = 12.0f;
+	Adaptation->SetDefinitionForTesting(Definition);
+
+	auto SpawnTarget = [this, World, Adaptation](bool bTurret)
+	{
+		FActorSpawnParameters SpawnParameters;
+		SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(
+			bTurret ? AAutoTurret::StaticClass() : AEnemyBase::StaticClass(),
+			FTransform::Identity, SpawnParameters);
+		if (!Enemy) return Enemy;
+		UOutlierAbilitySystemComponent* ASC = Enemy->GetOutlierAbilitySystemComponent();
+		// BP/메시 없이 실제 피해→GAS 체력 변경→최종 처치 경로를 검증한다.
+		// 비동기 Cue 리소스는 격리 월드 종료 뒤 실행되지 않도록 억제한다.
+		ASC->bSuppressGameplayCues = true;
+		ASC->InitializeVitalityToSelf(100.0f);
+		Enemy->BindGasVitalityObservers();
+		if (AAutoTurret* Turret = Cast<AAutoTurret>(Enemy))
+		{
+			TestTrue(TEXT("Placed turret starts deployment"),
+				Turret->BeginRoomWaveDeployment(Enemy->GetCombatGameplayGeneration()));
+			TestTrue(TEXT("Placed turret completes deployment"), Turret->CompleteRoomWaveDeployment());
+		}
+		TestTrue(TEXT("Current placed target registers"), Adaptation->RegisterEnemy(Enemy));
+		return Enemy;
+	};
+	auto HasStun = [](const AEnemyBase* Enemy)
+	{
+		return Enemy->GetOutlierAbilitySystemComponent()->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::Stunned());
+	};
+
+	int32 UpdateCount = 0;
+	FEnemyAdaptationUpdateResult LastUpdate;
+	const FDelegateHandle UpdateHandle = Adaptation->OnAdaptationUpdated.AddLambda(
+		[&](const FEnemyAdaptationUpdateResult& Result) { ++UpdateCount; LastUpdate = Result; });
+	AEnemyBase* PreviousGenerationEnemy = nullptr;
+	for (uint32 Generation = 0; Generation <= 2; ++Generation)
+	{
+		if (Generation > 0)
+		{
+			// 스트리밍은 Arena 회귀 테스트가 검증한다. 여기서는 새 Actor의 실제 피해 생산자를 검사한다.
+			Arena->GameplayGeneration = Generation;
+			Arena->OnArenaGameplayReloadStarted.Broadcast(Generation);
+			Arena->OnArenaGameplayGCReady.Broadcast(Generation);
+			Arena->OnArenaGameplayReady.Broadcast(Generation);
+			Adaptation->SetDefinitionForTesting(Definition);
+			TestFalse(TEXT("Old Actor cannot register again after reload"),
+				Adaptation->RegisterEnemy(PreviousGenerationEnemy));
+			Adaptation->SetGunAdaptationStack(6);
+			FEnemyAdaptationUpdateResult Rejected;
+			TestFalse(TEXT("Old Actor cannot report using the current world generation"),
+				Adaptation->ReportEnemyDefeat(PreviousGenerationEnemy, Generation, 0,
+					EEnemyFinalKillCategory::Gun, Rejected));
+			FOutlierDamageRequest OldDamage;
+			OldDamage.DamageAmount = 1000.0f;
+			OldDamage.AdaptationDamageCategory = EOutlierAdaptationDamageCategory::Gun;
+			PreviousGenerationEnemy->ReceiveOutlierDamage(OldDamage);
+			TestEqual(TEXT("Old actual death cannot change the new stack"), Adaptation->GetCurrentGunAdaptationStack(), 6);
+			PreviousGenerationEnemy->Destroy();
+		}
+
+		for (bool bTurret : {false, true})
+		{
+			// Gun 처치, Preview 비총기 처치, Preview 권총 명중/처치, 내성 권총 명중/처치, 비총기 파괴.
+			for (int32 Case = 0; Case < 7; ++Case)
+			{
+				AEnemyBase* Target = SpawnTarget(bTurret);
+				AEnemyBase* Witness = SpawnTarget(false);
+				if (!Target || !Witness) continue;
+				TestEqual(TEXT("Actor captures its initialization generation"), Target->GetCombatGameplayGeneration(), int32(Generation));
+				Witness->EnterCombat(FVector::ZeroVector);
+				const bool bPistol = Case >= 2 && Case <= 5;
+				const bool bNonlethal = Case == 2 || Case == 4;
+				const bool bBreak = Case >= 4;
+				const int32 InitialStack = Case == 0 ? 6 : bBreak ? 8 : 7;
+				Adaptation->SetGunAdaptationStack(InitialStack);
+				UpdateCount = 0;
+				LastUpdate = FEnemyAdaptationUpdateResult();
+				FOutlierDamageRequest Damage;
+				Damage.DamageAmount = bNonlethal ? 10.0f : 1000.0f;
+				Damage.DamageTag = OutlierGameplayTags::Damage::Weapon();
+				Damage.AdaptationDamageCategory = Case == 0 ? EOutlierAdaptationDamageCategory::Gun
+					: bPistol ? EOutlierAdaptationDamageCategory::Pistol : EOutlierAdaptationDamageCategory::NonGun;
+				Damage.StunDurationSeconds = bNonlethal ? 0.2f : 0.0f;
+				TestTrue(TEXT("Actual placed damage is applied"), Target->ReceiveOutlierDamage(Damage) > 0.0f);
+				const int32 ExpectedStack = Case == 0 ? 7 : bBreak ? 0 : Case == 2 ? 7 : 5;
+				TestEqual(TEXT("Actual damage/death follows the same generation rules"),
+					Adaptation->GetCurrentGunAdaptationStack(), ExpectedStack);
+				TestEqual(TEXT("A lethal hit consumes only one update"), UpdateCount, Case == 2 ? 0 : 1);
+				TestEqual(TEXT("Only resistance break emits a shared break update"), LastUpdate.bAdaptationBroken, bBreak);
+				TestEqual(TEXT("Shared break stuns another combat target"), HasStun(Witness), bBreak);
+				TestEqual(TEXT("Shared break damage is distinct from ordinary pistol hit stun"),
+					Witness->GetCurrentHealth(), bBreak ? 88.0f : 100.0f);
+				if (bNonlethal) TestTrue(TEXT("Pistol victim receives ordinary hit stun"), HasStun(Target));
+				if (!bNonlethal)
+				{
+					TestTrue(TEXT("Actual lethal damage reaches death"), Target->IsDead());
+					FEnemyAdaptationUpdateResult Duplicate;
+					TestFalse(TEXT("Lethal damage cannot consume a duplicate defeat"), Adaptation->ReportEnemyDefeat(
+						Target, Generation, 0, EEnemyFinalKillCategory::Gun, Duplicate));
+				}
+				Adaptation->UnregisterEnemy(Target);
+				Adaptation->UnregisterEnemy(Witness);
+				Target->Destroy();
+				Witness->Destroy();
+			}
+		}
+		PreviousGenerationEnemy = SpawnTarget(false);
+	}
+	Adaptation->OnAdaptationUpdated.Remove(UpdateHandle);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
 	return true;
 }
 

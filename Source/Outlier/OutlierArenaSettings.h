@@ -49,7 +49,7 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Levels", meta = (ClampMin = "1.0"))
 	float ArenaGameplayReloadStallSeconds = 15.0f;
 
-	// Dedicated Worker만 이 시간 이후 복구 불가능한 정지로 판정한다.
+	// Listen/Dedicated 모두 최초 리로드 시작부터 적용하는 전체 제한이다. 재시도로 연장하지 않는다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Levels", meta = (ClampMin = "1.0"))
 	float ArenaGameplayReloadFailureSeconds = 60.0f;
 

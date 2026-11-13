@@ -19,6 +19,7 @@
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -27,6 +28,7 @@ UE_DEFINE_GAMEPLAY_TAG_STATIC(IntegrationA, "Room.GroupIntegration01.1.1");
 UE_DEFINE_GAMEPLAY_TAG_STATIC(IntegrationB, "Room.GroupIntegration01.1.2");
 UE_DEFINE_GAMEPLAY_TAG_STATIC(IntegrationEvent, "Room.GroupIntegration01.1.3");
 UE_DEFINE_GAMEPLAY_TAG_STATIC(IntegrationOutside, "Room.GroupIntegration01.2.1");
+UE_DEFINE_GAMEPLAY_TAG_STATIC(IntegrationRestore, "Room.GroupIntegration01.3.1");
 
 struct FGroupIntegrationWorld
 {
@@ -204,6 +206,59 @@ bool FRoomCombatGroupPursuitIntegrationTest::RunTest(const FString& Parameters)
 		Test.Combat->GetRoomState(IntegrationEvent), ERoomCombatState::WaitingForTrigger);
 	TestTrue(TEXT("Another group can prepare after all actual participants complete"),
 		Test.Combat->BeginInitialDetectionPreparation(IntegrationOutside, Test.Shooter, Outside));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCombatPendingRestoreIntegrationTest,
+	"Outlier.Room.GroupIntegration.RestoredPhaseDrainsPendingEnemies",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatPendingRestoreIntegrationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FGroupIntegrationWorld Fixture;
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(Fixture.World);
+	auto& RoomDefinition = Definition->RoomDefinitions.AddDefaulted_GetRef();
+	RoomDefinition.RoomTag = IntegrationRestore;
+	RoomDefinition.CombatPhases.AddDefaulted(2);
+	RoomDefinition.CombatPhases[0].StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
+	RoomDefinition.CombatPhases[1].StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+	for (auto& Phase : RoomDefinition.CombatPhases) Phase.Waves.AddDefaulted();
+	Fixture.Combat->SetCombatDefinitionForTesting(Definition);
+	UOutlierSaveSubSystem* Saves = Fixture.GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	FOutlierRoomPhaseProgress Progress;
+	Progress.NextPhaseIndex = 1;
+	Saves->SetCurrentRoomPhaseProgress(IntegrationRestore, Progress);
+
+	TArray<AEnemyBase*> PendingEnemies;
+	for (int32 Index = 0; Index < 3; ++Index)
+	{
+		const FTransform Transform(FVector(30000, Index * 150, 250));
+		AEnemyBase* Enemy = Fixture.World->SpawnActorDeferred<AEnemyBase>(AEnemyBase::StaticClass(), Transform);
+		Enemy->GetRoomTagComp()->AssignDefaultRoomTag(IntegrationRestore);
+		UDataTable* Stats = NewObject<UDataTable>(Enemy);
+		Stats->RowStruct = FEnemyStat::StaticStruct();
+		FEnemyStat Stat;
+		Stat.Health = 100;
+		Stats->AddRow(TEXT("PendingRestore"), Stat);
+		auto* Row = FindFProperty<FStructProperty>(AEnemyBase::StaticClass(), TEXT("EnemyStatRow"))
+			->ContainerPtrToValuePtr<FDataTableRowHandle>(Enemy);
+		Row->DataTable = Stats;
+		Row->RowName = TEXT("PendingRestore");
+		Enemy->FinishSpawning(Transform);
+		TestFalse(TEXT("Enemy waits while the Room is not registered"), Enemy->IsActorBeingDestroyed());
+		PendingEnemies.Add(Enemy);
+	}
+	// 실제 BeginPlay 등록을 늦춘다. 이전 Phase 적의 Destroy/EndPlay가 등록 목록을 다시 수정하는 경로다.
+	const FTransform RoomTransform(FVector(30000, 0, 250));
+	ARoomVolume* Room = Fixture.World->SpawnActorDeferred<ARoomVolume>(ARoomVolume::StaticClass(), RoomTransform);
+	*FindFProperty<FStructProperty>(ARoomVolume::StaticClass(), TEXT("RoomTag"))
+		->ContainerPtrToValuePtr<FGameplayTag>(Room) = IntegrationRestore;
+	Room->FinishSpawning(RoomTransform);
+	TestEqual(TEXT("Saved phase remains authoritative"), Fixture.Combat->GetCurrentCombatPhaseIndex(IntegrationRestore), 1);
+	TestEqual(TEXT("Old pending enemies are not counted in the restored phase"), Fixture.Combat->GetAliveEnemyCount(IntegrationRestore), 0);
+	for (AEnemyBase* Enemy : PendingEnemies)
+		TestTrue(TEXT("Every earlier-phase pending enemy is destroyed safely"), Enemy->IsActorBeingDestroyed());
 	return true;
 }
 

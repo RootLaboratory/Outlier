@@ -72,6 +72,29 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Partner Shield")
 	FLinearColor PartnerShieldColor = FLinearColor(0.15f, 1.0f, 0.65f, 1.0f);
 
+	// 본체와 TP 무기는 독립 마스크에 함께 그린다. 기존 PartnerOutline 머티리얼은
+	// Scan/Melee/Guide 및 해킹 팀원에 계속 사용하므로 제거하지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Teammate Outline")
+	bool bEnableIndependentTeammateOutline = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Teammate Outline")
+	bool bUseExistingTeammateOutlineColor = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Teammate Outline")
+	FLinearColor TeammateOutlineColor = FLinearColor(0.0f, 1.0f, 1.0f, 1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Teammate Outline", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float TeammateVisibleThickness = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Teammate Outline", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float TeammateOccludedThickness = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Teammate Outline", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float TeammateVisibleStrength = 0.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Teammate Outline", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float TeammateOccludedStrength = 0.3f;
+
 	/** Highest-priority enabled volume containing Location; falls back to the volume class defaults. */
 	static FOutlierScreenTransitionTiming ResolveScreenTransitionTiming(UWorld* World, const FVector& Location);
 

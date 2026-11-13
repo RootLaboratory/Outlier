@@ -7,6 +7,7 @@
 #include "HAL/CriticalSection.h"
 #include "HeatHazeSourceComponent.h"
 #include "RDGEffectSourceWorldSubsystem.h"
+#include "TeammateOutlineRendering.h"
 
 class ULocalPlayer;
 class FSceneViewState;
@@ -40,8 +41,17 @@ public:
 	void UpdatePartnerKnockDownTexture(EPartnerKnockDownTexture Slot, const FTextureRHIRef& InTexture);
 	void UpdateHeatHazeSources(const TArray<FHeatHazeSourceData>& InSources);
 	void ResetRuntimeHistory_RenderThread();
+	void UpdateTeammateOutlineData(const FTeammateOutlineViewData& Data, UWorld* SourceWorld = nullptr);
+	void SetTeammateOutlineSuppressed(bool bSuppressed);
 
 private:
+	FScreenPassTexture TeammateOutlineCallback_RenderThread(
+		FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs);
+	// GT에서 등록 상태를 읽고 ViewFamily에 복사한다. RT는 다음 프레임의 멤버를 읽지 않는다.
+	FTeammateOutlineViewData TeammateOutlineData;
+	TWeakObjectPtr<UWorld> TeammateOutlineWorld;
+	bool bTeammateOutlineSuppressed = false;
+
 	bool ShouldRenderAnyEffect() const;
 	bool IsTargetLocalPlayerView(const FSceneView& InView) const;
 	bool HasHeatHazeSources() const;

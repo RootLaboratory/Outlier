@@ -210,6 +210,11 @@ void AOutlierPostProcessVolume::EndPlay(const EEndPlayReason::Type EndPlayReason
 	const TStaticArray<UTexture2D*, DeathTransitionTextureCount> DeathTransitionTextures = GetDeathTransitionTextures(*this);
 	const TStaticArray<UTexture2D*, PartnerKnockDownTextureCount> PartnerKnockDownTextures = GetPartnerKnockDownTextures(*this);
 	UWorld* World = GetWorld();
+	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World
+		? World->GetSubsystem<UMaterialPostProcessSubsystem>() : nullptr)
+	{
+		PostProcessSubsystem->UnregisterPostProcessVolume(this);
+	}
 	if (UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
 	{
 		for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
@@ -613,6 +618,13 @@ void AOutlierPostProcessVolume::UpdateDamagedMaterialParameters(float InPlayerHP
 
 void AOutlierPostProcessVolume::DisableAllBlendablesHard()
 {
+	if (UWorld* World = GetWorld())
+	{
+		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PostProcessSubsystem->SuspendIndependentTeammateOutline(this);
+		}
+	}
 	SetPartnerShieldPostProcessEnabled(false);
 	for (FWeightedBlendable& Blendable : Settings.WeightedBlendables.Array)
 	{

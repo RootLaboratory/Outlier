@@ -151,10 +151,18 @@ namespace
 	bool IsValidRequest(const FFlightPathRequest& Request)
 	{
 		for (const FVector& Position : Request.RouteHistory)
-			if (!IsFiniteVector(Position)) return false;
+		{
+			if (!IsFiniteVector(Position))
+			{
+				return false;
+			}
+		}
 		if (Request.bRequireAwayHalfSpace && (!IsFiniteVector(Request.AwayOrigin)
 			|| !IsFiniteVector(Request.AwayDirection) || !FMath::IsNearlyZero(Request.AwayDirection.Z)
-			|| !FMath::IsNearlyEqual(Request.AwayDirection.SizeSquared2D(), 1.0, 0.001))) return false;
+			|| !FMath::IsNearlyEqual(Request.AwayDirection.SizeSquared2D(), 1.0, 0.001)))
+		{
+			return false;
+		}
 		return IsFiniteVector(Request.Start) && IsFiniteVector(Request.Goal)
 			&& Request.SearchBounds.IsValid && IsFiniteVector(Request.SearchBounds.Min)
 			&& IsFiniteVector(Request.SearchBounds.Max)
@@ -204,7 +212,10 @@ namespace
 		void RequestRefinement(int32 Node) const
 		{
 			const FIntVector* Step = StepCache.Find(Node);
-			if (!bLocalRefinement || !Step || Step->GetMax() <= 1 || RefinementCandidates.Contains(Node)) return;
+			if (!bLocalRefinement || !Step || Step->GetMax() <= 1 || RefinementCandidates.Contains(Node))
+			{
+				return;
+			}
 			// 목표 직결 실패가 아닌, 큰 격자의 막힌 연결 주변만 작은 이웃을 추가한다.
 			RefinementCandidates.Add(Node);
 			PendingRefinement.Add(Node);
@@ -212,7 +223,10 @@ namespace
 
 		FIntVector GetStep(int32 Node) const
 		{
-			if (const FIntVector* Cached = StepCache.Find(Node)) return *Cached;
+			if (const FIntVector* Cached = StepCache.Find(Node))
+			{
+				return *Cached;
+			}
 			const FIntVector Step = ResolveStep ? ResolveStep(Node) : FIntVector(1);
 			StepCache.Add(Node, Step);
 			WideExpansionNodes += Step.GetMax() > 1 ? 1 : 0;
@@ -281,7 +295,10 @@ namespace
 		{
 			if (Request.bAdaptiveResolution && !UsesFineNeighbours(Node))
 			{
-				if (Node == GoalNode) return 0;
+				if (Node == GoalNode)
+				{
+					return 0;
+				}
 				GetStep(Node);
 				return 27;
 			}
@@ -311,8 +328,13 @@ namespace
 					const FIntVector Local = ToCell(Node) + Offset - MinCell;
 					// 높이가 고정된 격자/바닥의 단위 Z 연결은 입구 정밀화 사유가 아니다.
 					for (int32 Axis = 0; Axis < 3; ++Axis)
+					{
 						if (Step[Axis] > 1 && Dimensions[Axis] > Step[Axis]
-							&& (Local[Axis] < 0 || Local[Axis] >= Dimensions[Axis])) RequestRefinement(Node);
+								&& (Local[Axis] < 0 || Local[Axis] >= Dimensions[Axis]))
+						{
+							RequestRefinement(Node);
+						}
+					}
 				}
 				return Neighbour;
 			}
@@ -322,7 +344,9 @@ namespace
 			if (bLongConnections && NeighbourIndex <= 6)
 			{
 				if (bMixedResolution && Request.bAdaptiveResolution && GetStep(Node)[(NeighbourIndex - 1) / 2] <= 1)
+				{
 					return INDEX_NONE;
+				}
 				FIntVector Offset = FIntVector::ZeroValue;
 				Offset[(NeighbourIndex - 1) / 2] = (NeighbourIndex % 2 ? 1 : -1) * Request.LongConnectionStride;
 				const int32 Neighbour = ToNode(ToCell(Node) + Offset);
@@ -447,7 +471,10 @@ namespace
 			{
 				// 먼 목표 직결은 시작 시 한 번만 검사한다. 이후에는 지역 경유지를 먼저 확보한다.
 				if (To == Grid.GoalNode && Grid.Request.TravelHorizon > 0.0f
-					&& !Grid.Request.SearchBounds.IsInsideOrOn(Grid.Request.Goal)) return false;
+					&& !Grid.Request.SearchBounds.IsInsideOrOn(Grid.Request.Goal))
+				{
+					return false;
+				}
 				// 출발 직선은 이미 검사했다. 먼 목표는 공간적으로 분산된 노드에서만 재확인한다.
 				// 목표 근처에서는 제한을 풀어 실제 도착점으로 연결할 기회를 유지한다.
 				if (To == Grid.GoalNode && Grid.Request.bLimitDistantGoalChecks && !bCheckDeferredGoals)
@@ -478,7 +505,12 @@ namespace
 					// 비용상 버리는 연결도 이전 Sweep에서 통과했다면 큰 격자의 진행 가능성으로 남긴다.
 					const uint64 CachedKey = (uint64(uint32(From)) << 32) | uint32(To);
 					if (const bool* Cached = SegmentCache.Find(CachedKey))
-						if (*Cached) RecordCoarseProgress(From, To);
+					{
+						if (*Cached)
+						{
+							RecordCoarseProgress(From, To);
+						}
+					}
 					++PrunedTraversals;
 					return false;
 				}
@@ -487,7 +519,10 @@ namespace
 			// 후퇴 반공간은 볼록하므로 양 끝점이 내부이면 직선 연결도 플레이어 반대편으로 나가지 않는다.
 			if (!IsPositionClear(To))
 			{
-				if (To != Grid.GoalNode && !bBudgetExceeded && !bCancelled) Grid.RequestRefinement(From);
+				if (To != Grid.GoalNode && !bBudgetExceeded && !bCancelled)
+				{
+					Grid.RequestRefinement(From);
+				}
 				return false;
 			}
 			// A*는 비용 비교 전 충돌을 묻는다. 재방문한 연결은 같은 요청의 검사 결과를 재사용한다.
@@ -496,8 +531,14 @@ namespace
 			if (const bool* Cached = SegmentCache.Find(Key))
 			{
 				++SegmentCacheHits;
-				if (*Cached) RecordCoarseProgress(From, To);
-				if (!*Cached && To != Grid.GoalNode) Grid.RequestRefinement(From);
+				if (*Cached)
+				{
+					RecordCoarseProgress(From, To);
+				}
+				if (!*Cached && To != Grid.GoalNode)
+				{
+					Grid.RequestRefinement(From);
+				}
 				return *Cached;
 			}
 		const int32 StartNode = Grid.ToNode(FIntVector::ZeroValue);
@@ -509,8 +550,14 @@ namespace
 			if (const bool* Cached = SegmentCache.Find(ReverseKey))
 			{
 				++SegmentCacheHits;
-				if (*Cached) RecordCoarseProgress(From, To);
-				if (!*Cached && To != Grid.GoalNode) Grid.RequestRefinement(From);
+				if (*Cached)
+				{
+					RecordCoarseProgress(From, To);
+				}
+				if (!*Cached && To != Grid.GoalNode)
+				{
+					Grid.RequestRefinement(From);
+				}
 				return *Cached;
 			}
 		}
@@ -519,8 +566,14 @@ namespace
 				return false;
 			}
 			const bool bClear = SegmentCheck(Grid.ToPosition(From), Grid.ToPosition(To));
-			if (bClear) RecordCoarseProgress(From, To);
-			if (!bClear && To != Grid.GoalNode) Grid.RequestRefinement(From);
+			if (bClear)
+			{
+				RecordCoarseProgress(From, To);
+			}
+			if (!bClear && To != Grid.GoalNode)
+			{
+				Grid.RequestRefinement(From);
+			}
 			RejectedSegments += bClear ? 0 : 1;
 			ClearStartConnections += bClear && From == Grid.ToNode(FIntVector::ZeroValue) && To != Grid.GoalNode ? 1 : 0;
 			GoalConnectionChecks += To == Grid.GoalNode ? 1 : 0;
@@ -531,11 +584,19 @@ namespace
 
 		void RecordCoarseProgress(int32 From, int32 To) const
 		{
-			if (!Grid.bLocalRefinement || To == Grid.GoalNode || Grid.UsesFineNeighbours(From)) return;
+			if (!Grid.bLocalRefinement || To == Grid.GoalNode || Grid.UsesFineNeighbours(From))
+			{
+				return;
+			}
 			const FIntVector* Step = Grid.StepCache.Find(From);
-			if (!Step || Step->GetMax() <= 1) return;
+			if (!Step || Step->GetMax() <= 1)
+			{
+				return;
+			}
 			if (GetHeuristicCost(To, Grid.GoalNode) < GetHeuristicCost(From, Grid.GoalNode))
+			{
 				Grid.CoarseProgressNodes.Add(From);
+			}
 		}
 
 		double GetHeuristicScale() const
@@ -560,7 +621,10 @@ namespace
 				for (const FVector& Previous : Grid.Request.RouteHistory)
 				{
 					const double DistanceSquared = FVector::DistSquared(Position, Previous);
-					if (DistanceSquared < RadiusSquared) Penalty = FMath::Max(Penalty, 8.0 * (1.0 - DistanceSquared / RadiusSquared));
+					if (DistanceSquared < RadiusSquared)
+					{
+						Penalty = FMath::Max(Penalty, 8.0 * (1.0 - DistanceSquared / RadiusSquared));
+					}
 				}
 				Cost *= 1.0 + Penalty;
 			}
@@ -620,7 +684,10 @@ namespace
 		}
 		for (const auto& Room : Request.AllowedRooms)
 		{
-			if (!IsRoomValid(Room.Get())) return false;
+			if (!IsRoomValid(Room.Get()))
+			{
+				return false;
+			}
 		}
 		return true;
 	}
@@ -652,21 +719,33 @@ namespace
 				const FVector& B = Face[(Index + 1) % Face.Num()];
 				const double DA = Plane.Evaluate(A);
 				const double DB = Plane.Evaluate(B);
-				if (DA <= 0.0) Clipped.Add(A);
+				if (DA <= 0.0)
+				{
+					Clipped.Add(A);
+				}
 				if ((DA < 0.0 && DB > 0.0) || (DA > 0.0 && DB < 0.0))
 				{
 					const FVector Intersection = A + (B - A) * (DA / (DA - DB));
 					Clipped.Add(Intersection);
 					Cap.AddUnique(Intersection);
 				}
-				if (DA == 0.0) Cap.AddUnique(A);
+				if (DA == 0.0)
+				{
+					Cap.AddUnique(A);
+				}
 			}
-			if (!Clipped.IsEmpty()) Result.Faces.Add(MoveTemp(Clipped));
+			if (!Clipped.IsEmpty())
+			{
+				Result.Faces.Add(MoveTemp(Clipped));
+			}
 		}
 		if (Cap.Num() >= 3)
 		{
 			FVector Center = FVector::ZeroVector;
-			for (const FVector& Point : Cap) Center += Point;
+			for (const FVector& Point : Cap)
+			{
+				Center += Point;
+			}
 			Center /= Cap.Num();
 			FVector Axis, OtherAxis;
 			Plane.Normal.FindBestAxisVectors(Axis, OtherAxis);
@@ -686,15 +765,20 @@ namespace
 		const FVector Max = From.ComponentMax(To) + Extent;
 		FVector Vertices[8];
 		for (int32 Index = 0; Index < 8; ++Index)
+		{
 			Vertices[Index] = FVector((Index & 1) ? Max.X : Min.X,
 				(Index & 2) ? Max.Y : Min.Y, (Index & 4) ? Max.Z : Min.Z);
+		}
 		FMovementCell Cell;
 		const int32 Faces[6][4] = {{0, 2, 6, 4}, {1, 5, 7, 3}, {0, 4, 5, 1},
 			{2, 3, 7, 6}, {0, 1, 3, 2}, {4, 6, 7, 5}};
 		for (const auto& Face : Faces)
 		{
 			FMovementFace Polygon;
-			for (int32 Index : Face) Polygon.Add(Vertices[Index]);
+			for (int32 Index : Face)
+			{
+				Polygon.Add(Vertices[Index]);
+			}
 			Cell.Faces.Add(MoveTemp(Polygon));
 		}
 		// 박스를 선분 방향으로 압출한 볼록체: 축 평면 외에 각 박스 모서리의 압출 평면이 필요하다.
@@ -703,7 +787,10 @@ namespace
 		for (const FVector& Axis : {FVector::XAxisVector, FVector::YAxisVector, FVector::ZAxisVector})
 		{
 			const FVector Normal = FVector::CrossProduct(Delta, Axis).GetSafeNormal();
-			if (Normal.IsZero()) continue;
+			if (Normal.IsZero())
+			{
+				continue;
+			}
 			for (double Sign : {-1.0, 1.0})
 			{
 				const FVector N = Normal * Sign;
@@ -732,7 +819,10 @@ namespace
 		}
 		for (const auto& Room : Request.AllowedRooms)
 		{
-			if (IsCapsuleInsideRoom(*Room, From, Extent) && IsCapsuleInsideRoom(*Room, To, Extent)) return true;
+			if (IsCapsuleInsideRoom(*Room, From, Extent) && IsCapsuleInsideRoom(*Room, To, Extent))
+			{
+				return true;
+			}
 		}
 		TArray<FMovementCell> Uncovered;
 		Uncovered.Add(MakeMovementSweep(From, To, Extent));
@@ -755,12 +845,14 @@ namespace
 					double Minimum = TNumericLimits<double>::Max();
 					double Maximum = -TNumericLimits<double>::Max();
 					for (const FMovementFace& Face : Inside.Faces)
+					{
 						for (const FVector& Vertex : Face)
 						{
 							const double Distance = Plane.Evaluate(Vertex);
 							Minimum = FMath::Min(Minimum, Distance);
 							Maximum = FMath::Max(Maximum, Distance);
 						}
+					}
 					if (Maximum <= 0.0)
 					{
 						continue;
@@ -776,10 +868,16 @@ namespace
 					Inside = ClipMovementCell(Inside, Plane);
 				}
 				// 구성 오류로 조각이 폭증하면 제한을 풀지 않고 해당 연결을 거부한다.
-				if (Remaining.Num() > 256) return false;
+				if (Remaining.Num() > 256)
+				{
+					return false;
+				}
 			}
 			Uncovered = MoveTemp(Remaining);
-			if (Uncovered.IsEmpty()) return true;
+			if (Uncovered.IsEmpty())
+			{
+				return true;
+			}
 		}
 		return false;
 	}
@@ -805,7 +903,10 @@ bool FlightPathfinding::ClampToMovementRooms(const FFlightPathRequest& Request,
 		OutLocation = Location;
 		return true;
 	}
-	if (!AreMovementRoomsValid(Request)) return false;
+	if (!AreMovementRoomsValid(Request))
+	{
+		return false;
+	}
 	if (Request.AllowedRooms.IsEmpty())
 	{
 		return Request.Room.IsValid() && Request.Room->TryClampFlightLocation(Location, Extent, OutLocation);
@@ -889,9 +990,18 @@ static FFlightPathResult FindGridPathWithChecks(
 				const FVector Extent(RegionHalfExtent, RegionHalfExtent,
 					Step.Z > 1 ? RegionHalfExtent : 0.0f);
 				if (!Request.SearchBounds.IsInsideOrOn(Position - Extent)
-					|| !Request.SearchBounds.IsInsideOrOn(Position + Extent)) continue;
-				if (!Filter.BeginCheck()) break;
-				if (IsRegionClear(Position, Extent)) return Step;
+					|| !Request.SearchBounds.IsInsideOrOn(Position + Extent))
+				{
+					continue;
+				}
+				if (!Filter.BeginCheck())
+				{
+					break;
+				}
+				if (IsRegionClear(Position, Extent))
+				{
+					return Step;
+				}
 			}
 			return FIntVector(1);
 		};
@@ -1238,7 +1348,10 @@ FFlightPathResult FlightPathfinding::FindPathWithChecks(
 	{
 		FFlightPathRequest SearchRequest = Request;
 		SearchRequest.MaxCollisionChecks -= SimplificationReserve;
-		if (SimplificationReserve > 0) SearchRequest.MaxSearchMilliseconds *= 0.9;
+		if (SimplificationReserve > 0)
+		{
+			SearchRequest.MaxSearchMilliseconds *= 0.9;
+		}
 		Result = FindGridPathWithChecks(SearchRequest, IsPositionClear, IsSegmentClear, IsRegionClear);
 		if (bLogSearch)
 		{
@@ -1267,7 +1380,10 @@ FFlightPathResult FlightPathfinding::FindPathWithChecks(
 		if (bLogSearch)
 		{
 			LogFlightSearchPass(bTryAdaptive ? TEXT("Adaptive") : bTryCoarse ? TEXT("Coarse") : TEXT("Single"), FirstRequest, FirstResult);
-			if (bRanFine) LogFlightSearchPass(TEXT("Fine"), FineRequest, FinePassResult);
+			if (bRanFine)
+			{
+				LogFlightSearchPass(TEXT("Fine"), FineRequest, FinePassResult);
+			}
 		}
 	}
 	Result.PathLength = 0.0;
@@ -1362,7 +1478,7 @@ static void LogFailedFlightSegment(
 
 static FFlightPathResult FindPathOrCheckSegment(
 	UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request,
-	EFlightCheckMode Mode)
+	EFlightCheckMode Mode, bool bPassingSpace = false)
 {
 	// 게임 호출부: 권한/환경 검증 -> 캡슐 충돌 설정 구성 -> 공용 탐색에 검사 함수 전달.
 	FFlightPathResult Failure;
@@ -1407,19 +1523,25 @@ static FFlightPathResult FindPathOrCheckSegment(
 
 	// 고정 반경/Visibility가 아니라 실제 이동 캡슐의 크기와 충돌 응답을 그대로 사용한다.
 
-	const float Radius = MovementCapsule.GetScaledCapsuleRadius() + Request.Clearance;
+	const float Radius = (MovementCapsule.GetScaledCapsuleRadius() + Request.Clearance) * (bPassingSpace ? 2.0f : 1.0f);
 	const float HalfHeight = MovementCapsule.GetScaledCapsuleHalfHeight() + Request.Clearance;
-	if (!FMath::IsFinite(Radius) || !FMath::IsFinite(HalfHeight) || Radius <= 0.0f || HalfHeight < Radius)
+	if (!FMath::IsFinite(Radius) || !FMath::IsFinite(HalfHeight) || Radius <= 0.0f || HalfHeight <= 0.0f
+		|| (!bPassingSpace && HalfHeight < Radius))
 	{
 		return Failure;
 	}
 
-	const FCollisionShape Shape = FCollisionShape::MakeCapsule(Radius, HalfHeight);
+	// 통행 폭을 분류할 때 높이까지 두 배로 키우면 낮게 나는 넓은 방도 전부 좁은 길로 오인한다.
+	// 두 캡슐의 수평 여유만 보수적인 박스로 검사하며, 일반 이동은 원래 캡슐을 그대로 쓴다.
+	const FCollisionShape Shape = bPassingSpace ? FCollisionShape::MakeBox(FVector(Radius, Radius, HalfHeight))
+		: FCollisionShape::MakeCapsule(Radius, HalfHeight);
 	const float ActualRadius = MovementCapsule.GetScaledCapsuleRadius();
 	const float ActualHalfHeight = MovementCapsule.GetScaledCapsuleHalfHeight();
 	const FCollisionShape ActualShape = FCollisionShape::MakeCapsule(ActualRadius, ActualHalfHeight);
 	const FQuat Rotation = MovementCapsule.GetComponentQuat();
-	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(Radius, HalfHeight, Rotation);
+	const FVector Extent = bPassingSpace
+		? (Rotation.GetAxisX().GetAbs() + Rotation.GetAxisY().GetAbs()) * Radius + Rotation.GetAxisZ().GetAbs() * HalfHeight
+		: FlightPathfinding::GetCapsuleWorldExtent(Radius, HalfHeight, Rotation);
 	const FVector ActualExtent = FlightPathfinding::GetCapsuleWorldExtent(ActualRadius, ActualHalfHeight, Rotation);
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FlightPathfinding), false, Owner);
 	// 실제 이동에서 무시하는 대상은 경로 검증에서도 동일하게 무시한다.
@@ -1469,20 +1591,26 @@ static FFlightPathResult FindPathOrCheckSegment(
 			Position, Rotation, Channel, Shape, Params, Responses);
 		if (!bAtStart)
 		{
-			if (bSearchDebug && !bClear && RejectedPositionSamples.Num() < 2) RejectedPositionSamples.Add(Position);
+			if (bSearchDebug && !bClear && RejectedPositionSamples.Num() < 2)
+			{
+				RejectedPositionSamples.Add(Position);
+			}
 			return bClear;
 		}
 		bCheckedStart = true;
 		bStartClear = bClear;
 		// 안전 여유만 겹친 실제 현재 위치에서는 탈출할 수 있어야 한다. 실제 관통/방 이탈은 계속 거부한다.
-		if (!bClear && Request.Start.Equals(MovementCapsule.GetComponentLocation(), 0.01))
+		if (!bPassingSpace && !bClear && Request.Start.Equals(MovementCapsule.GetComponentLocation(), 0.01))
 		{
 			bStartClear = FlightPathfinding::IsInsideAwayHalfSpace(Request, Position)
 				&& FlightPathfinding::IsInsideMovementRooms(Request, Position, ActualExtent)
 				&& !World.OverlapBlockingTestByChannel(Position, Rotation, Channel, ActualShape, Params, Responses);
 			bStartNeedsClearanceEscape = bStartClear;
 		}
-		if (bSearchDebug && !bStartClear && RejectedPositionSamples.Num() < 2) RejectedPositionSamples.Add(Position);
+		if (bSearchDebug && !bStartClear && RejectedPositionSamples.Num() < 2)
+		{
+			RejectedPositionSamples.Add(Position);
+		}
 		return bStartClear;
 	};
 
@@ -1543,9 +1671,15 @@ static FFlightPathResult FindPathOrCheckSegment(
 		{
 			const double MinimumDistance = FVector::DotProduct(Center - Request.AwayOrigin, Request.AwayDirection)
 				- FVector::DotProduct(RegionExtent, Request.AwayDirection.GetAbs());
-			if (MinimumDistance < 0.0) return false;
+			if (MinimumDistance < 0.0)
+			{
+				return false;
+			}
 		}
-		if (!FlightPathfinding::IsInsideMovementRooms(Request, Center, BoxExtent)) return false;
+		if (!FlightPathfinding::IsInsideMovementRooms(Request, Center, BoxExtent))
+		{
+			return false;
+		}
 		return !World.OverlapBlockingTestByChannel(Center, FQuat::Identity, Channel,
 			FCollisionShape::MakeBox(BoxExtent), Params, Responses);
 	};
@@ -1562,11 +1696,17 @@ static FFlightPathResult FindPathOrCheckSegment(
 			int32 Blockers = 0;
 			for (const FOverlapResult& Overlap : Overlaps)
 			{
-				if (!Overlap.bBlockingHit) continue;
+				if (!Overlap.bBlockingHit)
+				{
+					continue;
+				}
 				UE_LOG(LogFlightPathCost, Log,
 					TEXT("[FlightSearchBlocker] Owner=%s Kind=Position At=%s Blocker=%s Component=%s"),
 					*GetNameSafe(Owner), *Position.ToCompactString(), *GetNameSafe(Overlap.GetActor()), *GetNameSafe(Overlap.GetComponent()));
-				if (++Blockers >= 2) break;
+				if (++Blockers >= 2)
+				{
+					break;
+				}
 			}
 			UE_LOG(LogFlightPathCost, Log, TEXT("[FlightSearchBlocker] Owner=%s Kind=Position At=%s InsideConstraints=%d Blockers=%d"),
 				*GetNameSafe(Owner), *Position.ToCompactString(), IsInsideRoom(Position), Blockers);
@@ -1629,6 +1769,13 @@ EFlightPathStatus FlightPathfinding::CheckSegment(
 	return FindPathOrCheckSegment(World, MovementCapsule, Request, EFlightCheckMode::Segment).Status;
 }
 
+FFlightPathResult FlightPathfinding::CheckPassingSpace(
+	UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request)
+{
+	// 분류용 수평 여유 검사에는 현재 위치의 clearance 탈출 예외를 적용하지 않는다.
+	return FindPathOrCheckSegment(World, MovementCapsule, Request, EFlightCheckMode::Segment, true);
+}
+
 EFlightPathStatus FlightPathfinding::CheckDestination(
 	UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request)
 {
@@ -1680,7 +1827,9 @@ namespace
 			{
 				Result.Waypoints = MoveTemp(PendingWaypoints);
 				for (int32 Index = 1; Index < Result.Waypoints.Num(); ++Index)
+				{
 					Result.PathLength += FVector::Distance(Result.Waypoints[Index - 1], Result.Waypoints[Index]);
+				}
 			}
 			else
 			{
@@ -1695,14 +1844,22 @@ namespace
 			const int32 Stride = ResolvedRequest.LongConnectionStride;
 			if (!RegionCheck || !ResolvedRequest.bAdaptiveResolution || Stride <= 1
 				|| (!OriginalRequest.bHierarchicalResolution && Node == Grid.ToNode(FIntVector::ZeroValue)))
+			{
 				return FIntVector(1);
+			}
 			// 영역은 간격 선택에만 사용한다. 실제 긴 연결은 별도의 캡슐 Sweep으로 검증한다.
 			for (const FIntVector Step : { FIntVector(Stride), FIntVector(Stride, Stride, 1) })
 			{
 				const FVector Extent(75.0, 75.0, Step.Z > 1 ? 75.0 : 0.0);
 				if (!ResolvedRequest.SearchBounds.IsInsideOrOn(Position - Extent)
-					|| !ResolvedRequest.SearchBounds.IsInsideOrOn(Position + Extent)) continue;
-				if (!Filter.BeginCheck()) break;
+					|| !ResolvedRequest.SearchBounds.IsInsideOrOn(Position + Extent))
+				{
+					continue;
+				}
+				if (!Filter.BeginCheck())
+				{
+					break;
+				}
 				if (RegionCheck(Position, Extent))
 				{
 					WideRegion3DNodes += Step.Z > 1 ? 1 : 0;
@@ -1728,7 +1885,10 @@ namespace
 
 		bool ShouldRefineSearch() const
 		{
-			if (!bCoarseSearch || Grid.PendingRefinement.IsEmpty()) return false;
+			if (!bCoarseSearch || Grid.PendingRefinement.IsEmpty())
+			{
+				return false;
+			}
 			const double ActiveMs = Filter.ActiveMilliseconds
 				+ (FPlatformTime::Seconds() - Filter.SliceStartedAt) * 1000.0;
 			return Filter.Checks >= OriginalRequest.MaxCollisionChecks / 2
@@ -1760,12 +1920,21 @@ namespace
 			for (int32 Index = 0; Index < Grid.PendingRefinement.Num(); ++Index)
 			{
 				const int32 NodeRef = Grid.PendingRefinement[Index];
-				if (!bFrontierExhausted && Grid.CoarseProgressNodes.Contains(NodeRef)) continue;
+				if (!bFrontierExhausted && Grid.CoarseProgressNodes.Contains(NodeRef))
+				{
+					continue;
+				}
 				const auto* Node = GraphSearch.NodePool.Find(NodeRef);
-				if (!Node || !Node->IsClosed()) continue;
+				if (!Node || !Node->IsClosed())
+				{
+					continue;
+				}
 				if (Node->TotalCost <= BestCost) { BestCost = Node->TotalCost; CandidateIndex = Index; }
 			}
-			if (CandidateIndex == INDEX_NONE) return;
+			if (CandidateIndex == INDEX_NONE)
+			{
+				return;
+			}
 			const int32 NodeRef = Grid.PendingRefinement[CandidateIndex];
 			Grid.PendingRefinement.RemoveAtSwap(CandidateIndex, 1, EAllowShrinking::No);
 			Grid.RefinedNodes.Add(NodeRef);
@@ -1787,7 +1956,10 @@ namespace
 				if (Node.NodeRef == Grid.ToNode(FIntVector::ZeroValue))
 				{
 					Algo::Reverse(PendingWaypoints);
-					if (bAppendGoal) PendingWaypoints.Add(ResolvedRequest.Goal);
+					if (bAppendGoal)
+					{
+						PendingWaypoints.Add(ResolvedRequest.Goal);
+					}
 					PrepareValidation();
 					return;
 				}
@@ -1804,11 +1976,20 @@ namespace
 
 		bool TryPrepareLocalRoute()
 		{
-			if (OriginalRequest.TravelHorizon <= 0.0f || GraphSearch.OpenList.Num() == 0) return false;
+			if (OriginalRequest.TravelHorizon <= 0.0f || GraphSearch.OpenList.Num() == 0)
+			{
+				return false;
+			}
 			const auto& Node = GraphSearch.NodePool[GraphSearch.OpenList[0]];
-			if (Node.NodeRef == Grid.GoalNode) return false;
+			if (Node.NodeRef == Grid.GoalNode)
+			{
+				return false;
+			}
 			const FVector Position = Grid.ToPosition(Node.NodeRef);
-			if (FVector::DistSquared(Position, OriginalRequest.Start) < FMath::Square(OriginalRequest.TravelHorizon)) return false;
+			if (FVector::DistSquared(Position, OriginalRequest.Start) < FMath::Square(OriginalRequest.TravelHorizon))
+			{
+				return false;
+			}
 			// 목표 방향이 막히면 옆/뒤로 우회해도 된다. 방문 이력은 비용에만 반영해 탈출을 막지 않는다.
 			Result.bPartialRoute = true;
 			Result.ResolvedGoal = Position;
@@ -1834,13 +2015,19 @@ namespace
 			}
 			const int32 Ring = GoalCandidateIndex / 28 + 1;
 			const int32 Direction = GoalCandidateIndex++ % 28;
-			if (Direction == 14) return;
+			if (Direction == 14)
+			{
+				return;
+			}
 			const int32 OffsetIndex = Direction - 1;
 			const FVector Offset = Direction == 0 ? (OriginalRequest.Start - OriginalRequest.Goal).GetSafeNormal()
 				: FVector(OffsetIndex % 3 - 1, OffsetIndex / 3 % 3 - 1, OffsetIndex / 9 - 1).GetSafeNormal();
 			const FVector Candidate = OriginalRequest.Goal + Offset * (OriginalRequest.GoalSearchRadius * Ring * 0.5);
 			if (!OriginalRequest.SearchBounds.IsInsideOrOn(Candidate)
-				|| !FlightPathfinding::IsInsideAwayHalfSpace(OriginalRequest, Candidate) || !Filter.BeginCheck()) return;
+				|| !FlightPathfinding::IsInsideAwayHalfSpace(OriginalRequest, Candidate) || !Filter.BeginCheck())
+			{
+				return;
+			}
 			if (!PositionCheck(Candidate)) { ++Filter.RejectedPositions; return; }
 			if (!bHaveFallbackGoal) { FallbackGoal = Candidate; bHaveFallbackGoal = true; }
 			if (Filter.CanProbeDirectGoal() && Filter.BeginCheck())
@@ -1854,7 +2041,10 @@ namespace
 					Filter.SegmentCache.Add((uint64(uint32(Grid.ToNode(FIntVector::ZeroValue))) << 32)
 						| uint32(Grid.GoalNode), true);
 				}
-				else ++Filter.RejectedSegments;
+				else
+				{
+					++Filter.RejectedSegments;
+				}
 			}
 		}
 
@@ -1869,13 +2059,28 @@ namespace
 					Result.bStartBlocked = true;
 					Finish(EFlightPathStatus::BlockedEndpoint);
 				}
-				else Phase = EPhase::Goal;
+				else
+				{
+					Phase = EPhase::Goal;
+				}
 				break;
 			case EPhase::Goal:
-				if (OriginalRequest.TravelHorizon > 0.0f && !ResolvedRequest.SearchBounds.IsInsideOrOn(ResolvedRequest.Goal)) Phase = EPhase::Direct;
-				else if (Filter.IsPositionClear(Grid.GoalNode)) Phase = EPhase::Direct;
-				else if (OriginalRequest.GoalSearchRadius > 0.0f) Phase = EPhase::AdjustGoal;
-				else Finish(EFlightPathStatus::BlockedEndpoint);
+				if (OriginalRequest.TravelHorizon > 0.0f && !ResolvedRequest.SearchBounds.IsInsideOrOn(ResolvedRequest.Goal))
+				{
+					Phase = EPhase::Direct;
+				}
+				else if (Filter.IsPositionClear(Grid.GoalNode))
+				{
+					Phase = EPhase::Direct;
+				}
+				else if (OriginalRequest.GoalSearchRadius > 0.0f)
+				{
+					Phase = EPhase::AdjustGoal;
+				}
+				else
+				{
+					Finish(EFlightPathStatus::BlockedEndpoint);
+				}
 				break;
 			case EPhase::AdjustGoal:
 				ProbeGoalCandidate();
@@ -1884,15 +2089,27 @@ namespace
 				if (Filter.IsTraversalAllowed(StartNode, Grid.GoalNode))
 				{
 					PendingWaypoints.Add(OriginalRequest.Start);
-					if (OriginalRequest.Start != ResolvedRequest.Goal) PendingWaypoints.Add(ResolvedRequest.Goal);
+					if (OriginalRequest.Start != ResolvedRequest.Goal)
+					{
+						PendingWaypoints.Add(ResolvedRequest.Goal);
+					}
 					PrepareValidation();
 				}
-				else StartGraph();
+				else
+				{
+					StartGraph();
+				}
 				break;
 			case EPhase::Expand:
-				if (TryPrepareLocalRoute()) break;
+				if (TryPrepareLocalRoute())
+				{
+					break;
+				}
 				if (ShouldRefineSearch()) { BeginRefinement(); break; }
-				if (!bCoarseSearch && Grid.bLocalRefinement) RefineVisitedNode();
+				if (!bCoarseSearch && Grid.bLocalRefinement)
+				{
+					RefineVisitedNode();
+				}
 				if (GraphSearch.OpenList.Num() == 0)
 				{
 					Filter.bCheckDeferredGoals = true;
@@ -1903,7 +2120,10 @@ namespace
 				if (!GraphSearch.ProcessSingleNode(FGraphAStar<FFlightGrid>::FSearchNode(Grid.GoalNode),
 					true, Filter, BestNodeIndex, BestNodeCost))
 				{
-					if (BestNodeCost == 0.0) PreparePath(BestNodeIndex);
+					if (BestNodeCost == 0.0)
+					{
+						PreparePath(BestNodeIndex);
+					}
 					else { Filter.bCheckDeferredGoals = true; Phase = EPhase::Deferred; }
 				}
 				break;
@@ -1925,7 +2145,10 @@ namespace
 					if (Filter.IsTraversalAllowed(From, Grid.GoalNode))
 					{
 						const auto* Node = GraphSearch.NodePool.Find(From);
-						if (Node) PreparePath(Node->SearchNodeIndex, true);
+						if (Node)
+						{
+							PreparePath(Node->SearchNodeIndex, true);
+						}
 					}
 				}
 				break;
@@ -1939,14 +2162,22 @@ namespace
 				{
 					++SimplifyProbes;
 					if (SegmentCheck(PendingWaypoints[SimplifyIndex], PendingWaypoints[SimplifyIndex + 2]))
+					{
 						PendingWaypoints.RemoveAt(SimplifyIndex + 1, 1, EAllowShrinking::No);
-					else ++SimplifyIndex;
+					}
+					else
+					{
+						++SimplifyIndex;
+					}
 				}
 				break;
 			case EPhase::Validate:
 				// 프레임 사이에 장애물이 바뀔 수 있으므로 성공 직전에는 탐색 캐시를 사용하지 않는다.
 				if (ValidationIndex >= PendingWaypoints.Num()) { Finish(EFlightPathStatus::Success); break; }
-				if (!Filter.BeginCheck()) break;
+				if (!Filter.BeginCheck())
+				{
+					break;
+				}
 				if (!PositionCheck(PendingWaypoints[ValidationIndex]))
 				{
 					Result.bStartBlocked = ValidationIndex == 0;
@@ -1955,7 +2186,10 @@ namespace
 				}
 				if (ValidationIndex > 0)
 				{
-					if (!Filter.BeginCheck()) break;
+					if (!Filter.BeginCheck())
+					{
+						break;
+					}
 					if (!SegmentCheck(PendingWaypoints[ValidationIndex - 1], PendingWaypoints[ValidationIndex]))
 					{
 						Finish(EFlightPathStatus::BlockedSegment);
@@ -1994,7 +2228,10 @@ namespace
 				Result.CoarseSearchNodes = Result.SearchNodes;
 				Result.CoarseCollisionChecks = Result.CollisionChecks;
 			}
-			if (!Result.bPartialRoute) Result.ResolvedGoal = ResolvedRequest.Goal;
+			if (!Result.bPartialRoute)
+			{
+				Result.ResolvedGoal = ResolvedRequest.Goal;
+			}
 		}
 
 		int32 GetPhaseCheckAllowance() const
@@ -2053,17 +2290,28 @@ namespace
 
 		bool Advance(int32 MaxChecks, double MaxMilliseconds) override
 		{
-			if (Phase == EPhase::Done) return true;
+			if (Phase == EPhase::Done)
+			{
+				return true;
+			}
 			const double StartedAt = FPlatformTime::Seconds();
 			Filter.SliceStartedAt = StartedAt;
 			if (ValidateEnvironment)
 			{
 				const EFlightPathStatus Status = ValidateEnvironment();
-				if (Status != EFlightPathStatus::InProgress) Finish(Status);
+				if (Status != EFlightPathStatus::InProgress)
+				{
+					Finish(Status);
+				}
 			}
-			if (OriginalRequest.ShouldCancel && OriginalRequest.ShouldCancel()) Finish(EFlightPathStatus::Cancelled);
+			if (OriginalRequest.ShouldCancel && OriginalRequest.ShouldCancel())
+			{
+				Finish(EFlightPathStatus::Cancelled);
+			}
 			if (Phase == EPhase::Done || MaxChecks <= 0 || !FMath::IsFinite(MaxMilliseconds) || MaxMilliseconds <= 0.0)
+			{
 				return Phase == EPhase::Done;
+			}
 			++Result.SearchSlices;
 			const int32 InitialChecks = Filter.Checks;
 			while (Phase != EPhase::Done)
@@ -2087,19 +2335,33 @@ namespace
 				const int32 Allowance = GetPhaseCheckAllowance();
 				const int32 RemainingTotal = OriginalRequest.MaxCollisionChecks - Filter.Checks;
 				if (MaxChecks - (Filter.Checks - InitialChecks) < FMath::Min(Allowance, RemainingTotal)
-					|| SliceMs >= MaxMilliseconds) break;
+					|| SliceMs >= MaxMilliseconds)
+				{
+					break;
+				}
 				Step();
-				if (Filter.bBudgetExceeded) Finish(EFlightPathStatus::BudgetExceeded);
-				else if (Filter.bCancelled) Finish(EFlightPathStatus::Cancelled);
+				if (Filter.bBudgetExceeded)
+				{
+					Finish(EFlightPathStatus::BudgetExceeded);
+				}
+				else if (Filter.bCancelled)
+				{
+					Finish(EFlightPathStatus::Cancelled);
+				}
 			}
 			const double Elapsed = (FPlatformTime::Seconds() - StartedAt) * 1000.0;
 			Filter.ActiveMilliseconds += Elapsed;
 			Result.ElapsedMilliseconds = Filter.ActiveMilliseconds;
 			Result.PeakSliceMilliseconds = FMath::Max(Result.PeakSliceMilliseconds, Elapsed);
 			Result.WallMilliseconds = (FPlatformTime::Seconds() - CreatedAt) * 1000.0;
-			if (UsedClearanceEscape) Result.bUsedClearanceEscape = UsedClearanceEscape();
+			if (UsedClearanceEscape)
+			{
+				Result.bUsedClearanceEscape = UsedClearanceEscape();
+			}
 			if (Filter.ActiveMilliseconds >= OriginalRequest.MaxSearchMilliseconds && Result.Status != EFlightPathStatus::Cancelled)
+			{
 				Finish(EFlightPathStatus::BudgetExceeded);
+			}
 			UpdateStatistics();
 			return Phase == EPhase::Done;
 		}
@@ -2149,19 +2411,38 @@ namespace
 		{
 			Params.AddIgnoredActors(InCapsule.GetMoveIgnoreActors());
 			Params.AddIgnoredComponents(InCapsule.GetMoveIgnoreComponents());
-			for (AActor* Actor : InCapsule.GetMoveIgnoreActors()) IgnoredActors.Add(Actor);
-			for (UPrimitiveComponent* Component : InCapsule.GetMoveIgnoreComponents()) IgnoredComponents.Add(Component);
+			for (AActor* Actor : InCapsule.GetMoveIgnoreActors())
+			{
+				IgnoredActors.Add(Actor);
+			}
+			for (UPrimitiveComponent* Component : InCapsule.GetMoveIgnoreComponents())
+			{
+				IgnoredComponents.Add(Component);
+			}
 		}
 
 		bool SameIgnoredObjects(const UCapsuleComponent& CurrentCapsule) const
 		{
 			const TArray<AActor*>& Actors = CurrentCapsule.GetMoveIgnoreActors();
 			const TArray<UPrimitiveComponent*>& Components = CurrentCapsule.GetMoveIgnoreComponents();
-			if (Actors.Num() != IgnoredActors.Num() || Components.Num() != IgnoredComponents.Num()) return false;
+			if (Actors.Num() != IgnoredActors.Num() || Components.Num() != IgnoredComponents.Num())
+			{
+				return false;
+			}
 			for (int32 Index = 0; Index < Actors.Num(); ++Index)
-				if (IgnoredActors[Index].Get() != Actors[Index]) return false;
+			{
+				if (IgnoredActors[Index].Get() != Actors[Index])
+				{
+					return false;
+				}
+			}
 			for (int32 Index = 0; Index < Components.Num(); ++Index)
-				if (IgnoredComponents[Index].Get() != Components[Index]) return false;
+			{
+				if (IgnoredComponents[Index].Get() != Components[Index])
+				{
+					return false;
+				}
+			}
 			return true;
 		}
 
@@ -2176,7 +2457,9 @@ namespace
 				|| !CurrentWorld->GetPhysicsScene() || CurrentCapsule->GetWorld() != CurrentWorld
 				|| !CurrentCapsule->IsRegistered() || !CurrentCapsule->IsQueryCollisionEnabled()
 				|| !AreMovementRoomsValid(Request, CurrentWorld))
+			{
 				return EFlightPathStatus::Unavailable;
+			}
 			// 캐시에 사용했던 캡슐 설정이 바뀌면 기존 결과를 전달하지 않는다. 위치 이동은 경로 합류로 처리한다.
 			if (!FMath::IsNearlyEqual(Radius, CurrentCapsule->GetScaledCapsuleRadius())
 				|| !FMath::IsNearlyEqual(HalfHeight, CurrentCapsule->GetScaledCapsuleHalfHeight())
@@ -2184,7 +2467,9 @@ namespace
 				|| Responses.CollisionResponse != CurrentCapsule->GetCollisionResponseToChannels()
 				|| !SameIgnoredObjects(*CurrentCapsule)
 				|| !Rotation.GetAxisZ().Equals(CurrentCapsule->GetComponentQuat().GetAxisZ(), 0.001))
+			{
 				return EFlightPathStatus::Cancelled;
+			}
 			return EFlightPathStatus::InProgress;
 		}
 
@@ -2198,16 +2483,28 @@ namespace
 		bool PositionClear(const FVector& Position)
 		{
 			UWorld* CurrentWorld = World.Get();
-			if (!CurrentWorld) return false;
+			if (!CurrentWorld)
+			{
+				return false;
+			}
 			const bool bClear = Inside(Position, Extent) && !CurrentWorld->OverlapBlockingTestByChannel(
 				Position, Rotation, Channel, Shape, Params, Responses);
-			if (!Position.Equals(Request.Start, 0.01)) return bClear;
+			if (!Position.Equals(Request.Start, 0.01))
+			{
+				return bClear;
+			}
 			bClearanceEscape = false;
-			if (bClear) return true;
+			if (bClear)
+			{
+				return true;
+			}
 			const UCapsuleComponent* CurrentCapsule = Capsule.Get();
 			const TSharedPtr<FResumableFlightSearch> CurrentSearch = Search.Pin();
 			if (!CurrentCapsule || !Position.Equals(CurrentCapsule->GetComponentLocation(), 0.01)
-				|| !Inside(Position, ActualExtent) || !CurrentSearch || !CurrentSearch->ChargeAdditionalCheck()) return false;
+				|| !Inside(Position, ActualExtent) || !CurrentSearch || !CurrentSearch->ChargeAdditionalCheck())
+			{
+				return false;
+			}
 			bClearanceEscape = !CurrentWorld->OverlapBlockingTestByChannel(Position, Rotation, Channel, ActualShape, Params, Responses);
 			return bClearanceEscape;
 		}
@@ -2215,9 +2512,15 @@ namespace
 		bool SegmentClear(const FVector& From, const FVector& To) const
 		{
 			UWorld* CurrentWorld = World.Get();
-			if (!CurrentWorld) return false;
+			if (!CurrentWorld)
+			{
+				return false;
+			}
 			const bool bEscape = bClearanceEscape && From.Equals(Request.Start, 0.01);
-			if (bEscape && FVector::DistSquared(From, To) > FMath::Square(Request.CellSize * 1.75f)) return false;
+			if (bEscape && FVector::DistSquared(From, To) > FMath::Square(Request.CellSize * 1.75f))
+			{
+				return false;
+			}
 			const FVector& BoundsExtent = bEscape ? ActualExtent : Extent;
 			return Inside(From, BoundsExtent) && Inside(To, BoundsExtent)
 				&& FlightPathfinding::IsSegmentInsideMovementRooms(Request, From, To, BoundsExtent) && !CurrentWorld->SweepTestByChannel(
@@ -2227,9 +2530,15 @@ namespace
 		bool RegionClear(const FVector& Center, const FVector& RegionExtent) const
 		{
 			UWorld* CurrentWorld = World.Get();
-			if (!CurrentWorld) return false;
+			if (!CurrentWorld)
+			{
+				return false;
+			}
 			if (Request.bRequireAwayHalfSpace && FVector::DotProduct(Center - Request.AwayOrigin, Request.AwayDirection)
-				- FVector::DotProduct(RegionExtent, Request.AwayDirection.GetAbs()) < 0.0) return false;
+				- FVector::DotProduct(RegionExtent, Request.AwayDirection.GetAbs()) < 0.0)
+			{
+				return false;
+			}
 			const FVector BoundsExtent = RegionExtent + Extent;
 			return Inside(Center, BoundsExtent) && !CurrentWorld->OverlapBlockingTestByChannel(Center, FQuat::Identity,
 				Channel, FCollisionShape::MakeBox(BoundsExtent), Params, Responses);
@@ -2255,7 +2564,10 @@ namespace
 TSharedPtr<FFlightPathSearch> FlightPathfinding::BeginSearch(
 	UWorld& World, const UCapsuleComponent& Capsule, const FFlightPathRequest& Request)
 {
-	if (!IsInGameThread()) return nullptr;
+	if (!IsInGameThread())
+	{
+		return nullptr;
+	}
 	const TSharedRef<FFlightWorldChecks> Checks = MakeShared<FFlightWorldChecks>(World, Capsule, Request);
 	const TSharedRef<FResumableFlightSearch> Search = MakeShared<FResumableFlightSearch>(Request,
 		[Checks](const FVector& Position) { return Checks->PositionClear(Position); },
@@ -2267,13 +2579,29 @@ TSharedPtr<FFlightPathSearch> FlightPathfinding::BeginSearch(
 	return Search;
 }
 
-bool FlightPathfinding::AdvanceSearch(UWorld& World, FFlightPathSearch& Search, int32 SliceChecks, double SliceMs)
+bool FlightPathfinding::AdvanceSearch(UWorld& World, FFlightPathSearch& Search, int32 SliceChecks, double SliceMs,
+	bool* bExecutionGranted)
 {
-	if (!IsInGameThread()) return false;
+	if (bExecutionGranted)
+	{
+		*bExecutionGranted = false;
+	}
+	if (!IsInGameThread())
+	{
+		return false;
+	}
 	// 차례를 기다려도 취소/월드 소멸은 즉시 관찰한다. 이 호출은 충돌 검사를 실행하지 않는다.
-	if (Search.Advance(0, 0.0)) return true;
+	if (Search.Advance(0, 0.0))
+	{
+		return true;
+	}
 	for (auto It = FlightFrameBudgets.CreateIterator(); It; ++It)
-		if (!It.Key().IsValid()) It.RemoveCurrent();
+	{
+		if (!It.Key().IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
 	FFlightFrameBudget& Budget = FlightFrameBudgets.FindOrAdd(&World);
 	const uint64 Frame = GFrameCounter;
 	if (Budget.Frame != Frame)
@@ -2296,14 +2624,25 @@ bool FlightPathfinding::AdvanceSearch(UWorld& World, FFlightPathSearch& Search, 
 		Index = Budget.Turns.Add({ Search.AsShared(), Frame, MAX_uint64 });
 	}
 	Budget.Turns[Index].LastSeenFrame = Frame;
-	if (Index != 0 || Budget.Turns[Index].LastAdvancedFrame == Frame) return false;
+	if (Index != 0 || Budget.Turns[Index].LastAdvancedFrame == Frame)
+	{
+		return false;
+	}
 	const int32 RemainingChecks = FMath::Max(0, CVarFlightSearchFrameChecks.GetValueOnGameThread() - Budget.Checks);
 	const double RemainingMs = CVarFlightSearchFrameMs.GetValueOnGameThread() - Budget.Milliseconds;
 	// 노드 도중 중단하지 않으므로 최소 한 노드의 검사 공간을 남겨둔다.
 	if (RemainingChecks < FlightNodeCheckAllowance || RemainingMs <= 0.0
-		|| SliceChecks < FlightNodeCheckAllowance || SliceMs <= 0.0) return false;
+		|| SliceChecks < FlightNodeCheckAllowance || SliceMs <= 0.0)
+	{
+		return false;
+	}
 	const int32 BeforeChecks = Search.GetResult().CollisionChecks;
 	const double StartedAt = FPlatformTime::Seconds();
+	// FIFO와 프레임 한도를 통과해 실제 계산을 시작하는 이 지점만 복구 예산의 배정 근거다.
+	if (bExecutionGranted)
+	{
+		*bExecutionGranted = true;
+	}
 	const bool bFinished = Search.Advance(FMath::Min(SliceChecks, RemainingChecks), FMath::Min(SliceMs, RemainingMs));
 	Budget.Checks += Search.GetResult().CollisionChecks - BeforeChecks;
 	Budget.Milliseconds += (FPlatformTime::Seconds() - StartedAt) * 1000.0;
@@ -2311,7 +2650,10 @@ bool FlightPathfinding::AdvanceSearch(UWorld& World, FFlightPathSearch& Search, 
 	FFlightSearchTurn Turn = Budget.Turns[0];
 	Budget.Turns.RemoveAt(0, 1, EAllowShrinking::No);
 	Turn.LastAdvancedFrame = Frame;
-	if (!bFinished) Budget.Turns.Add(MoveTemp(Turn));
+	if (!bFinished)
+	{
+		Budget.Turns.Add(MoveTemp(Turn));
+	}
 	return bFinished;
 }
 
@@ -2342,8 +2684,17 @@ FlightPathfinding::FTestCost FlightPathfinding::GetTestCost()
 
 void FlightPathfinding::RecordTestQuery(UWorld* World, bool bFinished)
 {
-	if (!World || TestBudgetWorld.Get() != World) return;
-	if (bFinished) ++TestCost.QueriesFinished;
-	else ++TestCost.QueriesStarted;
+	if (!World || TestBudgetWorld.Get() != World)
+	{
+		return;
+	}
+	if (bFinished)
+	{
+		++TestCost.QueriesFinished;
+	}
+	else
+	{
+		++TestCost.QueriesStarted;
+	}
 }
 #endif

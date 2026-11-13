@@ -40,9 +40,12 @@ bool IsCombatDestinationCurrent(const FEnemyCombatDestinationGuardTaskInstanceDa
 		return false;
 	}
 	const bool bGun = Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
+	if (bGun && Data.CapturedTacticalSerial != 0
+		&& !Enemy->IsCombatTacticalEpisodeCurrent(Data.CapturedTacticalSerial)) return false;
+	if (Data.bStartedForSightReposition && !Enemy->NeedsCombatTacticalReposition()) return false;
 	// 사거리 밖에서 시작한 접근은 도착까지 진행한다. 매 Tick 재선정하면 접근 자체가 시작되지 않는다.
 	if (bGun && !Data.bStartedOutsideWeaponRange && Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor)) return false;
-	return !HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(),
+	return !HasCombatTargetMoved(Data.SelectedTargetLocation, Enemy->GetCombatNavigationTargetLocation(Data.SelectedTargetActor),
 		Data.TargetChangeDistance, bGun);
 }
 
@@ -65,7 +68,7 @@ const TCHAR* GetCombatDestinationGuardReason(const FEnemyCombatDestinationGuardT
 	const bool bGun = Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
 	if (bGun && !Data.bStartedOutsideWeaponRange && Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor))
 		return TEXT("WeaponRangeLost");
-	if (HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(), Data.TargetChangeDistance, bGun))
+	if (HasCombatTargetMoved(Data.SelectedTargetLocation, Enemy->GetCombatNavigationTargetLocation(Data.SelectedTargetActor), Data.TargetChangeDistance, bGun))
 		return TEXT("TargetMoved");
 	return Data.bShouldReselect ? TEXT("ReselectLatched") : TEXT("Current");
 }
@@ -79,7 +82,7 @@ void LogCombatDestinationGuard(const TCHAR* Phase, const FEnemyCombatDestination
 	const AEnemyBase* Enemy = IsValid(Data.Enemy) ? Data.Enemy.Get() : nullptr;
 	const bool bGun = Enemy && Enemy->GetRuntimeStat().Type == EEnemyType::Gun;
 	const AActor* Target = IsValid(Data.SelectedTargetActor) ? Data.SelectedTargetActor.Get() : nullptr;
-	const FVector CurrentLocation = Target ? Target->GetActorLocation() : FVector::ZeroVector;
+	const FVector CurrentLocation = Enemy && Target ? Enemy->GetCombatNavigationTargetLocation(Target) : FVector::ZeroVector;
 	UE_LOG(LogEnemyCombatNavigation, Log,
 		TEXT("[CombatDestinationGuard] %s Enemy=%s ShouldReselect=%d Reason=%s SelectedTarget=%s CurrentTarget=%s SelectedLocation=%s CurrentLocation=%s Moved=%.1f Spatial=%d Threshold=%.1f CurrentState=%s TargetState=%s"),
 		Phase, *GetNameSafe(Data.Enemy), Data.bShouldReselect, GetCombatDestinationGuardReason(Data),
@@ -94,12 +97,24 @@ void LogCombatDestinationGuard(const TCHAR* Phase, const FEnemyCombatDestination
 
 void ResetAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 {
+	Data.bCloseRangeRetreatRequired = false;
+	Data.bCloseRangeRetreatStarted = false;
 	Data.bHasValidTarget = false;
 	Data.bTargetOutsideWeaponRange = false;
+	Data.bNeedsReposition = false;
+	Data.bCombatObservationWaiting = false;
+	Data.bRepositionResolved = false;
 	Data.HorizontalDistance = 0.0f;
 	Data.bLeftBlocked = false;
 	Data.bRightBlocked = false;
 	Data.bBothSidesBlocked = false;
+}
+
+bool IsCloseRetreatDistance(bool bActive, float Distance, float Enter, float Release)
+{
+	if (!FMath::IsFinite(Distance) || !FMath::IsFinite(Enter) || !FMath::IsFinite(Release)
+		|| Distance < 0.0f || Enter <= 0.0f || Release <= Enter) return false;
+	return bActive ? Distance < Release : Distance <= Enter;
 }
 
 AActor* GetAssessmentTarget(const FEnemyCombatAssessmentTaskInstanceData& Data)
@@ -111,8 +126,25 @@ AActor* GetAssessmentTarget(const FEnemyCombatAssessmentTaskInstanceData& Data)
 	return IsValid(Data.Enemy) ? Data.Enemy->GetTrackedTarget() : nullptr;
 }
 
+void LogCloseRetreatAssessment(const FEnemyCombatAssessmentTaskInstanceData& Data,
+	const TCHAR* Event, const TCHAR* Reason, AActor* Target)
+{
+	static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.FlightDebug"));
+	const AEnemyBase* Enemy = Data.Enemy;
+	if (!Debug || Debug->GetInt() == 0 || !IsValid(Enemy) || !Enemy->HasAuthority() || !Enemy->GetWorld()) return;
+	// 무효화/대상 교체 때의 이전 거리를 새 관측처럼 기록하지 않는다.
+	const float Distance = FCString::Strcmp(Event, TEXT("End")) == 0 ? -1.0f : Data.HorizontalDistance;
+	UE_LOG(LogEnemyCombatNavigation, Log,
+		TEXT("[EnemyCloseRetreat] Enemy=%s Target=%s Event=%s Now=%.3f Lease=%d Generation=%d Distance2D=%.1f Required=%d Reposition=%d Observation=%d Enter=%.1f Release=%.1f Interval=%.3f Reason=%s"),
+		*GetNameSafe(Enemy), *GetNameSafe(Target), Event, Enemy->GetWorld()->GetTimeSeconds(),
+		Enemy->GetPoolLeaseSerial(), Enemy->GetPoolGameplayGeneration(), Distance,
+		Data.bCloseRangeRetreatRequired, Data.bNeedsReposition, Data.bCombatObservationWaiting,
+		Data.CloseRetreatEnterDistance, Data.CloseRetreatReleaseDistance, Data.UpdateInterval, Reason);
+}
+
 void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 {
+	const bool bWasRepositionRequired = Data.bNeedsReposition;
 	ResetAssessment(Data);
 	AEnemyBase* Enemy = Data.Enemy;
 	AActor* Target = GetAssessmentTarget(Data);
@@ -120,6 +152,10 @@ void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 		|| Enemy->GetCombatState() != EEnemyCombatState::Combat
 		|| Enemy->IsEnemyPossessed() || Enemy->IsPossessionInProgress())
 	{
+		if (Data.bCloseRangeRetreatActive)
+			LogCloseRetreatAssessment(Data, TEXT("End"), TEXT("AssessmentInvalid"), Data.LastTarget.Get());
+		Data.bCloseRangeRetreatActive = false;
+		Data.bCloseRetreatDiagnosticSuppressed = false;
 		return;
 	}
 	UWorld* World = Enemy->GetWorld();
@@ -127,10 +163,37 @@ void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 	Data.bHasValidTarget = true;
 	Data.bTargetOutsideWeaponRange = Enemy->GetRuntimeStat().Type == EEnemyType::Gun
 		&& Enemy->IsTargetOutsideWeaponRange(Target);
+	// 공격 준비·회복·회전과 무관하게 실제 무기 사선만 누적한다.
+	// 노출 부위 선택은 Pawn의 Slice 3 판정을 공유하며 추가 EQS를 매 Tick 만들지 않는다.
+	Enemy->UpdateCombatTacticalSightBlock();
+	Data.bNeedsReposition = Enemy->NeedsCombatTacticalReposition();
+	Data.bCombatObservationWaiting = Enemy->IsCombatObservationWaiting();
+	// 사선 확보용 접근만 즉시 공통 판단으로 돌린다. 정상 장거리 접근을 거리 구간만으로 취소하지 않는다.
+	Data.bRepositionResolved = bWasRepositionRequired && !Data.bNeedsReposition
+		&& !Data.bTargetOutsideWeaponRange;
 	Data.bPrefersLeft = Enemy->PrefersCombatLeft();
 	const FVector Origin = Enemy->GetActorLocation();
-	Data.HorizontalDistance = CalculateTacticalDistance(Origin, Target->GetActorLocation(), EEnemyTacticalDistanceMode::Horizontal2D);
-	FVector Forward = (Target->GetActorLocation() - Origin).GetSafeNormal2D();
+	Data.HorizontalDistance = CalculateTacticalDistance(Origin, Enemy->GetCombatNavigationTargetLocation(Target), EEnemyTacticalDistanceMode::Horizontal2D);
+	const bool bWasClose = Data.bCloseRangeRetreatActive;
+	const bool bTargetChanged = Data.LastTarget.Get() != Target;
+	// 같은 프레임에 대상을 바꿔도 두 대상의 진입 회차가 합쳐지지 않게 먼저 닫는다.
+	if (bWasClose && bTargetChanged)
+		LogCloseRetreatAssessment(Data, TEXT("End"), TEXT("TargetChanged"), Data.LastTarget.Get());
+	Data.bCloseRangeRetreatActive = Enemy->GetRuntimeStat().Type == EEnemyType::Gun
+		&& IsCloseRetreatDistance(Data.LastTarget.Get() == Target && bWasClose, Data.HorizontalDistance,
+			Data.CloseRetreatEnterDistance, Data.CloseRetreatReleaseDistance);
+	Data.bCloseRangeRetreatRequired = Data.bCloseRangeRetreatActive && !Enemy->IsAIControlSuppressed();
+	Data.bCloseRangeRetreatStarted = !bWasClose && Data.bCloseRangeRetreatRequired;
+	if (Data.bCloseRangeRetreatActive && (!bWasClose || bTargetChanged))
+		LogCloseRetreatAssessment(Data, TEXT("Enter"), TEXT("Distance"), Target);
+	else if (bWasClose && !bTargetChanged && !Data.bCloseRangeRetreatActive)
+		LogCloseRetreatAssessment(Data, TEXT("Release"), TEXT("Distance"), Target);
+	const bool bSuppressed = Data.bCloseRangeRetreatActive && !Data.bCloseRangeRetreatRequired;
+	if (Data.bCloseRangeRetreatActive && (bSuppressed != Data.bCloseRetreatDiagnosticSuppressed || bTargetChanged))
+		LogCloseRetreatAssessment(Data, bSuppressed ? TEXT("Suspended") : TEXT("Resumed"),
+			bSuppressed ? TEXT("AIControlSuppressed") : TEXT("AssessmentAllowed"), Target);
+	Data.bCloseRetreatDiagnosticSuppressed = bSuppressed;
+	FVector Forward = (Enemy->GetCombatNavigationTargetLocation(Target) - Origin).GetSafeNormal2D();
 	if (Forward.IsNearlyZero()) Forward = Enemy->GetActorForwardVector().GetSafeNormal2D();
 	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward);
 	const FVector Start = Origin + FVector::UpVector * Data.WallCheckHeightOffset;
@@ -510,6 +573,19 @@ bool IsCandidateOccupied(
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCloseRetreatHysteresisTest,
+	"Outlier.Enemy.Combat.CloseRetreat.Hysteresis", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyCloseRetreatHysteresisTest::RunTest(const FString& Parameters)
+{
+	TestFalse(TEXT("Approaching four metres does not enter emergency"), IsCloseRetreatDistance(false, 400, 300, 500));
+	TestTrue(TEXT("Three metre boundary enters"), IsCloseRetreatDistance(false, 300, 300, 500));
+	TestTrue(TEXT("Four metres preserves active retreat"), IsCloseRetreatDistance(true, 400, 300, 500));
+	TestFalse(TEXT("Five metre boundary releases"), IsCloseRetreatDistance(true, 500, 300, 500));
+	TestFalse(TEXT("Invalid distance resets emergency state"), IsCloseRetreatDistance(true, -1, 300, 500));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCombatAssessmentMathTest,
 	"Outlier.Enemy.Combat.Assessment", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -603,6 +679,9 @@ EStateTreeRunStatus FEnemyCombatDestinationGuardTask::EnterState(FStateTreeExecu
 	Data.CachedController = IsValid(Data.Enemy) ? Cast<AEnemyAIController>(Data.Enemy->GetController()) : nullptr;
 	Data.bStartedOutsideWeaponRange = IsValid(Data.Enemy)
 		&& Data.Enemy->IsTargetOutsideWeaponRange(Data.SelectedTargetActor);
+	Data.CapturedTacticalSerial = IsValid(Data.Enemy)
+		? Data.Enemy->GetCombatTacticalEpisodeSerial() : 0;
+	Data.bStartedForSightReposition = IsValid(Data.Enemy) && Data.Enemy->NeedsCombatTacticalReposition();
 	Data.bShouldReselect = !FMath::IsFinite(Data.TargetChangeDistance) || Data.TargetChangeDistance < 1.0f
 		|| Data.SelectedTargetLocation.ContainsNaN() || !IsCombatDestinationCurrent(Data);
 	LogCombatDestinationGuard(TEXT("Enter"), Data, &Transition);
@@ -642,6 +721,8 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::EnterState(
 	auto& Data = Context.GetInstanceData(*this);
 	Data.Elapsed = 0.0f;
 	Data.LastTarget = GetAssessmentTarget(Data);
+	Data.bCloseRangeRetreatActive = false;
+	Data.bCloseRetreatDiagnosticSuppressed = false;
 	Data.bPrefersLeft = false;
 	UpdateAssessment(Data);
 	return IsValid(Data.Enemy) && Data.Enemy->HasAuthority()
@@ -651,6 +732,7 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::EnterState(
 EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
 {
 	auto& Data = Context.GetInstanceData(*this);
+	Data.bCloseRangeRetreatStarted = false;
 	if (!IsValid(Data.Enemy) || !Data.Enemy->HasAuthority())
 	{
 		ResetAssessment(Data);
@@ -660,8 +742,12 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext&
 	if (!IsValid(Target) || Data.Enemy->GetCombatState() != EEnemyCombatState::Combat
 		|| Data.Enemy->IsEnemyPossessed() || Data.Enemy->IsPossessionInProgress())
 	{
+		if (Data.bCloseRangeRetreatActive)
+			LogCloseRetreatAssessment(Data, TEXT("End"), TEXT("TargetOrCombatInvalid"), Data.LastTarget.Get());
 		ResetAssessment(Data);
 		Data.LastTarget.Reset();
+		Data.bCloseRangeRetreatActive = false;
+		Data.bCloseRetreatDiagnosticSuppressed = false;
 		Data.Elapsed = FMath::Max(Data.UpdateInterval, 0.01f);
 		return EStateTreeRunStatus::Running;
 	}
@@ -671,8 +757,8 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext&
 		|| Data.Elapsed >= FMath::Max(Data.UpdateInterval, 0.01f))
 	{
 		Data.Elapsed = 0.0f;
-		Data.LastTarget = Target;
 		UpdateAssessment(Data);
+		Data.LastTarget = Target;
 	}
 	return EStateTreeRunStatus::Running;
 }
@@ -681,7 +767,11 @@ void FEnemyCombatAssessmentTask::ExitState(FStateTreeExecutionContext& Context,
 	const FStateTreeTransitionResult& Transition) const
 {
 	auto& Data = Context.GetInstanceData(*this);
+	if (Data.bCloseRangeRetreatActive)
+		LogCloseRetreatAssessment(Data, TEXT("End"), TEXT("StateExit"), Data.LastTarget.Get());
 	ResetAssessment(Data);
+	Data.bCloseRangeRetreatActive = false;
+	Data.bCloseRetreatDiagnosticSuppressed = false;
 	Data.bPrefersLeft = false;
 	Data.LastTarget.Reset();
 	Data.Elapsed = 0.0f;
@@ -745,7 +835,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 	}
 
 	const FVector EnemyLocation = Enemy->GetActorLocation();
-	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector TargetLocation = Enemy->GetCombatNavigationTargetLocation(Target);
 	InstanceData.TargetDistance = CalculateTacticalDistance(
 		EnemyLocation,
 		TargetLocation,
@@ -905,7 +995,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::EnterState(
 
 	ResolveOrbitDirectionSign(
 		*InstanceData.Enemy,
-		Target->GetActorLocation(),
+		InstanceData.Enemy->GetCombatNavigationTargetLocation(Target),
 		InstanceData.ActiveOrbitDirection);
 	// 여러 드론이 같은 프레임에 같은 점을 고르는 현상을 줄이는 가벼운 위상 오프셋이다.
 	InstanceData.PhaseOffsetDegrees = FMath::FRandRange(-5.0f, 5.0f);
@@ -950,7 +1040,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 	}
 
 	const FVector EnemyLocation = Enemy->GetActorLocation();
-	const FVector OrbitCenter = Target->GetActorLocation();
+	const FVector OrbitCenter = Enemy->GetCombatNavigationTargetLocation(Target);
 	InstanceData.TargetDistance = CalculateTacticalDistance(
 		EnemyLocation,
 		OrbitCenter,

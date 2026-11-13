@@ -15,6 +15,10 @@ class UMaterialInterface;
 class UMeshComponent;
 class UOutlierAbilitySystemComponent;
 class UPrimitiveComponent;
+class ULocalPlayer;
+class ULocalPlayerPostProcessSubsystem;
+class UOutlierStencilSubsystem;
+class UGameInstance;
 enum class EOutlierPostProcessMaterialType : uint8;
 
 // 은신 오버라이드를 걸기 전 메시 컴포넌트의 원본 상태.
@@ -96,6 +100,9 @@ public:
 	virtual TStatId GetStatId() const override;
 
 	void RegisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume);
+	void UnregisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume);
+	// 볼륨의 직접 hard disable도 독립 패스와 같은 수명 경계를 사용한다.
+	void SuspendIndependentTeammateOutline(AOutlierPostProcessVolume* InPostProcessVolume);
 	void SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bEnabled);
 	void Refresh();
 	// 볼륨 미등록 상태에서도 타이머와 메시/스텐실의 원본 복구 상태를 정리한다.
@@ -153,6 +160,21 @@ public:
 	TObjectPtr<AOutlierPostProcessVolume> BoundPostProcessVolume;
 
 private:
+	TWeakObjectPtr<UOutlierStencilSubsystem> OutlineStencils;
+	TWeakObjectPtr<UGameInstance> OutlineGameInstance;
+	TArray<TWeakObjectPtr<ULocalPlayerPostProcessSubsystem>> OutlineViews;
+	FDelegateHandle OutlineMeshesChangedHandle;
+	FDelegateHandle OutlineLocalPlayerAddedHandle;
+	FDelegateHandle OutlineLocalPlayerRemovedHandle;
+	bool bIndependentOutlineRequested = false;
+	bool bUpdatingIndependentOutline = false;
+	void CacheOutlineViews();
+	void HandleOutlineLocalPlayerAdded(ULocalPlayer* LocalPlayer);
+	void HandleOutlineLocalPlayerRemoved(ULocalPlayer* LocalPlayer);
+	void RefreshIndependentTeammateOutline();
+	void HandleTeammateOutlineMasksQueued(bool bMasksQueued);
+	void ClearIndependentTeammateOutline();
+
 	TWeakObjectPtr<AShooterCharacter> PartnerShieldSource;
 	bool bEndingPresentation = false;
 	friend class FOutlierMaterialPostProcessResetTest;

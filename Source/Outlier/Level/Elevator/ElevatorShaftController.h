@@ -7,6 +7,7 @@
 #include "ElevatorShaftController.generated.h"
 
 class AElevatorShaftSection;
+class AExplosiveProp;
 class AInteractableDoor;
 class AFirstPersonPlayerController;
 class AFirstPersonCharacter;
@@ -140,6 +141,10 @@ public:
 
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Elevator|Setup")
 	TObjectPtr<ARoomVolume> EntryRoom;
+
+	// 레벨의 독립 배치 폭발통만 등록한다. 도착 암전에서 미폭발 통을 바닥과 함께 옮긴다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Elevator|Transport")
+	TArray<TObjectPtr<AExplosiveProp>> TransportExplosiveProps;
 
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Elevator|Setup")
 	FGameplayTag CombatRoomTag;
@@ -313,6 +318,14 @@ private:
 	FTransform DepartureControllerTransform;
 	FTransform ControllerSectionOffset;
 	bool bControllerAtArrival = false;
+	bool bTransportPropsInitialized = false;
+	TArray<TWeakObjectPtr<AExplosiveProp>> RegisteredTransportProps;
+	TArray<TPair<TWeakObjectPtr<AExplosiveProp>, FTransform>> TransportedPropTransforms;
+	void InitializeTransportProps();
+	bool AreTransportPropsReady() const;
+	void MoveTransportProps(const FVector& Translation);
+	void RestoreTransportProps();
+	bool IsTransportPropValid(const AExplosiveProp* Prop) const;
 	bool bConfigurationValid = false;
 	bool bStartingCombat = false;
 	bool bCombatRequested = false;
@@ -395,6 +408,7 @@ private:
 	friend class FElevatorArrivalMotionTest;
 	friend class FElevatorCompletionBoundaryTest;
 	friend class FElevatorControllerTransportTest;
+	friend class FElevatorExplosiveTransportTest;
 	friend class FElevatorOuterWallArrivalRubbingTest;
 	friend class FElevatorCollisionStateAndPlacementTest;
 	friend class FElevatorMultiPhaseCombatTest;

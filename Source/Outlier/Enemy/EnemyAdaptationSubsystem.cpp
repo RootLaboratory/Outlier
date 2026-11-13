@@ -90,9 +90,7 @@ bool UEnemyAdaptationSubsystem::RegisterEnemy(AEnemyBase* Enemy)
 	}
 
 	FEnemyRegistration Registration;
-	Registration.GameplayGeneration = Enemy->IsPoolManaged()
-		? Enemy->GetPoolGameplayGeneration()
-		: static_cast<int32>(ActiveGameplayGeneration);
+	Registration.GameplayGeneration = Enemy->GetCombatGameplayGeneration();
 	Registration.PoolLeaseSerial = Enemy->IsPoolManaged()
 		? Enemy->GetPoolLeaseSerial()
 		: 0;
@@ -525,7 +523,7 @@ bool UEnemyAdaptationSubsystem::CanRegisterEnemy(const AEnemyBase* Enemy) const
 
 	if (!Enemy->IsPoolManaged())
 	{
-		return true;
+		return Enemy->GetCombatGameplayGeneration() == static_cast<int32>(ActiveGameplayGeneration);
 	}
 
 	if (Enemy->GetEnemyPoolState() != EEnemyPoolState::CombatActive
@@ -555,6 +553,7 @@ bool UEnemyAdaptationSubsystem::IsCurrentRegistration(
 	if (!Enemy->IsPoolManaged())
 	{
 		return PoolLeaseSerial == 0
+			&& GameplayGeneration == Enemy->GetCombatGameplayGeneration()
 			&& GameplayGeneration == static_cast<int32>(ActiveGameplayGeneration);
 	}
 

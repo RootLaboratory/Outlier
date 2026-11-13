@@ -35,6 +35,7 @@ public:
 	void SetCombatRoomTag(FGameplayTag InRoomTag);
 	bool RetryCommit();
 	bool RefreshSnapshot(AController* Controller);
+	bool CanCaptureSnapshot(AController* Controller, bool bRefreshSnapshot) const;
 
 	UFUNCTION(BlueprintPure, Category = "Checkpoint")
 	bool IsCheckpointCommitted() const { return bCheckpointCommitted; }
@@ -71,6 +72,7 @@ protected:
 
 private:
 	friend class FOutlierCheckpointActivationOverlapTest;
+	friend class FRoomCheckpointSaveIntegrationTest;
 
 	UFUNCTION()
 	void HandleTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor,

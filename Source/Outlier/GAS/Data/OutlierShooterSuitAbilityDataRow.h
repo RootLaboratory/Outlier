@@ -24,6 +24,10 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float ExitSpeedBuffDurationSeconds = 2.0f;
 
+	// Stealth 행: 그림자 연쇄의 패시브 은신 발동에 필요한 본인 직접 처치 수.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth", meta = (ClampMin = "1", UIMin = "1"))
+	int32 ShadowChainRequiredKills = 5;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float CastTimeSeconds = 0.0f;
 

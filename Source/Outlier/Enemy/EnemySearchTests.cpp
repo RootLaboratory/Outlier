@@ -176,14 +176,15 @@ bool FEnemySearchEpisodeTest::RunTest(const FString& Parameters)
 	Enemy->CompleteSearchAnchor();
 	const FVector First(800, 200, 350);
 	const FVector Second(300, 800, 350);
-	TestFalse(TEXT("More than two search points are rejected"), Enemy->SetSearchPoints({First, Second, Hint}));
-	TestTrue(TEXT("Two points are stored once before movement"), Enemy->SetSearchPoints({First, Second}));
+	TestFalse(TEXT("More than four search points are rejected"), Enemy->SetSearchPoints({First, Second, Hint, -First, -Second}));
+	TestTrue(TEXT("Two available points are stored once before movement"), Enemy->SetSearchPoints({First, Second}));
 	TestFalse(TEXT("Selected points cannot be replenished in the episode"), Enemy->SetSearchPoints({Hint}));
 	TestTrue(TEXT("First LookAround completes one point"), Enemy->CompleteSearchPoint());
 	TestFalse(TEXT("Second point remains before LocalGuard"), Enemy->GetSearchEpisode().bLocalGuard);
 	TestTrue(TEXT("Second LookAround completes the episode"), Enemy->CompleteSearchPoint());
 	TestTrue(TEXT("Two confirmations enter LocalGuard"), Enemy->GetSearchEpisode().bLocalGuard);
 	TestFalse(TEXT("Completed episode cannot confirm a third point"), Enemy->CompleteSearchPoint());
+	Enemy->ApplySharedTargetContact(Hint + FVector(1000.0, 0.0, 0.0), true, 12);
 	Enemy->BeginSearchEpisode();
 	Enemy->SetSearchPoints({First});
 	Enemy->CompleteSearchPoint();
@@ -197,7 +198,7 @@ bool FEnemySearchEpisodeTest::RunTest(const FString& Parameters)
 	Controller->SetCachedVisibleTargetForTesting(Target);
 	Enemy->SetPlayerCurrentlyVisible(true);
 	TestFalse(TEXT("Direct sight ends the search episode"), Enemy->GetSearchEpisode().bActive);
-	Enemy->ApplySharedTargetContact(Hint, true, 12);
+	Enemy->ApplySharedTargetContact(Hint, true, 13);
 	TestFalse(TEXT("Sharing while directly seeing is already confirmed"), Enemy->HasFreshSharedTargetLocation());
 	TestFalse(TEXT("Visible enemy cannot begin hidden-target search"), Enemy->BeginSearchEpisode());
 	return true;
@@ -243,6 +244,129 @@ bool FEnemySearchReservationTest::RunTest(const FString& Parameters)
 	Rooms->ReserveSearchDestinations(First, {Point}, 200);
 	Rooms->NotifyRoomCombatEnded(Room);
 	TestFalse(TEXT("Room combat ending releases search destinations"), Rooms->IsSearchDestinationReserved(Second, Point, 200));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemySearchEpisodeBudgetTest,
+	"Outlier.Enemy.Search.EpisodeBudget", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemySearchEpisodeBudgetTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("Deadline"), TEXT("Reentry"), TEXT("SamePositionHint"),
+		TEXT("MeaningfulHint"), TEXT("CluePitch")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemySearchEpisodeBudgetTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World))
+	{
+		return false;
+	}
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(Room);
+	if (!TestNotNull(TEXT("Enemy exists"), Enemy))
+	{
+		return false;
+	}
+	const FVector Center(500.0, 0.0, 2000.0);
+	Enemy->ApplySharedTargetContact(Center, true, 10);
+	FEnemySearchSessionTaskInstanceData Session;
+	Session.Enemy = Enemy;
+	TestEqual(TEXT("Session starts"), EnemySearchTesting::EnterSession(Session), EStateTreeRunStatus::Running);
+	const FEnemySearchEpisode Snapshot = Enemy->GetSearchEpisode();
+	TestEqual(TEXT("General search limit is four points"), Enemy->GetSearchPointLimit(), 4);
+	TestEqual(TEXT("General search includes anchor approach in its twelve seconds"),
+		Snapshot.EndsAt - Snapshot.StartedAt, 12.0);
+
+	if (Parameters == TEXT("Deadline"))
+	{
+		TestTrue(TEXT("Unfinished point exists before the deadline"), Enemy->SetSearchPoints({Center + FVector(500.0, 0.0, 0.0)}));
+		for (int32 Step = 0; Step < 383; ++Step)
+		{
+			Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		}
+		EnemySearchTesting::TickSession(Session);
+		TestFalse(TEXT("Search remains available immediately before its deadline"), Session.bLocalGuard);
+		Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		EnemySearchTesting::RefreshSessionTransitions(Session);
+		TestTrue(TEXT("Deadline interrupts even an unfinished anchor approach"), Session.bLocalGuard);
+		TestFalse(TEXT("Late look completion cannot confirm an expired point"), Enemy->CompleteSearchPoint());
+		TestTrue(TEXT("Deadline cannot be restarted by parent reentry"), Enemy->BeginSearchEpisode());
+		TestEqual(TEXT("Expired episode keeps its deadline"), Enemy->GetSearchEpisode().EndsAt, Snapshot.EndsAt);
+		TestTrue(TEXT("Reentered expired episode remains LocalGuard"), Enemy->GetSearchEpisode().bLocalGuard);
+	}
+	else if (Parameters == TEXT("Reentry"))
+	{
+		const TArray<FVector> Points = {Center + FVector(500.0, 0.0, 0.0), Center + FVector(0.0, 500.0, 0.0),
+			Center + FVector(-500.0, 0.0, 0.0), Center + FVector(0.0, -500.0, 0.0)};
+		TestTrue(TEXT("Four points commit"), Enemy->SetSearchPoints(Points));
+		UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+		TestTrue(TEXT("All four selected points can reserve their actual shared space"),
+			Rooms && Rooms->ReserveSearchDestinations(Enemy, Points, 200.0f));
+		TestTrue(TEXT("First confirmation consumes one point"), Enemy->CompleteSearchPoint());
+		Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		EnemySearchTesting::EnterSession(Session);
+		TestEqual(TEXT("Active parent reentry preserves serial"), Enemy->GetSearchEpisode().Serial, Snapshot.Serial);
+		EnemySearchTesting::ExitSession(Session);
+		EnemySearchTesting::EnterSession(Session);
+		TestEqual(TEXT("Exit and reentry preserve absolute deadline"), Enemy->GetSearchEpisode().EndsAt, Snapshot.EndsAt);
+		TestEqual(TEXT("Exit and reentry preserve consumed points"), Enemy->GetSearchEpisode().PointIndex, 1);
+		TestEqual(TEXT("Confirmed region remains excluded"), Enemy->GetSearchEpisode().CheckedPoints.Num(), 1);
+		TestFalse(TEXT("Same evidence cannot refill points after reentry"), Enemy->SetSearchPoints(Points));
+	}
+	else if (Parameters == TEXT("SamePositionHint") || Parameters == TEXT("MeaningfulHint"))
+	{
+		const bool bMeaningful = Parameters == TEXT("MeaningfulHint");
+		const FVector Hint = Center + FVector(bMeaningful ? 201.0 : 200.0, 0.0, 0.0);
+		UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+		AEnemyBase* Other = Fixture.SpawnEnemy(Room, FVector(-2000.0, 0.0, 0.0));
+		TestTrue(TEXT("Current search reserves its selected space"),
+			Rooms && Rooms->ReserveSearchDestinations(Enemy, {Center}, 200.0f));
+		Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		Enemy->ApplySharedTargetContact(Hint, true, 11);
+		TestEqual(TEXT("Only a changed search goal releases its current spatial reservation"),
+			Rooms->IsSearchDestinationReserved(Other, Center, 200.0f), !bMeaningful);
+		EnemySearchTesting::RefreshSessionTransitions(Session);
+		TestEqual(TEXT("Only a meaningful changed location requests restart"), Session.bShouldRestart, bMeaningful);
+		if (bMeaningful)
+		{
+			FEnemySearchProgressTaskInstanceData Progress;
+			Progress.Enemy = Enemy;
+			Progress.Action = EEnemySearchProgress::RestartWithHint;
+			TestEqual(TEXT("Meaningful hint restarts through the progress task"),
+				EnemySearchTesting::Progress(Progress), EStateTreeRunStatus::Succeeded);
+			TestTrue(TEXT("New evidence gets its own deadline"), Enemy->GetSearchEpisode().EndsAt > Snapshot.EndsAt);
+		}
+		else
+		{
+			EnemySearchTesting::EnterSession(Session);
+			TestEqual(TEXT("Same-position report does not replace the frozen clue"), Enemy->GetSearchEpisode().Center, Center);
+			TestEqual(TEXT("Same-position report does not reset budget"), Enemy->GetSearchEpisode().EndsAt, Snapshot.EndsAt);
+		}
+	}
+	else if (Parameters == TEXT("CluePitch"))
+	{
+		float Pitch = 0.0f;
+		TestTrue(TEXT("Active search has a clue-based pitch"), Enemy->GetSearchLookPitch(Pitch));
+		TestEqual(TEXT("High clue is limited to forty-five degrees"), Pitch, 45.0f);
+		Enemy->UpdateLastKnownPlayerLocation(FVector(500.0, 0.0, -2000.0));
+		Enemy->GetSearchLookPitch(Pitch);
+		TestEqual(TEXT("Later hidden position updates cannot redirect the fixed clue"), Pitch, 45.0f);
+		Enemy->SetActorLocation(FVector(0.0, 0.0, 4000.0));
+		Enemy->GetSearchLookPitch(Pitch);
+		TestEqual(TEXT("Low clue is limited to minus forty-five degrees"), Pitch, -45.0f);
+		Enemy->EndSearchEpisode();
+		TestFalse(TEXT("Ordinary guard without a search clue does not acquire pitch"), Enemy->GetSearchLookPitch(Pitch));
+	}
+	else
+	{
+		AddError(FString::Printf(TEXT("Unknown budget scenario: %s"), *Parameters));
+	}
 	return true;
 }
 
@@ -581,10 +705,13 @@ bool FEnemyPerceptionGoalTest::RunTest(const FString& Parameters)
 	{
 		Controller->SetCachedVisibleTargetForTesting(Source);
 		Receiver->SetPlayerCurrentlyVisible(true);
+		TestEqual(TEXT("Direct sight adopts the visible player before processing sound"),
+			Receiver->GetTrackedTarget(), static_cast<AActor*>(Source));
 		TestTrue(TEXT("Near noise is stored"), Hear(100));
 		ExpectGoal(TEXT("Any direct player sight blocks noise"), EEnemyPerceptionGoalType::Combat);
 		TestEqual(TEXT("Goal uses visible player"), Receiver->GetPerceptionGoal().Target.Get(), static_cast<AActor*>(Source));
-		TestEqual(TEXT("Decision does not rewrite the combat tracking target"), Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
+		TestEqual(TEXT("Sound cannot redirect the adopted visible target to the hidden shared player"),
+			Receiver->GetTrackedTarget(), static_cast<AActor*>(Source));
 	}
 	else if (Parameters == TEXT("OlderThanGrace") || Parameters == TEXT("NewerThanGrace"))
 	{
@@ -1451,7 +1578,7 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemySearchScenarioTest,
 
 void FEnemySearchScenarioTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
-	for (const TCHAR* Scenario : {TEXT("Points0"), TEXT("Points1"), TEXT("Points2"),
+	for (const TCHAR* Scenario : {TEXT("Points0"), TEXT("Points1"), TEXT("Points2"), TEXT("Points4"),
 		TEXT("FrozenCenter"), TEXT("FreshHint"), TEXT("DuplicateHint"),
 		TEXT("LocalGuardRestart"), TEXT("SameFrameRestart"), TEXT("ConsecutiveHints"),
 		TEXT("MovementFailure"), TEXT("Rediscovery"), TEXT("Interrupted"), TEXT("Possessed")})
@@ -1477,22 +1604,52 @@ bool FEnemySearchScenarioTest::RunTest(const FString& Parameters)
 	const FVector First(600, 0, 350);
 	const FVector Second(0, 600, 350);
 	const FVector Hint(300, 200, 350);
+	AEnemyAIController* RediscoveryController = nullptr;
+	AShooterCharacter* RediscoveryTarget = nullptr;
+	if (Parameters == TEXT("Rediscovery"))
+	{
+		RediscoveryController = Fixture.World->SpawnActor<AEnemyAIController>();
+		RediscoveryTarget = Fixture.SpawnPlayer(Hint);
+		if (!TestNotNull(TEXT("Rediscovery controller exists"), RediscoveryController)
+			|| !TestNotNull(TEXT("Rediscovery uses a real player target"), RediscoveryTarget))
+		{
+			return false;
+		}
+		RediscoveryController->Possess(Enemy);
+		// 각 단계의 재발견을 독립적으로 검증한다. 이 테스트에서는 추적 유예를 생략한다.
+		const_cast<FEnemyStat&>(Enemy->GetRuntimeStat()).TargetTrackingGraceSeconds = 0.0f;
+	}
 	const bool bFreshOnEntry = Parameters == TEXT("FreshHint");
-	if (bFreshOnEntry) Enemy->ApplySharedTargetContact(Hint, true, 10);
+	if (bFreshOnEntry)
+	{
+		Enemy->ApplySharedTargetContact(-Hint, true, 10);
+	}
 	TestEqual(TEXT("Search parent stays running for child transitions"),
 		EnemySearchTesting::EnterSession(Session), EStateTreeRunStatus::Running);
 	TestEqual(TEXT("Only a fresh shared hint skips the loss wait"), Session.bSkipLossWait, bFreshOnEntry);
 	const uint64 Serial = Enemy->GetSearchEpisode().Serial;
 
-	// 0/1/2 지점은 동일한 진행 Task를 반복 호출한다. 이동 전 조회로 확인 횟수가 늘지 않아야 한다.
+	// 0/1/2/4 지점은 동일한 진행 Task를 반복 호출한다. 이동 전 조회로 확인 횟수가 늘지 않아야 한다.
 	if (Parameters.StartsWith(TEXT("Points")))
 	{
-		const int32 Count = Parameters == TEXT("Points2") ? 2 : Parameters == TEXT("Points1") ? 1 : 0;
+		const int32 Count = Parameters == TEXT("Points4") ? 4
+			: Parameters == TEXT("Points2") ? 2 : Parameters == TEXT("Points1") ? 1 : 0;
 		Progress.Action = EEnemySearchProgress::AnchorArrived;
 		TestEqual(TEXT("Anchor arrival succeeds"), EnemySearchTesting::Progress(Progress), EStateTreeRunStatus::Succeeded);
 		TArray<FVector> Points;
-		if (Count > 0) Points.Add(First);
-		if (Count > 1) Points.Add(Second);
+		if (Count > 0)
+		{
+			Points.Add(First);
+		}
+		if (Count > 1)
+		{
+			Points.Add(Second);
+		}
+		if (Count > 2)
+		{
+			Points.Add(FVector(-600.0, 0.0, 350.0));
+			Points.Add(FVector(0.0, -600.0, 350.0));
+		}
 		TestTrue(TEXT("Prevalidated points are stored once"), Enemy->SetSearchPoints(Points));
 		for (int32 Index = 0; Index < Count; ++Index)
 		{
@@ -1510,7 +1667,10 @@ bool FEnemySearchScenarioTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Exhausted selection takes the failure-to-LocalGuard branch"), EnemySearchTesting::Progress(Progress), EStateTreeRunStatus::Failed);
 		TestTrue(TEXT("All selected points lead to LocalGuard"), Enemy->GetSearchEpisode().bLocalGuard);
 		TestFalse(TEXT("LocalGuard cannot replenish candidates"), Enemy->SetSearchPoints({First}));
-		for (int32 Tick = 0; Tick < 5; ++Tick) EnemySearchTesting::TickSession(Session);
+		for (int32 Tick = 0; Tick < 5; ++Tick)
+		{
+			EnemySearchTesting::TickSession(Session);
+		}
 		TestTrue(TEXT("LocalGuard remains active without new information"), Session.bLocalGuard);
 		TestEqual(TEXT("Guard repetition cannot create extra confirmations"), Enemy->GetSearchEpisode().CheckedPoints.Num(), Count);
 	}
@@ -1590,12 +1750,26 @@ bool FEnemySearchScenarioTest::RunTest(const FString& Parameters)
 		{
 			if (Phase > 0)
 			{
+				RediscoveryController->SetCachedVisibleTargetForTesting(nullptr);
 				Enemy->SetPlayerCurrentlyVisible(false);
-				EnemySearchTesting::EnterSession(Session);
+				Enemy->RefreshTargetTracking();
+				TestEqual(TEXT("Sight loss starts the next search phase"),
+					EnemySearchTesting::EnterSession(Session), EStateTreeRunStatus::Running);
 			}
-			if (Phase == 1) Enemy->SetSearchPoints({First, Second});
-			if (Phase == 2) Enemy->EnterSearchLocalGuard();
+			if (Phase == 1)
+			{
+				Enemy->SetSearchPoints({First, Second});
+			}
+			if (Phase == 2)
+			{
+				Enemy->EnterSearchLocalGuard();
+			}
+			TestTrue(TEXT("Each phase has an active search before reacquisition"), Enemy->GetSearchEpisode().bActive);
+			// 가시 bool만으로는 직접 시야가 성립하지 않는다. 실제 관측 대상과 Controller 캐시를 함께 갱신한다.
+			RediscoveryController->SetCachedVisibleTargetForTesting(RediscoveryTarget);
+			Enemy->ObserveTrackedTarget(RediscoveryTarget);
 			Enemy->SetPlayerCurrentlyVisible(true);
+			TestTrue(TEXT("Reacquisition has validated direct sight"), Enemy->IsPlayerCurrentlyVisible());
 			TestFalse(TEXT("Rediscovery cancels the active search episode"), Enemy->GetSearchEpisode().bActive);
 			TestEqual(TEXT("Parent remains running so the sight transition has priority"), EnemySearchTesting::TickSession(Session), EStateTreeRunStatus::Running);
 			Progress.Action = EEnemySearchProgress::SelectCurrentPoint;
@@ -2114,7 +2288,7 @@ bool FEnemyRoomTrackingTest::RunTest(const FString& Parameters)
 	}
 	else if (Parameters == TEXT("KeepCurrent") || Parameters == TEXT("Alternative") || Parameters == TEXT("Priority"))
 	{
-		// 더 가까운 대상이나 우선순위가 높은 Shooter도 유효한 현재 대상을 교체하지 않는다.
+		// 후보 수신은 즉시 교체가 아니다. 이후의 안전한 선택 경계에서 유지/거리/우선순위를 적용한다.
 		if (Parameters != TEXT("Priority")) Other->SetActorLocation(FVector(100, 100, 300));
 		Rooms->ReportRoomTargetContact(OtherObserver, Other, Other->GetActorLocation());
 		Controller->SetCachedVisibleTargetForTesting(Other);
@@ -2123,11 +2297,15 @@ bool FEnemyRoomTrackingTest::RunTest(const FString& Parameters)
 			Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
 		if (Parameters == TEXT("Priority"))
 		{
-			Controller->SetCachedVisibleTargetForTesting(nullptr);
-			Receiver->SetPlayerCurrentlyVisible(false);
-			Receiver->ClearTargetTracking();
-			Receiver->RefreshTargetTracking();
-			TestEqual(TEXT("Without a current target, Shooter priority beats a closer Partner"),
+			Receiver->RefreshTargetTrackingAtSelectionBoundary();
+			TestEqual(TEXT("At a safe boundary, Shooter priority replaces a still-valid closer Partner"),
+				Receiver->GetTrackedTarget(), static_cast<AActor*>(Other));
+		}
+		if (Parameters == TEXT("KeepCurrent"))
+		{
+			Advance(1.0f);
+			Receiver->RefreshTargetTrackingAtSelectionBoundary();
+			TestEqual(TEXT("After the hold, the better shared candidate can replace a still-valid target"),
 				Receiver->GetTrackedTarget(), static_cast<AActor*>(Other));
 		}
 		if (Parameters == TEXT("Alternative"))
@@ -2358,8 +2536,8 @@ bool FEnemyNoiseDirectionConfirmationTest::RunTest(const FString& Parameters)
 	if (Parameters == TEXT("ExpiredActive"))
 	{
 		Advance(5);
-		TestTrue(TEXT("Candidate expiry keeps the active fixed response"), Enemy->IsNoiseDirectionConfirmationActive());
-		TestTrue(TEXT("Active snapshot may reach after candidate expiry"), Enemy->NotifyNoiseDirectionReached(Initial.Serial));
+		TestFalse(TEXT("Original clue expiry ends active response"), Enemy->IsNoiseDirectionConfirmationActive());
+		TestFalse(TEXT("Expired snapshot cannot enter hold"), Enemy->NotifyNoiseDirectionReached(Initial.Serial));
 		Advance(11);
 		TestFalse(TEXT("Hold still ends normally"), Enemy->IsNoiseDirectionConfirmationActive());
 		return TestFalse(TEXT("Expired event cannot start again"), Enemy->TryBeginNoiseDirectionConfirmation());
@@ -2741,6 +2919,255 @@ bool FEnemyNoiseBoundaryTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Suppressed repeat keeps search episode"), Enemy->GetSearchEpisode().Serial, Search);
 	TestFalse(TEXT("Failed goal cannot restart without permission"), Enemy->BeginNoiseInvestigation(Destination));
 	return TestTrue(TEXT("Suppressed location remains eligible for direction confirmation"), Enemy->TryBeginNoiseDirectionConfirmation());
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyF5NoiseContinuationTest,
+	"Outlier.Enemy.F5.NoiseContinuation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyF5NoiseContinuationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("Arrival"), TEXT("Waypoint"), TEXT("StillBehind"), TEXT("Expired"),
+		TEXT("StaleBoundary"), TEXT("SightPreempts"), TEXT("NewDestination"), TEXT("OriginalDeadline"), TEXT("ObservedArrival")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyF5NoiseContinuationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemySearchTestWorld Fixture(true);
+	const bool bObservedArrival = Parameters == TEXT("ObservedArrival");
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(FGameplayTag(), FVector::ZeroVector, !bObservedArrival);
+	AEnemyAIController* AI = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* Source = Fixture.SpawnPlayer(FVector(5000, 0, 0));
+	if (!TestNotNull(TEXT("Enemy"), Enemy) || !TestNotNull(TEXT("AI"), AI) || !TestNotNull(TEXT("Source"), Source))
+	{
+		return false;
+	}
+	AI->Possess(Enemy);
+	Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Source->GetCharacterMovement()->SetComponentTickEnabled(false);
+	// Isolate direction confirmation from independently approved destination replacement.
+	Enemy->NoiseDestinationUpdateInterval = 10.0f;
+	const auto Advance = [&](int32 Frames, bool bRotate = true)
+	{
+		for (int32 Frame = 0; Frame < Frames; ++Frame)
+		{
+			++GFrameCounter;
+			Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+			Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+			if (bRotate)
+			{
+				AI->UpdateControlRotation(1.0f / 32.0f);
+			}
+		}
+	};
+	Advance(32, false);
+	if (bObservedArrival)
+	{
+		Enemy->EnterAlertFromPerception(FVector(1000, 0, 0));
+	}
+	FVector Destination;
+	if (!TestTrue(TEXT("Original noise accepted"), Enemy->RecordHeardNoise(Source, FVector(1000, 0, 0), Fixture.World->GetTimeSeconds()))
+		|| !TestTrue(TEXT("Original investigation adopted"), Enemy->BeginNoiseInvestigation(Destination)))
+	{
+		return false;
+	}
+	const uint64 OriginalNoiseSerial = Enemy->GetLocationInvestigationSerial();
+	if (bObservedArrival)
+	{
+		Enemy->VisualInvestigationHoldDuration = 10.0f;
+		TestTrue(TEXT("Brief actual observation recorded"), Enemy->RecordInvestigationSight(Source, Destination, Fixture.World->GetTimeSeconds()));
+		Enemy->OnDirectSightForHitResponse(Destination);
+		Advance(24);
+		if (!TestTrue(TEXT("Last observed investigation begins moving"), Enemy->BeginLocationInvestigation(Destination)))
+		{
+			return false;
+		}
+		TestTrue(TEXT("Visual investigation replaces original noise identity"), Enemy->GetLocationInvestigationSerial() != OriginalNoiseSerial);
+	}
+	const uint64 Investigation = Enemy->GetLocationInvestigationSerial();
+	Enemy->UpdateNoiseInvestigationTravelDirection(Investigation, FVector::ForwardVector, 360.0f);
+	Advance(1, false);
+	if (Parameters == TEXT("OriginalDeadline"))
+	{
+		Enemy->HeardNoiseLifetime = 1.2f;
+	}
+	const double OccurredAt = Fixture.World->GetTimeSeconds();
+	if (!TestTrue(TEXT("Farther rear noise accepted"), Enemy->RecordHeardNoise(Source, FVector(-2000, 0, 0), OccurredAt))
+		|| !TestTrue(TEXT("Limited look starts"), Enemy->TryBeginNoiseDirectionConfirmation()))
+	{
+		return false;
+	}
+	const uint64 Initial = Enemy->GetNoiseDirectionConfirmation().Serial;
+	Advance(20);
+	TestTrue(TEXT("Rear look remains within moving sector"), FMath::Abs(Enemy->GetActorRotation().Yaw) <= 60.01);
+	TestFalse(TEXT("Limited reaction does not claim full source confirmation"), Enemy->GetNoiseDirectionConfirmation().bReachedSourceDirection);
+	TestTrue(TEXT("Original destination retained"), Enemy->BeginLocationInvestigation(Destination) && Destination.Equals(FVector(1000, 0, 0)));
+	Enemy->EndNoiseDirectionConfirmation(Initial);
+	Advance(16, false);
+	if (bObservedArrival)
+	{
+		Enemy->NotifyNoiseInvestigationNaturalBoundary(OriginalNoiseSerial, true);
+		AI->UpdateControlRotation(1.0f / 32.0f);
+		TestFalse(TEXT("Old noise arrival cannot resume visual investigation remainder"), Enemy->IsNoiseDirectionConfirmationActive());
+	}
+	if (Parameters == TEXT("Expired"))
+	{
+		Advance(64, false);
+	}
+	if (Parameters == TEXT("NewDestination"))
+	{
+		Enemy->NoiseDestinationUpdateInterval = 0.0f;
+		TestTrue(TEXT("New closer event accepted"), Enemy->RecordHeardNoise(Source, FVector(0, 500, 0), Fixture.World->GetTimeSeconds()));
+		TestTrue(TEXT("New destination adopted"), Enemy->TryUpdateNoiseInvestigationDestination(Destination));
+	}
+	if (Parameters == TEXT("SightPreempts"))
+	{
+		Enemy->OnDirectSightForHitResponse(Source->GetActorLocation());
+	}
+	if (Parameters == TEXT("Waypoint"))
+	{
+		Enemy->UpdateNoiseInvestigationTravelDirection(Investigation, -FVector::ForwardVector, 360.0f);
+	}
+	if (Parameters == TEXT("Arrival") || Parameters == TEXT("OriginalDeadline") || bObservedArrival)
+	{
+		TestTrue(TEXT("Natural arrival enters stationary search"), Enemy->BeginLocationInvestigationSearch(Investigation, Enemy->GetActorLocation()));
+	}
+	else
+	{
+		Enemy->NotifyNoiseInvestigationNaturalBoundary(Parameters == TEXT("StaleBoundary") ? Investigation + 1 : Investigation,
+			Parameters != TEXT("Waypoint") && Parameters != TEXT("StillBehind"));
+	}
+	AI->UpdateControlRotation(1.0f / 32.0f);
+	const bool bExpectedContinuation = Parameters == TEXT("Arrival") || Parameters == TEXT("Waypoint") || Parameters == TEXT("OriginalDeadline") || bObservedArrival;
+	TestEqual(TEXT("Only eligible natural boundary resumes the original event"), Enemy->IsNoiseDirectionConfirmationActive(), bExpectedContinuation);
+	if (!bExpectedContinuation)
+	{
+		return true;
+	}
+	const uint64 Continued = Enemy->GetNoiseDirectionConfirmation().Serial;
+	TestTrue(TEXT("Continuation owns a new callback identity"), Continued > Initial);
+	TestFalse(TEXT("Old completion cannot cancel continuation"), Enemy->EndNoiseDirectionConfirmation(Initial));
+	TestEqual(TEXT("Continuation keeps original occurrence time"), Enemy->GetNoiseDirectionConfirmation().Clue.OccurredAt, OccurredAt);
+	if (Parameters == TEXT("OriginalDeadline"))
+	{
+		Advance(4);
+		return TestFalse(TEXT("Continuation ends at original TTL without fresh budget"), Enemy->IsNoiseDirectionConfirmationActive());
+	}
+	Advance(24);
+	TestTrue(TEXT("Remaining source direction becomes visibly reachable"), FMath::Abs(Enemy->GetActorRotation().Yaw) > 150.0);
+	Enemy->EndNoiseDirectionConfirmation(Continued);
+	Advance(12, false);
+	Enemy->NotifyNoiseInvestigationNaturalBoundary(Investigation, true);
+	return TestFalse(TEXT("Same rear remainder cannot replay at another boundary"), Enemy->TryBeginNoiseDirectionConfirmation());
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyNearNoiseFacingTest,
+	"Outlier.Enemy.Perception.NearNoiseFacing", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyNearNoiseFacingTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : { TEXT("BeforeAdoption"), TEXT("MovingRear"), TEXT("MovingVeryNear"), TEXT("Queued"), TEXT("FarBoundary"), TEXT("NearBoundary"), TEXT("AttackAim"), TEXT("Stun"), TEXT("Expired"), TEXT("Merge"), TEXT("CommittedCharge") })
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyNearNoiseFacingTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemySearchTestWorld Fixture(true);
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(FGameplayTag());
+	AEnemyAIController* AI = Fixture.World->SpawnActor<AEnemyAIController>();
+	AShooterCharacter* Source = Fixture.SpawnPlayer(FVector(5000, 0, 0));
+	if (!TestNotNull(TEXT("Enemy"), Enemy) || !TestNotNull(TEXT("AI"), AI) || !TestNotNull(TEXT("Source"), Source)) return false;
+	AI->Possess(Enemy);
+	Enemy->GetCharacterMovement()->SetComponentTickEnabled(false);
+	Source->GetCharacterMovement()->SetComponentTickEnabled(false);
+	const auto Advance = [&]()
+	{
+		++GFrameCounter;
+		Fixture.World->Tick(LEVELTICK_TimeOnly, 1.0f / 32.0f);
+		Fixture.World->GetTimerManager().Tick(Fixture.World->GetDeltaSeconds());
+	};
+	Advance();
+	const_cast<FEnemyStat&>(Enemy->GetRuntimeStat()).AwarenessNearDistance = 300.0f;
+	if (Parameters == TEXT("CommittedCharge"))
+	{
+		ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>();
+		AEnemyAIController* DroneAI = Fixture.World->SpawnActor<AEnemyAIController>();
+		if (!TestNotNull(TEXT("Drone"), Drone) || !TestNotNull(TEXT("Drone AI"), DroneAI)) return false;
+		DroneAI->Possess(Drone);
+		Drone->EnterCombatFromRoom(FVector::ZeroVector, false);
+		TestTrue(TEXT("Charge commits"), Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 10.0f, 100.0f, 1000.0f));
+		TestTrue(TEXT("Committed drone receives nearby sound"), Drone->RecordHeardNoise(Source, FVector(-200, 0, 0), Fixture.World->GetTimeSeconds()));
+		DroneAI->UpdateControlRotation(1.0f / 32.0f);
+		TestTrue(TEXT("Charge remains committed"), Drone->IsSelfDestructCommitted());
+		return TestFalse(TEXT("Nearby sound cannot own committed charge facing"), Drone->IsNoiseDirectionConfirmationActive());
+	}
+	FVector Destination;
+	if (Parameters == TEXT("MovingRear") || Parameters == TEXT("MovingVeryNear"))
+	{
+		TestTrue(TEXT("Far movement clue accepted"), Enemy->RecordHeardNoise(Source, FVector(1000, 0, 0), Fixture.World->GetTimeSeconds()));
+		if (!TestTrue(TEXT("Far movement adopted"), Enemy->BeginNoiseInvestigation(Destination))) return false;
+		Advance();
+	}
+	const FVector Snapshot = Parameters == TEXT("NearBoundary") ? FVector(0, 300, 0)
+		: Parameters == TEXT("FarBoundary") ? FVector(0, 301, 0)
+		: Parameters == TEXT("MovingVeryNear") ? FVector(-20, 0, 0) : FVector(-200, 0, 0);
+	TestTrue(TEXT("Sound accepted"), Enemy->RecordHeardNoise(Source, Snapshot, Fixture.World->GetTimeSeconds()));
+	if (Parameters == TEXT("AttackAim")) AI->SetAttackAimActive(true);
+	if (Parameters == TEXT("Stun")) Enemy->EnterStun();
+	if (Parameters == TEXT("Expired"))
+	{
+		Enemy->HeardNoiseLifetime = 0.01f;
+		Advance();
+	}
+	AI->UpdateControlRotation(1.0f / 32.0f);
+	if (Parameters == TEXT("FarBoundary")) return TestFalse(TEXT("Beyond boundary keeps adoption gate"), Enemy->IsNoiseDirectionConfirmationActive());
+	if (Parameters == TEXT("AttackAim") || Parameters == TEXT("Stun") || Parameters == TEXT("Expired"))
+		return TestFalse(TEXT("Higher priority or expired evidence blocks near facing"), Enemy->IsNoiseDirectionConfirmationActive());
+	if (!TestTrue(TEXT("Near sound starts on first facing update"), Enemy->IsNoiseDirectionConfirmationActive())) return false;
+	TestTrue(TEXT("Smooth first rotation"), FMath::Abs(Enemy->GetActorRotation().Yaw) > 0.0 && FMath::Abs(Enemy->GetActorRotation().Yaw) < 20.0);
+	const FEnemyNoiseDirectionConfirmation Initial = Enemy->GetNoiseDirectionConfirmation();
+	Source->SetActorLocation(FVector(0, 5000, 0));
+	TestTrue(TEXT("Fixed sound snapshot"), Enemy->GetNoiseDirectionConfirmation().Clue.Location.Equals(Snapshot));
+	if (Parameters == TEXT("BeforeAdoption"))
+	{
+		TestTrue(TEXT("Near destination remains adoptable"), Enemy->BeginNoiseInvestigation(Destination));
+		TestTrue(TEXT("Adoption preserves active turn"), Enemy->IsNoiseDirectionConfirmationActive());
+		TestEqual(TEXT("Adoption keeps response identity"), Enemy->GetNoiseDirectionConfirmation().Serial, Initial.Serial);
+	}
+	if (Parameters == TEXT("MovingRear"))
+	{
+		for (int32 Frame = 0; Frame < 20; ++Frame) { Advance(); AI->UpdateControlRotation(1.0f / 32.0f); }
+		TestTrue(TEXT("Near rear bypasses moving sixty degree limit"), FMath::Abs(Enemy->GetActorRotation().Yaw) > 60.0);
+	}
+	if (Parameters == TEXT("Queued"))
+	{
+		Advance();
+		TestTrue(TEXT("Opposite new event accepted"), Enemy->RecordHeardNoise(Source, FVector(0, 200, 0), Fixture.World->GetTimeSeconds()));
+		AI->UpdateControlRotation(1.0f / 32.0f);
+		TestEqual(TEXT("New event cannot reverse active turn"), Enemy->GetNoiseDirectionConfirmation().Serial, Initial.Serial);
+		TestEqual(TEXT("New event cannot extend deadline"), Enemy->GetNoiseDirectionConfirmation().PhaseEndsAt, Initial.PhaseEndsAt);
+		Enemy->EndNoiseDirectionConfirmation(Initial.Serial);
+		AI->UpdateControlRotation(1.0f / 32.0f);
+		return TestTrue(TEXT("Queued near event bypasses interval after end"), Enemy->IsNoiseDirectionConfirmationActive());
+	}
+	if (Parameters == TEXT("Merge"))
+	{
+		Advance();
+		TestTrue(TEXT("Same direction new sound accepted"), Enemy->RecordHeardNoise(Source, FVector(-210, 0, 0), Fixture.World->GetTimeSeconds()));
+		AI->UpdateControlRotation(1.0f / 32.0f);
+		TestEqual(TEXT("Merged event keeps response identity"), Enemy->GetNoiseDirectionConfirmation().Serial, Initial.Serial);
+		TestEqual(TEXT("Merged event keeps deadline"), Enemy->GetNoiseDirectionConfirmation().PhaseEndsAt, Initial.PhaseEndsAt);
+	}
+	Enemy->EndNoiseDirectionConfirmation(Initial.Serial);
+	return TestFalse(TEXT("Same near event cannot replay"), Enemy->TryBeginNoiseDirectionConfirmation());
 }
 
 #endif

@@ -6,10 +6,21 @@
 #include "EnvironmentQuery/EnvQueryContext.h"
 #include "EnvironmentQuery/EnvQueryTest.h"
 #include "EnvironmentQuery/EnvQueryGenerator.h"
+#include "EnvironmentQuery/Tests/EnvQueryTest_Trace.h"
 #include "EnemyEnvQuery.generated.h"
 
 struct FEnvQueryRequest;
 class AEnemyBase;
+
+// Shooter 사선은 중앙 한 점 Trace가 아닌 Task의 제한된 노출 후보 검사에서 확정한다.
+// 다른 대상은 저장된 Trace 설정을 그대로 사용한다.
+UCLASS()
+class OUTLIER_API UEnemyEnvQueryTest_CombatSight : public UEnvQueryTest_Trace
+{
+	GENERATED_BODY()
+public:
+	virtual void RunTest(FEnvQueryInstance& QueryInstance) const override;
+};
 
 // 보정 결과는 요청 단위로 고정한다. EQS 완료 후 같은 위치를 다시 Trace해 좌표를 바꾸지 않는다.
 struct FEnemyFlightHeightCandidate
@@ -31,6 +42,10 @@ struct FEnemyFlightHeightSnapshot
 
 namespace EnemyFlightHeight
 {
+	// 접근/우회/후퇴를 합친 후보도 같은 바닥·천장·방 경계 및 요청 예산으로 보정한다.
+	OUTLIER_API EFlightPathStatus PrepareCombatCandidates(const AEnemyBase& Enemy, const TArray<FVector>& Locations,
+		const FVector& Start, const FVector& Target, float Clearance, int32 MaxChecks,
+		double MaxMilliseconds, FEnemyFlightHeightSnapshot& OutSnapshot);
 	OUTLIER_API EFlightPathStatus PrepareQuery(const AEnemyBase& Enemy, const UEnvQueryGenerator& Generator,
 		const FVector& Start, const FVector& Target, float PreferredOrbitLength, bool bLeft, int32 Lane,
 		float Clearance, int32 MaxChecks, double MaxMilliseconds, FEnemyFlightHeightSnapshot& OutSnapshot);

@@ -1744,9 +1744,16 @@ void AShooterCharacter::HandleControlMappingsRebuilt()
 	SprintInputKeys = Config->SprintAction ? Subsystem->QueryKeysMappedToAction(Config->SprintAction) : TArray<FKey>();
 	const bool bMissingSprint = Config->SprintAction && Subsystem->QueryKeysMappedToAction(Config->SprintAction).IsEmpty();
 	const bool bMissingAim = Config->AimAction && Subsystem->QueryKeysMappedToAction(Config->AimAction).IsEmpty();
-	if (!bMissingSprint && !bMissingAim) return;
+	const bool bMissingAttack = Config->AttackAction && Subsystem->QueryKeysMappedToAction(Config->AttackAction).IsEmpty();
+	if (!bMissingSprint && !bMissingAim && !bMissingAttack) return;
 	// 일반 Release와 컨텍스트 종료를 구분한다. 키 재설정으로 액션이 계속 유효하면 의도는 유지한다.
 	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	if (bMissingAttack && CombatComponent)
+	{
+		// 컨텍스트 종료는 일반 Release와 다르다. 예약 첫 발까지 폐기한 뒤 홀드를 내린다.
+		CombatComponent->CancelPendingSprintExitFire();
+		CombatComponent->TryStopAttack();
+	}
 	Movement->CancelActionInput(bMissingSprint, bMissingAim);
 	if (bMissingSprint)
 	{
@@ -2614,9 +2621,19 @@ UAISense_Sight::EVisibilityResult AShooterCharacter::CanBeSeenFrom(
 	int32* UserData,
 	const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
 {
+	// Shooter의 실제 등록 본에만 머리 예외와 조준 역할을 부여한다. 다른 플레이어 모델은 기존 판정을 유지한다.
+	static const FName BodyBones[] = { TEXT("spine_03"), TEXT("pelvis"), TEXT("clavicle_l"), TEXT("clavicle_r") };
+	const FOutlierSightBoneRoles Roles{ TEXT("head"), MakeArrayView(BodyBones) };
 	return BoneSight.Query(*this, GetMesh(), ResolveSightBoneRegistration(), Context,
 		OutSeenLocation, OutNumberOfLoSChecksPerformed, OutNumberOfAsyncLosCheckRequested,
-		OutSightStrength, [this] { RefreshFirstPersonShadowPolicy(); });
+		OutSightStrength, [this] { RefreshFirstPersonShadowPolicy(); }, &Roles);
+}
+
+bool AShooterCharacter::GetObservedAimPoints(const AActor* Observer, FOutlierSightObservation& Out) const
+{
+	if (HasAuthority()) return BoneSight.GetObservation(Observer, GetMesh(), ResolveSightBoneRegistration(), Out);
+	Out = FOutlierSightObservation();
+	return false;
 }
 
 FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
@@ -3170,6 +3187,8 @@ bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 
 void AShooterCharacter::BeginActionLock(EShooterActionLock NewLock)
 {
+	// 새 행동은 이전 달리기 복귀 공격을 취소한다. 잠금 종료 뒤 첫 발이 늦게 튀어나오지 않는다.
+	if (NewLock != EShooterActionLock::Slide && CombatComponent) CombatComponent->CancelPendingSprintExitFire();
 	ActionLock = NewLock;
 	bIsEquipping = (ActionLock == EShooterActionLock::Equip);
 	GetWorldTimerManager().ClearTimer(ActionLockTimerHandle);
@@ -3763,6 +3782,16 @@ void AShooterCharacter::ServerStartAttack_Implementation()
 	{
 		CombatComponent->TryStartAttack();
 	}
+}
+
+void AShooterCharacter::ServerBeginSprintExitFire_Implementation(AWeaponBase* Weapon, uint32 Request, uint32 Epoch)
+{
+	if (CombatComponent) CombatComponent->BeginSprintExitFire(Weapon, Request, Epoch);
+}
+
+void AShooterCharacter::ServerResolveSprintExitFire_Implementation(uint32 Request, uint32 Epoch, bool bFire)
+{
+	if (CombatComponent) CombatComponent->ResolveSprintExitFire(Request, Epoch, bFire);
 }
 
 void AShooterCharacter::TryStopAttack()
@@ -4444,6 +4473,7 @@ void AShooterCharacter::BeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon)
 
 void AShooterCharacter::StartLocalProceduralWeaponSwitch(int32 SwitchId)
 {
+	if (CombatComponent) CombatComponent->CancelPendingSprintExitFire();
 	if (CombatComponent) CombatComponent->SuspendAimInternal();
 	ActiveProceduralSwitchId = SwitchId;
 	WeaponAtSwitchStart = CurrentWeapon;
@@ -4458,6 +4488,7 @@ void AShooterCharacter::StartLocalProceduralWeaponSwitch(int32 SwitchId)
 
 void AShooterCharacter::StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeapon, AWeaponBase* PreviousWeapon)
 {
+	if (CombatComponent) CombatComponent->CancelPendingSprintExitFire();
 	if (CombatComponent) CombatComponent->SuspendAimInternal();
 	OutlierFirstPickup::FScope Scope(TEXT("StartLocalRaise"), ExpectedWeapon);
 	ActiveProceduralSwitchId = 0;

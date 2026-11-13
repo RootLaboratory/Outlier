@@ -9,6 +9,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/WorldSettings.h"
@@ -22,9 +23,11 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Save/OutlierCheckpoint.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "TimerManager.h"
+#include "Tutorial/Actors/Tuto_CombatObserver.h"
 #include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FElevatorCheckpointIntegrationTest,
@@ -224,6 +227,263 @@ bool FElevatorCheckpointIntegrationTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Ordinary phase boundary is durable"), Snapshot.RoomTag, OrdinaryTag);
 	Combat->ReleaseEncounterCheckpointHold(ElevatorTag, ExecutionId);
 	Combat->ResetRuntimeCombatState();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCheckpointSaveIntegrationTest,
+	"Outlier.Room.CheckpointCleanup.DurableSave",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCheckpointSaveIntegrationTest::RunTest(const FString& Parameters)
+{
+	UClass* ModeClass = LoadClass<AOutlierGameMode>(nullptr,
+		TEXT("/Game/Blueprints/Outlier/BP_OutlierGM.BP_OutlierGM_C"));
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Concrete mode"), ModeClass) || !TestNotNull(TEXT("Concrete shooter"), ShooterClass)) return false;
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("CheckpointCleanupTest")));
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	UGameInstance* Instance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(Instance);
+	Instance->OnWorldChanged(nullptr, World);
+	Instance->Init();
+	const FString Directory = FPaths::ConvertRelativePathToFull(FPaths::Combine(
+		FPaths::ProjectSavedDir(), TEXT("Automation"), World->GetName()));
+	ON_SCOPE_EXIT
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(false);
+		Instance->Shutdown();
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		IFileManager::Get().DeleteDirectory(*Directory, false, true);
+	};
+	World->GetWorldSettings()->DefaultGameMode = ModeClass;
+	if (!World->SetGameMode(FURL())) return false;
+	World->InitializeActorsForPlay(FURL());
+	AOutlierGameMode* Mode = World->GetAuthGameMode<AOutlierGameMode>();
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	UOutlierSaveSubSystem* Saves = Instance->GetSubsystem<UOutlierSaveSubSystem>();
+	AShooterCharacter* Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass,
+		FTransform(FVector(3000, 0, 300)));
+	APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>(APartnerCharacter::StaticClass(),
+		FTransform(FVector(4000, 0, 300)));
+	APlayerController* ShooterPC = World->SpawnActor<AFirstPersonPlayerController>();
+	APlayerController* PartnerPC = World->SpawnActor<AFirstPersonPlayerController>();
+	AOutlierPlayerState* ShooterPS = World->SpawnActor<AOutlierPlayerState>();
+	AOutlierPlayerState* PartnerPS = World->SpawnActor<AOutlierPlayerState>();
+	if (!Mode->GameState) Mode->GameState = World->SpawnActor<AGameStateBase>();
+	if (!TestNotNull(TEXT("Shooter"), Shooter) || !TestNotNull(TEXT("Partner"), Partner)) return false;
+	Mode->ActiveMatchPairId = 0;
+	ShooterPS->SetPairId(0);
+	PartnerPS->SetPairId(0);
+	ShooterPS->SetPlayerRole(EOutlierPlayerRole::Shooter);
+	PartnerPS->SetPlayerRole(EOutlierPlayerRole::Partner);
+	ShooterPS->SetOwner(ShooterPC);
+	PartnerPS->SetOwner(PartnerPC);
+	ShooterPS->SetShooterCharacter(Shooter);
+	PartnerPS->SetPartnerCharacter(Partner);
+	Mode->GameState->PlayerArray.AddUnique(ShooterPS);
+	Mode->GameState->PlayerArray.AddUnique(PartnerPS);
+	FObjectProperty* PawnProperty = FindFProperty<FObjectProperty>(AController::StaticClass(), TEXT("Pawn"));
+	FObjectProperty* StateProperty = FindFProperty<FObjectProperty>(AController::StaticClass(), TEXT("PlayerState"));
+	PawnProperty->SetObjectPropertyValue_InContainer(ShooterPC, Shooter);
+	PawnProperty->SetObjectPropertyValue_InContainer(PartnerPC, Partner);
+	StateProperty->SetObjectPropertyValue_InContainer(ShooterPC, ShooterPS);
+	StateProperty->SetObjectPropertyValue_InContainer(PartnerPC, PartnerPS);
+	ON_SCOPE_EXIT
+	{
+		PawnProperty->SetObjectPropertyValue_InContainer(ShooterPC, nullptr);
+		PawnProperty->SetObjectPropertyValue_InContainer(PartnerPC, nullptr);
+	};
+	// 스트리밍 에셋을 바꾸지 않고 기존 DirectPair의 PIE 준비 판정만 사용한다.
+	// 명시적 RegisterCheckpoint는 DirectPair에서도 실제 durable 파일을 기록한다.
+	Mode->bDirectPairTest = true;
+	World->WorldType = EWorldType::PIE;
+	ON_SCOPE_EXIT { World->WorldType = EWorldType::Game; };
+	TestTrue(TEXT("Real readiness preflight passes"), Mode->IsPairGameplayReady());
+	Saves->SetAutoSaveDirectoryForTesting(Directory);
+	const FGuid Owner = FGuid::NewGuid(), SaveId = FGuid::NewGuid();
+	const FString Verifier = UOutlierSaveSubSystem::MakeKeyVerifier(FGuid::NewGuid());
+	TestTrue(TEXT("Save identity configured"), Saves->ConfigureNewSave(Owner, SaveId, Verifier));
+	FOutlierCheckpointSnapshot Baseline;
+	Baseline.CheckpointId = TEXT("Cleanup.Before");
+	TestTrue(TEXT("Baseline is durable"), Saves->CommitDurableCheckpointSnapshot(Baseline));
+	const FString Latest = FPaths::Combine(Directory, SaveId.ToString(EGuidFormats::Digits), TEXT("LatestAutoSave.sav"));
+	TArray<uint8> Before;
+	FFileHelper::LoadFileToArray(Before, *Latest);
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.1"));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	FRoomCombatRoomDefinition& RoomDefinition = Definition->RoomDefinitions.AddDefaulted_GetRef();
+	RoomDefinition.RoomTag = Tag;
+	RoomDefinition.bFinishCombatOnCheckpointSave = true;
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
+		Phase.StartPolicy = Index == 0 ? ERoomCombatPhaseStartPolicy::ExternalTrigger : ERoomCombatPhaseStartPolicy::Automatic;
+		FRoomCombatWaveDefinition& Wave = Phase.Waves.AddDefaulted_GetRef();
+		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		Wave.ExpectedWaveTurretCount = 1;
+	}
+	Combat->SetCombatDefinitionForTesting(Definition);
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	*FindFProperty<FStructProperty>(ARoomVolume::StaticClass(), TEXT("RoomTag"))->ContainerPtrToValuePtr<FGameplayTag>(Room) = Tag;
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		AAutoTurret* Turret = World->SpawnActorDeferred<AAutoTurret>(AAutoTurret::StaticClass(), FTransform::Identity);
+		Turret->ConfigureWaveRegistrationForTesting(Tag, Index, 0, FName(*FString::Printf(TEXT("Cleanup.Turret.%d"), Index)));
+		Turret->FinishSpawning(FTransform::Identity);
+		if (!Turret->HasActorBegunPlay()) Turret->DispatchBeginPlay();
+	}
+	TestTrue(TEXT("Room registers"), Combat->RegisterRoom(Room, Tag));
+	FRoomCombatTriggerContext Context;
+	TestTrue(TEXT("Trigger context"), Combat->CreateTriggerContext(Room, Tag, FGameplayTag(), Context));
+	TestTrue(TEXT("Combat starts"), Combat->StartTriggeredSequence(Room, Context));
+	// 완료 통보의 실제 Observer → Trigger → 발행 기록 경로를 최종 캡처와 함께 검증한다.
+	const FGameplayTag ImmediateEvent = FGameplayTag::RequestGameplayTag(TEXT("Event.Tutorial.Shooter.Move"));
+	ATuto_CombatObserver* Observer = World->SpawnActorDeferred<ATuto_CombatObserver>(
+		ATuto_CombatObserver::StaticClass(), FTransform::Identity);
+	*FindFProperty<FStructProperty>(ATuto_CombatObserver::StaticClass(), TEXT("RoomTag"))
+		->ContainerPtrToValuePtr<FGameplayTag>(Observer) = Tag;
+	auto* Slots = FindFProperty<FArrayProperty>(ATuto_CombatObserver::StaticClass(), TEXT("EventTriggers"))
+		->ContainerPtrToValuePtr<TArray<FTuto_EventTriggerData>>(Observer);
+	(*Slots)[ATuto_CombatObserver::ClearedSlot].EventTag = ImmediateEvent;
+	Observer->FinishSpawning(FTransform::Identity);
+	if (!Observer->HasActorBegunPlay()) Observer->DispatchBeginPlay();
+	AOutlierCheckpoint* Checkpoint = World->SpawnActor<AOutlierCheckpoint>();
+	Checkpoint->CheckpointId = TEXT("Cleanup.After");
+	Checkpoint->bCheckpointIdRegistered = Saves->RegisterCheckpointId(Checkpoint->CheckpointId, Checkpoint);
+	Checkpoint->bActivationConditionSatisfied = true;
+	Checkpoint->bShooterPassed = Checkpoint->bPartnerPassed = true;
+	Checkpoint->OverlappingPairId = 0;
+	Checkpoint->CommitController = ShooterPC;
+	Checkpoint->SetCombatRoomTag(Tag);
+	// 부적격 요청에서는 활성 전투를 제거하지 않는다.
+	Checkpoint->bPartnerPassed = false;
+	TestFalse(TEXT("Missing passage cannot clean combat"), Checkpoint->RetryCommit());
+	TestEqual(TEXT("Combat survives failed save preflight"), Combat->GetRoomState(Tag), ERoomCombatState::Combat);
+	Checkpoint->bPartnerPassed = true;
+	int32 Cleared = 0;
+	bool bNestedRejected = false;
+	Combat->CombatEventObserverForTesting = [&](FGameplayTag, ERoomCombatEvent Event, int32)
+	{
+		if (Event == ERoomCombatEvent::RoomCleared)
+		{
+			++Cleared;
+			bNestedRejected = !Mode->CommitCombatPhaseCheckpoint(Tag, INDEX_NONE, true, Context.GameplayGeneration)
+				&& !Checkpoint->RetryCommit();
+		}
+	};
+	// 실제 파일 경로의 상위에 파일을 놓아 쓰기 실패를 주입한다. 기존 정상 저장 디렉터리는 건드리지 않는다.
+	const FString Blocker = FPaths::Combine(Directory, TEXT("NotADirectory"));
+	FFileHelper::SaveStringToFile(TEXT("block"), *Blocker);
+	Saves->SetAutoSaveDirectoryForTesting(Blocker);
+	TestFalse(TEXT("Disk failure does not confirm checkpoint"), Checkpoint->RetryCommit());
+	TestFalse(TEXT("Checkpoint stays pending"), Checkpoint->IsCheckpointCommitted());
+	TestTrue(TEXT("Nested phase save and trigger save rejected"), bNestedRejected);
+	TestEqual(TEXT("Live encounter stays fully cleaned after disk failure"), Combat->GetRoomState(Tag), ERoomCombatState::Cleared);
+	TestTrue(TEXT("Completion observer issues the event before disk success"), Saves->HasFiredTutorialEvent(ImmediateEvent));
+	FOutlierCheckpointSnapshot Snapshot;
+	Saves->GetRestoreSnapshot(Snapshot);
+	TestEqual(TEXT("In-memory committed save is unchanged"), Snapshot.CheckpointId, Baseline.CheckpointId);
+	TArray<uint8> After;
+	FFileHelper::LoadFileToArray(After, *Latest);
+	TestTrue(TEXT("Previous disk save is unchanged"), After == Before);
+	Saves->SetAutoSaveDirectoryForTesting(Directory);
+	TestTrue(TEXT("Retry commits cleaned world"), Checkpoint->RetryCommit());
+	TestEqual(TEXT("Cleanup completion emitted once across retry"), Cleared, 1);
+	TestTrue(TEXT("Disk checkpoint loads"), Saves->LoadLatestSave(Owner, SaveId, Verifier));
+	TestTrue(TEXT("Restore snapshot exists"), Saves->GetRestoreSnapshot(Snapshot));
+	TestEqual(TEXT("Explicit checkpoint owns final save"), Snapshot.CheckpointId, Checkpoint->CheckpointId);
+	TestTrue(TEXT("Full encounter completion is durable"), Snapshot.WorldProgress.CompletedEncounterIds.Contains(Tag.GetTagName()));
+	TestFalse(TEXT("No remaining phase resume"), Snapshot.RoomPhaseProgress.Contains(Tag));
+	TestEqual(TEXT("Completed room has no next phase"), Snapshot.NextPhaseIndex, INDEX_NONE);
+	TestTrue(TEXT("Final durable capture includes immediate completion issuance"), Snapshot.FiredTutorialEvents.Contains(ImmediateEvent));
+	Combat->CombatEventObserverForTesting = nullptr;
+
+	// 재시도 전의 라이브 기록이 결과를 가리지 않도록, 별도 Encounter의 첫 저장에서 순서를 검증한다.
+	const auto VerifyFirstSaveIssuance = [&](FGameplayTag RoomTag, FGameplayTag EventTag, FName CheckpointId, bool bDelayRecipient)
+	{
+		URoomCombatDefinition* FreshDefinition = NewObject<URoomCombatDefinition>(World);
+		FRoomCombatRoomDefinition& Entry = FreshDefinition->RoomDefinitions.AddDefaulted_GetRef();
+		Entry.RoomTag = RoomTag;
+		Entry.bFinishCombatOnCheckpointSave = true;
+		FRoomCombatPhaseDefinition& Phase = Entry.CombatPhases.AddDefaulted_GetRef();
+		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		FRoomCombatWaveDefinition& Wave = Phase.Waves.AddDefaulted_GetRef();
+		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		Wave.ExpectedWaveTurretCount = 1;
+		Combat->SetCombatDefinitionForTesting(FreshDefinition);
+		ARoomVolume* FreshRoom = World->SpawnActor<ARoomVolume>();
+		*FindFProperty<FStructProperty>(ARoomVolume::StaticClass(), TEXT("RoomTag"))
+			->ContainerPtrToValuePtr<FGameplayTag>(FreshRoom) = RoomTag;
+		AAutoTurret* Turret = World->SpawnActorDeferred<AAutoTurret>(AAutoTurret::StaticClass(), FTransform::Identity);
+		Turret->ConfigureWaveRegistrationForTesting(RoomTag, 0, 0,
+			FName(*(CheckpointId.ToString() + TEXT(".Turret"))));
+		Turret->FinishSpawning(FTransform::Identity);
+		if (!Turret->HasActorBegunPlay()) Turret->DispatchBeginPlay();
+		if (!TestTrue(TEXT("Fresh encounter registers"), Combat->RegisterRoom(FreshRoom, RoomTag))) return;
+		FRoomCombatTriggerContext FreshContext;
+		TestTrue(TEXT("Fresh trigger context"), Combat->CreateTriggerContext(FreshRoom, RoomTag, FGameplayTag(), FreshContext));
+		TestTrue(TEXT("Fresh combat starts"), Combat->StartTriggeredSequence(FreshRoom, FreshContext));
+		ATuto_CombatObserver* FreshObserver = World->SpawnActorDeferred<ATuto_CombatObserver>(
+			ATuto_CombatObserver::StaticClass(), FTransform::Identity);
+		*FindFProperty<FStructProperty>(ATuto_CombatObserver::StaticClass(), TEXT("RoomTag"))
+			->ContainerPtrToValuePtr<FGameplayTag>(FreshObserver) = RoomTag;
+		auto* FreshSlots = FindFProperty<FArrayProperty>(ATuto_CombatObserver::StaticClass(), TEXT("EventTriggers"))
+			->ContainerPtrToValuePtr<TArray<FTuto_EventTriggerData>>(FreshObserver);
+		(*FreshSlots)[ATuto_CombatObserver::ClearedSlot].EventTag = EventTag;
+		FreshObserver->FinishSpawning(FTransform::Identity);
+		if (!FreshObserver->HasActorBegunPlay()) FreshObserver->DispatchBeginPlay();
+		AOutlierCheckpoint* FreshCheckpoint = World->SpawnActor<AOutlierCheckpoint>();
+		FreshCheckpoint->CheckpointId = CheckpointId;
+		FreshCheckpoint->bCheckpointIdRegistered = Saves->RegisterCheckpointId(CheckpointId, FreshCheckpoint);
+		FreshCheckpoint->bActivationConditionSatisfied = true;
+		FreshCheckpoint->bShooterPassed = FreshCheckpoint->bPartnerPassed = true;
+		FreshCheckpoint->OverlappingPairId = 0;
+		FreshCheckpoint->CommitController = ShooterPC;
+		FreshCheckpoint->SetCombatRoomTag(RoomTag);
+
+		// 일반 PC도 저장 자격은 있지만 이벤트 Relay 수신자는 아니다. 폰/저장 상태는 준비된 채로 전달만 지연한다.
+		APlayerController* UnreadyRecipient = bDelayRecipient ? World->SpawnActor<APlayerController>() : nullptr;
+		if (UnreadyRecipient)
+		{
+			PawnProperty->SetObjectPropertyValue_InContainer(UnreadyRecipient, Partner);
+			StateProperty->SetObjectPropertyValue_InContainer(UnreadyRecipient, PartnerPS);
+			PartnerPS->SetOwner(UnreadyRecipient);
+		}
+		TestFalse(TEXT("Completion tag has not fired before first save"), Saves->HasFiredTutorialEvent(EventTag));
+		TestTrue(TEXT("First save succeeds without a retry"), FreshCheckpoint->RetryCommit());
+		FOutlierCheckpointSnapshot FirstSave;
+		TestTrue(TEXT("First save snapshot exists"), Saves->GetRestoreSnapshot(FirstSave));
+		TestEqual(TEXT("First save owns the committed snapshot"), FirstSave.CheckpointId, CheckpointId);
+		TestEqual(TEXT("Only issuance accepted during this operation is captured"),
+			FirstSave.FiredTutorialEvents.Contains(EventTag), !bDelayRecipient);
+		if (UnreadyRecipient)
+		{
+			TestFalse(TEXT("Rejected completion delivery is retryable"), Saves->HasFiredTutorialEvent(EventTag));
+			PartnerPS->SetOwner(PartnerPC);
+			PawnProperty->SetObjectPropertyValue_InContainer(UnreadyRecipient, nullptr);
+			StateProperty->SetObjectPropertyValue_InContainer(UnreadyRecipient, nullptr);
+			// 실제 Observer의 ClearedRetryTimer를 실행한다. 테스트에서 이벤트를 수동 발행하지 않는다.
+			// 첫 프레임은 pending 타이머를 활성화하고 다음 프레임에서 만료 시간을 넘긴다.
+			TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+			++GFrameCounter;
+			World->GetTimerManager().Tick(0.0f);
+			++GFrameCounter;
+			World->GetTimerManager().Tick(1.1f);
+			TestTrue(TEXT("Observer retries when the recipient becomes ready"), Saves->HasFiredTutorialEvent(EventTag));
+			TestTrue(TEXT("Committed snapshot is still available"), Saves->GetRestoreSnapshot(FirstSave));
+			TestFalse(TEXT("Late completion issuance cannot retroactively edit the save"), FirstSave.FiredTutorialEvents.Contains(EventTag));
+			Saves->RestoreFiredTutorialEvents(FirstSave.FiredTutorialEvents);
+			TestTrue(TEXT("Same-flow restore preserves delayed live issuance"), Saves->HasFiredTutorialEvent(EventTag));
+		}
+	};
+	VerifyFirstSaveIssuance(FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.2")),
+		FGameplayTag::RequestGameplayTag(TEXT("Event.Tutorial.Shooter.Look")), TEXT("Cleanup.Immediate"), false);
+	VerifyFirstSaveIssuance(FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.3")),
+		FGameplayTag::RequestGameplayTag(TEXT("Event.Tutorial.Partner.Move")), TEXT("Cleanup.Delayed"), true);
 	return true;
 }
 

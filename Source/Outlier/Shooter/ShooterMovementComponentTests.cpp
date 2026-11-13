@@ -4,6 +4,7 @@
 #include "Shooter/ShooterMovementComponent.h"
 #include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Shooter/ShooterCombatComponent.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "OutlierPlayerState.h"
 #include "Curves/CurveFloat.h"
 #include "Engine/Engine.h"
@@ -40,6 +41,7 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 	if (TestNotNull(TEXT("Shooter fixture"), Shooter))
 	{
 		UCharacterMovementComponent* CharacterMovement = Shooter->GetCharacterMovement();
+		CastChecked<UShooterCharacterMovementComponent>(CharacterMovement)->SetSprintInputMode(EOutlierSprintInputMode::Toggle);
 		UShooterMovementComponent* Movement = Shooter->FindComponentByClass<UShooterMovementComponent>();
 		if (TestNotNull(TEXT("Shooter movement component"), Movement))
 		{
@@ -109,6 +111,14 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			UShooterCombatComponent* Combat = Shooter->FindComponentByClass<UShooterCombatComponent>();
 			if (TestNotNull(TEXT("Combat fixture"), Combat))
 			{
+				// Run 재진입은 전투 상태도 갱신한다. 무기가 없으면 Reload를 정리하므로
+				// 재장전 이동 자격 검증에도 실제 총기를 장착한다.
+				UClass* PistolClass = LoadClass<ARangedWeaponBase>(nullptr,
+					TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
+				ARangedWeaponBase* Pistol = PistolClass ? World->SpawnActor<ARangedWeaponBase>(PistolClass) : nullptr;
+				if (!TestNotNull(TEXT("Reload weapon fixture"), Pistol)) return false;
+				Shooter->AFirstPersonCharacter::EquipWeapon(Pistol);
+				Shooter->RefreshWeaponMode();
 				// 이동 잠금 검증은 몽타주 재생 조건과 분리하고, 완료 처리는 실제 경로를 사용한다.
 				const auto BeginReloadFixture = [&]()
 				{
@@ -119,12 +129,12 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 				};
 				BeginReloadFixture();
 				TestTrue(TEXT("Reload fixture is active"), Shooter->IsReloading());
-				TestFalse(TEXT("Sprint is blocked with reload lock"), Movement->CanSprint());
+				TestTrue(TEXT("Sprint is allowed with reload lock"), Movement->CanSprint());
 				Movement->RefreshMovementState();
 				Combat->ResolveStateConflicts();
-				TestFalse(TEXT("Reload suspends actual sprint"), Movement->IsSprinting());
+				TestTrue(TEXT("Reload preserves actual sprint"), Movement->IsSprinting());
 				TestTrue(TEXT("Reload preserves Sprint toggle intent"), Movement->WantsToSprint());
-				TestEqual(TEXT("Reload uses walk speed"), CharacterMovement->MaxWalkSpeed, Shooter->WalkSpeed);
+				TestEqual(TEXT("Reload preserves sprint speed"), CharacterMovement->MaxWalkSpeed, Shooter->SprintSpeed);
 				Combat->FinishReloadInternal();
 				TestTrue(TEXT("Reload completion resumes Sprint toggle"), Movement->IsSprinting());
 				TestEqual(TEXT("Reload completion restores sprint speed"), CharacterMovement->MaxWalkSpeed, Shooter->SprintSpeed);

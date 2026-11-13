@@ -10,7 +10,11 @@
 #include "GAS/Effects/OutlierGameplayEffects.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "FirstPerson/PlayerRelocationEQS.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
+#include "Shooter/ShooterMovementComponent.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
 
@@ -177,6 +181,7 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 
 	bCommitFailureCooldown = false;
 	bTeleportSucceeded = false;
+	bEndRequestedDuringTeleport = false;
 	AShooterCharacter* Shooter = GetShooterCharacter();
 	APartnerCharacter* Partner = Shooter ? Shooter->GetPartnerCharacter() : nullptr;
 	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
@@ -187,19 +192,29 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 		return;
 	}
 
-	if (!TryResolveDestination(*Shooter, *Partner, Destination))
-	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Activate] Could not resolve destination. Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
-		bCommitFailureCooldown = true;
-		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
-		return;
-	}
+	// 1. 최초 탐색부터 완료 재탐색까지 같은 기준과 참가자를 사용한다.
+	++ExecutionSerial;
+	LeapShooter = Shooter;
+	LeapPartner = Partner;
+	LeapArena = Shooter->GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	GameplayGeneration = LeapArena.IsValid() ? LeapArena->GetGameplayGeneration() : 0;
+	Reference = FTransform(FRotator(0, Partner->GetActorRotation().Yaw, 0), Partner->GetActorLocation());
+	Phase = ELeapPhase::FindingInitial;
+	StartDestinationQuery(false);
+}
+
+void UOutlierShooterQuantumLeapAbility::BeginCast()
+{
+	if (!CheckLeapEligibility()) return;
+	AShooterCharacter* Shooter = LeapShooter.Get();
+	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
+	Phase = ELeapPhase::Casting;
+	// 2. 착지 후보가 확정된 뒤에만 기존 시전/무적을 시작한다. 재탐색은 이 경로를 다시 타지 않는다.
 
 	DamageImmuneHandle = ShooterASC->ApplyDamageImmuneStateToSelf();
 	if (!DamageImmuneHandle.IsValid())
 	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Activate] Failed to apply damage immunity. Shooter=%s"), *GetNameSafe(Shooter));
-		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
 	}
 
@@ -209,8 +224,7 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 		Shooter);
 	if (!QuantumLeapStateHandle.IsValid())
 	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Activate] Failed to apply QuantumLeap state. Shooter=%s CastTime=%.3f"), *GetNameSafe(Shooter), ShooterASC->GetShooterSuitConfig().QuantumLeap.CastTimeSeconds);
-		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
 	}
 
@@ -225,6 +239,7 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 		&UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap,
 		ShooterASC->GetShooterSuitConfig().QuantumLeap.CastTimeSeconds,
 		false);
+	if (ShooterASC->GetShooterSuitConfig().QuantumLeap.CastTimeSeconds <= 0) CompleteQuantumLeap();
 }
 
 bool UOutlierShooterQuantumLeapAbility::CancelQuantumLeap(bool bInCommitFailureCooldown)
@@ -246,6 +261,27 @@ void UOutlierShooterQuantumLeapAbility::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
+	// 목적지 Overlap 통보가 취소를 요청해도 실제 이동 성공/실패를 확정한 뒤 한 번만 정리한다.
+	if (Phase == ELeapPhase::Applying)
+	{
+		bEndRequestedDuringTeleport = true;
+		bDeferredReplicateEnd = bReplicateEndAbility;
+		bDeferredWasCancelled = bWasCancelled;
+		return;
+	}
+	// 이동 중 발생한 사망/Pawn 정리/세대 변경에는 새 충전 소모나 재시도 효과를 남기지 않는다.
+	if (!HasCurrentParticipants())
+	{
+		bTeleportSucceeded = false;
+		bCommitFailureCooldown = false;
+	}
+	++ExecutionSerial;
+	Phase = ELeapPhase::Idle;
+	if (DestinationQuery)
+	{
+		DestinationQuery->Cancel();
+		DestinationQuery = nullptr;
+	}
 	AShooterCharacter* Shooter = GetShooterCharacter();
 	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
 	if (Shooter)
@@ -273,163 +309,121 @@ void UOutlierShooterQuantumLeapAbility::EndAbility(
 		ensureMsgf(bDelayCommitted, TEXT("Quantum Leap must commit a success cooldown or failure retry delay after a resolved attempt."));
 	}
 
-	Destination = FVector::ZeroVector;
+	LeapShooter.Reset();
+	LeapPartner.Reset();
+	LeapArena.Reset();
 	bCommitFailureCooldown = false;
 	bTeleportSucceeded = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 
-bool UOutlierShooterQuantumLeapAbility::TryResolveDestination(
-	const AShooterCharacter& Shooter,
-	const APartnerCharacter& Partner,
-	FVector& OutDestination) const
+bool UOutlierShooterQuantumLeapAbility::HasCurrentParticipants() const
 {
-	const UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
-	const UCapsuleComponent* Capsule = Shooter.GetCapsuleComponent();
-	UWorld* World = Shooter.GetWorld();
-	if (!ShooterASC || !Capsule || !World)
-	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Resolve] Missing ASC, capsule or world. Shooter=%s ASC=%s Capsule=%s World=%s"), *GetNameSafe(&Shooter), *GetNameSafe(ShooterASC), *GetNameSafe(Capsule), *GetNameSafe(World));
-		return false;
-	}
-
-	const float Offset = ShooterASC->GetShooterSuitConfig().QuantumLeap.PartnerOffset;
-	const FRotator PartnerYaw(0.0f, Partner.GetActorRotation().Yaw, 0.0f);
-	const FVector Forward = PartnerYaw.Vector();
-	const FVector Right = FRotationMatrix(PartnerYaw).GetUnitAxis(EAxis::Y);
-	const FVector Directions[] = {-Forward, -Right, Right, Forward};
-	const float CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
-
-	FCollisionQueryParams GroundParams(SCENE_QUERY_STAT(QuantumLeapGround), false, &Shooter);
-	GroundParams.AddIgnoredActor(&Partner);
-	for (const FVector& Direction : Directions)
-	{
-		FVector Candidate = Partner.GetActorLocation() + Direction * Offset;
-		const FVector TraceStart = Candidate;
-		const FVector TraceEnd = TraceStart - FVector(0.0f, 0.0f, 100.0f);
-		FHitResult GroundHit;
-		const bool bGroundHit = World->LineTraceSingleByChannel(
-			GroundHit,
-			TraceStart,
-			TraceEnd,
-			ECC_Visibility,
-			GroundParams);
-		if (bGroundHit)
-		{
-			Candidate.Z = GroundHit.ImpactPoint.Z + CapsuleHalfHeight + 1.0f;
-		}
-		else
-		{
-			UE_LOG(LogQuantumLeap, Log, TEXT("[Resolve] No ground within 100cm below candidate; checking unadjusted position. Shooter=%s Candidate=%s Direction=%s"),
-				*GetNameSafe(&Shooter), *Candidate.ToString(), *Direction.ToString());
-		}
-
-		const bool bClear = IsDestinationClear(Shooter, Partner, Candidate);
-		if (bClear)
-		{
-			OutDestination = Candidate;
-			UE_LOG(LogQuantumLeap, Log, TEXT("[Resolve] Selected destination. Shooter=%s Destination=%s Direction=%s Offset=%.1f"), *GetNameSafe(&Shooter), *Candidate.ToString(), *Direction.ToString(), Offset);
-			return true;
-		}
-	}
-	UE_LOG(LogQuantumLeap, Warning, TEXT("[Resolve] All four candidates blocked. Shooter=%s PartnerLocation=%s Offset=%.1f"), *GetNameSafe(&Shooter), *Partner.GetActorLocation().ToString(), Offset);
-	return false;
+	const AShooterCharacter* Shooter = LeapShooter.Get();
+	const APartnerCharacter* Partner = LeapPartner.Get();
+	return IsActive() && IsValid(Shooter) && IsValid(Partner)
+		&& !Shooter->IsActorBeingDestroyed() && !Partner->IsActorBeingDestroyed()
+		&& !Shooter->IsDead() && Shooter == GetShooterCharacter()
+		&& Shooter->GetPartnerCharacter() == Partner
+		&& GetOutlierAbilitySystem() && GetOutlierAbilitySystem()->GetAvatarActor() == Shooter
+		&& Partner->GetAbilitySystemComponent() && Partner->GetAbilitySystemComponent()->GetAvatarActor() == Partner
+		&& (!LeapArena.IsValid() || LeapArena->GetGameplayGeneration() == GameplayGeneration);
 }
 
-bool UOutlierShooterQuantumLeapAbility::IsDestinationClear(
-	const AShooterCharacter& Shooter,
-	const APartnerCharacter& Partner,
-	const FVector& InDestination) const
+bool UOutlierShooterQuantumLeapAbility::CheckLeapEligibility()
 {
-	const UCapsuleComponent* Capsule = Shooter.GetCapsuleComponent();
-	UWorld* World = Shooter.GetWorld();
-	if (!Capsule || !World)
+	if (!HasCurrentParticipants())
 	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Destination] Missing capsule or world. Shooter=%s"), *GetNameSafe(&Shooter));
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return false;
 	}
-
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(QuantumLeapDestination), false, &Shooter);
-	Params.AddIgnoredActor(&Partner);
-	const FCollisionShape CapsuleShape = FCollisionShape::MakeCapsule(
-		Capsule->GetScaledCapsuleRadius(),
-		Capsule->GetScaledCapsuleHalfHeight());
-	const bool bBlocked = World->OverlapBlockingTestByProfile(
-		InDestination,
-		Shooter.GetActorQuat(),
-		Capsule->GetCollisionProfileName(),
-		CapsuleShape,
-		Params);
-	if (bBlocked && UE_LOG_ACTIVE(LogQuantumLeap, Warning))
+	const AShooterCharacter* Shooter = LeapShooter.Get();
+	const APartnerCharacter* Partner = LeapPartner.Get();
+	if (!Shooter->IsSuitUsable()
+		|| Partner->GetAbilitySystemComponent()->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting())
+		|| FVector::Dist(Shooter->GetActorLocation(), Partner->GetActorLocation()) > GetOutlierAbilitySystem()->GetShooterSuitConfig().MaxPartnerDistance)
 	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Destination] Capsule blocked. Shooter=%s Destination=%s Profile=%s Radius=%.1f HalfHeight=%.1f"),
-			*GetNameSafe(&Shooter), *InDestination.ToString(), *Capsule->GetCollisionProfileName().ToString(), Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight());
-		// Preserve the original blocking test; this extra query only identifies blockers for diagnostics.
-		TArray<FOverlapResult> Overlaps;
-		World->OverlapMultiByProfile(Overlaps, InDestination, Shooter.GetActorQuat(), Capsule->GetCollisionProfileName(), CapsuleShape, Params);
-		for (const FOverlapResult& Overlap : Overlaps)
-		{
-			if (Overlap.bBlockingHit)
-			{
-				UE_LOG(LogQuantumLeap, Warning, TEXT("[Destination] Blocker Actor=%s Component=%s Profile=%s"),
-					*GetNameSafe(Overlap.GetActor()), *GetNameSafe(Overlap.GetComponent()),
-					Overlap.GetComponent() ? *Overlap.GetComponent()->GetCollisionProfileName().ToString() : TEXT("<none>"));
-			}
-		}
+		bCommitFailureCooldown = true;
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+		return false;
 	}
-	return !bBlocked;
+	return true;
+}
+
+void UOutlierShooterQuantumLeapAbility::StartDestinationQuery(bool bExpandedOnly)
+{
+	const uint32 Execution = ExecutionSerial;
+	const TWeakObjectPtr<UOutlierShooterQuantumLeapAbility> WeakThis(this);
+	FPlayerRelocationRequest Request;
+	Request.MovingCharacter = LeapShooter;
+	Request.Anchor = LeapPartner.Get();
+	Request.Reference = Reference;
+	Request.bExpandedOnly = bExpandedOnly;
+	Request.bWantsCrouch = LeapShooter->FindComponentByClass<UShooterMovementComponent>()->WantsToCrouch();
+	Request.IsContextCurrent = [WeakThis, Execution]
+	{
+		return WeakThis.IsValid() && WeakThis->ExecutionSerial == Execution && WeakThis->HasCurrentParticipants();
+	};
+	DestinationQuery = NewObject<UPlayerRelocationQuery>(this);
+	DestinationQuery->Start(Request, [WeakThis, Execution](const FPlayerRelocationResult& Result)
+	{
+		if (WeakThis.IsValid()) WeakThis->HandleDestinationResult(Execution, Result);
+	});
+}
+
+void UOutlierShooterQuantumLeapAbility::HandleDestinationResult(uint32 Execution, const FPlayerRelocationResult& Result)
+{
+	// 취소/새 실행 전에 제출된 콜백은 상태와 충전을 변경하지 않는다.
+	if (Execution != ExecutionSerial || !IsActive() || !CheckLeapEligibility()) return;
+	if (Result.Status != EPlayerRelocationStatus::Success)
+	{
+		bCommitFailureCooldown = true;
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+		return;
+	}
+	if (Phase == ELeapPhase::FindingInitial) BeginCast();
+	else if (Phase == ELeapPhase::FindingFinal) ApplyDestination();
 }
 
 void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 {
-	AShooterCharacter* Shooter = GetShooterCharacter();
-	APartnerCharacter* Partner = Shooter ? Shooter->GetPartnerCharacter() : nullptr;
-	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
-	if (!Shooter || !ShooterASC || Shooter->IsDead() || !IsValid(Partner))
+	if (Phase != ELeapPhase::Casting || !CheckLeapEligibility()) return;
+	// 3. 저장한 착지점을 최신 입력 자세로 재검증한다. 무효일 때만 확장 범위를 한 번 더 탐색한다.
+	if (DestinationQuery && DestinationQuery->RevalidateForCrouchIntent(LeapShooter->FindComponentByClass<UShooterMovementComponent>()->WantsToCrouch()))
 	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Complete] Missing actor/ASC or Shooter dead. Shooter=%s ASC=%s Dead=%d Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(ShooterASC), Shooter ? Shooter->IsDead() : false, *GetNameSafe(Partner));
-		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+		ApplyDestination();
 		return;
 	}
-
-	const UAbilitySystemComponent* PartnerASC = Partner->GetAbilitySystemComponent();
-	if (!PartnerASC)
-	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Complete] Partner ASC missing. Partner=%s"), *GetNameSafe(Partner));
-		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
-		return;
-	}
-	const bool bSuitUnusable = !Shooter->IsSuitUsable();
-	const bool bPartnerRebooting = PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
-	const float Distance = FVector::Dist(Shooter->GetActorLocation(), Partner->GetActorLocation());
-	const bool bOutOfRange = Distance > ShooterASC->GetShooterSuitConfig().MaxPartnerDistance;
-	const bool bDestinationBlocked = !IsDestinationClear(*Shooter, *Partner, Destination);
-	if (bSuitUnusable || bPartnerRebooting || bOutOfRange || bDestinationBlocked)
-	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Complete] Revalidation failed. Shooter=%s SuitUnusable=%d PartnerRebooting=%d OutOfRange=%d DestinationBlocked=%d Distance=%.1f MaxDistance=%.1f Destination=%s"),
-			*GetNameSafe(Shooter), bSuitUnusable, bPartnerRebooting, bOutOfRange, bDestinationBlocked, Distance,
-			ShooterASC->GetShooterSuitConfig().MaxPartnerDistance, *Destination.ToString());
-		bCommitFailureCooldown = true;
-		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
-		return;
-	}
-
-	const FRotator PreservedRotation = Shooter->GetActorRotation();
-	bTeleportSucceeded = Shooter->TeleportTo(Destination, PreservedRotation, false, true);
-	if (!bTeleportSucceeded)
-	{
-		UE_LOG(LogQuantumLeap, Warning, TEXT("[Complete] TeleportTo returned false. Shooter=%s From=%s Destination=%s"), *GetNameSafe(Shooter), *Shooter->GetActorLocation().ToString(), *Destination.ToString());
-		bCommitFailureCooldown = true;
-	}
-	else
-	{
-		// EndAbility가 시전 무적을 지우기 전에 성공 후 무적으로 이어 준다.
-		ShooterASC->RefreshShooterQuantumLeapImmunity();
-		Shooter->ForceNetUpdate();
-	}
-	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bTeleportSucceeded);
+	Phase = ELeapPhase::FindingFinal;
+	StartDestinationQuery(true);
 }
 
+void UOutlierShooterQuantumLeapAbility::ApplyDestination()
+{
+	if (!CheckLeapEligibility()) return;
+	AShooterCharacter* Shooter = LeapShooter.Get();
+	auto* Movement = Cast<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
+	if (!Movement || !DestinationQuery || !DestinationQuery->RevalidateForCrouchIntent(Shooter->FindComponentByClass<UShooterMovementComponent>()->WantsToCrouch()))
+	{
+		bCommitFailureCooldown = true;
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+		return;
+	}
+	const FPlayerRelocationResult Landing = DestinationQuery->GetResult();
+	// 4. 자세와 위치를 함께 적용한 실제 성공만 충전을 소모한다. 최종 탐색 실패는 다시 탐색하지 않는다.
+	Phase = ELeapPhase::Applying;
+	bTeleportSucceeded = Movement->TeleportToRelocation(Landing.Location, Landing.Posture == EPlayerRelocationPosture::Crouched);
+	Phase = ELeapPhase::Finishing;
+	bCommitFailureCooldown = !bTeleportSucceeded && HasCurrentParticipants();
+	if (bTeleportSucceeded && !bEndRequestedDuringTeleport && HasCurrentParticipants())
+	{
+		GetOutlierAbilitySystem()->RefreshShooterQuantumLeapImmunity();
+		Shooter->ForceNetUpdate();
+	}
+	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo,
+		bEndRequestedDuringTeleport ? bDeferredReplicateEnd : true,
+		bEndRequestedDuringTeleport ? bDeferredWasCancelled : !bTeleportSucceeded);
+}
 UOutlierShooterBulletReflectionAbility::UOutlierShooterBulletReflectionAbility()
 {
 	FGameplayTagContainer Tags;
@@ -852,8 +846,7 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		TEXT("Shooter stealth removal observers must bind to both AbilitySystemComponents."));
 
 	bAutomaticStealth = bRequestAutomaticStealth;
-	bPassiveStealth = bAutomaticStealth
-		&& ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	bPassiveStealth = bAutomaticStealth && bRequestPassiveStealth;
 	if (bAutomaticStealth)
 	{
 		// 처치형 은신은 실행 중인 다른 슈트와 병행하며 이후 입력도 막지 않는다.
@@ -929,7 +922,7 @@ bool UOutlierShooterStealthAbility::ApplyStealthEffects(float Duration)
 	return true;
 }
 
-bool UOutlierShooterStealthAbility::TriggerAutomaticStealth()
+bool UOutlierShooterStealthAbility::TriggerAutomaticStealth(bool bPassive)
 {
 	UOutlierAbilitySystemComponent* AbilitySystem = GetOutlierAbilitySystem();
 	if (!AbilitySystem || !CurrentActorInfo || !CurrentActorInfo->IsNetAuthority())
@@ -937,22 +930,27 @@ bool UOutlierShooterStealthAbility::TriggerAutomaticStealth()
 		return false;
 	}
 	bRequestAutomaticStealth = true;
+	bRequestPassiveStealth = bPassive;
 	if (!CanActivateAbility(CurrentSpecHandle, CurrentActorInfo))
 	{
 		bRequestAutomaticStealth = false;
+		bRequestPassiveStealth = false;
 		return false;
 	}
 	if (!IsActive())
 	{
 		const bool bActivated = AbilitySystem->TryActivateAbility(CurrentSpecHandle);
 		bRequestAutomaticStealth = false;
+		bRequestPassiveStealth = false;
 		return bActivated;
 	}
 	bRequestAutomaticStealth = false;
+	bRequestPassiveStealth = false;
 	const bool bWasAutomatic = bAutomaticStealth;
 	const bool bWasPassive = bPassiveStealth;
 	bAutomaticStealth = true;
-	bPassiveStealth = AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	// 암살 보상으로 갱신해도 이미 발동한 패시브 은신의 유지 속성은 약화하지 않는다.
+	bPassiveStealth = bWasPassive || bPassive;
 	if (!ApplyStealthEffects(1.5f))
 	{
 		bAutomaticStealth = bWasAutomatic;

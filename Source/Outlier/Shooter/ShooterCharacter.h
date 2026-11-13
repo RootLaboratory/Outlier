@@ -40,6 +40,9 @@ class UCurveFloat;
 class UMaterialInterface;
 class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
+class UPlayerRelocationQuery;
+class UOutlierArenaSubsystem;
+struct FPlayerRelocationResult;
 class UAbilitySystemComponent;
 struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
@@ -268,6 +271,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FOutlierShooterPresentationAnimationTest;
 	friend class FOutlierProceduralEquipReferenceOrderTest;
 	friend class FOutlierSuitTransitionTest;
+	friend class FOutlierSuitTeleportPlacementTest;
 	friend class FOutlierSlideSuitRecoveryTest;
 	friend class FOutlierTransitionRecoveryTest;
 	friend class FOutlierMeleeAttackLifecycleTest;
@@ -278,6 +282,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 public:
 	// 조회 시 현재 TP 메시로 재검증한다. 반환 캐시의 인덱스는 다음 재검증 전까지만 유효하다.
 	const FOutlierSightBoneCache& ResolveSightBoneRegistration() const;
+	bool GetObservedAimPoints(const AActor* Observer, FOutlierSightObservation& Out) const;
 
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Sight")
@@ -1051,7 +1056,9 @@ protected:
 	bool ValidateSuitTransitionPair() const;
 	bool ValidateSuitTransitionPartnerState(bool bForReservation) const;
 	bool CanCommitSuitTransition() const;
-	bool TeleportSuitTransitionPartner();
+	void StartSuitTransitionPartnerQuery();
+	bool IsSuitTransitionRelocationCurrent(const FGuid& TransitionId) const;
+	void CompleteSuitTransitionPartnerQuery(const FGuid& TransitionId, const FPlayerRelocationResult& Result);
 	float GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase) const;
 	bool IsSuitTransitionPhaseReady() const;
 	void EnterSuitTransitionPhase(ESuitTransitionPhase Phase);
@@ -1065,6 +1072,10 @@ protected:
 	ESuitTransitionPhase SuitTransitionPhase = ESuitTransitionPhase::Idle;
 	TWeakObjectPtr<ASuitInteraction> SuitTransitionInteraction;
 	TWeakObjectPtr<APartnerCharacter> SuitTransitionPartner;
+	UPROPERTY(Transient)
+	TObjectPtr<UPlayerRelocationQuery> SuitTransitionPartnerQuery;
+	TWeakObjectPtr<UOutlierArenaSubsystem> SuitTransitionArena;
+	uint32 SuitTransitionGameplayGeneration = 0;
 	FVector SuitTransitionPartnerDestination = FVector::ZeroVector;
 	TWeakObjectPtr<APlayerController> SuitTransitionShooterController;
 	TWeakObjectPtr<APlayerController> SuitTransitionPartnerController;
@@ -1093,6 +1104,12 @@ protected:
 	// Server RPC
 	UFUNCTION(Server, Reliable)
 	void ServerStartAttack();
+
+	UFUNCTION(Server, Reliable)
+	void ServerBeginSprintExitFire(AWeaponBase* Weapon, uint32 Request, uint32 Epoch);
+
+	UFUNCTION(Server, Reliable)
+	void ServerResolveSprintExitFire(uint32 Request, uint32 Epoch, bool bFire);
 
 	UFUNCTION(Server, Reliable)
 	void ServerStopAttack();

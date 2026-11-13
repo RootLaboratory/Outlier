@@ -1,4 +1,5 @@
 #include "Explosion/ExplosiveProp.h"
+#include "Level/Elevator/ElevatorShaftController.h"
 
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
@@ -198,6 +199,46 @@ bool AExplosiveProp::IsMountedOnSelfDestructDrone() const
 	return CachedOwningDrone.IsValid()
 		|| Cast<ASelfDestructDrone>(GetOwner()) != nullptr
 		|| Cast<ASelfDestructDrone>(GetAttachParentActor()) != nullptr;
+}
+
+bool AExplosiveProp::RegisterElevatorTransport(AElevatorShaftController* Controller)
+{
+	if (!HasAuthority() || !IsValid(Controller) || Controller->GetWorld() != GetWorld()
+		|| (TransportController.IsValid() && TransportController.Get() != Controller))
+	{
+		return false;
+	}
+	TransportController = Controller;
+	PrepareTransportMobility();
+	FlushNetDormancy();
+	SetReplicateMovement(true);
+	ForceNetUpdate();
+	return true;
+}
+
+void AExplosiveProp::UnregisterElevatorTransport(const AElevatorShaftController* Controller)
+{
+	if (TransportController.Get() == Controller) TransportController.Reset();
+}
+
+void AExplosiveProp::PrepareTransportMobility()
+{
+	TInlineComponentArray<USceneComponent*> Components;
+	GetComponents(Components, false);
+	for (USceneComponent* Component : Components)
+	{
+		if (Component->Mobility != EComponentMobility::Movable)
+		{
+			Component->SetMobility(EComponentMobility::Movable);
+		}
+	}
+}
+
+void AExplosiveProp::OnRep_ReplicatedMovement()
+{
+	// 레벨 BP에 Static이 저장돼 있어도 서버 위치를 적용하기 전에 클라이언트도 이동 가능하게 한다.
+	if (IsReplicatingMovement()) PrepareTransportMobility();
+	Super::OnRep_ReplicatedMovement();
 }
 
 float AExplosiveProp::GetCurrentHP() const
@@ -490,8 +531,12 @@ void AExplosiveProp::HandleHealthChanged(const FOnAttributeChangeData& ChangeDat
 
 	if (ExplosionComponent)
 	{
+		// 배치 피봇은 통 바닥에 둘 수 있다. 피해와 연출은 피봇 대신 현재 메시 중앙에서 시작한다.
+		const FVector ExplosionLocation = ExplosiveMesh && ExplosiveMesh->GetStaticMesh()
+			? ExplosiveMesh->CalcBounds(ExplosiveMesh->GetComponentTransform()).Origin
+			: GetActorLocation();
 		const bool bDetonationRequested = ExplosionComponent->DetonateAt(
-			GetActorLocation(),
+			ExplosionLocation,
 			PendingDamageInstigator.IsValid() ? PendingDamageInstigator.Get() : GetInstigatorController(),
 			PendingAdaptationDamageCategory);
 		if (!bDetonationRequested)

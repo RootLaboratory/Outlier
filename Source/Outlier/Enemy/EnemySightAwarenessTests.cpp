@@ -155,6 +155,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySightAwarenessExposureTest,
 
 bool FEnemySightAwarenessExposureTest::RunTest(const FString& Parameters)
 {
+	TestTrue(TEXT("A registered visible head admits one of seven samples"), OutlierEnemySight::MeetsExposureThreshold(7, 1, true));
+	TestFalse(TEXT("A head flag without a visible sample cannot admit exposure"), OutlierEnemySight::MeetsExposureThreshold(7, 0, true));
+	TestFalse(TEXT("The head exception cannot repair invalid counts"), OutlierEnemySight::MeetsExposureThreshold(0, 1, true));
 	for (int32 RegisteredCount = 1; RegisteredCount <= 10; ++RegisteredCount)
 	{
 		for (int32 VisibleCount = 0; VisibleCount <= RegisteredCount; ++VisibleCount)
@@ -271,6 +274,71 @@ bool FEnemyAwarenessHearingTimelineTest::RunTest(const FString& Parameters)
 		const double InvalidHold = Invalid == 2.0 ? -2.0 : Invalid;
 		TestEqual(TEXT("Invalid hold falls back to half a second"), OutlierEnemySight::ResolveHearingAwarenessHoldDuration(InvalidHold), 0.5);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyDistanceAwarenessTest,
+	"Outlier.Enemy.SightAwareness.DistanceCurveAndIntervals",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyDistanceAwarenessTest::RunTest(const FString& Parameters)
+{
+	const auto FillAt = [](double Distance)
+	{
+		return OutlierEnemySight::ResolveSightFillDuration(Distance, 0.25, 1.0, 300.0, 1500.0);
+	};
+	TestEqual(TEXT("Near boundary is a quarter second"), FillAt(300.0), 0.25);
+	TestEqual(TEXT("Below near boundary is clamped"), FillAt(0.0), 0.25);
+	TestEqual(TEXT("Midpoint interpolates the duration"), FillAt(900.0), 0.625);
+	TestEqual(TEXT("Far boundary is one second"), FillAt(1500.0), 1.0);
+	TestEqual(TEXT("Beyond far boundary is clamped"), FillAt(5000.0), 1.0);
+	for (const int32 Rate : {15, 30, 60})
+	{
+		for (const double Distance : {300.0, 900.0, 1500.0})
+		{
+			FEnemySightAwareness State;
+			const double Duration = FillAt(Distance);
+			State.Observe(0.0, true, 1.0, 2.0, -1.0, 0.25, Duration);
+			const int32 CompletionFrame = FMath::CeilToInt(Duration * Rate);
+			for (int32 Frame = 1; Frame <= CompletionFrame; ++Frame)
+			{
+				const double Now = static_cast<double>(Frame) / Rate;
+				const bool bCompleted = State.Observe(Now, true, 1.0, 2.0, -1.0, 0.25, Duration);
+				TestEqual(TEXT("Completes on the first evaluation at or after the duration"), bCompleted, Frame == CompletionFrame);
+				const double Progress = State.GetAwareness();
+				State.Observe(Now, true, 1.0, 2.0, -1.0, 0.25, Duration);
+				TestEqual(TEXT("Same-time evaluation cannot consume time twice"), State.GetAwareness(), Progress);
+			}
+		}
+	}
+
+	FEnemySightAwareness State;
+	State.Observe(0.0, true, 1.0, 2.0, -1.0, 0.25, 1.0);
+	State.Observe(0.2, true, 1.0, 2.0, -1.0, 0.25, 0.25);
+	TestTrue(TEXT("New near distance does not accelerate the previous far interval"), FMath::IsNearlyEqual(State.GetAwareness(), 0.2));
+	State.Observe(0.3, false, 1.0, 2.0, 0.8, 0.25, 0.25);
+	TestTrue(TEXT("Next interval uses the adopted near rate"), FMath::IsNearlyEqual(State.GetAwareness(), 0.6));
+	State.Observe(0.8, false, 1.0, 2.0, 0.8, 0.25, 0.25);
+	TestTrue(TEXT("Hearing retains the far baseline despite the last near observation"), FMath::IsNearlyEqual(State.GetAwareness(), 0.725));
+	State.Observe(1.0, true, 1.0, 2.0, -1.0, 0.25, 1.0);
+	TestTrue(TEXT("Hidden time decays before distant rediscovery"), FMath::IsNearlyEqual(State.GetAwareness(), 0.625));
+	TestTrue(TEXT("A large visible interval completes at the previous observed rate"), State.Observe(3.0, true, 1.0, 2.0, -1.0, 0.25, 0.25));
+	State.Reset(4.0, true);
+	State.Observe(4.0, true, 1.0, 2.0, -1.0, 0.25, 0.25);
+	State.Observe(4.1, true, 1.0, 2.0, -1.0, 0.25, 1.0);
+	TestTrue(TEXT("Moving away does not slow the previous near interval"), FMath::IsNearlyEqual(State.GetAwareness(), 0.4));
+	State.Observe(4.2, true, 1.0, 2.0, -1.0, 0.25, 1.0);
+	TestTrue(TEXT("Moving away slows only the next interval without resetting progress"), FMath::IsNearlyEqual(State.GetAwareness(), 0.5));
+
+	AddExpectedError(TEXT("Invalid awareness sight distance settings"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestEqual(TEXT("Reversed distance settings use the default curve"),
+		OutlierEnemySight::ResolveSightFillDuration(900.0, 0.25, 1.0, 1500.0, 300.0), 0.625);
+	AddExpectedError(TEXT("Invalid awareness sight distance;"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestEqual(TEXT("Invalid observation distance cannot grant near acceleration"), FillAt(std::numeric_limits<double>::quiet_NaN()), 1.0);
+	State.Reset(10.0, true);
+	State.Observe(10.0, true, 1.0, 2.0, -1.0, 0.25, 1.0);
+	State.Observe(10.1, true, 1.0, 2.0, -1.0, 0.25, 1.0);
+	TestTrue(TEXT("Reset does not inherit the previous near rate"), FMath::IsNearlyEqual(State.GetAwareness(), 0.1));
 	return true;
 }
 

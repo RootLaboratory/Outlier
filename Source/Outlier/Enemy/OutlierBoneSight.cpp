@@ -1,6 +1,8 @@
 #include "Enemy/OutlierBoneSight.h"
 
 #include "Enemy/OutlierSightBoneCache.h"
+#include "Enemy/EnemySightAwareness.h"
+#include "Enemy/EnemyBase.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
@@ -24,6 +26,10 @@ void FOutlierBoneSight::MarkPoseReady()
 
 void FOutlierBoneSight::Shutdown()
 {
+	Observations.Reset();
+	++ObservationEpoch;
+	ObservationRegistrationRevision = 0;
+	ObservationAsset.Reset();
 	if (USkeletalMeshComponent* Mesh = ActiveMesh.Get())
 	{
 		Mesh->UnregisterOnBoneTransformsFinalizedDelegate(PoseFinalizedHandle);
@@ -45,7 +51,8 @@ void FOutlierBoneSight::Shutdown()
 UAISense_Sight::EVisibilityResult FOutlierBoneSight::Query(AActor& Target,
 	USkeletalMeshComponent* Mesh, const FOutlierSightBoneCache& Registration,
 	const FCanBeSeenFromContext& Context, FVector& SeenLocation, int32& SyncChecks,
-	int32& AsyncChecks, float& Strength, TFunction<void()> RefreshPosePolicy)
+	int32& AsyncChecks, float& Strength, TFunction<void()> RefreshPosePolicy,
+	const FOutlierSightBoneRoles* Roles)
 {
 	SCOPE_CYCLE_COUNTER(STAT_OutlierBoneSightQuery);
 	AsyncChecks = 0;
@@ -80,6 +87,39 @@ UAISense_Sight::EVisibilityResult FOutlierBoneSight::Query(AActor& Target,
 	World->GetTimerManager().SetTimer(LeaseTimer,
 		FTimerDelegate::CreateWeakLambda(&Target, [this] { Shutdown(); }), 1.0f, false);
 
+	// 성공/실패와 관계없이 이번 관측으로 교체한다. 가려진 뒤 옛 노출 점이 남지 않는다.
+	if (ObservationRegistrationRevision != Registration.GetRevision()
+		|| ObservationAsset.Get() != Mesh->GetSkeletalMeshAsset())
+	{
+		Observations.Reset();
+		++ObservationEpoch;
+		ObservationRegistrationRevision = Registration.GetRevision();
+		ObservationAsset = Mesh->GetSkeletalMeshAsset();
+	}
+	for (auto It = Observations.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid() || World->GetTimeSeconds() - It.Value().Observation.ObservedAt > 0.25)
+			It.RemoveCurrent();
+	}
+	FObserverSnapshot* Snapshot = nullptr;
+	if (Roles && IsValid(Context.IgnoreActor))
+	{
+		const TWeakObjectPtr<const AActor> Key(Context.IgnoreActor);
+		Snapshot = Observations.Find(Key);
+		// 대상당 저장량도 제한한다. 상한에서는 새 관측자의 사격을 보류한다.
+		if (!Snapshot && Observations.Num() < 64) Snapshot = &Observations.Add(Key);
+		if (Snapshot)
+		{
+			*Snapshot = FObserverSnapshot();
+			Snapshot->RegistrationRevision = Registration.GetRevision();
+			if (const AEnemyBase* EnemyObserver = Cast<AEnemyBase>(Context.IgnoreActor))
+				Snapshot->ObserverSerial = EnemyObserver->GetCombatAimObservationSerial();
+			Snapshot->MeshAsset = Mesh->GetSkeletalMeshAsset();
+			Snapshot->Observation.ObservedAt = World->GetTimeSeconds();
+			Snapshot->Observation.Epoch = ObservationEpoch;
+		}
+	}
+
 	// 최초 조회와 메시 교체 직후에는 새 포즈 완료를 기다린다. 오래된 본/기준 자세로 성공하지 않는다.
 	const double Age = World->GetTimeSeconds() - PoseTime;
 	if (PoseAsset.Get() != Mesh->GetSkeletalMeshAsset() || PoseTime < 0.0 || Age < 0.0 || Age > 0.25)
@@ -87,6 +127,20 @@ UAISense_Sight::EVisibilityResult FOutlierBoneSight::Query(AActor& Target,
 		return UAISense_Sight::EVisibilityResult::NotVisible;
 	}
 	const TConstArrayView<int32> Bones = Registration.GetBoneIndices();
+	int32 HeadPosition = INDEX_NONE;
+	TArray<int32, TInlineAllocator<8>> BodyPositions;
+	if (Roles)
+	{
+		// 역할표와 실제 등록 목록의 교집합만 사용한다. 본 목록 override에도 누락 역할을 임의로 생성하지 않는다.
+		for (int32 Index = 0; Index < Bones.Num(); ++Index)
+		{
+			const FName Name = Mesh->GetBoneName(Bones[Index]);
+			if (!Roles->Head.IsNone() && Name == Roles->Head) HeadPosition = Index;
+			if (Roles->Body.Contains(Name)) BodyPositions.Add(Index);
+		}
+		if (BodyPositions.Contains(HeadPosition))
+			return UAISense_Sight::EVisibilityResult::NotVisible;
+	}
 	TArray<FVector, TInlineAllocator<16>> Locations;
 	for (const int32 Bone : Bones)
 	{
@@ -108,24 +162,77 @@ UAISense_Sight::EVisibilityResult FOutlierBoneSight::Query(AActor& Target,
 	if (Context.ObserverLocation.ContainsNaN() || Bones.IsEmpty()) return UAISense_Sight::EVisibilityResult::NotVisible;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(OutlierBoneSight), true, Context.IgnoreActor);
 	int32 Visible = 0;
-	for (const FVector& Location : Locations)
+	bool bHeadVisible = false;
+	for (int32 Index = 0; Index < Locations.Num(); ++Index)
 	{
+		const FVector& Location = Locations[Index];
 		FHitResult Hit;
 		++SyncChecks;
 		INC_DWORD_STAT(STAT_OutlierBoneSightTraces);
 		const bool bBlocked = World->LineTraceSingleByChannel(Hit, Context.ObserverLocation, Location, ECC_Visibility, Params);
 		if (!bBlocked || Hit.GetActor() == &Target)
 		{
-			if (Visible == 0) SeenLocation = Location;
+			if (Visible == 0)
+			{
+				SeenLocation = Location;
+				if (Snapshot) Snapshot->Observation.SeenBoneIndex = Bones[Index];
+			}
 			++Visible;
+			bHeadVisible |= Index == HeadPosition;
+			if (Snapshot)
+			{
+				if (Index == HeadPosition)
+				{
+					Snapshot->Observation.HeadPoints.Add(Location);
+					Snapshot->Observation.HeadBoneIndices.Add(Bones[Index]);
+				}
+				else if (BodyPositions.Contains(Index))
+				{
+					Snapshot->Observation.BodyPoints.Add(Location);
+					Snapshot->Observation.BodyBoneIndices.Add(Bones[Index]);
+				}
+				else
+				{
+					Snapshot->Observation.OtherPoints.Add(Location);
+					Snapshot->Observation.OtherBoneIndices.Add(Bones[Index]);
+				}
+			}
 		}
 	}
+	const bool bVisible = OutlierEnemySight::MeetsExposureThreshold(Bones.Num(), Visible, bHeadVisible);
+	if (Snapshot)
+	{
+		Snapshot->Observation.PoseAt = PoseTime;
+		Snapshot->Observation.bSightVisible = bVisible;
+	}
 	// 전체 본을 검사해 Strength도 실제 표본 비율로 보고한다. 기준 이상에서의 발견 속도는 별도 계약이다.
-	if (Visible >= Bones.Num() / 2 + Bones.Num() % 2)
+	if (bVisible)
 	{
 		Strength = static_cast<float>(Visible) / Bones.Num();
 		return UAISense_Sight::EVisibilityResult::Visible;
 	}
 	SeenLocation = FVector::ZeroVector;
 	return UAISense_Sight::EVisibilityResult::NotVisible;
+}
+
+bool FOutlierBoneSight::GetObservation(const AActor* Observer, const USkeletalMeshComponent* Mesh,
+	const FOutlierSightBoneCache& Registration, FOutlierSightObservation& Out) const
+{
+	Out = FOutlierSightObservation();
+	if (!IsValid(Observer) || !Mesh || !Registration.IsValid() || !bPoseRefreshRequested
+		|| ActiveMesh.Get() != Mesh || PoseAsset.Get() != Mesh->GetSkeletalMeshAsset()) return false;
+	const FObserverSnapshot* Snapshot = Observations.Find(TWeakObjectPtr<const AActor>(Observer));
+	const AEnemyBase* EnemyObserver = Cast<AEnemyBase>(Observer);
+	if (!Snapshot || Snapshot->RegistrationRevision != Registration.GetRevision()
+		|| (EnemyObserver && Snapshot->ObserverSerial != EnemyObserver->GetCombatAimObservationSerial())
+		|| Snapshot->MeshAsset.Get() != Mesh->GetSkeletalMeshAsset()
+		|| Snapshot->Observation.Epoch != ObservationEpoch || !Mesh->GetWorld()) return false;
+	const double Now = Mesh->GetWorld()->GetTimeSeconds();
+	const FOutlierSightObservation& Observation = Snapshot->Observation;
+	// 새 포즈가 완료됐어도 옛 관측 좌표의 수명은 연장하지 않는다. 조회는 Trace/본 평가를 하지 않는다.
+	if (Observation.ObservedAt < 0.0 || Observation.PoseAt < 0.0
+		|| Now < Observation.ObservedAt || Now < Observation.PoseAt
+		|| Now - Observation.ObservedAt > 0.25 || Now - Observation.PoseAt > 0.25) return false;
+	Out = Observation;
+	return true;
 }

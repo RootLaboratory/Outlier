@@ -2,6 +2,7 @@
 
 #include "Components/MeshComponent.h"
 #include "Components/SkinnedMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -10,6 +11,91 @@
 #include "OutlierPlayerState.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Weapon/WeaponBase.h"
+
+namespace
+{
+AFirstPersonCharacter* ResolvePairOutlineTarget(const APlayerController* Viewer)
+{
+	if (!IsValid(Viewer) || !Viewer->IsLocalController()) return nullptr;
+	const AOutlierPlayerState* Pair = Viewer->GetPlayerState<AOutlierPlayerState>();
+	if (!Pair) return nullptr;
+	AFirstPersonCharacter* Other = Pair->IsShooterPlayer()
+		? static_cast<AFirstPersonCharacter*>(Pair->GetPartnerCharacter())
+		: Pair->IsPartnerPlayer() ? static_cast<AFirstPersonCharacter*>(Pair->GetShooterCharacter()) : nullptr;
+	return IsValid(Other) && Other != Viewer->GetPawn() && Other->GetWorld() == Viewer->GetWorld()
+		&& !Other->IsActorBeingDestroyed() ? Other : nullptr;
+}
+}
+
+void UOutlierStencilSubsystem::GatherCharacterOutlineMeshes(const AFirstPersonCharacter* Character,
+	bool bFirstPerson, TArray<UMeshComponent*>& OutMeshes)
+{
+	if (!IsValid(Character) || Character->IsActorBeingDestroyed() || Character->IsHidden()) return;
+	USceneComponent* Root = bFirstPerson ? Character->GetFirstPersonMesh() : Character->GetMesh();
+	if (!Root) return;
+
+	// 소켓에 붙은 무기는 별도 Actor 소유다. 실제 메시 계층을 따라가되 캐릭터와
+	// 소유 무기의 해당 시점 메시만 허용하여 그림자 복제/임의 Attached Actor를 섞지 않는다.
+	TArray<USceneComponent*> Components;
+	Root->GetChildrenComponents(true, Components);
+	Components.Add(Root);
+	if (bFirstPerson)
+	{
+		// Partner의 FP 무기는 본체 대신 카메라의 독립 루트에 부착된다.
+		if (const AWeaponBase* Weapon = Character->GetCurrentWeapon();
+			IsValid(Weapon) && Weapon->GetWeaponOwner() == Character)
+		{
+			if (USceneComponent* WeaponRoot = Weapon->GetFirstPersonWeaponMesh())
+			{
+				Components.AddUnique(WeaponRoot);
+				TArray<USceneComponent*> WeaponChildren;
+				WeaponRoot->GetChildrenComponents(true, WeaponChildren);
+				Components.Append(WeaponChildren);
+			}
+		}
+	}
+	for (USceneComponent* Component : Components)
+	{
+		UMeshComponent* Mesh = Cast<UMeshComponent>(Component);
+		if (!IsValid(Mesh) || (!Mesh->IsA<USkinnedMeshComponent>() && !Mesh->IsA<UStaticMeshComponent>())
+			|| !Mesh->IsRegistered() || !Mesh->IsVisible() || Mesh->bHiddenInGame || !Mesh->bRenderInMainPass
+			|| Mesh->ComponentHasTag(TEXT("Outlier.StencilExclude"))) continue;
+		const AActor* Owner = Mesh->GetOwner();
+		if (!IsValid(Owner) || Owner->IsHidden() || Owner->IsActorBeingDestroyed()) continue;
+		if (Owner != Character)
+		{
+			const AWeaponBase* Weapon = Cast<AWeaponBase>(Owner);
+			if (!Weapon || Weapon->GetWeaponOwner() != Character) continue;
+			const USceneComponent* WeaponRoot = bFirstPerson
+				? Weapon->GetFirstPersonWeaponMesh() : Weapon->GetThirdPersonWeaponMesh();
+			if (!WeaponRoot || (Mesh != WeaponRoot && !Mesh->IsAttachedTo(WeaponRoot))) continue;
+		}
+		if (!bFirstPerson && Mesh->bOnlyOwnerSee) continue;
+		if (bFirstPerson && Mesh->bOwnerNoSee) continue;
+		OutMeshes.AddUnique(Mesh);
+	}
+}
+
+void UOutlierStencilSubsystem::GatherOutlineMeshes(const APlayerController* Viewer,
+	TArray<UMeshComponent*>& OutTeammateMeshes, TArray<UMeshComponent*>& OutFirstPersonMeshes) const
+{
+	OutTeammateMeshes.Reset();
+	OutFirstPersonMeshes.Reset();
+	const UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_DedicatedServer || !IsValid(Viewer)
+		|| !Viewer->IsLocalController() || Viewer->GetWorld() != World) return;
+	GatherCharacterOutlineMeshes(ResolvePairOutlineTarget(Viewer), false, OutTeammateMeshes);
+	GatherCharacterOutlineMeshes(Cast<AFirstPersonCharacter>(Viewer->GetPawn()), true, OutFirstPersonMeshes);
+}
+
+void UOutlierStencilSubsystem::SetIndependentPairOutlineEnabled(bool bEnabled)
+{
+	if (bIndependentPairOutlineEnabled == bEnabled) return;
+	bIndependentPairOutlineEnabled = bEnabled;
+	Reconcile();
+	MarkTeammatesDirty();
+}
 
 bool UOutlierStencilSubsystem::IsEligibleMesh(const UMeshComponent* Mesh)
 {
@@ -101,12 +187,14 @@ void UOutlierStencilSubsystem::ClearActorEffects(AActor* Target)
 	Requests.RemoveAll([=](const auto& Item) { return Item.Target.Get() == Target; });
 	// 사망/풀 반납 경로다. 해킹된 터렛은 사망 후 풀 리셋 전까지 팀 플래그가 남으므로 여기서 함께 해제한다.
 	RegisteredTeammates.Remove(TWeakObjectPtr<AActor>(Target));
+	MarkTeammatesDirty();
 	Reconcile();
 }
 
 void UOutlierStencilSubsystem::ResetTransientEffects()
 {
 	Requests.Reset();
+	MarkTeammatesDirty();
 	Reconcile();
 }
 
@@ -151,6 +239,8 @@ void UOutlierStencilSubsystem::Reconcile()
 	}
 	for (const TSet<TWeakObjectPtr<AActor>>* Teammates : { &PairTeammates, &RegisteredTeammates })
 	{
+		// 독립 pair 마스크만 전환한다. 해킹된 팀원과 다른 스텐실 효과는 그대로 유지한다.
+		if (bIndependentPairOutlineEnabled && Teammates == &PairTeammates) continue;
 		for (const auto& Target : *Teammates)
 		{
 			if (!Target.IsValid()) continue;
@@ -204,12 +294,7 @@ bool UOutlierStencilSubsystem::RefreshPairTeammates()
 	{
 		APlayerController* Viewer = It->Get();
 		if (!IsValid(Viewer) || !Viewer->IsLocalController()) continue;
-		const AOutlierPlayerState* Pair = Viewer->GetPlayerState<AOutlierPlayerState>();
-		if (!Pair) continue;
-		AActor* Other = Pair->IsShooterPlayer() ? static_cast<AActor*>(Pair->GetPartnerCharacter())
-			: Pair->IsPartnerPlayer() ? static_cast<AActor*>(Pair->GetShooterCharacter()) : nullptr;
-		if (IsValid(Other) && Other != Viewer->GetPawn() && Other->GetWorld() == World
-			&& !Other->IsActorBeingDestroyed())
+		if (AFirstPersonCharacter* Other = ResolvePairOutlineTarget(Viewer))
 		{
 			Found.Add(Other);
 		}
@@ -259,6 +344,8 @@ void UOutlierStencilSubsystem::Tick(float DeltaTime)
 	{
 		FallbackElapsed = 0.f;
 		if (Requests.Num() || MeshStates.Num() || PairTeammates.Num() || RegisteredTeammates.Num()) Reconcile();
+		// Reconcile 바깥에서 알린다. 구독자가 새 마스크 상태를 적용해도 스텐실 순회에 재진입하지 않는다.
+		OnTeammateMeshesChanged.Broadcast();
 	}
 }
 
@@ -280,5 +367,6 @@ void UOutlierStencilSubsystem::Deinitialize()
 	PairTeammates.Reset();
 	RegisteredTeammates.Reset();
 	MeshStates.Reset();
+	OnTeammateMeshesChanged.Clear();
 	Super::Deinitialize();
 }

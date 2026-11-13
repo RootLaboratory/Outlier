@@ -43,9 +43,18 @@ struct OUTLIER_API FEnemyStat : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float BattlePeripheralVisionAngle = 0.0f;
 
-	// 최초 발견의 시각 0→100%, 미인지 100→0%에 걸리는 시간이다. 최소 경계 시간과 독립적으로 계산한다.
+	// 원거리 시각 충전 및 청각 기여의 기준 시간이다. 근거리 시각 가속을 청각에 곱하지 않는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.01", Units = "s"))
 	float AwarenessFillDuration = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.01", Units = "s"))
+	float AwarenessNearFillDuration = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float AwarenessNearDistance = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.0", Units = "cm"))
+	float AwarenessFarDistance = 1500.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.01", Units = "s"))
 	float AwarenessDecayDuration = 2.0f;
@@ -82,6 +91,65 @@ struct OUTLIER_API FEnemyStat : public FTableRowBase
 	// 직접 시야를 잃은 뒤 실제 대상 위치를 추적하는 시간. 위치 갱신으로 연장하지 않는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Perception", meta = (ClampMin = "0.0"))
 	float TargetTrackingGraceSeconds = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Target Selection", meta = (ClampMin = "0.01", Units = "s"))
+	float TargetReevaluationInterval = 0.5f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Target Selection", meta = (ClampMin = "0.0", Units = "s"))
+	float TargetMinimumHoldSeconds = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Target Selection", meta = (ClampMin = "0.0", Units = "cm"))
+	float TargetSwitchDistanceGain = 200.0f;
+
+	// 일반 접촉 소실 수색만 확장한다. 청각/피격 조사는 기존 지점 수와 전용 기한을 사용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Search", meta = (ClampMin = "1", ClampMax = "4"))
+	int32 SearchMaxPoints = 4;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Search", meta = (ClampMin = "0.01", Units = "s"))
+	float SearchMaxSeconds = 12.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Search", meta = (ClampMin = "0.01", Units = "s"))
+	float SearchGuardSeconds = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Return", meta = (ClampMin = "1"))
+	int32 ReturnMaxRequests = 3;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Return", meta = (ClampMin = "0.01", Units = "s"))
+	float ReturnMaxSeconds = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Return", meta = (ClampMin = "0.01", Units = "s"))
+	float ReturnRetryInterval = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Search", meta = (ClampMin = "0.0", ClampMax = "45.0", Units = "deg"))
+	float SearchPitchLimit = 45.0f;
+
+	// 최초 전조와 병렬로 회전한다. 발사 타이머는 회전시키지 않고 이 허용각만 검사한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attack", meta = (ClampMin = "1.0", Units = "deg/s"))
+	float AttackRotationSpeed = 240.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attack", meta = (ClampMin = "0.1", ClampMax = "45.0", Units = "deg"))
+	float AttackAimTolerance = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Tactical", meta = (ClampMin = "0.0", Units = "s"))
+	float TacticalSightBlockDuration = 0.3f;
+	// 병렬 준비 시간을 포함한 공격 개시 비용이 비슷하면 현재 교전 거리를 유지한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Tactical", meta = (ClampMin = "0.0", Units = "s"))
+	float TacticalAttackTimeTie = 0.1f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Tactical", meta = (ClampMin = "0.0", Units = "s"))
+	float TacticalPathChangeGain = 0.3f;
+	// 양보의 순서/표현 튜닝은 같은 런타임 Row에서 읽는다. 예약 TTL·전체 탐색 상한과는 별개다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Yield", meta = (ClampMin = "0.01", Units = "s"))
+	float CombatYieldPriorityHold = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Yield", meta = (ClampMin = "0.01", Units = "s"))
+	float CombatYieldStarvationSeconds = 2.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Yield", meta = (ClampMin = "0.01", Units = "s"))
+	float CombatYieldCheckInterval = 0.5f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Yield", meta = (ClampMin = "1.0", Units = "cm"))
+	float CombatYieldCandidateRadius = 150.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Yield", meta = (ClampMin = "0.0", ClampMax = "90.0", Units = "deg"))
+	float CombatYieldObservationAngle = 30.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Tactical", meta = (ClampMin = "1"))
+	int32 TacticalMaxRequests = 3;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Tactical", meta = (ClampMin = "0.01", Units = "s"))
+	float TacticalMaxSeconds = 3.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Tactical", meta = (ClampMin = "1"))
+	int32 TacticalRecoveryMaxRequests = 2;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Tactical", meta = (ClampMin = "0.01", Units = "s"))
+	float TacticalRecoveryMaxSeconds = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float HearingRange = 0.0f;

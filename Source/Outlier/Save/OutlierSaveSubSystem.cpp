@@ -247,7 +247,8 @@ bool UOutlierSaveSubSystem::CommitCheckpointSnapshot(const FOutlierCheckpointSna
 	return true;
 }
 
-bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot)
+bool UOutlierSaveSubSystem::CanCommitDurableCheckpointSnapshot(
+	const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot) const
 {
 	if (!Snapshot.IsValid() || Snapshot.bInitialSnapshot || Snapshot.CheckpointId.IsNone()
 		|| (!bRefreshSnapshot && CommittedCheckpointIds.Contains(Snapshot.CheckpointId)) || !bStableIdsValid
@@ -261,6 +262,13 @@ bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckp
 	{
 		return false;
 	}
+	return true;
+}
+
+bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot)
+{
+	if (!CanCommitDurableCheckpointSnapshot(Snapshot, bRefreshSnapshot)) return false;
+	const UWorld* World = GetGameInstance()->GetWorld();
 
 	TArray<uint8> Payload;
 	FMemoryWriter PayloadWriter(Payload);

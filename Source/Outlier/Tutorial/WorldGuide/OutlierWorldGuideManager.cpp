@@ -389,7 +389,12 @@ bool AOutlierWorldGuideManager::NotifyEventOverlap(FGameplayTag EventTag) { retu
 
 void AOutlierWorldGuideManager::ClearGuides(bool bResetCompleted)
 {
-	if (!HasAuthority() || bChangingQueue) return;
+	TryClearGuides(bResetCompleted);
+}
+
+bool AOutlierWorldGuideManager::TryClearGuides(bool bResetCompleted)
+{
+	if (!CanClearGuides()) return false;
 	TGuardValue<bool> ClearingGuard(bClearingQueue, true);
 	TGuardValue<bool> ChangingGuard(bChangingQueue, true);
 	TArray<FOutlierWorldGuideContext> Cancelled = PendingContexts;
@@ -407,6 +412,7 @@ void AOutlierWorldGuideManager::ClearGuides(bool bResetCompleted)
 	RefreshPresentation();
 	ForceNetUpdate();
 	for (const FOutlierWorldGuideContext& Context : Cancelled) OnGuideFinished.Broadcast(Context, false);
+	return true;
 }
 
 void AOutlierWorldGuideManager::RegisterTarget(UOutlierWorldGuideTargetComponent* Target)

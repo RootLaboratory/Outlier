@@ -17,6 +17,7 @@ class UMeshComponent;
 class USceneComponent;
 class USphereComponent;
 class AFirstPersonCharacter;
+class ACharacter;
 class UInteractableComponent;
 class UProceduralAnimValues;
 class UMaterialInterface;
@@ -24,6 +25,7 @@ struct FCollisionQueryParams;
 class UOutlierAudioSubsystem;
 class UVisualEventSubsystem;
 class UProjectionMarkDefinition;
+class UOutlierStencilSubsystem;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -208,6 +210,8 @@ public:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	void RefreshProceduralPresentation();
+	/** 부착/표시를 바꾼 뒤 외곽선 대상 캐시를 다음 갱신에서 다시 구성한다. */
+	void NotifyOutlinePresentationChanged();
 
 	virtual bool CanAttack() const;
 
@@ -261,6 +265,7 @@ public:
 	EWeaponFireMode GetFireMode() const { return FireMode; }
 	bool IsAttacking() const { return bIsAttacking; }
 	bool IsEquipped() const { return bIsEquipped; }
+	ACharacter* GetWeaponOwner() const { return WeaponOwner; }
 	bool CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const;
 	float GetDamageAtDistance(float DistanceCm) const;
 	float GetMovementSpeedMultiplier() const { return MovementSpeedMultiplier; }
@@ -297,6 +302,7 @@ public:
 
 private:
 	TWeakObjectPtr<ACharacter> CachedProceduralOwner;
+	TWeakObjectPtr<UOutlierStencilSubsystem> CachedOutlineSubsystem;
 	TWeakObjectPtr<class AShooterCharacter> CachedProceduralShooter;
 	UPROPERTY(Transient)
 	TObjectPtr<const UProceduralAnimValues> SelectedProceduralValues;
