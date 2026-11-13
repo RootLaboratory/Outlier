@@ -129,10 +129,50 @@ void CheckBarrierPresentation(FAutomationTestBase& Test, ARoomCombatBarrier* Bar
 	const auto* Box = CastChecked<UBoxComponent>(Barrier->GetRootComponent());
 	Test.TestEqual(TEXT("Blocking collision follows authoritative state"), Box->GetCollisionEnabled(),
 		bBlocked ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-	const auto* Visual = Barrier->FindComponentByClass<UStaticMeshComponent>();
 	const auto* Hidden = FindFProperty<FBoolProperty>(USceneComponent::StaticClass(), TEXT("bHiddenInGame"));
-	Test.TestEqual(TEXT("Visual hidden state follows authoritative state"), Hidden->GetPropertyValue_InContainer(Visual), !bBlocked);
+	TInlineComponentArray<UStaticMeshComponent*> VisualMeshes;
+	Barrier->GetComponents(VisualMeshes);
+	for (const UStaticMeshComponent* Visual : VisualMeshes)
+	{
+		Test.TestEqual(FString::Printf(TEXT("%s hidden state follows authoritative state"), *Visual->GetName()),
+			Hidden->GetPropertyValue_InContainer(Visual), !bBlocked);
+	}
 }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBarrierDuplicatedVisualsTest, "Outlier.Room.GroupBarrier.DuplicatedVisuals",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBarrierDuplicatedVisualsTest::RunTest(const FString& Parameters)
+{
+	FGroupBarrierWorld Fixture;
+	Fixture.AddRoom(BarrierA);
+	AEnemyBase* Enemy = Fixture.AddEnemy(BarrierA);
+	ARoomCombatBarrier* Barrier = Fixture.World->SpawnActorDeferred<ARoomCombatBarrier>(
+		ARoomCombatBarrier::StaticClass(), FTransform::Identity);
+	*FindFProperty<FStructProperty>(ARoomCombatBarrier::StaticClass(), TEXT("RoomTag"))
+		->ContainerPtrToValuePtr<FGameplayTag>(Barrier) = BarrierA;
+	UStaticMeshComponent* Original = Barrier->FindComponentByClass<UStaticMeshComponent>();
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		UStaticMeshComponent* Duplicate = DuplicateObject<UStaticMeshComponent>(Original, Barrier);
+		Barrier->AddInstanceComponent(Duplicate);
+		// 원본의 형제 또는 자식으로 배치해도 같은 상태를 적용해야 한다.
+		Duplicate->SetupAttachment(Index == 0 ? Barrier->GetRootComponent() : Original);
+		Duplicate->SetHiddenInGame(false);
+		Duplicate->RegisterComponent();
+	}
+	Barrier->FinishSpawning(FTransform::Identity);
+	if (!Barrier->HasActorBegunPlay()) Barrier->DispatchBeginPlay();
+	TInlineComponentArray<UStaticMeshComponent*> VisualMeshes;
+	Barrier->GetComponents(VisualMeshes);
+	TestEqual(TEXT("Original and two instance duplicates are present"), VisualMeshes.Num(), 3);
+	CheckBarrierPresentation(*this, Barrier, false);
+	TestTrue(TEXT("Combat starts"), Fixture.Start(BarrierA));
+	CheckBarrierPresentation(*this, Barrier, true);
+	Fixture.Combat->NotifyEnemyDefeated(Enemy);
+	CheckBarrierPresentation(*this, Barrier, false);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGroupBarrierParticipationTest, "Outlier.Room.GroupBarrier.Participation",

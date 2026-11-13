@@ -50,7 +50,8 @@ void ARoomCombatBarrier::BeginPlay()
 	}
 	Super::BeginPlay();
 	// 서버는 등록/안전 검사를 거친 상태만 적용한다. 복원된 true도 먼저 켜지 않는다.
-	if (!HasAuthority()) ApplyBlockedState();
+	// 인스턴스에서 추가한 표시 메시도 시작 상태에 맞춘다. 서버의 복원된 true는 안전 검사까지 보류한다.
+	if (!HasAuthority() || !bBlocked) ApplyBlockedState();
 	if (HasAuthority())
 	{
 		if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
@@ -253,7 +254,13 @@ void ARoomCombatBarrier::OnRep_Blocked()
 void ARoomCombatBarrier::ApplyBlockedState()
 {
 	// 서버의 단일 차단 상태가 복제되면 클라이언트에서도 표시와 충돌을 함께 갱신한다.
-	VisualPlane->SetHiddenInGame(!bBlocked);
+	// 원본뿐 아니라 인스턴스에서 복제한 Plane도 같은 표시 상태를 사용한다.
+	TInlineComponentArray<UStaticMeshComponent*> VisualMeshes;
+	GetComponents(VisualMeshes);
+	for (UStaticMeshComponent* VisualMesh : VisualMeshes)
+	{
+		VisualMesh->SetHiddenInGame(!bBlocked);
+	}
 	BlockingBox->SetCollisionEnabled(bBlocked
 		? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
 	UE_LOG(LogTemp, Display,
