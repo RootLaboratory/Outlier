@@ -13,6 +13,7 @@
 #include "FRDGDeathColorLerpPass.h"
 #include "FRDGDeathNoisePass.h"
 #include "FRDGDroneDamageFeedbackPass.h"
+#include "FRDGPartnerKnockDownPass.h"
 #include "RDGExplosionVolumeProvider.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -212,6 +213,15 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 			FAfterPassCallbackDelegate::CreateRaw(
 				this,
 				&FOutlierPostProcessSceneViewExtension::DroneDamageFeedbackCallback_RenderThread));
+	}
+
+	// 파트너 다운(Reboot): 마스크 가중치 글리치 + DamageHud. Tonemap 이후라 UI는 안 먹는다.
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.PartnerKnockDown.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::PartnerKnockDownCallback_RenderThread));
 	}
 
 	// 사망 연출: Fade → Black → Vignette → Noise. Tonemap 이후라 UI는 안 먹는다.
@@ -432,6 +442,14 @@ void FOutlierPostProcessSceneViewExtension::UpdateDroneDamageMaskTexture(EDroneD
 	}
 }
 
+void FOutlierPostProcessSceneViewExtension::UpdatePartnerKnockDownTexture(EPartnerKnockDownTexture Slot, const FTextureRHIRef& InTexture)
+{
+	if (Slot < EPartnerKnockDownTexture::Count)
+	{
+		PartnerKnockDownTextureRHIs[static_cast<int32>(Slot)] = InTexture;
+	}
+}
+
 void FOutlierPostProcessSceneViewExtension::UpdateHeatHazeSources(const TArray<FHeatHazeSourceData>& InSources)
 {
 	FScopeLock Lock(&HeatHazeSourcesCriticalSection);
@@ -477,6 +495,7 @@ bool FOutlierPostProcessSceneViewExtension::ShouldRenderAnyEffect() const
 		|| CachedParameters.DualKawaseBlur.bEnabled
 		|| CachedParameters.SplitPrismDefocus.bEnabled
 		|| CachedParameters.DroneDamageFeedback.bEnabled
+		|| CachedParameters.PartnerKnockDown.bEnabled
 		|| CachedParameters.Datamoshing.bEnabled
 		|| CachedParameters.ADSBlur.bEnabled
 		|| CachedParameters.DeathNoise.bEnabled
@@ -721,6 +740,27 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DroneDamageFeedbackCal
 		SceneColor,
 		CachedParameters.DroneDamageFeedback,
 		MaskTextures,
+		Inputs.OverrideOutput);
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::PartnerKnockDownCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	return FRDGPartnerKnockDownPass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		CachedParameters.PartnerKnockDown,
+		PartnerKnockDownTextureRHIs[static_cast<int32>(EPartnerKnockDownTexture::Mask)].GetReference(),
+		PartnerKnockDownTextureRHIs[static_cast<int32>(EPartnerKnockDownTexture::DamageHud)].GetReference(),
 		Inputs.OverrideOutput);
 }
 

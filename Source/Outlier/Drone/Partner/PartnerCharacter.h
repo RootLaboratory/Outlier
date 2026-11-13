@@ -17,6 +17,8 @@
 #include "Enemy/OutlierBoneSight.h"
 #include "PartnerCharacter.generated.h"
 
+DECLARE_LOG_CATEGORY_EXTERN(LogPartnerInputDebug, Log, All);
+
 UENUM(BlueprintType)
 enum class EDroneMovementState : uint8
 {
@@ -80,6 +82,7 @@ class UOutlierVitalAttributeSet;
 class UOutlierPartnerMovementAttributeSet;
 class UOutlierPartnerCombatAttributeSet;
 class UPartnerVitalityComponent;
+class ULocalPlayer;
 class ULocalPlayerSettingsSubsystem;
 class UEnhancedInputLocalPlayerSubsystem;
 class UEnhancedInputUserSettings;
@@ -468,6 +471,8 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
+	virtual void PawnClientRestart() override;
+	void LogActionInputState(const TCHAR* Event) const;
 	virtual void OnRep_PlayerState() override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
@@ -520,6 +525,7 @@ protected:
 	// 실행 중인 가속과 분리해 재부팅 중에도 Hold/Toggle의 최신 의도를 보존한다.
 	bool bAccelerateRequested = false;
 	bool bAccelerateNeedsFreshPress = false;
+	uint8 LastDebugBoostBlockMask = 0;
 	bool bRebootActionRecoveryPending = false;
 	// 서버 수명주기와 요청 순번을 함께 검사해 지연된 ON이 초기화 이후 되살아나지 않게 한다.
 	UPROPERTY(ReplicatedUsing = OnRep_AccelerateInputEpoch)
@@ -589,6 +595,12 @@ protected:
 	FDelegateHandle MoveSpeedChangedHandle;
 	FDelegateHandle BoostSpeedChangedHandle;
 	FDelegateHandle RebootingTagChangedHandle;
+
+	// RDG Partner KnockDown 화면 연출. 로컬로 조종 중이고 다운(State.Rebooting)이면 켜고, 아니면 끈다.
+	// 남은 시간은 Reboot GE에서 읽어 늦게 들어와도 진행 중인 시점부터 맞춘다. bForceStop은 EndPlay용.
+	void RefreshKnockDownPostProcess(bool bForceStop = false);
+	// 연출을 켜 둔 로컬 플레이어. 빙의가 풀리면 컨트롤러가 사라지므로 끌 대상을 따로 기억한다.
+	TWeakObjectPtr<ULocalPlayer> KnockDownPostProcessLocalPlayer;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 
@@ -690,8 +702,12 @@ public:
 
 	void SetEnemyPossessionProtection(bool bEnabled);
 	void StopActionsForReboot(bool bPreserveActionInput = true);
+	// 페어 Shooter 사망 시 진행 중인 비행/부스트/능력을 의도까지 폐기하고 관성도 멈춘다. 서버 전용.
+	void StopActionsForPairDeath();
 	void FinishActionsAfterReboot();
 	bool CanTrackActionInputIntent() const;
+	// 페어 Shooter가 사망 상태면 리스폰으로 Pawn이 교체될 때까지 Partner 입력을 막는다.
+	bool IsPairShooterDead() const;
 	uint32 GetActionInputEpoch() const { return AccelerateInputEpoch; }
 	void RefreshEnemyDetectionForVitality();
 

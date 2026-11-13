@@ -46,8 +46,6 @@ void UHackCandidateMarkerWidget::NativeConstruct()
 
 void UHackCandidateMarkerWidget::NativeDestruct()
 {
-	CancelHackHold();
-
 	if (HackComponent && TargetActor)
 	{
 		HackComponent->NotifyHackMarkerUnhovered(this, TargetActor);
@@ -70,6 +68,7 @@ void UHackCandidateMarkerWidget::NativeDestruct()
 }
 void UHackCandidateMarkerWidget::HandleHovered()
 {
+	if (HackComponent && HackComponent->IsHackHoldActive()) return;
 	ShowHackableInfoWidget();
 
 	if (HackComponent && TargetActor)
@@ -80,8 +79,6 @@ void UHackCandidateMarkerWidget::HandleHovered()
 
 void UHackCandidateMarkerWidget::HandleUnhovered()
 {
-	CancelHackHold();
-
 	if (HackComponent && TargetActor)
 	{
 		HackComponent->NotifyHackMarkerUnhovered(this, TargetActor);
@@ -90,89 +87,18 @@ void UHackCandidateMarkerWidget::HandleUnhovered()
 	HideHackableInfoWidget();
 }
 
-void UHackCandidateMarkerWidget::SetHackHoldProgress(float InProgress)
+UHackableInfoWidget* UHackCandidateMarkerWidget::ReleaseInfoForHackHold()
 {
 	EnsureHackableInfoWidget();
-
-	if (HackableInfoWidget)
-	{
-		HackableInfoWidget->SetHackProgress(InProgress);
-	}
+	UHackableInfoWidget* Info = HackableInfoWidget;
+	// Transfer ownership before removal so unhover/destruction cannot close the held info.
+	HackableInfoWidget = nullptr;
+	return Info;
 }
 
-void UHackCandidateMarkerWidget::StartHackHold(float InHoldDuration)
+float UHackCandidateMarkerWidget::GetHackHoldDuration(float BaseDuration) const
 {
-	CancelHackHold();
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
-	HackHoldDuration = FMath::Max(InHoldDuration, KINDA_SMALL_NUMBER);
-	HackHoldStartTime = World->GetTimeSeconds();
-	bIsHoldingHack = true;
-	SetHackHoldProgress(0.0f);
-
-	FTimerManagerTimerParameters TimerParameters;
-	TimerParameters.bLoop = true;
-	TimerParameters.bMaxOncePerFrame = true;
-
-	World->GetTimerManager().SetTimer(
-		HackHoldTimerHandle,
-		this,
-		&UHackCandidateMarkerWidget::TickHackHold,
-		1.0f / 60.0f,
-		TimerParameters);
-}
-
-void UHackCandidateMarkerWidget::CancelHackHold()
-{
-	bIsHoldingHack = false;
-	HackHoldStartTime = 0.0f;
-
-	if (UWorld* World = GetWorld())
-	{
-		World->GetTimerManager().ClearTimer(HackHoldTimerHandle);
-	}
-	else
-	{
-		HackHoldTimerHandle.Invalidate();
-	}
-
-	if (HackableInfoWidget)
-	{
-		HackableInfoWidget->SetHackProgress(0.0f);
-	}
-}
-
-void UHackCandidateMarkerWidget::TickHackHold()
-{
-	UWorld* World = GetWorld();
-	if (!bIsHoldingHack || !World)
-	{
-		CancelHackHold();
-		return;
-	}
-
-	const float HackHoldElapsed = World->GetTimeSeconds() - HackHoldStartTime;
-	const float HoldProgress = FMath::Clamp(HackHoldElapsed* UpdateScale / HackHoldDuration, 0.0f, 1.0f);
-	SetHackHoldProgress(HoldProgress);
-
-	if (HoldProgress < 1.0f)
-	{
-		return;
-	}
-
-	bIsHoldingHack = false;
-	HackHoldStartTime = 0.0f;
-	World->GetTimerManager().ClearTimer(HackHoldTimerHandle);
-
-	if (HackComponent && TargetActor)
-	{
-		HackComponent->NotifyHackHoldCompleted(this, TargetActor);
-	}
+	return FMath::Max(BaseDuration, KINDA_SMALL_NUMBER) / FMath::Max(UpdateScale, KINDA_SMALL_NUMBER);
 }
 
 void UHackCandidateMarkerWidget::EnsureHackableInfoWidget()

@@ -95,7 +95,7 @@ public:
 		EOutlierVitalityUpdatePolicy Policy = EOutlierVitalityUpdatePolicy::Animated);
 	bool ApplyDeadStateToSelf();
 	bool InitializeVitalityToSelf(float MaxHealth);
-	bool RestoreHealthToMax();
+	bool RestoreHealthToMax(EOutlierVitalityUpdatePolicy Policy = EOutlierVitalityUpdatePolicy::Immediate);
 	FActiveGameplayEffectHandle ApplyRebootStateToSelf(float DurationSeconds);
 	FActiveGameplayEffectHandle ApplyStunStateToSelf(float DurationSeconds, UObject* SourceObject);
 	FActiveGameplayEffectHandle ApplyDamageImmuneStateToSelf();

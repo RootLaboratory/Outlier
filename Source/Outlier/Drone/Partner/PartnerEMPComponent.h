@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Drone/Partner/PartnerCharacterComponentBase.h"
 #include "GameplayTagContainer.h"
+#include "Interface/ActorBasedWidgetInterface.h"
 #include "UI/UILayerTypes.h"
 #include "PartnerEMPComponent.generated.h"
 
@@ -26,7 +27,7 @@ struct OUTLIER_API FPartnerEMPAbilityData
 };
 
 UCLASS()
-class OUTLIER_API UPartnerEMPComponent : public UPartnerCharacterComponentBase
+class OUTLIER_API UPartnerEMPComponent : public UPartnerCharacterComponentBase, public IActorBasedWidgetInterface
 {
 	GENERATED_BODY()
 
@@ -35,6 +36,7 @@ public:
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void DismissActorBasedWidgets_Implementation() override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 

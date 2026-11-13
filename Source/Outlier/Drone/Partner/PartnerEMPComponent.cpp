@@ -6,6 +6,8 @@
 #include "AbilitySystemInterface.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/OverlapResult.h"
+#include "Engine/World.h"
+#include "UI/ActorBasedWidgetSubsystem.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "GameFramework/PlayerController.h"
@@ -27,6 +29,10 @@ UPartnerEMPComponent::UPartnerEMPComponent()
 void UPartnerEMPComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->RegisterWidgetOwner(this);
+	}
 
 	CachedAbilityData.EMPRange = EMPRange;
 	ResetEMPEarlyCompleteTimer();
@@ -35,11 +41,21 @@ void UPartnerEMPComponent::BeginPlay()
 
 void UPartnerEMPComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->UnregisterWidgetOwner(this);
+	}
 	ResetEMPEarlyCompleteTimer();
 	ResetAutoTarget();
 	DestroyEMPLayerWidget();
 	ClearEMPCandidates();
 	Super::EndPlay(EndPlayReason);
+}
+
+void UPartnerEMPComponent::DismissActorBasedWidgets_Implementation()
+{
+	// Dismiss presentation only; gameplay cancellation follows its existing lifecycle.
+	DestroyEMPLayerWidget();
 }
 
 void UPartnerEMPComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

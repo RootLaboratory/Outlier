@@ -38,6 +38,7 @@ public:
 	void UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters);
 	void UpdateDeathTransitionTexture(EDeathTransitionTexture Slot, const FTextureRHIRef& InTexture);
 	void UpdateDroneDamageMaskTexture(EDroneDamageMask Slot, const FTextureRHIRef& InTexture);
+	void UpdatePartnerKnockDownTexture(EPartnerKnockDownTexture Slot, const FTextureRHIRef& InTexture);
 	void UpdateHeatHazeSources(const TArray<FHeatHazeSourceData>& InSources);
 	void ResetRuntimeHistory_RenderThread();
 	void UpdateTeammateOutlineData(const FTeammateOutlineViewData& Data, UWorld* SourceWorld = nullptr);
@@ -96,6 +97,11 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture PartnerKnockDownCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 	FScreenPassTexture DeathNoiseCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
@@ -129,6 +135,8 @@ private:
 	FTextureRHIRef DeathTransitionTextureRHIs[DeathTransitionTextureCount];
 	// EDroneDamageMask 순서.
 	FTextureRHIRef DroneDamageMaskTextureRHIs[DroneDamageMaskCount];
+	// EPartnerKnockDownTexture 순서.
+	FTextureRHIRef PartnerKnockDownTextureRHIs[PartnerKnockDownTextureCount];
 
 	mutable FCriticalSection HeatHazeSourcesCriticalSection;
 	TArray<FHeatHazeSourceData> CachedHeatHazeSources;

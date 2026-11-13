@@ -572,6 +572,15 @@ void ULocalPlayerUISubSystem::OnDamageFeedback(
 	}
 }
 
+void ULocalPlayerUISubSystem::ClearDamageFeedback()
+{
+	UMainUIBase* MainUI = GetMainUI();
+	if (MainUI && MainUI->DamageFeedbackLayer)
+	{
+		MainUI->DamageFeedbackLayer->ClearDamageFeedback();
+	}
+}
+
 void ULocalPlayerUISubSystem::OnRep_ShooterConditionRefresh()
 {
 	if (UPartnerLeftHudWidget* PartnerLeftHUD = Cast<UPartnerLeftHudWidget>(

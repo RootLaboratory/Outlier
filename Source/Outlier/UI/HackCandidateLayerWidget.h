@@ -26,6 +26,9 @@ public:
 	void AddCandidate(AActor* TargetActor, UHackableComponent* HackableComponent);
 	void RemoveCandidate(AActor* TargetActor, UHackableComponent* HackableComponent);
 	void ClearMarkers();
+	void BeginHackHold(AActor* TargetActor, UHackableInfoWidget* InfoWidget);
+	void EndHackHold();
+	void SetHackHoldProgress(float Progress);
 
 protected:
 	virtual void NativeConstruct() override;
@@ -68,6 +71,13 @@ private:
 	void EnsureRevealMaterial();
 	void StartReveal();
 	void UpdateReveal(float InDeltaTime);
+	void UpdateHackHoldLayout();
+
+	UPROPERTY(Transient)
+	TObjectPtr<AActor> HeldActor;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UHackableInfoWidget> HeldInfoWidget;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> RevealMaterial;

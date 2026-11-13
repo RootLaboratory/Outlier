@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameplayTagContainer.h"
 #include "Drone/Partner/PartnerCharacterComponentBase.h"
 #include "PartnerDistanceComponent.generated.h"
 
@@ -19,6 +20,10 @@ class OUTLIER_API UPartnerDistanceComponent : public UPartnerCharacterComponentB
 
 public:
 	UPartnerDistanceComponent();
+
+	/** Submitted to both players once per game flow on the first distance disconnect. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Boundary|Event", meta = (Categories = "Event"))
+	FGameplayTag DisconnectEventTag;
 
 	// Each transition has its own cooldown. Suppressed sounds are never queued.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Boundary|Audio", meta = (ClampMin = "0.0", Units = "s"))
@@ -45,6 +50,8 @@ private:
 	float CalculateDistance() const;
 	void CacheUISubsystem();
 	void PlayBoundaryTransitionAudio(bool bOutside);
+
+	bool bDisconnectEventSubmitted = false;
 
 	FTimerHandle ConnectionAudioCooldownTimer;
 	FTimerHandle DisconnectionAudioCooldownTimer;

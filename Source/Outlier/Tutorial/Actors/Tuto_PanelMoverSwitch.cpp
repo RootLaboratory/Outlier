@@ -3,7 +3,6 @@
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "OutlierPlayerState.h"
 #include "Interaction/PanelMover.h"
-#include "Outlier.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideTargetComponent.h"
 
 ATuto_PanelMoverSwitch::ATuto_PanelMoverSwitch()
@@ -16,6 +15,7 @@ bool ATuto_PanelMoverSwitch::Interact(AFirstPersonCharacter* Interactor)
 {
 	ActivatingPlayer = IsValid(Interactor) ? Interactor->GetPlayerState<AOutlierPlayerState>() : nullptr;
 	const bool bAccepted = Super::Interact(Interactor);
+	if (bAccepted) CompleteInteraction(ActivatingPlayer.Get());
 	ActivatingPlayer.Reset();
 	return bAccepted;
 }
@@ -23,36 +23,21 @@ bool ATuto_PanelMoverSwitch::Interact(AFirstPersonCharacter* Interactor)
 void ATuto_PanelMoverSwitch::BeginPlay()
 {
 	Super::BeginPlay();
-	if (!HasAuthority()) return;
-	if (ITuto_ProgressSourceInterface* Progress = Cast<ITuto_ProgressSourceInterface>(TargetPanel))
-	{
-		BoundPanel = TargetPanel;
-		Progress->OnProgressCompleted.AddUObject(this, &ThisClass::HandlePanelCompleted);
-		if (Progress->IsProgressCompleted()) HandlePanelCompleted(TargetPanel, nullptr);
-	}
-	else UE_LOG(LogOutlier, Warning, TEXT("[EventTrigger] %s requires a Tuto progress-source TargetPanel."), *GetName());
-}
-
-void ATuto_PanelMoverSwitch::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
-	if (ITuto_ProgressSourceInterface* Progress = Cast<ITuto_ProgressSourceInterface>(BoundPanel.Get()))
-		Progress->OnProgressCompleted.RemoveAll(this);
-	Super::EndPlay(EndPlayReason);
+	// 체크포인트에서 복원한 스위치는 이동 도착을 기다리지 않고 완료 상태로 복원한다.
+	if (bIsActivated) CompleteInteraction(nullptr);
 }
 
 bool ATuto_PanelMoverSwitch::ActivateTarget()
 {
 	ITuto_ProgressSourceInterface* Progress = Cast<ITuto_ProgressSourceInterface>(TargetPanel);
-	if (!Progress || BoundPanel.Get() != TargetPanel) return false;
+	if (!Progress) return false;
 	Progress->SetProgressInstigator(ActivatingPlayer.Get());
 	return Super::ActivateTarget();
 }
 
-void ATuto_PanelMoverSwitch::HandlePanelCompleted(AActor* Source, AOutlierPlayerState* SourcePlayerState)
+void ATuto_PanelMoverSwitch::CompleteInteraction(AOutlierPlayerState* SourcePlayerState)
 {
-	if (!HasAuthority() || bEffectCompleted || Source != BoundPanel.Get()) return;
-	const ITuto_ProgressSourceInterface* Progress = Cast<ITuto_ProgressSourceInterface>(Source);
-	if (!Progress || !Progress->IsProgressCompleted()) return;
+	if (!HasAuthority() || bEffectCompleted) return;
 	bEffectCompleted = true;
 	UOutlierWorldGuideTargetComponent::CompleteOnActor(this);
 	CompleteProgress(SourcePlayerState);

@@ -6,9 +6,81 @@
 #include "Components/Image.h"
 #include "Components/TextBlock.h"
 #include "Drone/Partner/PartnerHackComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Interface/HackableInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UI/HackCandidateMarkerWidget.h"
+#include "UI/HackableInfoWidget.h"
+
+void UHackCandidateLayerWidget::BeginHackHold(AActor* TargetActor, UHackableInfoWidget* InfoWidget)
+{
+	EndHackHold();
+	HeldActor = TargetActor;
+	HeldInfoWidget = InfoWidget;
+	if (HeldInfoWidget)
+	{
+		HeldInfoWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+		HeldInfoWidget->SetHackProgress(0.0f);
+	}
+	UpdateHackHoldLayout();
+	UpdateCandidateNullVisibility();
+}
+
+void UHackCandidateLayerWidget::EndHackHold()
+{
+	if (HeldInfoWidget)
+	{
+		HeldInfoWidget->SetHackProgress(0.0f);
+		HeldInfoWidget->ResetPopup();
+		HeldInfoWidget->RemoveFromParent();
+	}
+	HeldInfoWidget = nullptr;
+	HeldActor = nullptr;
+	UpdateCandidateNullVisibility();
+}
+
+void UHackCandidateLayerWidget::SetHackHoldProgress(float Progress)
+{
+	if (HeldInfoWidget) HeldInfoWidget->SetHackProgress(Progress);
+}
+
+void UHackCandidateLayerWidget::UpdateHackHoldLayout()
+{
+	APlayerController* PC = GetOwningPlayer();
+	if (!PC || !IsValid(HeldActor) || !HeldInfoWidget) return;
+	const FVector2D ViewSize = UWidgetLayoutLibrary::GetPlayerScreenWidgetGeometry(PC).GetLocalSize();
+	if (ViewSize.X <= 0 || ViewSize.Y <= 0) return;
+	const FVector Target = IHackableInterface::ResolveHackTargetLocation(HeldActor);
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	FVector2D ScreenPoint;
+	if (!UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(PC, Target, ScreenPoint, true))
+	{
+		// Projection fails behind the camera. Keep the info on the corresponding screen edge.
+		const FVector LocalDirection = ViewRotation.UnrotateVector(Target - ViewLocation);
+		FVector2D EdgeDirection(LocalDirection.Y, -LocalDirection.Z);
+		if (!EdgeDirection.Normalize()) EdgeDirection = FVector2D(0.0, 1.0);
+		ScreenPoint = ViewSize * 0.5 + EdgeDirection * (ViewSize.X + ViewSize.Y);
+	}
+	FVector2D Size = HeldInfoWidget->GetDesiredSize();
+	Size.X = FMath::Max(Size.X, double(HeldInfoWidget->GetWidgetWidth()));
+	Size.Y = FMath::Max(Size.Y, double(HeldInfoWidget->GetMinWidgetHeight()));
+	FVector2D Position;
+	float Scale;
+	HudPresentation.CalculateLayout(ScreenPoint, ViewSize, Size,
+		FVector::Distance(ViewLocation, Target), Position, Scale);
+	if (UCanvasPanelSlot* InfoSlot = Cast<UCanvasPanelSlot>(HeldInfoWidget->Slot))
+	{
+		InfoSlot->SetAutoSize(false);
+		InfoSlot->SetAlignment(FVector2D::ZeroVector);
+		InfoSlot->SetPosition(Position);
+		InfoSlot->SetSize(Size);
+		InfoSlot->SetZOrder(10);
+	}
+	HeldInfoWidget->SetRenderTransformPivot(FVector2D::ZeroVector);
+	HeldInfoWidget->SetRenderScale(FVector2D(Scale));
+}
 
 void UHackCandidateLayerWidget::BindHackComponent(UPartnerHackComponent* InHackComponent)
 {
@@ -46,7 +118,7 @@ void UHackCandidateLayerWidget::UpdateCandidateNullVisibility()
 		return;
 	}
 
-	const ESlateVisibility NullVisibility = MarkerWidgets.IsEmpty()
+	const ESlateVisibility NullVisibility = MarkerWidgets.IsEmpty() && !HeldInfoWidget
 		? ESlateVisibility::Visible : ESlateVisibility::Collapsed;
 	if (HackCandidateNull->GetVisibility() != NullVisibility)
 	{
@@ -77,6 +149,8 @@ void UHackCandidateLayerWidget::NativeConstruct()
 
 void UHackCandidateLayerWidget::NativeDestruct()
 {
+	if (HackComponent) HackComponent->ResetLocalHackHoldProgress();
+	EndHackHold();
 	BindHackComponent(nullptr);
 	ClearMarkers();
 	bRevealActive = false;
@@ -89,6 +163,7 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
 	UpdateReveal(InDeltaTime);
+	UpdateHackHoldLayout();
 
 	APlayerController* PC = GetOwningPlayer();
 	if (!PC)

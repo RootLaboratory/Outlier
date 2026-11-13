@@ -3,6 +3,7 @@
 
 #include "FrontendPlayerController.h"
 #include "Audio/OutlierAudioSubsystem.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Cinematic/OutlierCinematicSubsystem.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -535,6 +536,13 @@ void AFrontendPlayerController::PrepareForMatch()
 			: nullptr)
 		{
 			Cinematic->ClearLevelCinematics();
+		}
+		// 타이틀 카메라가 빠지면 FirstPersonPC가 LocalPlayer를 넘겨받기 전까지 이 PC 시점으로
+		// 아레나 스트리밍이 노출된다. 시네마틱 상태 복원 뒤에 암전해 이후 LevelLoad 암전과 잇는다.
+		// 이 PC는 교체로 파괴되므로 해제하지 않는다.
+		if (PlayerCameraManager)
+		{
+			PlayerCameraManager->SetManualCameraFade(1.0f, FLinearColor::Black, false);
 		}
 		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
 		{

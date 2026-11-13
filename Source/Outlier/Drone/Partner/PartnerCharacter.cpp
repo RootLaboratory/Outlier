@@ -51,6 +51,7 @@
 #include "GameplayEffect.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Engine/LocalPlayer.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "Templates/UnrealTemplate.h"
 #include "Environment/PartnerLightVolume.h"
 #include "Components/SpotLightComponent.h"
@@ -192,6 +193,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	UnbindPartnerCooldownUIObserver();
 	UnbindGasCombatObservers();
 	UnbindGasMobilityObservers();
+	RefreshKnockDownPostProcess(true);
 	CleanupBoostVFXComponents();
 	if (PartnerVitalityComponent)
 	{
@@ -205,6 +207,34 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+DEFINE_LOG_CATEGORY(LogPartnerInputDebug);
+
+void APartnerCharacter::LogActionInputState(const TCHAR* Event) const
+{
+	UE_LOG(LogPartnerInputDebug, Display,
+		TEXT("Event=%s Partner=%s World=%s NetMode=%d Role=%d Local=%d Controller=%s Input=%s InputPtr=%p Settings=%s Subsystem=%s BoostKeys=%d AttackKeys=%d FreshBoost=%d HeldBoost=%d Epoch=%u"),
+		Event, *GetNameSafe(this), *GetNameSafe(GetWorld()), static_cast<int32>(GetNetMode()),
+		static_cast<int32>(GetLocalRole()), IsLocallyControlled(), *GetNameSafe(GetController()),
+		*GetNameSafe(InputComponent), static_cast<const void*>(InputComponent.Get()),
+		*GetNameSafe(AccelerateSettings.Get()), *GetNameSafe(AccelerateInputSubsystem.Get()),
+		AccelerateInputKeys.Num(), AttackInputKeys.Num(), bAccelerateNeedsFreshPress,
+		bAccelerateInputHeld, AccelerateInputEpoch);
+}
+
+void APartnerCharacter::PawnClientRestart()
+{
+	LogActionInputState(TEXT("PawnClientRestart.Before"));
+	Super::PawnClientRestart();
+	// 클라이언트는 빙의 복귀 시 기존 InputComponent를 재사용하여 Setup을 건너뛸 수 있다.
+	// 액션 바인딩 생성과 별개로, 로컬 조종을 재개할 때마다 설정 구독과 키 목록을 복구한다.
+	if (IsLocallyControlled() && Cast<UEnhancedInputComponent>(InputComponent)
+		&& Cast<UPartnerInputConfig>(InputConfig))
+	{
+		BindAccelerateInputSettings();
+	}
+	LogActionInputState(TEXT("PawnClientRestart.After"));
+}
+
 void APartnerCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
@@ -213,6 +243,9 @@ void APartnerCharacter::PossessedBy(AController* NewController)
 	bStandbyAimInitialized = false;
 	RefreshAbilitySystemActorInfo();
 	RefreshPartnerHackChargeUI();
+	LogActionInputState(TEXT("PossessedBy.After"));
+	// 리슨 서버 호스트가 다운된 파트너에 빙의한 경우.
+	RefreshKnockDownPostProcess();
 
 	if (bIsAccelerate)
 	{
@@ -241,10 +274,10 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	}
 	const AOutlierPlayerState* PartnerState = GetPlayerState<AOutlierPlayerState>();
 	const TWeakObjectPtr<AShooterCharacter> ShooterAtHit = CachedShooterCharacter.Get();
-	const bool bTriggerPairGameOver = PartnerState && !PartnerState->IsPairSuitAcquired()
-		&& (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())
-			|| Request.DamageTag == OutlierDamage::InstantKillTag())
-		&& ShooterAtHit.IsValid();
+	const bool bTriggerPairGameOver = ShooterAtHit.IsValid()
+		&& (Request.DamageTag == OutlierDamage::InstantKillTag()
+			|| (PartnerState && !PartnerState->IsPairSuitAcquired()
+				&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())));
 	if (bTriggerPairGameOver && ShooterAtHit->IsDead())
 	{
 		return 0.0f;
@@ -252,7 +285,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	const float HealthBefore = OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
 	bool bApplied = false;
 	{
-		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 슈트 전 사격/즉사는 Reboot 대신 GameOver로 이어진다.
+		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 환경 즉사와 슈트 전 사격은 Reboot 대신 GameOver로 이어진다.
 		TGuardValue<bool> RebootGuard(PartnerVitalityComponent->bSuppressRebootForDamage, bTriggerPairGameOver);
 		bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
 			Request.DamageAmount,
@@ -297,6 +330,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 
 void APartnerCharacter::UnPossessed()
 {
+	LogActionInputState(TEXT("UnPossessed.Before"));
 	ResetAccelerateInput();
 	UnbindAccelerateInputSettings();
 	NotifyStandbyActivity();
@@ -316,11 +350,14 @@ void APartnerCharacter::UnPossessed()
 	}
 
 	Super::UnPossessed();
+	LogActionInputState(TEXT("UnPossessed.After"));
 	RefreshAbilitySystemActorInfo();
+	RefreshKnockDownPostProcess();
 }
 
 void APartnerCharacter::OnRep_Controller()
 {
+	LogActionInputState(TEXT("OnRep_Controller.Before"));
 	Super::OnRep_Controller();
 	if (!IsLocallyControlled())
 	{
@@ -333,6 +370,8 @@ void APartnerCharacter::OnRep_Controller()
 	}
 	RefreshAbilitySystemActorInfo();
 	RefreshPartnerCooldownUI();
+	RefreshKnockDownPostProcess();
+	LogActionInputState(TEXT("OnRep_Controller.After"));
 }
 
 void APartnerCharacter::OnRep_PlayerState()
@@ -502,6 +541,75 @@ void APartnerCharacter::UnbindGasMobilityObservers()
 void APartnerCharacter::HandleRebootingTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	RefreshMovementLoopAudio();
+	RefreshKnockDownPostProcess();
+}
+
+void APartnerCharacter::RefreshKnockDownPostProcess(bool bForceStop)
+{
+	const APlayerController* PlayerController = GetController<APlayerController>();
+	ULocalPlayer* LocalPlayer = !bForceStop && PlayerController && IsLocallyControlled()
+		? PlayerController->GetLocalPlayer()
+		: nullptr;
+	const bool bRebooting = LocalPlayer
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
+
+	// 다운이 풀렸거나 조종하는 로컬 플레이어가 바뀌었으면 이전 화면의 연출을 끈다.
+	if (ULocalPlayer* PreviousLocalPlayer = KnockDownPostProcessLocalPlayer.Get();
+		PreviousLocalPlayer && (!bRebooting || PreviousLocalPlayer != LocalPlayer))
+	{
+		if (ULocalPlayerPostProcessSubsystem* PreviousSubsystem = PreviousLocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PreviousSubsystem->StopPartnerKnockDown();
+		}
+		KnockDownPostProcessLocalPlayer.Reset();
+	}
+
+	if (!bRebooting || KnockDownPostProcessLocalPlayer.Get() == LocalPlayer)
+	{
+		return;
+	}
+
+	ULocalPlayerPostProcessSubsystem* Subsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>();
+	if (!Subsystem)
+	{
+		return;
+	}
+
+	// Reboot GE는 Duration이 있어서 클라이언트도 남은 시간 / 전체 시간을 그대로 읽을 수 있다.
+	float RebootRemaining = 0.0f;
+	float RebootDuration = 0.0f;
+	const FGameplayEffectQuery RebootQuery = FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(
+		FGameplayTagContainer(OutlierGameplayTags::State::Rebooting()));
+	for (const TPair<float, float>& TimeRemainingAndDuration
+		: OutlierAbilitySystemComponent->GetActiveEffectsTimeRemainingAndDuration(RebootQuery))
+	{
+		if (TimeRemainingAndDuration.Value > RebootDuration)
+		{
+			RebootRemaining = TimeRemainingAndDuration.Key;
+			RebootDuration = TimeRemainingAndDuration.Value;
+		}
+	}
+
+	// GE 시간을 못 읽으면 데이터 테이블의 다운 시간으로 처음부터 돈다.
+	if (RebootDuration <= 0.0f && PartnerVitalityComponent)
+	{
+		RebootDuration = PartnerVitalityComponent->GetConfiguredRebootTime();
+		RebootRemaining = RebootDuration;
+	}
+	if (RebootDuration <= 0.0f)
+	{
+		return;
+	}
+
+	Subsystem->StartPartnerKnockDown(RebootDuration, FMath::Max(0.0f, RebootDuration - RebootRemaining));
+	KnockDownPostProcessLocalPlayer = LocalPlayer;
+
+	// KnockDown 화면이 덮이므로 그 전에 떠 있던 피격 피드백(진행 중 + 대기 중)을 정리한다.
+	if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+	{
+		UISubsystem->ClearDamageFeedback();
+	}
 }
 
 void APartnerCharacter::HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData)
@@ -674,6 +782,7 @@ void APartnerCharacter::RefreshPartnerHackChargeUI(bool bPlayRecoveryFeedback)
 
 void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
+	LogActionInputState(TEXT("SetupPlayerInputComponent.Begin"));
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
 	if (MovementComponent)
@@ -730,7 +839,7 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Started,	  this, &APartnerCharacter::ToggleAccelerate);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Completed, this, &APartnerCharacter::ReleaseAccelerate);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Canceled,  this, &APartnerCharacter::ResetAccelerateInput);
-	BindAccelerateInputSettings();
+	LogActionInputState(TEXT("SetupPlayerInputComponent.Bound"));
 
 	// FreeMove
 	EnhancedInputComponent->BindAction(PartnerInputConfig->FreeMoveAction,		ETriggerEvent::Triggered, this, &APartnerCharacter::FreeMove);
@@ -1188,10 +1297,21 @@ void APartnerCharacter::StopSyncMove()
 
 void APartnerCharacter::ToggleAccelerate()
 {
-	if (!CanTrackActionInputIntent() || bAccelerateNeedsFreshPress || bAccelerateInputHeld)
+	const bool bCanTrack = CanTrackActionInputIntent();
+	const uint8 BlockMask = (!bCanTrack ? 1 : 0) | (bAccelerateNeedsFreshPress ? 2 : 0) | (bAccelerateInputHeld ? 4 : 0);
+	if (BlockMask != 0)
 	{
+		if (LastDebugBoostBlockMask != BlockMask)
+		{
+			UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=Boost.Blocked Partner=%s CanTrack=%d FreshRequired=%d Held=%d"),
+				*GetNameSafe(this), bCanTrack, bAccelerateNeedsFreshPress, bAccelerateInputHeld);
+			LogActionInputState(TEXT("Boost.Blocked.State"));
+		}
+		LastDebugBoostBlockMask = BlockMask;
 		return;
 	}
+	LastDebugBoostBlockMask = 0;
+	LogActionInputState(TEXT("Boost.Accepted"));
 
 	bAccelerateInputHeld = true;
 	const bool bNewAccelerate = AccelerateInputMode == EOutlierSprintInputMode::Hold || !bAccelerateRequested;
@@ -1207,6 +1327,7 @@ void APartnerCharacter::ReleaseAccelerate()
 
 void APartnerCharacter::ResetAccelerateInput()
 {
+	LogActionInputState(TEXT("ResetAccelerateInput.Before"));
 	// Flush/매핑 재구성에서 만들어지는 Started는 새 물리 입력이 아니다.
 	// Controller의 실제 IE_Pressed만 아래 차단을 해제하므로 기존 홀드가 전환을 넘지 않는다.
 	bAccelerateNeedsFreshPress = true;
@@ -1251,6 +1372,7 @@ void APartnerCharacter::ApplyAccelerateInput(bool bAccelerate)
 
 void APartnerCharacter::OnRep_AccelerateInputEpoch()
 {
+	LogActionInputState(TEXT("OnRep_AccelerateInputEpoch"));
 	// 조종/슈트/포커스 경계만 세대를 바꾼다. 재부팅은 세대를 유지해 최신 의도를 보존한다.
 	bAccelerateNeedsFreshPress = true;
 	bAccelerateInputHeld = false;
@@ -1264,16 +1386,25 @@ void APartnerCharacter::OnRep_AccelerateInputEpoch()
 
 void APartnerCharacter::NotifyActionKeyPressed(FKey Key)
 {
+	UE_LOG(LogPartnerInputDebug, Display,
+		TEXT("Event=PhysicalPress Partner=%s Key=%s BoostMatch=%d AttackMatch=%d BoostKeys=%d AttackKeys=%d"),
+		*GetNameSafe(this), *Key.ToString(), AccelerateInputKeys.Contains(Key), AttackInputKeys.Contains(Key),
+		AccelerateInputKeys.Num(), AttackInputKeys.Num());
 	if (AccelerateInputKeys.Contains(Key)) bAccelerateNeedsFreshPress = false;
 	if (AttackInputKeys.Contains(Key) && CombatComponent) CombatComponent->AllowAttackInput();
 }
 
 void APartnerCharacter::BindAccelerateInputSettings()
 {
+	LogActionInputState(TEXT("BindSettings.Before"));
 	UnbindAccelerateInputSettings();
 	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
 	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
-	if (!LocalPlayer) return;
+	if (!LocalPlayer)
+	{
+		LogActionInputState(TEXT("BindSettings.NoLocalPlayer"));
+		return;
+	}
 	AccelerateSettings = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>();
 	AccelerateInputSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
 	if (ULocalPlayerSettingsSubsystem* Settings = AccelerateSettings.Get())
@@ -1290,10 +1421,12 @@ void APartnerCharacter::BindAccelerateInputSettings()
 	}
 	HandleAccelerateMappingsRebuilt();
 	ResetAccelerateInput();
+	LogActionInputState(TEXT("BindSettings.After"));
 }
 
 void APartnerCharacter::UnbindAccelerateInputSettings()
 {
+	LogActionInputState(TEXT("UnbindSettings.Before"));
 	if (ULocalPlayerSettingsSubsystem* Settings = AccelerateSettings.Get())
 	{
 		Settings->OnSprintInputModeChanged.RemoveAll(this);
@@ -1308,6 +1441,7 @@ void APartnerCharacter::UnbindAccelerateInputSettings()
 	AccelerateInputSubsystem.Reset();
 	AccelerateInputKeys.Reset();
 	AttackInputKeys.Reset();
+	LogActionInputState(TEXT("UnbindSettings.After"));
 }
 
 void APartnerCharacter::HandleAccelerateModeChanged(EOutlierPlayerRole SettingsRole, EOutlierSprintInputMode Mode)
@@ -1331,9 +1465,22 @@ void APartnerCharacter::HandleAccelerateMappingsRebuilt()
 {
 	const UPartnerInputConfig* Config = Cast<UPartnerInputConfig>(InputConfig);
 	const UEnhancedInputLocalPlayerSubsystem* Subsystem = AccelerateInputSubsystem.Get();
-	if (!Config || !Subsystem) return;
+	if (!Config || !Subsystem)
+	{
+		LogActionInputState(TEXT("MappingsRebuilt.MissingConfigOrSubsystem"));
+		return;
+	}
 	AccelerateInputKeys = Subsystem->QueryKeysMappedToAction(Config->AccelerateAction);
 	AttackInputKeys = Subsystem->QueryKeysMappedToAction(Config->AttackAction);
+	LogActionInputState(TEXT("MappingsRebuilt.Queried"));
+	for (const FKey& Key : AccelerateInputKeys)
+	{
+		UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=MappedKey Partner=%s Action=Boost Key=%s"), *GetNameSafe(this), *Key.ToString());
+	}
+	for (const FKey& Key : AttackInputKeys)
+	{
+		UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=MappedKey Partner=%s Action=Attack Key=%s"), *GetNameSafe(this), *Key.ToString());
+	}
 	// UI는 Toggle의 Release만으로 꺼지지 않는다. 매핑 전환에서 의도까지 명시적으로 폐기한다.
 	if (AccelerateInputKeys.IsEmpty() || Subsystem->GetInputMode().HasTag(FirstPersonInputModeTags::UI()))
 	{
@@ -1503,6 +1650,22 @@ void APartnerCharacter::StopActionsForReboot(bool bPreserveActionInput)
 	}
 }
 
+void APartnerCharacter::StopActionsForPairDeath()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// 재부팅과 달리 리스폰 시 새 Pawn으로 교체되므로 부스트 의도를 보존하지 않는다.
+	// Epoch 증가가 클라이언트에도 복제되어 로컬 부스트 입력 상태까지 리셋된다.
+	StopActionsForReboot(false);
+	if (UCharacterMovementComponent* PartnerCharacterMovement = GetCharacterMovement())
+	{
+		PartnerCharacterMovement->StopMovementImmediately();
+	}
+}
+
 void APartnerCharacter::RefreshEnemyDetectionForVitality()
 {
 	if (!HasAuthority())
@@ -1533,8 +1696,14 @@ bool APartnerCharacter::CanTrackActionInputIntent() const
 		return false;
 	}
 	return !IsSuitTransitionBlocked()
+		&& !IsPairShooterDead()
 		&& (!OutlierAbilitySystemComponent
 			|| !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
+}
+
+bool APartnerCharacter::IsPairShooterDead() const
+{
+	return IsValid(CachedShooterCharacter) && CachedShooterCharacter->IsDead();
 }
 
 void APartnerCharacter::FinishActionsAfterReboot()
@@ -1558,6 +1727,11 @@ void APartnerCharacter::FinishActionsAfterReboot()
 
 bool APartnerCharacter::CanResumeMovementAfterSuitTransition() const
 {
+	// CanAcceptInput의 기반이라 이동/부스트/능력/공격 입력이 모두 이 조건을 따른다.
+	if (IsPairShooterDead())
+	{
+		return false;
+	}
 	return !OutlierAbilitySystemComponent
 		|| (!OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting())
 			&& !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
@@ -1826,6 +2000,10 @@ void APartnerCharacter::CleanupBoostVFXComponents()
 
 void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate, uint32 Request, uint32 Epoch)
 {
+	UE_LOG(LogPartnerInputDebug, Display,
+		TEXT("Event=Boost.ServerRequest Partner=%s Boost=%d Request=%u Epoch=%u CurrentEpoch=%u ProcessedRequest=%u CanTrack=%d CanAccept=%d"),
+		*GetNameSafe(this), bNewAccelerate, Request, Epoch, AccelerateInputEpoch,
+		ProcessedAccelerateInputRequest, CanTrackActionInputIntent(), CanAcceptInput());
 	if (Epoch != AccelerateInputEpoch || Request == 0
 		|| static_cast<int32>(Request - ProcessedAccelerateInputRequest) <= 0) return;
 	ProcessedAccelerateInputRequest = Request;

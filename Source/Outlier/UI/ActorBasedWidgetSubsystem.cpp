@@ -1,6 +1,8 @@
 #include "UI/ActorBasedWidgetSubsystem.h"
 
 #include "Interface/ActorBasedWidgetInterface.h"
+#include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 
 void UActorBasedWidgetSubsystem::RegisterWidgetOwner(UObject* WidgetOwner)
 {
@@ -25,6 +27,12 @@ void UActorBasedWidgetSubsystem::DismissRegisteredWidgets()
 
 	// A callback may destroy an owner or change subscriptions.
 	const TArray<TWeakObjectPtr<UObject>> Snapshot = WidgetOwners.Array();
+	const IConsoleVariable* DebugDismiss = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.UI.DebugInteractionDismiss"));
+	if (DebugDismiss && DebugDismiss->GetInt() != 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[InteractionWidgetDebug] DismissRegisteredWidgets World=%s RegisteredOwners=%d"),
+			*GetNameSafe(GetWorld()), Snapshot.Num());
+	}
 	for (const TWeakObjectPtr<UObject>& Owner : Snapshot)
 	{
 		if (Owner.IsValid() && WidgetOwners.Contains(Owner))

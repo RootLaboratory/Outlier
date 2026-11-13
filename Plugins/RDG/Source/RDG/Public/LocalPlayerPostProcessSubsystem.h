@@ -166,6 +166,19 @@ public:
 	// 튜닝값만 갱신한다. 켜짐 / 드러남 / 시간 같은 런타임 필드는 입력값을 무시하고 유지한다.
 	void SetDroneDamageFeedbackParameters(const FDroneDamageFeedbackParameters& InParameters);
 
+	// Partner KnockDown(Reboot). 로컬로 조종 중인 파트너가 다운된 동안 켠다.
+	// Duration은 전체 다운 시간, ElapsedTime은 이미 지난 시간(늦게 들어온 경우). 진행 중이면 새 값으로 다시 맞춘다.
+	// Duration이 지나면 스스로 꺼진다.
+	void StartPartnerKnockDown(float Duration, float ElapsedTime = 0.0f);
+	void StopPartnerKnockDown();
+	bool IsPartnerKnockDownActive() const { return PostProcessParameters.PartnerKnockDown.bEnabled != 0; }
+	float GetPartnerKnockDownProgress() const;
+	// 튜닝값만 갱신한다. 켜짐 / 시간 / 전체 시간 같은 런타임 필드는 입력값을 무시하고 유지한다.
+	void SetPartnerKnockDownParameters(const FPartnerKnockDownParameters& InParameters);
+	void SetPartnerKnockDownTexture(EPartnerKnockDownTexture Slot, UTexture2D* InTexture);
+	UTexture2D* GetPartnerKnockDownTexture(EPartnerKnockDownTexture Slot) const { return PartnerKnockDownTextures[static_cast<int32>(Slot)].Get(); }
+	bool IsPartnerKnockDownTextureReady(EPartnerKnockDownTexture Slot) const { return PartnerKnockDownTextureRHIs[static_cast<int32>(Slot)].IsValid(); }
+
 	// Split Prism(Slate 갈라짐 + 씬 PP 블러 + 깊이 잔차). 진행 중이면 처음부터 다시 시작한다.
 	// FocusDuration 뒤: 깊이 잔차가 꺼져 있으면 바로 끝, A(Settle)는 잔차를 줄이고 끝, B(Persist)는 Stop까지 유지.
 	void StartSplitPrism();
@@ -257,6 +270,8 @@ private:
 	void UpdateDroneDamageFeedback(float DeltaTime);
 	void RefreshDroneDamageEnabled();
 	void RefreshDroneDamageMaskTextures();
+	void UpdatePartnerKnockDown(float DeltaTime);
+	void RefreshPartnerKnockDownTextures();
 	void UpdateSplitPrism(float DeltaTime);
 	void ApplySplitPrism();
 	void ApplySplitPrismOff();
@@ -305,6 +320,11 @@ private:
 	TObjectPtr<UTexture2D> DroneDamageMaskTextures[4];
 	FTextureRHIRef DroneDamageMaskTextureRHIs[DroneDamageMaskCount];
 	uint8 bDroneDamageSuppressed : 1 = false;
+
+	// EPartnerKnockDownTexture 순서. UPROPERTY 배열 크기는 숫자로 적고, 슬롯 수와 같은지는 cpp에서 검사한다.
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> PartnerKnockDownTextures[2];
+	FTextureRHIRef PartnerKnockDownTextureRHIs[PartnerKnockDownTextureCount];
 
 	FSplitPrismSettings SplitPrismSettings;
 	ESplitPrismPhase SplitPrismPhase = ESplitPrismPhase::Idle;

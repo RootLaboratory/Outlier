@@ -373,7 +373,7 @@ bool UOutlierAbilitySystemComponent::InitializeVitalityToSelf(float MaxHealth)
 	return ApplySpecToSelf(*this, SpecHandle, EOutlierVitalityUpdatePolicy::Immediate);
 }
 
-bool UOutlierAbilitySystemComponent::RestoreHealthToMax()
+bool UOutlierAbilitySystemComponent::RestoreHealthToMax(EOutlierVitalityUpdatePolicy Policy)
 {
 	if (!IsOwnerActorAuthoritative())
 	{
@@ -397,7 +397,7 @@ bool UOutlierAbilitySystemComponent::RestoreHealthToMax()
 	}
 
 	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::Health(), MaxHealth);
-	return ApplySpecToSelf(*this, SpecHandle, EOutlierVitalityUpdatePolicy::Immediate);
+	return ApplySpecToSelf(*this, SpecHandle, Policy);
 }
 
 FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyRebootStateToSelf(float DurationSeconds)

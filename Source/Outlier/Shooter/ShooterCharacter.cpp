@@ -826,6 +826,8 @@ void AShooterCharacter::BindGasVitalityObservers()
 	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
 			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
+	StealthCooldownEffectAddedHandle = OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.AddUObject(
+		this, &AShooterCharacter::HandleStealthCooldownEffectAdded);
 	StealthSpeedTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).AddUObject(
 			this, &AShooterCharacter::HandleStealthSpeedTagChanged);
@@ -833,6 +835,7 @@ void AShooterCharacter::BindGasVitalityObservers()
 
 void AShooterCharacter::UnbindGasVitalityObservers()
 {
+	GetWorldTimerManager().ClearTimer(StealthCooldownUIRefreshTimer);
 	if (!OutlierAbilitySystemComponent)
 	{
 		return;
@@ -860,6 +863,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 		OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()).Remove(WeaponOverchargeCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.Remove(StealthCooldownEffectAddedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).Remove(StealthSpeedTagChangedHandle);
 
@@ -875,6 +879,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	BulletReflectionCooldownTagChangedHandle.Reset();
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
+	StealthCooldownEffectAddedHandle.Reset();
 	StealthSpeedTagChangedHandle.Reset();
 }
 
@@ -1262,11 +1267,30 @@ static void QueueShooterSkillReadyAudio(AShooterCharacter* Character, const FGam
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	QueueShooterSkillReadyAudio(this, Tag, NewCount);
-	if (!IsLocallyControlled())
+	QueueStealthCooldownUIRefresh();
+}
+
+void AShooterCharacter::HandleStealthCooldownEffectAdded(UAbilitySystemComponent* AbilitySystem,
+	const FGameplayEffectSpec& EffectSpec, FActiveGameplayEffectHandle EffectHandle)
+{
+	// 복제 중 기존 효과가 새 효과로 교체돼도 태그 개수는 그대로일 수 있다.
+	// 효과 추가도 감지해야 암살자의 일격으로 줄어든 잔여 시간이 오너 HUD에 반영된다.
+	if (EffectSpec.Def && EffectSpec.Def->GetGrantedTags().HasTagExact(
+		OutlierGameplayTags::Cooldown::Shooter::Stealth()))
+	{
+		QueueStealthCooldownUIRefresh();
+	}
+}
+
+void AShooterCharacter::QueueStealthCooldownUIRefresh()
+{
+	if (!IsLocallyControlled() || GetWorldTimerManager().TimerExists(StealthCooldownUIRefreshTimer))
 	{
 		return;
 	}
-	RefreshShooterSuitCooldownUI();
+	// 제거/재부여 중간의 0초로 완료 연출이 켜지지 않도록 최종 상태만 전달한다.
+	StealthCooldownUIRefreshTimer = GetWorldTimerManager().SetTimerForNextTick(this,
+		&AShooterCharacter::RefreshShooterSuitCooldownUI);
 }
 
 void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -1912,7 +1936,7 @@ void AShooterCharacter::CheckJumpInput(float DeltaTime)
 		const FVector FootLocation = Capsule->GetComponentLocation()
 			- FVector::UpVector * Capsule->GetScaledCapsuleHalfHeight();
 		EPhysicalSurface Surface = SurfaceType_Default;
-		// 지상 출발에만 짧게 조회한다. 공중 점프는 아래의 다른 바닥을 선택하지 않고 Plastic을 사용한다.
+		// 지상 출발에만 짧게 조회한다. 2단 점프는 표면과 무관한 전용 태그를 사용한다.
 		if (bWasOnGround)
 		{
 			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterJumpSurface), false, this);
@@ -1934,8 +1958,11 @@ void AShooterCharacter::CheckJumpInput(float DeltaTime)
 				Surface = UPhysicalMaterial::DetermineSurfaceType(SurfaceHit.PhysMaterial.Get());
 			}
 		}
+		const FGameplayTag JumpAudioContext = JumpCurrentCount == 2
+			? OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.DoubleJump"))
+			: OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Jump"));
 		MovementAudioSubsystem->PlayMovementSurfaceAudio(this,
-			OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Jump")), Surface, FootLocation,
+			JumpAudioContext, Surface, FootLocation,
 			JumpMovement->GetMovementAudioEventId(false));
 	}
 

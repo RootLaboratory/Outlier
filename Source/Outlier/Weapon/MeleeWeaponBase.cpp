@@ -9,6 +9,7 @@
 #include "Drone/Partner/PartnerVitalityComponent.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/AutoTurret.h"
+#include "Explosion/ExplosiveProp.h"
 #include "EngineUtils.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -999,6 +1000,13 @@ bool AMeleeWeaponBase::IsValidMeleeTarget(
 	bool bIncludePartner,
 	bool bRequireIndicatorEligibility) const
 {
+	if (const AExplosiveProp* Explosive = Cast<AExplosiveProp>(Candidate))
+	{
+		// 폭발물은 실제 타격만 허용하고 적 전용 근접 인디케이터에서는 제외한다.
+		return !bRequireIndicatorEligibility && Explosive->CanBeDamaged()
+			&& !Explosive->IsExploded() && Explosive->GetCurrentHP() > 0.0f;
+	}
+
 	if (const AEnemyBase* Enemy = Cast<AEnemyBase>(Candidate))
 	{
 		const bool bValidEnemy = !Enemy->IsDead()
@@ -1043,7 +1051,8 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 		*GetNameSafe(this), HasAuthority(), AttackSequence, *GetNameSafe(Target), IsValid(Target) && Target->CanBeDamaged(), *HitResult.ImpactPoint.ToString());
 	AEnemyBase* Enemy = Cast<AEnemyBase>(Target);
 	APartnerCharacter* Partner = Cast<APartnerCharacter>(Target);
-	if (!HasAuthority() || (!IsValid(Enemy) && !IsValid(Partner))
+	AExplosiveProp* Explosive = Cast<AExplosiveProp>(Target);
+	if (!HasAuthority() || (!IsValid(Enemy) && !IsValid(Partner) && !IsValid(Explosive))
 		|| !Target->CanBeDamaged())
 	{
 		UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][DamageRejected] Weapon=%s Sequence=%d Reason=AuthorityOrTargetTypeOrDamageDisabled"), *GetNameSafe(this), AttackSequence);
@@ -1069,7 +1078,7 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 			? EMeleeHitResultType::EnemyInstantKill
 			: EMeleeHitResultType::EnemyDamage;
 	}
-	else
+	else if (Partner)
 	{
 		const UOutlierVitalAttributeSet* Vital = Partner->GetVitalAttributeSet();
 		const UPartnerVitalityComponent* Vitality = Partner->GetPartnerVitalityComponent();
@@ -1107,7 +1116,6 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 		return;
 	}
 
-	FMeleeHitContext Context;
 	// 접촉 후보가 아니라 실제 피해가 적용된 경우에만 초록 표식을 전송한다.
 #if !UE_BUILD_SHIPPING
 	if (bServerTraceDebugRequested || bDrawDebugMeleeTrace)
@@ -1116,6 +1124,13 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 			bServerTraceDebugRequested ? ServerTraceDebugDuration : DebugMeleeTraceDuration);
 	}
 #endif
+	// 폭발물의 피격/폭발 연출은 ReceiveOutlierDamage에서 처리한다.
+	if (Explosive)
+	{
+		return;
+	}
+
+	FMeleeHitContext Context;
 	Context.TargetActor = Target;
 	Context.HitLocation = HitResult.ImpactPoint;
 	Context.HitNormal = HitResult.ImpactNormal;

@@ -3,6 +3,8 @@
 #include "Audio/OutlierAbilityAudioSettings.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Engine/OverlapResult.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
@@ -15,6 +17,8 @@
 #include "Shooter/ShooterMovementComponent.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogQuantumLeap, Log, All);
 
 namespace
 {
@@ -103,10 +107,16 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 {
 	if (!PassesUpgradeGrantGate(ActorInfo, OutlierGameplayTags::Ability::Shooter::QuantumLeap()))
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Ability grant gate rejected. Avatar=%s"), *GetNameSafe(ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr));
 		return false;
 	}
-	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
+	FGameplayTagContainer FailureTags;
+	FGameplayTagContainer* RelevantTags = OptionalRelevantTags ? OptionalRelevantTags : &FailureTags;
+	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, RelevantTags))
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] GAS activation rejected (blocked tags, active ability, cooldown or cost). Avatar=%s RelevantTags=%s"),
+			*GetNameSafe(ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr),
+			*RelevantTags->ToStringSimple());
 		return false;
 	}
 
@@ -120,27 +130,34 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	const UAbilitySystemComponent* PartnerASC = Partner ? Partner->GetAbilitySystemComponent() : nullptr;
 	if (!Shooter || !AbilitySystem)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Missing Shooter or ASC. Shooter=%s ASC=%s"), *GetNameSafe(Shooter), *GetNameSafe(AbilitySystem));
 		return false;
 	}
 	if (!AbilitySystem->IsShooterSuitConfigured())
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Suit not configured. Shooter=%s"), *GetNameSafe(Shooter));
 		return false;
 	}
 	// 재충전 중이어도 남은 횟수로 도약할 수 있다. 실패 후 재시도 제한은 별도로 적용한다.
 	if (AbilitySystem->GetShooterQuantumLeapChargeState().CurrentCharges <= 0 || AbilitySystem->IsShooterQuantumLeapRetryActive())
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] No charge or failure retry delay active. Shooter=%s Charges=%d RetryActive=%d"),
+			*GetNameSafe(Shooter), AbilitySystem->GetShooterQuantumLeapChargeState().CurrentCharges, AbilitySystem->IsShooterQuantumLeapRetryActive());
 		return false;
 	}
 	if (!Shooter->IsSuitUsable())
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Suit unusable. Shooter=%s"), *GetNameSafe(Shooter));
 		return false;
 	}
 	if (!IsValid(Partner) || !PartnerASC)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Invalid Partner or missing Partner ASC. Shooter=%s Partner=%s ASC=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner), *GetNameSafe(PartnerASC));
 		return false;
 	}
 	if (PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting()))
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Partner rebooting. Partner=%s"), *GetNameSafe(Partner));
 		return false;
 	}
 
@@ -148,6 +165,7 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	const float MaxDistance = AbilitySystem->GetShooterSuitConfig().MaxPartnerDistance;
 	if (Distance > MaxDistance)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[CanActivate] Partner out of range. Shooter=%s Distance=%.1f MaxDistance=%.1f"), *GetNameSafe(Shooter), Distance, MaxDistance);
 		return false;
 	}
 	return true;
@@ -169,6 +187,7 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
 	if (!Shooter || !Partner || !ShooterASC)
 	{
+		UE_LOG(LogQuantumLeap, Warning, TEXT("[Activate] Missing required actor/ASC. Shooter=%s Partner=%s ASC=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner), *GetNameSafe(ShooterASC));
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
@@ -230,6 +249,7 @@ bool UOutlierShooterQuantumLeapAbility::CancelQuantumLeap(bool bInCommitFailureC
 		return false;
 	}
 	bCommitFailureCooldown = bInCommitFailureCooldown;
+	UE_LOG(LogQuantumLeap, Warning, TEXT("[Cancel] External cancellation. Shooter=%s CommitFailureRetry=%d"), *GetNameSafe(GetShooterCharacter()), bInCommitFailureCooldown);
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 	return true;
 }

@@ -354,13 +354,18 @@ bool FOutlierLaserPlayerLifecycleTest::RunTest(const FString& Parameters)
 			PartnerASC->RemoveActiveEffectFromSelf(Immunity);
 			AdvanceContactTimers(World);
 			TestEqual(TEXT("Immunity OFF inside kills Partner vitality"), Partner->GetVitalAttributeSet()->GetHealth(), 0.0f);
-			TestEqual(TEXT("Only suited Partner reboots"), PartnerVitality->IsRebooting(), bSuit);
-			TestEqual(TEXT("Pre-suit Partner enters Shooter death path"), Shooter->IsDead(), !bSuit);
+			TestFalse(TEXT("Partner instant kill bypasses Reboot regardless of suit"), PartnerVitality->IsRebooting());
+			TestTrue(TEXT("Partner instant kill enters Shooter death path regardless of suit"), Shooter->IsDead());
 			if (bSuit)
 			{
-				PartnerVitality->RemoveRebootEffect();
+				// Partner 접촉의 페어 사망을 지운 뒤 Shooter 자신의 레이저 피해를 별도로 검증한다.
+				FGameplayTagContainer DeadTags;
+				DeadTags.AddTag(OutlierGameplayTags::State::Dead());
+				ShooterASC->RemoveActiveEffectsWithGrantedTags(DeadTags);
+				TestFalse(TEXT("Shooter laser fixture clears preceding pair death"), Shooter->IsDead());
 				AdvanceContactTimers(World);
-				TestFalse(TEXT("Same successful contact cannot reboot twice"), PartnerVitality->IsRebooting());
+				TestFalse(TEXT("Same successful contact cannot repeat pair death"), Shooter->IsDead());
+				TestFalse(TEXT("Same successful contact cannot start Reboot"), PartnerVitality->IsRebooting());
 				ShooterState->SetEditorPairInvulnerable(true);
 				Shooter->SetActorLocation(Floor->GetActorLocation());
 				Shooter->GetCapsuleComponent()->UpdateOverlaps();

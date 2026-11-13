@@ -43,6 +43,15 @@ TStaticArray<UTexture2D*, DeathTransitionTextureCount> GetDeathTransitionTexture
 	Textures[static_cast<int32>(EDeathTransitionTexture::FadeVignette)] = Volume.DeathBlackVignetteTexture;
 	return Textures;
 }
+
+// Partner KnockDown 텍스처를 EPartnerKnockDownTexture 순서로 모은다.
+TStaticArray<UTexture2D*, PartnerKnockDownTextureCount> GetPartnerKnockDownTextures(const AOutlierPostProcessVolume& Volume)
+{
+	TStaticArray<UTexture2D*, PartnerKnockDownTextureCount> Textures;
+	Textures[static_cast<int32>(EPartnerKnockDownTexture::Mask)] = Volume.PartnerKnockDownMaskTexture;
+	Textures[static_cast<int32>(EPartnerKnockDownTexture::DamageHud)] = Volume.PartnerKnockDownDamageHudTexture;
+	return Textures;
+}
 }
 
 FOutlierScreenTransitionTiming AOutlierPostProcessVolume::ResolveScreenTransitionTiming(
@@ -162,6 +171,7 @@ void AOutlierPostProcessVolume::BeginPlay()
 		if (UGameInstance* GameInstance = World->GetGameInstance())
 		{
 			const TStaticArray<UTexture2D*, DeathTransitionTextureCount> DeathTransitionTextures = GetDeathTransitionTextures(*this);
+			const TStaticArray<UTexture2D*, PartnerKnockDownTextureCount> PartnerKnockDownTextures = GetPartnerKnockDownTextures(*this);
 			for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
 			{
 				if (!LocalPlayer)
@@ -181,6 +191,14 @@ void AOutlierPostProcessVolume::BeginPlay()
 						}
 					}
 
+					for (int32 SlotIndex = 0; SlotIndex < PartnerKnockDownTextureCount; ++SlotIndex)
+					{
+						if (UTexture2D* Texture = PartnerKnockDownTextures[SlotIndex])
+						{
+							RDGSubsystem->SetPartnerKnockDownTexture(static_cast<EPartnerKnockDownTexture>(SlotIndex), Texture);
+						}
+					}
+
 				}
 			}
 		}
@@ -190,6 +208,7 @@ void AOutlierPostProcessVolume::BeginPlay()
 void AOutlierPostProcessVolume::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	const TStaticArray<UTexture2D*, DeathTransitionTextureCount> DeathTransitionTextures = GetDeathTransitionTextures(*this);
+	const TStaticArray<UTexture2D*, PartnerKnockDownTextureCount> PartnerKnockDownTextures = GetPartnerKnockDownTextures(*this);
 	UWorld* World = GetWorld();
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World
 		? World->GetSubsystem<UMaterialPostProcessSubsystem>() : nullptr)
@@ -215,6 +234,16 @@ void AOutlierPostProcessVolume::EndPlay(const EEndPlayReason::Type EndPlayReason
 				if (Texture && RDGSubsystem->GetDeathTransitionTexture(Slot) == Texture)
 				{
 					RDGSubsystem->SetDeathTransitionTexture(Slot, nullptr);
+				}
+			}
+
+			for (int32 SlotIndex = 0; SlotIndex < PartnerKnockDownTextureCount; ++SlotIndex)
+			{
+				const EPartnerKnockDownTexture Slot = static_cast<EPartnerKnockDownTexture>(SlotIndex);
+				UTexture2D* Texture = PartnerKnockDownTextures[SlotIndex];
+				if (Texture && RDGSubsystem->GetPartnerKnockDownTexture(Slot) == Texture)
+				{
+					RDGSubsystem->SetPartnerKnockDownTexture(Slot, nullptr);
 				}
 			}
 		}

@@ -1206,6 +1206,20 @@ void AOutlierGameMode::HandlePlayerDeath(AShooterCharacter* Character)
 		}
 
 		PS->SetSuitDisabledByPartnerBoundary(false);
+
+		// 사망 연출 동안 Partner가 비행/부스트를 이어가지 않도록 진행 중인 행동을 정리한다.
+		APartnerCharacter* Partner = PS->GetPartnerCharacter();
+		if (!Partner)
+		{
+			if (const AOutlierPlayerState* PartnerPS = FindPairPlayerState(PS->GetPairId(), EOutlierPlayerRole::Partner))
+			{
+				Partner = PartnerPS->GetPartnerCharacter();
+			}
+		}
+		if (IsValid(Partner))
+		{
+			Partner->StopActionsForPairDeath();
+		}
 	}
 
 	// 사망 Pawn을 Controller에서 분리하지 않는다. 분리하면 시점이 Controller로 넘어가 3인칭 메시가

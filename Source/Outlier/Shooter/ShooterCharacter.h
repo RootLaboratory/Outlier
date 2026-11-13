@@ -43,6 +43,9 @@ class UOutlierAbilitySystemComponent;
 class UPlayerRelocationQuery;
 class UOutlierArenaSubsystem;
 struct FPlayerRelocationResult;
+class UAbilitySystemComponent;
+struct FGameplayEffectSpec;
+struct FActiveGameplayEffectHandle;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UOutlierWeaponAttributeSet;
@@ -617,6 +620,8 @@ protected:
 	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
 	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
+	FDelegateHandle StealthCooldownEffectAddedHandle;
+	FTimerHandle StealthCooldownUIRefreshTimer;
 	FDelegateHandle StealthSpeedTagChangedHandle;
 	FDelegateHandle PartnerRebootTagChangedHandle;
 	FUILayerHandle ReflectionBarrierLayerHandle;
@@ -709,6 +714,9 @@ protected:
 	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleStealthCooldownEffectAdded(UAbilitySystemComponent* AbilitySystem,
+		const FGameplayEffectSpec& EffectSpec, FActiveGameplayEffectHandle EffectHandle);
+	void QueueStealthCooldownUIRefresh();
 	void HandleStealthSpeedTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshShooterSuitCooldownUI();
 	// 휠 아이콘 해금( = Grant )을 4개 전부 다시 계산한다. 선택 중인 능력이 잠기면 기본 제공 능력으로 되돌린다.

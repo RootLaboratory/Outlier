@@ -13,6 +13,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "DeathTransitionSequence.h"
+#include "FRDGPartnerKnockDownPass.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -1682,6 +1683,12 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 				.Padding(RDGGraphicsDebugger::RowPadding)
 				[
 					MakeDroneDamageFeedbackSection()
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					MakePartnerKnockDownSection()
 				]
 			]
 		]
@@ -3766,6 +3773,221 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDroneDamageFeedbackSection()
 		[
 			SNew(STextBlock)
 			.Text(FText::FromString(TEXT("Drone Damage Feedback (mask .r x .a, Slice Glitch / Pixel Sort / Shift To Black)")))
+		]
+		.BodyContent()
+		[
+			Body
+		];
+}
+
+TSharedRef<SWidget> SRDGGraphicsDebugger::MakePartnerKnockDownSection()
+{
+	using namespace RDGGraphicsDebugger;
+
+	const TFunction<ULocalPlayerPostProcessSubsystem*()> Resolve = [this]()
+	{
+		return ResolvePostProcessSubsystem();
+	};
+
+	auto ParameterRow = [Resolve](const TCHAR* Label, float MinSlider, float MaxSlider, TFunction<float&(FPartnerKnockDownParameters&)> Field)
+	{
+		return MakeDeathParameterRow<FPartnerKnockDownParameters>(
+			Label, MinSlider, MaxSlider, Resolve,
+			[](const ULocalPlayerPostProcessSubsystem& Subsystem) -> const FPartnerKnockDownParameters& { return Subsystem.GetPostProcessStrcture().PartnerKnockDown; },
+			[](ULocalPlayerPostProcessSubsystem& Subsystem, const FPartnerKnockDownParameters& Parameters) { Subsystem.SetPartnerKnockDownParameters(Parameters); },
+			MoveTemp(Field));
+	};
+
+	auto FlagRow = [Resolve](const TCHAR* Label, TFunction<int32&(FPartnerKnockDownParameters&)> Field) -> TSharedRef<SWidget>
+	{
+		return SNew(SCheckBox)
+			.IsChecked_Lambda([Resolve, Field]()
+			{
+				const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+				if (!Subsystem)
+				{
+					return ECheckBoxState::Unchecked;
+				}
+
+				FPartnerKnockDownParameters Parameters = Subsystem->GetPostProcessStrcture().PartnerKnockDown;
+				return Field(Parameters) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			})
+			.OnCheckStateChanged_Lambda([Resolve, Field](ECheckBoxState NewState)
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					FPartnerKnockDownParameters Parameters = Subsystem->GetPostProcessStrcture().PartnerKnockDown;
+					Field(Parameters) = NewState == ECheckBoxState::Checked ? 1 : 0;
+					Subsystem->SetPartnerKnockDownParameters(Parameters);
+				}
+			})
+			[
+				SNew(STextBlock).Text(FText::FromString(Label))
+			];
+	};
+
+	auto TextureStatusRow = [Resolve](EPartnerKnockDownTexture Slot, const TCHAR* SlotName) -> TSharedRef<SWidget>
+	{
+		return SNew(STextBlock)
+			.Text_Lambda([Resolve, Slot, SlotName]()
+			{
+				const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+				return FText::FromString(Subsystem
+					? FString::Printf(TEXT("%s: %s (%s)"),
+						SlotName,
+						*GetNameSafe(Subsystem->GetPartnerKnockDownTexture(Slot)),
+						Subsystem->IsPartnerKnockDownTextureReady(Slot) ? TEXT("ready") : TEXT("not set"))
+					: FString::Printf(TEXT("%s: no subsystem"), SlotName));
+			});
+	};
+
+	TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+
+	auto AddRow = [&Body](TSharedRef<SWidget> Row)
+	{
+		Body->AddSlot()
+		.AutoHeight()
+		.Padding(RowPadding)
+		[
+			Row
+		];
+	};
+
+	// 실제로 다운되지 않고 미리 보기. Duration은 디버거 전용 값이다.
+	const TSharedRef<float> PreviewDuration = MakeShared<float>(5.0f);
+
+	AddRow(SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SButton)
+			.Text(FText::FromString(TEXT("Play")))
+			.OnClicked_Lambda([Resolve, PreviewDuration]()
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					Subsystem->StartPartnerKnockDown(FMath::Max(0.1f, *PreviewDuration));
+				}
+				return FReply::Handled();
+			})
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+		[
+			SNew(SButton)
+			.Text(FText::FromString(TEXT("Stop")))
+			.OnClicked_Lambda([Resolve]()
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					Subsystem->StopPartnerKnockDown();
+				}
+				return FReply::Handled();
+			})
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(12.0f, 0.0f, 4.0f, 0.0f)
+		[
+			SNew(STextBlock).Text(FText::FromString(TEXT("Preview Duration (s)")))
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SBox)
+			.WidthOverride(72.0f)
+			[
+				SNew(SNumericEntryBox<float>)
+				.AllowSpin(false)
+				.Value_Lambda([PreviewDuration]() { return TOptional<float>(*PreviewDuration); })
+				.OnValueChanged_Lambda([PreviewDuration](float NewValue) { *PreviewDuration = FMath::Max(0.1f, NewValue); })
+			]
+		]);
+
+	AddRow(SNew(STextBlock).Text_Lambda([Resolve]()
+	{
+		const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+		if (!Subsystem)
+		{
+			return FText::FromString(TEXT("Start PIE to preview Partner KnockDown."));
+		}
+
+		const FPartnerKnockDownParameters& KnockDown = Subsystem->GetPostProcessStrcture().PartnerKnockDown;
+		return FText::FromString(FString::Printf(TEXT("Active: %s  Time: %.2f / %.2f s  Progress: %.2f%s  DamageHud Intensity: %.2f  Exponent Pulse: %.2f (pow %.2f)  Breath: %.2f"),
+			KnockDown.bEnabled ? TEXT("yes") : TEXT("no"),
+			KnockDown.Time,
+			KnockDown.Duration,
+			Subsystem->GetPartnerKnockDownProgress(),
+			KnockDown.bProgressOverride ? TEXT(" (override)") : TEXT(""),
+			FRDGPartnerKnockDownPass::GetDamageHudIntensity(KnockDown),
+			FRDGPartnerKnockDownPass::GetDamageHudExponentPulse(KnockDown),
+			FRDGPartnerKnockDownPass::GetDamageHudExponent(KnockDown),
+			FRDGPartnerKnockDownPass::GetDamageHudBreath(KnockDown)));
+	}));
+
+	AddRow(TextureStatusRow(EPartnerKnockDownTexture::Mask, TEXT("Mask Texture (PostProcessVolume)")));
+	AddRow(TextureStatusRow(EPartnerKnockDownTexture::DamageHud, TEXT("DamageHud Texture (PostProcessVolume)")));
+
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[Progress / Debug]"))));
+	AddRow(FlagRow(TEXT("Progress Override (hold progress, no auto stop)"), [](FPartnerKnockDownParameters& P) -> int32& { return P.bProgressOverride; }));
+	AddRow(ParameterRow(TEXT("Progress Override (0 = just down, 1 = recovered)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ProgressOverride; }));
+	AddRow(FlagRow(TEXT("Mask Visualize (redder = weaker glitch)"), [](FPartnerKnockDownParameters& P) -> int32& { return P.bMaskVisualize; }));
+
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[Mask] white = glitch, low values recover first"))));
+	AddRow(FlagRow(TEXT("Mask Invert"), [](FPartnerKnockDownParameters& P) -> int32& { return P.bMaskInvert; }));
+	AddRow(ParameterRow(TEXT("Mask Black Point"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.MaskBlackPoint; }));
+	AddRow(ParameterRow(TEXT("Mask White Point"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.MaskWhitePoint; }));
+	AddRow(ParameterRow(TEXT("Mask Gamma (gradient curve)"), 0.05f, 4.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.MaskGamma; }));
+	AddRow(ParameterRow(TEXT("Recover Softness (edge width while recovering)"), 0.0f, 0.5f, [](FPartnerKnockDownParameters& P) -> float& { return P.RecoverSoftness; }));
+
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[Slice Glitch] defaults = Death Noise"))));
+	AddRow(ParameterRow(TEXT("Max Intensity"), 0.0f, 4.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.MaxIntensity; }));
+	AddRow(ParameterRow(TEXT("Seed"), 0.0f, 100.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.Seed; }));
+	AddRow(ParameterRow(TEXT("Slice Rows (grid)"), 1.0f, 256.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.SliceRows; }));
+	AddRow(ParameterRow(TEXT("Slice Split Chance (avg height = 1/x rows)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.SliceSplitChance; }));
+	AddRow(ParameterRow(TEXT("Glitch Rate (/s)"), 1.0f, 60.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.GlitchRate; }));
+	AddRow(ParameterRow(TEXT("Glitch Strength (view width ratio)"), 0.0f, 0.3f, [](FPartnerKnockDownParameters& P) -> float& { return P.GlitchStrength; }));
+	AddRow(ParameterRow(TEXT("Glitch Threshold"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.GlitchThreshold; }));
+	AddRow(ParameterRow(TEXT("Glitch Glow"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.GlitchGlow; }));
+	AddRow(ParameterRow(TEXT("Burst Chance"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.BurstChance; }));
+	AddRow(ParameterRow(TEXT("Burst Strength (x)"), 1.0f, 10.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.BurstStrength; }));
+	AddRow(ParameterRow(TEXT("Burst Threshold"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.BurstThreshold; }));
+	AddRow(ParameterRow(TEXT("Tint R"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.Tint.R; }));
+	AddRow(ParameterRow(TEXT("Tint G"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.Tint.G; }));
+	AddRow(ParameterRow(TEXT("Tint B"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.Tint.B; }));
+
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[Chromatic Aberration] UI lens CA, masked by glitch weight"))));
+	AddRow(FlagRow(TEXT("Chromatic Aberration"), [](FPartnerKnockDownParameters& P) -> int32& { return P.bChromaticAberration; }));
+	AddRow(FlagRow(TEXT("Chromatic Glitch Slices Only (off = whole mask)"), [](FPartnerKnockDownParameters& P) -> int32& { return P.bChromaticGlitchOnly; }));
+	AddRow(ParameterRow(TEXT("Chromatic Start Offset (lens radius, 0 = center)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChromaticStartOffset; }));
+	AddRow(ParameterRow(TEXT("Chromatic Intensity"), 0.0f, 4.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.ChromaticIntensity; }));
+
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[DamageHud] not glitched, drawn on top (after Tonemap)"))));
+	AddRow(FlagRow(TEXT("DamageHud Blend: Add + Darken (off = Alpha Over)"), [](FPartnerKnockDownParameters& P) -> int32& { return P.DamageHud.BlendMode; }));
+	AddRow(ParameterRow(TEXT("DamageHud Opacity"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.Opacity; }));
+	AddRow(ParameterRow(TEXT("DamageHud Darken (scene under HUD, Add mode only)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.Darken; }));
+	AddRow(ParameterRow(TEXT("DamageHud Min Intensity (start / end, add multiplier)"), 0.0f, 6.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.MinIntensity; }));
+	AddRow(ParameterRow(TEXT("DamageHud Max Intensity (peak)"), 0.0f, 6.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.MaxIntensity; }));
+	AddRow(ParameterRow(TEXT("DamageHud Min Exponent (start / end, 0 = original)"), 0.0f, 4.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.MinExponent; }));
+	AddRow(ParameterRow(TEXT("DamageHud Max Exponent (peak, pow(tex, 1 / (1 + x)), higher = stronger)"), 0.0f, 4.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.MaxExponent; }));
+	AddRow(ParameterRow(TEXT("DamageHud Pulse In Time (s, ease in Min -> Max, intensity + exponent)"), 0.0f, 2.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.PulseInTime; }));
+	AddRow(ParameterRow(TEXT("DamageHud Pulse Out Time (s, ease out Max -> Min, intensity + exponent)"), 0.0f, 2.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.PulseOutTime; }));
+	AddRow(ParameterRow(TEXT("DamageHud Fade Out Time (s before end)"), 0.0f, 3.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.FadeOutTime; }));
+	AddRow(FlagRow(TEXT("DamageHud Breath (after pulse, HUD rgb x same value)"), [](FPartnerKnockDownParameters& P) -> int32& { return P.DamageHud.bBreath; }));
+	AddRow(ParameterRow(TEXT("DamageHud Breath Min (deepest press, 1 = none)"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.BreathMin; }));
+	AddRow(ParameterRow(TEXT("DamageHud Breath Period (s per breath)"), 0.05f, 6.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.BreathPeriod; }));
+	AddRow(ParameterRow(TEXT("DamageHud Tint R"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.Tint.R; }));
+	AddRow(ParameterRow(TEXT("DamageHud Tint G"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.Tint.G; }));
+	AddRow(ParameterRow(TEXT("DamageHud Tint B"), 0.0f, 1.0f, [](FPartnerKnockDownParameters& P) -> float& { return P.DamageHud.Tint.B; }));
+
+	return SNew(SExpandableArea)
+		.InitiallyCollapsed(false)
+		.HeaderContent()
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(TEXT("Partner KnockDown (passes: RDG.PartnerKnockDown.Mask -> RDG.PartnerKnockDown)")))
 		]
 		.BodyContent()
 		[

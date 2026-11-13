@@ -15,11 +15,23 @@ UPartnerCombatComponent::UPartnerCombatComponent()
 
 void UPartnerCombatComponent::TryStartAttack(bool bRequireFreshPress)
 {
-	if (!PartnerCharacter || (bRequireFreshPress && bAttackNeedsFreshPress) || bAttackInputHeld
-		|| !PartnerCharacter->CanTrackActionInputIntent())
+	const bool bCanTrack = PartnerCharacter && PartnerCharacter->CanTrackActionInputIntent();
+	const uint8 BlockMask = (!PartnerCharacter ? 1 : 0) | ((bRequireFreshPress && bAttackNeedsFreshPress) ? 2 : 0)
+		| (bAttackInputHeld ? 4 : 0) | (!bCanTrack ? 8 : 0);
+	if (BlockMask != 0)
 	{
+		if (LastDebugAttackBlockMask != BlockMask)
+		{
+			UE_LOG(LogPartnerInputDebug, Display,
+				TEXT("Event=Attack.Blocked Partner=%s CanTrack=%d RequireFresh=%d FreshRequired=%d Held=%d"),
+				*GetNameSafe(PartnerCharacter), bCanTrack, bRequireFreshPress, bAttackNeedsFreshPress, bAttackInputHeld);
+		}
+		LastDebugAttackBlockMask = BlockMask;
 		return;
 	}
+	LastDebugAttackBlockMask = 0;
+	UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=Attack.Accepted Partner=%s Authority=%d Epoch=%u"),
+		*GetNameSafe(PartnerCharacter), PartnerCharacter->HasAuthority(), PartnerCharacter->GetActionInputEpoch());
 
 	SendAttackInput(true);
 }
@@ -52,6 +64,12 @@ void UPartnerCombatComponent::SendAttackInput(bool bHeld)
 
 void UPartnerCombatComponent::ServerSetAttackHeld_Implementation(bool bHeld, uint32 Request, uint32 Epoch)
 {
+	UE_LOG(LogPartnerInputDebug, Display,
+		TEXT("Event=Attack.ServerRequest Partner=%s Held=%d Request=%u Epoch=%u CurrentEpoch=%u ProcessedEpoch=%u ProcessedRequest=%u CanTrack=%d"),
+		*GetNameSafe(PartnerCharacter), bHeld, Request, Epoch,
+		PartnerCharacter ? PartnerCharacter->GetActionInputEpoch() : 0,
+		ProcessedAttackInputEpoch, ProcessedAttackInputRequest,
+		PartnerCharacter && PartnerCharacter->CanTrackActionInputIntent());
 	if (!PartnerCharacter || Epoch != PartnerCharacter->GetActionInputEpoch() || Request == 0) return;
 	// 순번은 새 세대에서만 초기화한다. 같은 세대의 실행 중단이 오래된 ON을 되살리면 안 된다.
 	if (ProcessedAttackInputEpoch != Epoch)
@@ -167,6 +185,8 @@ void UPartnerCombatComponent::StopCurrentAttack(bool bPreserveCadence)
 
 void UPartnerCombatComponent::ResetAttackInput()
 {
+	UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=Attack.Reset Partner=%s FreshRequired=%d Held=%d"),
+		*GetNameSafe(PartnerCharacter), bAttackNeedsFreshPress, bAttackInputHeld);
 	bAttackNeedsFreshPress = true;
 	bAttackStartPending = false;
 	LastAttackBlockReason = NAME_None;

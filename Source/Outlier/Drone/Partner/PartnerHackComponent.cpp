@@ -8,6 +8,8 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/OverlapResult.h"
+#include "Engine/World.h"
+#include "UI/ActorBasedWidgetSubsystem.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
@@ -17,6 +19,7 @@
 #include "Interface/HackableInterface.h"
 #include "UI/HackCandidateLayerWidget.h"
 #include "UI/HackCandidateMarkerWidget.h"
+#include "UI/HackableInfoWidget.h"
 #include "UI/HackMiniGameWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/UILayerGameplayTags.h"
@@ -30,6 +33,10 @@ UPartnerHackComponent::UPartnerHackComponent()
 void UPartnerHackComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->RegisterWidgetOwner(this);
+	}
 
 	CachedAbilityData.bRequireLineOfSight = bRequireLineOfSight;
 
@@ -41,6 +48,10 @@ void UPartnerHackComponent::BeginPlay()
 
 void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->UnregisterWidgetOwner(this);
+	}
 	if (GetOwner() && GetOwner()->HasAuthority() && IsValid(ActiveHackableComponent))
 	{
 		FHackResultContext ResultContext;
@@ -54,6 +65,9 @@ void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
 	}
 
+	ResetLocalHackHoldProgress();
+	ServerHeldHackActor.Reset();
+	ServerHoldId = 0;
 	ClearActiveHackableComponent();
 	DestroyHackMiniGameWidget();
 	DestroyCandidateLayerWidget();
@@ -61,10 +75,26 @@ void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+void UPartnerHackComponent::DismissActorBasedWidgets_Implementation()
+{
+	ResetLocalHackHoldProgress();
+	DestroyHackMiniGameWidget();
+	DestroyCandidateLayerWidget();
+}
+
 void UPartnerHackComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+	if (GetOwner() && GetOwner()->HasAuthority() && ServerHoldId != 0
+		&& (!bHackCandidateSearchActive || !PartnerCharacter || !PartnerCharacter->CanAcceptInput()
+			|| !CanMaintainHackHold(ServerHeldHackActor.Get(), BuildQueryContext())))
+	{
+		const uint32 CancelledHoldId = ServerHoldId;
+		ServerHeldHackActor.Reset();
+		ServerHoldId = 0;
+		ClientCancelHackHold(CancelledHoldId);
+	}
 	if (!bHackCandidateSearchActive)
 	{
 		return;
@@ -75,6 +105,7 @@ void UPartnerHackComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 		return;
 	}
 
+	UpdateLocalHackHold();
 	RefreshHackCandidates();
 }
 
@@ -460,6 +491,7 @@ void UPartnerHackComponent::RefreshHackCandidates()
 	for (const FOverlapResult& Result : OverlapResults)
 	{
 		AActor* Actor = Result.GetActor();
+		if (Actor == HeldHackActor) continue;
 		UHackableComponent* HackableComponent = ResolveHackableComponent(Actor);
 		FVector2D ScreenLocation = FVector2D::ZeroVector;
 
@@ -495,76 +527,123 @@ void UPartnerHackComponent::RefreshHackCandidates()
 
 bool UPartnerHackComponent::TryBeginHackHold()
 {
-	if (!PartnerCharacter
-		|| !PartnerCharacter->IsLocallyControlled()
-		|| !bHackCandidateSearchActive
-		|| !HoveredMarkerWidget
-		|| !HoveredHackActor)
-	{
-		return false;
-	}
+	if (HeldHackActor) return true;
+	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled()
+		|| !PartnerCharacter->CanAcceptInput() || !GetWorld()
+		|| !bHackCandidateSearchActive || !IsValid(HoveredMarkerWidget)
+		|| !IsValid(CandidateLayerWidget)) return false;
 
-	HoveredMarkerWidget->StartHackHold(CachedAbilityData.MiniGameTime); //Property로
+	FVector2D ScreenLocation;
+	UHackableComponent* Hackable = ResolveHackableComponent(HoveredHackActor);
+	if (!IsCandidateActorValid(HoveredHackActor, Hackable, BuildQueryContext(), ScreenLocation)) return false;
+
+	UHackableInfoWidget* Info = HoveredMarkerWidget->ReleaseInfoForHackHold();
+	if (!Info) return false;
+	HeldHackActor = HoveredHackActor;
+	HackHoldDuration = HoveredMarkerWidget->GetHackHoldDuration(CachedAbilityData.MiniGameTime);
+	HackHoldStartTime = GetWorld()->GetTimeSeconds();
+	if (++LocalHoldId == 0) ++LocalHoldId;
+	CandidateLayerWidget->BeginHackHold(HeldHackActor, Info);
+	HoveredHackActor = nullptr;
+	HoveredMarkerWidget = nullptr;
+	// Held info belongs to the layer, independently of candidate overlap and marker lifetime.
+	for (int32 Index = HackCandidateActors.Num() - 1; Index >= 0; --Index)
+	{
+		if (HackCandidateActors[Index] == HeldHackActor) RemoveHackCandidateAt(Index);
+	}
+	ServerBeginHackHold(HeldHackActor, LocalHoldId);
 	return true;
 }
 
 void UPartnerHackComponent::NotifyHackMarkerHovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
 {
-	if (!MarkerWidget || !TargetActor)
-	{
-		return;
-	}
-
-	if (HoveredMarkerWidget && HoveredMarkerWidget != MarkerWidget)
-	{
-		HoveredMarkerWidget->CancelHackHold();
-	}
-
+	if (!MarkerWidget || !TargetActor || HeldHackActor) return;
 	HoveredMarkerWidget = MarkerWidget;
 	HoveredHackActor = TargetActor;
 }
 
 void UPartnerHackComponent::NotifyHackMarkerUnhovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
 {
-	if (HoveredMarkerWidget != MarkerWidget || HoveredHackActor != TargetActor)
-	{
-		return;
-	}
-
-	ResetLocalHackHoldProgress();
+	if (HoveredMarkerWidget != MarkerWidget || HoveredHackActor != TargetActor) return;
 	HoveredMarkerWidget = nullptr;
 	HoveredHackActor = nullptr;
 }
 
-void UPartnerHackComponent::NotifyHackHoldCompleted(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
+bool UPartnerHackComponent::CanMaintainHackHold(AActor* Actor, const FHackQueryContext& Context) const
 {
-	if (!IsValid(MarkerWidget)
-		|| !IsValid(TargetActor)
-		|| TargetActor->IsActorBeingDestroyed()
-		|| MarkerWidget != HoveredMarkerWidget
-		|| TargetActor != HoveredHackActor)
-	{
-		return;
-	}
-
-	ResetLocalHackHoldProgress();
-	ServerTryStartHack(TargetActor);
+	UHackableComponent* Hackable = ResolveHackableComponent(Actor);
+	return Hackable && Hackable->IsHackTargetType() && Hackable->CanBeHackTarget(Context)
+		&& FVector::DistSquared(Context.ViewLocation, IHackableInterface::ResolveHackTargetLocation(Actor))
+			<= FMath::Square(FMath::Max(Context.MaxRange, 0.0f));
 }
 
-void UPartnerHackComponent::ResetLocalHackHoldProgress()
+void UPartnerHackComponent::UpdateLocalHackHold()
 {
-	if (HoveredMarkerWidget)
+	if (!HeldHackActor) return;
+	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput() || !GetWorld()
+		|| !bHackCandidateSearchActive || !IsValid(CandidateLayerWidget)
+		|| !CanMaintainHackHold(HeldHackActor, BuildQueryContext()))
 	{
-		HoveredMarkerWidget->CancelHackHold();
+		ResetLocalHackHoldProgress();
+		return;
+	}
+	const float Progress = FMath::Clamp((GetWorld()->GetTimeSeconds() - HackHoldStartTime) / HackHoldDuration, 0.0f, 1.0f);
+	CandidateLayerWidget->SetHackHoldProgress(Progress);
+	if (Progress >= 1.0f)
+	{
+		AActor* Target = HeldHackActor;
+		const uint32 CompletedHoldId = LocalHoldId;
+		ResetLocalHackHoldProgress(false);
+		ServerTryStartHack(Target, CompletedHoldId);
 	}
 }
 
-void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActor)
+void UPartnerHackComponent::ResetLocalHackHoldProgress(bool bNotifyServer)
 {
-	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput())
+	const bool bWasHolding = HeldHackActor != nullptr;
+	HeldHackActor = nullptr;
+	HackHoldStartTime = 0.0f;
+	HackHoldDuration = 0.0f;
+	if (CandidateLayerWidget) CandidateLayerWidget->EndHackHold();
+	if (bWasHolding && bNotifyServer) ServerEndHackHold(LocalHoldId);
+}
+
+void UPartnerHackComponent::ServerBeginHackHold_Implementation(AActor* TargetActor, uint32 HoldId)
+{
+	ServerHeldHackActor.Reset();
+	ServerHoldId = 0;
+	const UOutlierAbilitySystemComponent* ASC = PartnerCharacter ? PartnerCharacter->GetOutlierAbilitySystemComponent() : nullptr;
+	FVector2D ScreenLocation;
+	if (!HoldId || !bHackCandidateSearchActive || !PartnerCharacter || !PartnerCharacter->CanAcceptInput()
+		|| !ASC || !ASC->CanUsePartnerHackCharge()
+		|| !IsCandidateActorValid(TargetActor, ResolveHackableComponent(TargetActor), BuildQueryContext(), ScreenLocation))
 	{
+		ClientCancelHackHold(HoldId);
 		return;
 	}
+	ServerHeldHackActor = TargetActor;
+	ServerHoldId = HoldId;
+}
+
+void UPartnerHackComponent::ServerEndHackHold_Implementation(uint32 HoldId)
+{
+	if (ServerHoldId != HoldId) return;
+	ServerHeldHackActor.Reset();
+	ServerHoldId = 0;
+}
+
+void UPartnerHackComponent::ClientCancelHackHold_Implementation(uint32 HoldId)
+{
+	if (LocalHoldId == HoldId) ResetLocalHackHoldProgress(false);
+}
+
+void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActor, uint32 HoldId)
+{
+	// Only a target accepted when R was pressed may bypass viewport/angle/LOS checks.
+	if (!HoldId || HoldId != ServerHoldId || TargetActor != ServerHeldHackActor.Get()) return;
+	ServerHeldHackActor.Reset();
+	ServerHoldId = 0;
+	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput()) return;
 	const UOutlierAbilitySystemComponent* AbilitySystem = PartnerCharacter->GetOutlierAbilitySystemComponent();
 	// 취소 전에 시작한 홀드의 완료 RPC가 뒤늦게 도착해도 새 해킹을 시작하지 않는다.
 	if (!bHackCandidateSearchActive || !AbilitySystem || !AbilitySystem->CanUsePartnerHackCharge())
@@ -585,8 +664,8 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 
 	FVector2D ScreenLocation = FVector2D::ZeroVector;
 	const FHackQueryContext Context = BuildQueryContext();
-	// 후보 검사에서 서버 시점 기준 거리와 각도, 가시선을 검증하므로 몸체 거리로 다시 제한하지 않는다.
-	if (!IsCandidateActorValid(TargetActor, HackableComponent, Context, ScreenLocation))
+	// Locked holds use range and target state, even behind the camera or cover.
+	if (!CanMaintainHackHold(TargetActor, Context))
 	{
 		if (bDebugHack)
 		{
@@ -657,6 +736,8 @@ void UPartnerHackComponent::ClearHackCandidates()
 void UPartnerHackComponent::StopHackCandidateSearch()
 {
 	ResetLocalHackHoldProgress();
+	ServerHeldHackActor.Reset();
+	ServerHoldId = 0;
 	HoveredMarkerWidget = nullptr;
 	HoveredHackActor = nullptr;
 

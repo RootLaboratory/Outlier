@@ -6,6 +6,7 @@
 #include "Drone/Partner/PartnerCharacterComponentBase.h"
 #include "GameplayTagContainer.h"
 #include "HackType.h"
+#include "Interface/ActorBasedWidgetInterface.h"
 #include "UI/UILayerTypes.h"
 #include "PartnerHackComponent.generated.h"
 
@@ -37,7 +38,7 @@ struct OUTLIER_API FPartnerHackAbilityData
 };
 
 UCLASS()
-class OUTLIER_API UPartnerHackComponent : public UPartnerCharacterComponentBase
+class OUTLIER_API UPartnerHackComponent : public UPartnerCharacterComponentBase, public IActorBasedWidgetInterface
 {
 	GENERATED_BODY()
 
@@ -46,6 +47,7 @@ public:
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void DismissActorBasedWidgets_Implementation() override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Candidate", meta = (ClampMin = "0.0", ClampMax = "180.0"))
@@ -111,7 +113,16 @@ public:
 	void RefreshHackCandidates();
 
 	UFUNCTION(Server, Reliable)
-	void ServerTryStartHack(AActor* TargetActor);
+	void ServerTryStartHack(AActor* TargetActor, uint32 HoldId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerBeginHackHold(AActor* TargetActor, uint32 HoldId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerEndHackHold(uint32 HoldId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientCancelHackHold(uint32 HoldId);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	void ClientCompleteHack();
@@ -129,10 +140,10 @@ public:
 	bool IsHackInteractionActive() const { return bHackCandidateSearchActive || ActiveHackableComponent || HackMiniGameWidget; }
 
 	bool TryBeginHackHold();
+	bool IsHackHoldActive() const { return HeldHackActor != nullptr; }
 	void NotifyHackMarkerHovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
 	void NotifyHackMarkerUnhovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
-	void NotifyHackHoldCompleted(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
-	void ResetLocalHackHoldProgress();
+	void ResetLocalHackHoldProgress(bool bNotifyServer = true);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	const TArray<AActor*>& GetHackCandidateActors() const { return HackCandidateActors; }
@@ -171,6 +182,17 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UHackCandidateMarkerWidget> HoveredMarkerWidget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AActor> HeldHackActor;
+
+	TWeakObjectPtr<AActor> ServerHeldHackActor;
+	uint32 LocalHoldId = 0;
+	uint32 ServerHoldId = 0;
+	float HackHoldStartTime = 0.0f;
+	float HackHoldDuration = 0.0f;
+	void UpdateLocalHackHold();
+	bool CanMaintainHackHold(AActor* Actor, const FHackQueryContext& Context) const;
 
 	FHackQueryContext BuildQueryContext() const;
 	UHackableComponent* ResolveHackableComponent(AActor* Actor) const;

@@ -172,5 +172,8 @@ private:
 	// Drone Damage Feedback 섹션. 모서리별 드러냄 토글과 글리치 튜닝값을 담는다.
 	TSharedRef<SWidget> MakeDroneDamageFeedbackSection();
 
+	// Partner KnockDown 섹션. Play / Stop, 진행도 고정, 글리치 / 마스크 / DamageHud 튜닝값을 담는다.
+	TSharedRef<SWidget> MakePartnerKnockDownSection();
+
 	mutable TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> CachedSubsystem;
 };
