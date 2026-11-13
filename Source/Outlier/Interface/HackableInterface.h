@@ -29,5 +29,8 @@ public:
 	static FVector ResolveHackTargetLocation(const AActor* Actor);
 	virtual void HandleHackStarted(const FHackQueryContext& Context) {}
 	virtual void HandleHackCompleted(const FHackResultContext& Context) {}
+	// 상태 진입 이후 효과를 확정하는 대상은 완료 통지까지 직접 소유한다.
+	virtual bool DeferHackCompletion(const FHackResultContext& Context,
+		TFunction<void(const FHackResultContext&)> Completion) { return false; }
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) = 0;
 };

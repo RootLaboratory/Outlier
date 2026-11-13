@@ -22,6 +22,7 @@
 #include "NativeGameplayTags.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierPlayerState.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/CinematicHintkey.h"
 #include "UI/UILayerGameplayTags.h"
@@ -158,6 +159,8 @@ void UOutlierCinematicSubsystem::PrepareInitialIntro(
 	BoundWorld = Controller->GetWorld();
 	ActiveIntroId = IntroId;
 	State = EOutlierCinematicState::Preparing;
+	// 이미 생성된 Partner HUD도 준비 시작과 같은 프레임에 숨긴다.
+	Controller->RefreshHudVisibility();
 	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateUObject(this, &UOutlierCinematicSubsystem::TickCinematic));
 }
@@ -267,6 +270,8 @@ void UOutlierCinematicSubsystem::StartCinematic(const FGuid& IntroId)
 	}
 	ULevelSequencePlayer* Player = Cinematics.FindChecked(OutlierCinematicTags::ArenaIntro())->GetSequencePlayer();
 	ActivePlayer = Player;
+	// Jump도 Fade 트랙을 평가한다. 첫 평가 전에 로딩 암전을 풀어 검은 화면이 복원 상태로 저장되지 않게 한다.
+	OwningController->RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
 	Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(Player->GetStartTime().Time, EUpdatePositionMethod::Jump));
 	Player->OnFinished.AddUniqueDynamic(this, &UOutlierCinematicSubsystem::HandleSequenceFinished);
 	State = EOutlierCinematicState::Playing;
@@ -275,8 +280,6 @@ void UOutlierCinematicSubsystem::StartCinematic(const FGuid& IntroId)
 	PushCinematicHint();
 	bPausedByWorld = false;
 	HidePairPawnVisuals();
-	// 시퀀스 Fade 트랙이 암전 상태를 사전 상태로 캡처하지 않도록 재생 전에 같은 프레임에서 해제한다.
-	OwningController->RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
 	Player->Play();
 	// 시작 RPC와 정지 복제가 같은 프레임에 도착해도 첫 프레임부터 멈춰 있게 한다.
 	SyncWorldPause();
@@ -399,14 +402,21 @@ void UOutlierCinematicSubsystem::FailCinematic(const TCHAR* Reason)
 	{
 		// 실패 시 검은 화면에 갇히지 않도록 레벨 로드 암전을 푼다.
 		PC->RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
+		// Keep State인 Fade/카메라 트랙도 실패한 시퀀스의 마지막 화면을 남기지 않는다.
+		PC->RestoreCameraAfterCinematic();
+		PC->RefreshHudVisibility();
 		PC->ServerNotifyCinematic({ActiveIntroId, EOutlierCinematicClientEvent::Failed});
 	}
 }
 
 void UOutlierCinematicSubsystem::ReleaseCinematic(const FGuid& IntroId)
 {
-	if (IntroId != ActiveIntroId || State != EOutlierCinematicState::Ready) return;
+	if (IntroId != ActiveIntroId) return;
+	// 서버는 정상 완료뿐 아니라 한쪽 실패 때도 양쪽에 해제를 보낸다. 오래된 ID는 위에서 거부한다.
+	const bool bInterrupted = State != EOutlierCinematicState::Ready;
+	AFirstPersonPlayerController* PC = OwningController.Get();
 	ClearLevelCinematics();
+	if (bInterrupted && PC) PC->RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
 	const auto* Layers = GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>();
 	const auto* Input = GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
 	const FGameplayTag ActiveMode = Layers ? Layers->GetActiveInputModeTag() : FGameplayTag();
@@ -473,6 +483,13 @@ void UOutlierCinematicSubsystem::ClearLevelCinematics()
 	}
 	Cinematics.Reset();
 	BoundWorld.Reset();
+	// 정상 Release와 중단/월드 정리 모두 Idle 상태의 기존 사망·빙의 조건으로 복구한다.
+	if (AFirstPersonPlayerController* PC = OwningController.Get())
+	{
+		// 타이틀 등 인트로가 아닌 시퀀스의 카메라는 건드리지 않는다.
+		if (ActiveIntroId.IsValid()) PC->RestoreCameraAfterCinematic();
+		PC->RefreshHudVisibility();
+	}
 	OwningController.Reset();
 	ActiveIntroId.Invalidate();
 	bSkipUnregisteredCinematic = false;
@@ -602,9 +619,13 @@ void UOutlierCinematicSubsystem::SyncWorldPause()
 
 void UOutlierCinematicSubsystem::RestorePairPawnVisuals()
 {
+	if (HiddenPawnVisuals.IsEmpty()) return;
 	for (const TWeakObjectPtr<USceneComponent>& Visual : HiddenPawnVisuals)
 	{
 		if (Visual.IsValid()) Visual->SetVisibility(true);
 	}
 	HiddenPawnVisuals.Reset();
+	// 숨김 중 비워진 외곽선 대상 목록은 1초 보정을 기다리지 않고 기존 dirty 갱신에서 다시 수집한다.
+	if (UOutlierStencilSubsystem* Stencils = GetWorld() ? GetWorld()->GetSubsystem<UOutlierStencilSubsystem>() : nullptr)
+		Stencils->MarkTeammatesDirty();
 }

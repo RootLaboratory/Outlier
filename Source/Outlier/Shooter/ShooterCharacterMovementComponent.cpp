@@ -34,7 +34,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogShooterCoyote, Log, All);
 bool FShooterMovementInput::operator==(const FShooterMovementInput& Other) const
 {
 	return Epoch == Other.Epoch && CrouchRequest == Other.CrouchRequest && JumpCancelRequest == Other.JumpCancelRequest
-		&& ActionRequest == Other.ActionRequest && AimSwitchId == Other.AimSwitchId
+		&& ActionRequest == Other.ActionRequest && EquipGeneration == Other.EquipGeneration && AimSwitchId == Other.AimSwitchId
 		&& bSprint == Other.bSprint && bHoldSprint == Other.bHoldSprint && bFire == Other.bFire && bAim == Other.bAim
 		&& bCrouch == Other.bCrouch && bSprintAtCrouch == Other.bSprintAtCrouch;
 }
@@ -45,6 +45,7 @@ void FShooterMovementInput::Serialize(FArchive& Ar)
 	Ar.SerializeIntPacked(CrouchRequest);
 	Ar.SerializeIntPacked(JumpCancelRequest);
 	Ar.SerializeIntPacked(ActionRequest);
+	Ar.SerializeIntPacked(EquipGeneration);
 	Ar << AimSwitchId;
 	Ar.SerializeBits(&bSprint, 1);
 	Ar.SerializeBits(&bHoldSprint, 1);
@@ -145,11 +146,12 @@ bool UShooterCharacterMovementComponent::QueueMovementInput(EShooterMovementInpu
 	{
 	case EShooterMovementInput::SprintPressed:
 		if (const auto* Shooter = Cast<AShooterCharacter>(CharacterOwner);
-			Shooter && (Shooter->IsDead() || Shooter->IsSuitTransitionBlocked())) return true;
+			Shooter && (Shooter->IsDead() || Shooter->IsSuitTransitionBlocked() || Shooter->IsWeaponEquipInputBlocked())) return true;
 		if (bAwaitingFreshSprintPress || bSprintKeyDown) return true;
 		bSprintKeyDown = true;
 		if (++NextMovementRequest == 0) ++NextMovementRequest;
 		LiveMovementInput.ActionRequest = NextMovementRequest;
+		LiveMovementInput.EquipGeneration = CastChecked<AShooterCharacter>(CharacterOwner)->GetEquipActionGeneration();
 		LiveMovementInput.bHoldSprint = SprintInputMode == EOutlierSprintInputMode::Hold;
 		LiveMovementInput.bSprint = LiveMovementInput.bHoldSprint || !LiveMovementInput.bSprint;
 		if (LiveMovementInput.bSprint)
@@ -190,19 +192,26 @@ uint32 UShooterCharacterMovementComponent::RecordActionInput(bool bAim)
 	LiveMovementInput.ActionRequest = NextMovementRequest;
 	LiveMovementInput.bAim = bAim;
 	const auto* Shooter = Cast<AShooterCharacter>(CharacterOwner);
+	LiveMovementInput.EquipGeneration = Shooter ? Shooter->GetEquipActionGeneration() : 0;
+	if (Shooter && Shooter->IsWeaponEquipInputBlocked()) LiveMovementInput.bAim = false;
 	LiveMovementInput.AimSwitchId = bAim && Shooter && Shooter->IsWeaponSwitchInProgress()
 		? Shooter->ActiveProceduralSwitchId : 0;
 	if (bAim && !LiveMovementInput.bHoldSprint) LiveMovementInput.bSprint = false;
 	return LiveMovementInput.ActionRequest;
 }
 
-uint32 UShooterCharacterMovementComponent::RecordFireInput(bool bFire)
+uint32 UShooterCharacterMovementComponent::RecordFireInput(bool bFire, bool bForce)
 {
 	if (bApplyingMovementInput || IsReplayingMovement()) return LiveMovementInput.ActionRequest;
-	if (LiveMovementInput.bFire == bFire) return LiveMovementInput.ActionRequest;
+	const auto* Shooter = Cast<AShooterCharacter>(CharacterOwner);
+	if (Shooter && Shooter->IsWeaponEquipInputBlocked()) bFire = false;
+	const uint32 Generation = Shooter ? Shooter->GetEquipActionGeneration() : 0;
+	if (!bForce && LiveMovementInput.bFire == bFire && LiveMovementInput.EquipGeneration == Generation)
+		return LiveMovementInput.ActionRequest;
 	if (++NextMovementRequest == 0) ++NextMovementRequest;
 	LiveMovementInput.ActionRequest = NextMovementRequest;
 	LiveMovementInput.bFire = bFire;
+	LiveMovementInput.EquipGeneration = Generation;
 	// Toggle은 사격 입력으로 해제하고, Hold는 의도를 남겨 사격 종료 후 재개한다.
 	if (bFire && !LiveMovementInput.bHoldSprint) LiveMovementInput.bSprint = false;
 	return LiveMovementInput.ActionRequest;
@@ -223,19 +232,22 @@ void UShooterCharacterMovementComponent::CancelActionInput(bool bCancelSprint, b
 	}
 }
 
-bool UShooterCharacterMovementComponent::ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId, bool bHoldSprint, bool bFire)
+bool UShooterCharacterMovementComponent::ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId, bool bHoldSprint, bool bFire, uint32 EquipGeneration)
 {
 	auto* Shooter = Cast<AShooterCharacter>(CharacterOwner);
 	auto* Movement = GetShooterMovement();
 	if (!Shooter || !Movement || Epoch != MovementEpoch || Request == 0
 		|| static_cast<int32>(Request - ProcessedActionRequest) <= 0) return false;
 	ProcessedActionRequest = Request;
+	// 오래된 장착 입력은 순번만 소비한다. 가짜 Release로 현재 입력의 재입력 대기를 풀지 않는다.
+	if (EquipGeneration != Shooter->GetEquipActionGeneration()) return true;
 	TGuardValue<bool> InputGuard(bApplyingMovementInput, true);
 	Movement->bHoldSprintInput = bHoldSprint;
 	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyFireInput(bFire);
 	// 공통 순번으로 늦은 Aim RPC/이동 입력을 버린다. Sprint ON 후 OFF가 같은 이동에 묶여도
 	// bAim=false가 남으므로 중간 ON에서 취소한 Aim은 다시 살아나지 않는다.
-	const bool bAllowed = !Shooter->IsDead() && !Shooter->IsSuitTransitionBlocked();
+	const bool bAllowed = !Shooter->IsDead() && !Shooter->IsSuitTransitionBlocked()
+		&& !Shooter->IsWeaponEquipInputBlocked();
 	// Lower timeout 뒤 도착한 Aim도 실패한 교체의 예약이다. 새 입력 순번만으로 되살리지 않는다.
 	bool bValidAimSwitch = true;
 	if (AimSwitchId != 0)
@@ -248,7 +260,12 @@ bool UShooterCharacterMovementComponent::ApplyActionInput(uint32 Request, uint32
 			&& (AimSwitchId == CurrentSwitchId || (!Shooter->HasAuthority() && !Shooter->IsWeaponSwitchInProgress()));
 	}
 	AppliedAimSwitchId = bAllowed && bAim && bValidAimSwitch ? AimSwitchId : 0;
-	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyAimInput(bAllowed && bAim && bValidAimSwitch);
+	if (Shooter->CombatComponent)
+	{
+		// Equip 중 Press도 전투 입력 경로에 전달해 실제 Release 전까지 다시 켜지지 않게 한다.
+		Shooter->CombatComponent->ApplyAimInput(bAim && bValidAimSwitch
+			&& !Shooter->IsDead() && !Shooter->IsSuitTransitionBlocked());
+	}
 	// Hold에서는 Aim과 Sprint 의도를 함께 보관한다. 실제 달리기는 CanSprint가 차단한다.
 	Movement->SetSprintIntent(bAllowed && bSprint && (bHoldSprint || !bAim));
 	return true;
@@ -288,7 +305,7 @@ void UShooterCharacterMovementComponent::ApplyMovementInput()
 		PrepareSlideJump();
 		CharacterOwner->Jump();
 	};
-	ApplyActionInput(MoveInput.ActionRequest, MoveInput.Epoch, MoveInput.bSprint, MoveInput.bAim, MoveInput.AimSwitchId, MoveInput.bHoldSprint, MoveInput.bFire);
+	ApplyActionInput(MoveInput.ActionRequest, MoveInput.Epoch, MoveInput.bSprint, MoveInput.bAim, MoveInput.AimSwitchId, MoveInput.bHoldSprint, MoveInput.bFire, MoveInput.EquipGeneration);
 	// 같은 프레임에 누르고 놓아도 시작 요청은 남는다. 취소와 재입력은 요청 순서대로 판정한다.
 	const bool bJumpFirst = bNewJump && bNewCrouch
 		&& static_cast<int32>(MoveInput.CrouchRequest - MoveInput.JumpCancelRequest) > 0;
@@ -370,12 +387,24 @@ FShooterSlideSnapshot UShooterCharacterMovementComponent::CaptureSlideSnapshot()
 	return Result;
 }
 
-void UShooterCharacterMovementComponent::RestoreSlideSnapshot(const FShooterSlideSnapshot& Snapshot)
+void UShooterCharacterMovementComponent::RestoreSlideSnapshot(const FShooterSlideSnapshot& IncomingSnapshot)
 {
 	auto* Shooter = CastChecked<AShooterCharacter>(CharacterOwner);
 	auto* Movement = GetShooterMovement();
 	if (!Movement) return;
+	FShooterSlideSnapshot Snapshot = IncomingSnapshot;
 	if (static_cast<int32>(Snapshot.AppliedInput.Epoch - MovementEpoch) < 0) return;
+	// 위치 보정은 적용하되 과거 장착의 행동/Slide는 현재 장착 위에 복원하지 않는다.
+	const bool bEquipInputBlocked = Shooter->IsWeaponEquipInputBlocked()
+		|| Snapshot.AppliedInput.EquipGeneration != Shooter->GetEquipActionGeneration();
+	if (bEquipInputBlocked)
+	{
+		Snapshot.bSprintHeld = Snapshot.bAimHeld = Snapshot.bFireHeld = false;
+		Snapshot.bActive = false;
+		Snapshot.EndReason = uint8(ESlideEndReason::ForcedCancel);
+		LiveMovementInput.bSprint = LiveMovementInput.bAim = LiveMovementInput.bFire = false;
+		LiveMovementInput.AimSwitchId = 0;
+	}
 	bRelocationEpoch = Snapshot.bRelocation;
 	SlideJumpMomentum = Snapshot.JumpMomentum;
 	if (Snapshot.AppliedInput.Epoch != MovementEpoch)
@@ -437,8 +466,11 @@ void UShooterCharacterMovementComponent::RestoreSlideSnapshot(const FShooterSlid
 	SlideEndReason = Snapshot.EndReason;
 	Movement->bWantsToSprint = Snapshot.bSprintHeld;
 	Movement->bHoldSprintInput = Snapshot.bHoldSprint;
-	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyFireInput(Snapshot.bFireHeld);
-	if (Shooter->CombatComponent) Shooter->CombatComponent->ApplyAimInput(Snapshot.bAimHeld);
+	if (Shooter->CombatComponent && !bEquipInputBlocked)
+	{
+		Shooter->CombatComponent->ApplyFireInput(Snapshot.bFireHeld);
+		Shooter->CombatComponent->ApplyAimInput(Snapshot.bAimHeld);
+	}
 	Movement->bWantsToCrouch = Snapshot.bCrouchHeld;
 	Movement->bIsSliding = Snapshot.bActive;
 	Movement->bIsSlidingCanceled = !Snapshot.bActive && Snapshot.EndReason != uint8(ESlideEndReason::Finished);

@@ -25,6 +25,8 @@ class OUTLIER_API UHackMiniGameWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
+	void SetHackRequestId(uint32 InRequestId) { HackRequestId = InRequestId; }
+
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
 	void InitializeHackMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent,
 		UPartnerHackComponent* InHackComponent, float InClickSuccessRangeMultiplier = 1.0f, float InSpinningGapMultiplier = 1.0f);
@@ -102,6 +104,7 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> ProgressMaterial;
 
 	float MiniGameTimeLimit = 0.0f;
+	uint32 HackRequestId = 0;
 	float ClickSuccessRangeMultiplier = 1.0f;
 	float SpinningGapMultiplier = 1.0f;
 

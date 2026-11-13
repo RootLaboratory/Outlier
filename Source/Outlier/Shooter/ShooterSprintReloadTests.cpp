@@ -80,6 +80,8 @@ bool FShooterSprintReloadTest::RunTest(const FString& Parameters)
 			const FBoolProperty* InfiniteAmmo = FindFProperty<FBoolProperty>(ARangedWeaponBase::StaticClass(), TEXT("bInfiniteAmmo"));
 			if (!InfiniteAmmo) return false;
 			InfiniteAmmo->SetPropertyValue_InContainer(Weapon, false);
+			// 1발 권총은 1발이면 이미 가득 찬 상태다. 저장된 탄창 크기로 장전 조건을 만든다.
+			const int32 ReloadStartAmmo = FMath::Max(0, Weapon->GetMagazineSize() - 1);
 			UAnimInstance* TP = Shooter->GetMesh()->GetAnimInstance();
 			auto* FP = Cast<UShooterFirstPersonAnimInstance>(Shooter->GetFirstPersonMesh()->GetAnimInstance());
 			UAnimMontage* Montage = Shooter->GetActionMontage(EShooterMontageAction::Reload, false);
@@ -141,7 +143,7 @@ bool FShooterSprintReloadTest::RunTest(const FString& Parameters)
 						Movement->SetSprintInputMode(Mode);
 						Movement->SetMovementMode(MOVE_Walking);
 						Movement->Velocity = FVector(150.0f, 0.0f, 0.0f);
-						Weapon->RestoreCheckpointAmmo(1);
+						Weapon->RestoreCheckpointAmmo(ReloadStartAmmo);
 						const auto Press = [&]() { Movement->NotifyFreshSprintPress(); Input->HandleSprintPressed(); Movement->ApplyMovementInput(); };
 						const auto Release = [&]() { Input->HandleSprintReleased(); Movement->ApplyMovementInput(); };
 						if (bSprintFirst) Press();
@@ -193,7 +195,7 @@ bool FShooterSprintReloadTest::RunTest(const FString& Parameters)
 				Movement->SetSprintInputMode(Mode);
 				Movement->SetMovementMode(MOVE_Walking);
 				Movement->Velocity = FVector(150.0f, 0.0f, 0.0f);
-				Weapon->RestoreCheckpointAmmo(1);
+				Weapon->RestoreCheckpointAmmo(ReloadStartAmmo);
 				Combat->TryReload();
 				Combat->HandleAimPressed();
 				Movement->ApplyMovementInput();
@@ -247,7 +249,7 @@ bool FShooterSprintReloadTest::RunTest(const FString& Parameters)
 				Movement->SetMovementMode(MOVE_Walking);
 				Movement->Velocity = FVector(150.0f, 0.0f, 0.0f);
 				Input->SetSprintIntent(true);
-				Weapon->RestoreCheckpointAmmo(1);
+				Weapon->RestoreCheckpointAmmo(ReloadStartAmmo);
 				Combat->TryReload();
 				if (!TestTrue(TEXT("Frame-rate fixture starts Reload"), Combat->IsReloading())) return false;
 				int32 AmmoChanges = 0;
@@ -294,7 +296,7 @@ bool FShooterSprintReloadTest::RunTest(const FString& Parameters)
 
 			Combat->ClearInputIntent();
 			Movement->ResetSlideForLifecycle();
-			Weapon->RestoreCheckpointAmmo(1);
+			Weapon->RestoreCheckpointAmmo(ReloadStartAmmo);
 			Combat->TryReload();
 			Combat->TryStartAttack();
 			TestFalse(TEXT("Reload attack does not create deferred first shot"), Combat->bPendingSprintExitFire);
@@ -302,20 +304,25 @@ bool FShooterSprintReloadTest::RunTest(const FString& Parameters)
 			Combat->TryStopAttack();
 			Combat->HandleReloadMontageEnded(Montage, true);
 			TestFalse(TEXT("Interrupted montage cancels Reload"), Combat->IsReloading() || Weapon->IsReloading());
-			TestEqual(TEXT("Interruption before Commit does not grant ammunition"), Weapon->GetCurrentAmmo(), 1);
+			TestEqual(TEXT("Interruption before Commit does not grant ammunition"), Weapon->GetCurrentAmmo(), ReloadStartAmmo);
 			TestEqual(TEXT("Interruption releases Reload lock"), Shooter->GetActionLock(), EShooterActionLock::None);
-			FP->ViewModelSprintAlpha = 1.0f;
-			Weapon->RestoreCheckpointAmmo(1);
-			Combat->TryStartAttack();
-			TestTrue(TEXT("Sprint-exit first shot is pending before Reload"), Combat->bPendingSprintExitFire);
-			const uint32 OldRequest = Combat->PendingSprintExitRequest;
-			const uint32 OldEpoch = Combat->PendingSprintExitEpoch;
-			Combat->TryReload();
-			TestFalse(TEXT("Reload cancels the earlier Sprint-exit first shot"), Combat->bPendingSprintExitFire);
-			Combat->HandleReloadCommitNotify();
-			Combat->HandleReloadMontageEnded(Montage, false);
-			Combat->ResolveSprintExitFire(OldRequest, OldEpoch, true);
-			TestEqual(TEXT("Late readiness cannot fire the cancelled request after Reload"), Weapon->GetCurrentAmmo(), Weapon->GetMagazineSize());
+			// 발사 대기와 수동 장전을 함께 수락하려면 탄약이 남은 미완충 탄창이 필요하다.
+			// 1발 권총에는 없는 조합이므로 이 경계는 실제 라이플로 검증한다.
+			if (ReloadStartAmmo > 0)
+			{
+				FP->ViewModelSprintAlpha = 1.0f;
+				Weapon->RestoreCheckpointAmmo(ReloadStartAmmo);
+				Combat->TryStartAttack();
+				TestTrue(TEXT("Sprint-exit first shot is pending before Reload"), Combat->bPendingSprintExitFire);
+				const uint32 OldRequest = Combat->PendingSprintExitRequest;
+				const uint32 OldEpoch = Combat->PendingSprintExitEpoch;
+				Combat->TryReload();
+				TestFalse(TEXT("Reload cancels the earlier Sprint-exit first shot"), Combat->bPendingSprintExitFire);
+				Combat->HandleReloadCommitNotify();
+				Combat->HandleReloadMontageEnded(Montage, false);
+				Combat->ResolveSprintExitFire(OldRequest, OldEpoch, true);
+				TestEqual(TEXT("Late readiness cannot fire the cancelled request after Reload"), Weapon->GetCurrentAmmo(), Weapon->GetMagazineSize());
+			}
 			Weapon->Destroy();
 		}
 	}

@@ -43,7 +43,11 @@ void AOutlierGameMode::HandleCinematicContext(
 		break;
 
 	case EOutlierCinematicClientEvent::Failed:
+		if (bInitialIntroFailed) return;
 		bInitialIntroFailed = true;
+		// 게임 시작 차단은 유지하되, 상대도 시퀀스/메시 숨김/HUD 대기에 남지 않도록 함께 정리한다.
+		if (InitialIntroShooter.IsValid()) InitialIntroShooter->ClientReleaseArenaIntro(Context.IntroId);
+		if (InitialIntroPartner.IsValid()) InitialIntroPartner->ClientReleaseArenaIntro(Context.IntroId);
 		UE_LOG(LogTemp, Error, TEXT("[Cinematic] Client failed Intro=%s PC=%s; gameplay start remains blocked"),
 			*Context.IntroId.ToString(), *GetNameSafe(PC));
 		break;

@@ -51,6 +51,7 @@ protected:
 	FTimerHandle PendingSwitchTimerHandle;
 	bool bHasPendingWeaponSwitch = false;
 	int32 PendingSwitchId = 0;
+	double PendingSwitchLowerReadyTime = 0.0;
 
 public:
 	UShooterInventoryComponent();

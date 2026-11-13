@@ -91,6 +91,7 @@ void UHackMiniGameWidget::CancelHacking()
 	}
 
 	FHackResultContext ResultContext;
+	ResultContext.RequestId = HackRequestId;
 	ResultContext.TargetActor = TargetActor;
 	ResultContext.Result = EHackResult::Cancelled;
 	RestoreCursor();
@@ -354,6 +355,7 @@ void UHackMiniGameWidget::RestoreCursor()
 void UHackMiniGameWidget::HandleActiveMiniGameFinished(EHackResult Result)
 {
 	FHackResultContext ResultContext;
+	ResultContext.RequestId = HackRequestId;
 	ResultContext.TargetActor = TargetActor;
 	ResultContext.Result = Result;
 	RestoreCursor();

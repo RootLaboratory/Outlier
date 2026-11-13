@@ -718,6 +718,7 @@ void AHackTargetPointNetworkProbe::ClientFinishHack_Implementation(bool bSuccess
 	if (Hack->ActiveHackableComponent)
 	{
 		FHackResultContext Result;
+		Result.RequestId = Hack->ActiveHackRequestId;
 		Result.TargetActor = Target;
 		Result.Result = bSuccess ? EHackResult::Success : EHackResult::Cancelled;
 		Hack->ServerCompleteHack(Result);

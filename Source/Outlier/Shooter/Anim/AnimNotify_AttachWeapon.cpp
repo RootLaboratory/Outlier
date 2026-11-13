@@ -29,7 +29,7 @@ void UAnimNotify_AttachWeapon::Notify(USkeletalMeshComponent* MeshComp, UAnimSeq
 	}
 
 	// 전환 commit은 직접 부착한다. 이전 Equip의 늦은 Notify로 새 무기를 다시 완료하지 않는다.
-	if (Shooter->IsSuitTransitionBlocked())
+	if (Shooter->IsSuitTransitionBlocked() || !Shooter->IsCurrentWeaponActionNotify(MeshComp, EventReference))
 	{
 		return;
 	}

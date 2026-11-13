@@ -181,12 +181,12 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 		WeaponSlots.Num()
 	);
 
-	if (!ShooterCharacter || !Weapon || !ShooterCharacter->HasAuthority())
+	if (!ShooterCharacter || !IsValid(Weapon) || !ShooterCharacter->HasAuthority())
 	{
 		return;
 	}
 
-	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Equip))
+	if (!ShooterCharacter->CanBeginWeaponEquip())
 	{
 		return;
 	}
@@ -230,6 +230,13 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 			*GetNameSafe(ShooterCharacter), *GetNameSafe(Weapon));
 		return;
 	}
+	if (Weapon == ShooterCharacter->CurrentWeapon)
+	{
+		return;
+	}
+
+	// 모든 검증을 통과한 요청만 기존 행동을 종료한다. Drop과 새 무기 부착은 그 다음이다.
+	ShooterCharacter->BeginWeaponEquip();
 	if (Slot != EWeaponSlot::Primary)
 	{
 		ShooterCharacter->EndActiveWeaponOvercharge(true);
@@ -305,7 +312,7 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		return;
 	}
 
-	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Equip))
+	if (!ShooterCharacter->CanBeginWeaponEquip())
 	{
 		return;
 	}
@@ -323,31 +330,17 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		return;
 	}
 
-	// 교체할 무기가 없더라도 유효한 슬롯 입력은 현재 근접 공격을 취소한다.
-	if (ShooterCharacter->CombatComponent)
-	{
-		ShooterCharacter->CombatComponent->CancelMeleeAttack();
-	}
-
 	AWeaponBase* TargetWeapon = WeaponSlots[WeaponIndex];
-	if (!TargetWeapon || TargetWeapon == ShooterCharacter->CurrentWeapon)
+	if (!IsValid(TargetWeapon) || TargetWeapon == ShooterCharacter->CurrentWeapon)
 	{
 		return;
 	}
 
-	if (ShooterCharacter->IsReloading())
-	{
-		ShooterCharacter->CancelReloadInternal();
-	}
+	// 빈 슬롯/동일 무기 입력은 행동을 유지한다. 실제 교체가 확정된 뒤 취소 경계를 연다.
+	ShooterCharacter->BeginWeaponEquip();
 	if (Slot != EWeaponSlot::Primary)
 	{
 		ShooterCharacter->EndActiveWeaponOvercharge(true);
-	}
-
-	// 일반 교체는 홀드 의도를 보존하고 실제 ADS만 내린다. 슈트 지급의 강제 초기화와 구분한다.
-	if (ShooterCharacter->CombatComponent)
-	{
-		ShooterCharacter->CombatComponent->SuspendAimInternal();
 	}
 
 	if (ShooterCharacter->CurrentWeapon)
@@ -355,14 +348,22 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		PendingSwitchWeapon = TargetWeapon;
 		PendingSwitchSlot = Slot;
 		bHasPendingWeaponSwitch = true;
-		ShooterCharacter->BeginActionLock(EShooterActionLock::Equip);
 		PendingSwitchId = ShooterCharacter->BeginProceduralWeaponSwitch();
 		UE_LOG(LogTemp, Log, TEXT("%s [FPWeaponSwitch] Lower old=%s target=%s slot=%d"),
 			OutlierNet::GetNetPrefix(ShooterCharacter), *GetNameSafe(ShooterCharacter->CurrentWeapon),
 			*GetNameSafe(TargetWeapon), static_cast<int32>(Slot));
+		const float LowerDuration = FMath::IsFinite(ShooterCharacter->GetFirstPersonSwitchLowerDuration())
+			? FMath::Max(ShooterCharacter->GetFirstPersonSwitchLowerDuration(), 0.05f) : 0.05f;
+		PendingSwitchLowerReadyTime = GetWorld()->GetTimeSeconds() + LowerDuration;
+		// 서버의 Lower 시간이 끝나면 교체한다. 소유자 확인이 없어도 Raise까지 진행한다.
+		FTimerDelegate LowerEndDelegate;
+		LowerEndDelegate.BindWeakLambda(this, [this, SwitchId = PendingSwitchId]()
+		{
+			PendingSwitchLowerReadyTime = 0.0;
+			FinishPendingWeaponSwitch(SwitchId);
+		});
 		GetWorld()->GetTimerManager().SetTimer(
-			PendingSwitchTimerHandle, this, &UShooterInventoryComponent::ExpirePendingWeaponSwitch,
-			FMath::Max(ShooterCharacter->GetFirstPersonSwitchLowerDuration() + 3.0f, 3.0f), false);
+			PendingSwitchTimerHandle, LowerEndDelegate, LowerDuration, false);
 		return;
 	}
 
@@ -375,9 +376,11 @@ void UShooterInventoryComponent::FinishPendingWeaponSwitch(int32 SwitchId)
 	{
 		return;
 	}
+	// 확인 RPC가 먼저 와도 서버 Lower 시간을 단축하지 않는다.
+	if (GetWorld()->GetTimeSeconds() + UE_SMALL_NUMBER < PendingSwitchLowerReadyTime) return;
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	AWeaponBase* TargetWeapon = PendingSwitchWeapon.Get();
-	if (!ShooterCharacter || !ShooterCharacter->HasAuthority() || !TargetWeapon)
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority() || !IsValid(TargetWeapon))
 	{
 		CancelPendingWeaponSwitch();
 		return;
@@ -430,7 +433,7 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 			ShooterCharacter->MulticastPlayThirdPersonSwitchPhase(
 				ShooterCharacter->GetWeaponType(), TEXT("Raise"));
 		}
-		ShooterCharacter->EndActionLock(EShooterActionLock::Equip);
+		ShooterCharacter->FinishEquipAction(ShooterCharacter->GetEquipActionGeneration());
 		ShooterCharacter->ClientCancelProceduralWeaponSwitch(PendingSwitchId);
 	}
 }
@@ -445,6 +448,12 @@ void UShooterInventoryComponent::ApplyWeaponToSlot(
 		return;
 	}
 
+	// 슈트 지급/복원은 자체 전환을 유지하면서 이전 무기의 전투 수명만 같은 경로로 닫는다.
+	if (!bPlayEquipPresentation && ShooterCharacter->GetActionLock() != EShooterActionLock::Equip
+		&& ShooterCharacter->CurrentWeapon != Weapon && ShooterCharacter->CombatComponent)
+	{
+		ShooterCharacter->CombatComponent->PrepareForWeaponEquip();
+	}
 	WeaponSlots[static_cast<int32>(Slot)] = Weapon;
 	CurrentSlot = Slot;
 	if (bPlayEquipPresentation)

@@ -610,6 +610,7 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 
 void AShooterCharacter::UnPossessed()
 {
+	ResetWeaponEquipForLifecycle();
 	if (HasAuthority()) ClientSetPartnerShieldPostProcess(false);
 	if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 		PPS->SetPartnerShieldPostProcess(this, false);
@@ -627,6 +628,7 @@ void AShooterCharacter::UnPossessed()
 
 void AShooterCharacter::OnRep_Controller()
 {
+	if (!Controller) ResetWeaponEquipForLifecycle();
 	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
@@ -1703,7 +1705,7 @@ void AShooterCharacter::HandleSprintInputModeChanged(EOutlierPlayerRole Settings
 	// 방식 변경은 Sprint만 초기화한다. 진행 중인 Aim/Fire 입력은 그대로 전달한다.
 	if (!HasAuthority()) ServerSetAimState(WantsToAim(), false, Movement->GetActionInputRequest(),
 		Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId(),
-		Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent());
+		Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent(), EquipActionGeneration);
 }
 
 void AShooterCharacter::HandleSprintSettingsContextChanged(EOutlierPlayerRole SettingsRole)
@@ -1764,7 +1766,7 @@ void AShooterCharacter::HandleControlMappingsRebuilt()
 	RefreshActionIntentsAfterEquip();
 	if (!HasAuthority()) ServerSetAimState(WantsToAim(), Movement->GetSprintInputIntent(),
 		Movement->GetActionInputRequest(), Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId(),
-		Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent());
+		Movement->IsLiveHoldSprintInput(), Movement->GetFireInputIntent(), EquipActionGeneration);
 }
 
 void AShooterCharacter::ResetActionInput()
@@ -1778,7 +1780,7 @@ void AShooterCharacter::ResetActionInput()
 	// 포커스 초기화는 이동이 일시 정지해도 서버에 전달한다. 단순 키 Release에서는 호출하지 않는다.
 	const uint32 Request = Movement->RecordActionInput(false);
 	if (!HasAuthority()) ServerSetAimState(false, false, Request, Movement->GetMovementInputEpoch(), 0,
-		Movement->IsLiveHoldSprintInput(), false);
+		Movement->IsLiveHoldSprintInput(), false, EquipActionGeneration);
 }
 
 void AShooterCharacter::OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
@@ -2011,6 +2013,16 @@ void AShooterCharacter::ServerReload_Implementation()
 	{
 		CombatComponent->TryReload();
 	}
+}
+
+void AShooterCharacter::ServerReloadRequest_Implementation(AWeaponBase* Weapon, uint32 RequestId, uint32 EquipGeneration)
+{
+	if (CombatComponent) CombatComponent->HandleServerReloadRequest(Weapon, RequestId, EquipGeneration);
+}
+
+void AShooterCharacter::ClientReloadResult_Implementation(AWeaponBase* Weapon, uint32 RequestId, uint32 EquipGeneration, bool bAccepted, bool bFinished)
+{
+	if (CombatComponent) CombatComponent->HandleReloadResult(Weapon, RequestId, EquipGeneration, bAccepted, bFinished);
 }
 
 void AShooterCharacter::TrySwitchWeapon1()
@@ -2342,6 +2354,7 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
+	DOREPLIFETIME_CONDITION(AShooterCharacter, EquipActionGeneration, COND_OwnerOnly);
 	DOREPLIFETIME(AShooterCharacter, CurrentLeanAlpha);
 	DOREPLIFETIME(AShooterCharacter, WallShotEquipmentRevision);
 	DOREPLIFETIME_CONDITION(AShooterCharacter, WallAvoidanceSnapshot, COND_OwnerOnly);
@@ -3012,6 +3025,7 @@ bool AShooterCharacter::CanInteract() const
 bool AShooterCharacter::CanLean() const
 {
 	return !IsDead()
+		&& !IsWeaponEquipInputBlocked()
 		&& !IsSuitTransitionBlocked()
 		&& !IsSprinting()
 		&& !GetCharacterMovement()->IsFalling()
@@ -3185,6 +3199,89 @@ bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 		&& (ActionLock == EShooterActionLock::None || bCanOverrideSlideLock);
 }
 
+bool AShooterCharacter::CanBeginWeaponEquip() const
+{
+	return !IsDead() && !IsSuitTransitionBlocked() && !IsWeaponEquipInputBlocked()
+		&& (ActionLock == EShooterActionLock::None || ActionLock == EShooterActionLock::Reload
+			|| ActionLock == EShooterActionLock::Slide);
+}
+
+bool AShooterCharacter::IsWeaponEquipInputBlocked() const
+{
+	return bPreparingWeaponEquip || bAwaitingServerEquipCompletion
+		|| ActionLock == EShooterActionLock::Equip || IsWeaponSwitchInProgress();
+}
+
+void AShooterCharacter::BeginWeaponEquip()
+{
+	// 유효성 검사가 끝난 요청만 진입한다. 세대/잠금을 먼저 바꿔 취소 콜백의 행동 복원을 막는다.
+	BeginActionLock(EShooterActionLock::Equip);
+	MulticastPrepareWeaponEquip(EquipActionGeneration);
+}
+
+void AShooterCharacter::MulticastPrepareWeaponEquip_Implementation(uint32 Generation)
+{
+	if (Generation < EquipActionGeneration || IsDead() || IsSuitTransitionBlocked()) return;
+	EquipActionGeneration = Generation;
+	TGuardValue<bool> PreparingGuard(bPreparingWeaponEquip, true);
+	bAwaitingServerEquipCompletion = IsLocallyControlled();
+	WeaponActionNotifyContexts.Reset();
+	if (CombatComponent) CombatComponent->PrepareForWeaponEquip();
+	if (CurrentWeapon) CurrentWeapon->StopAttack();
+	StopSlide(ESlideEndReason::ForcedCancel);
+	StopSprintInternal();
+	auto* ShooterMovement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	ShooterMovement->RequireFreshSprintPress();
+	ShooterMovement->CancelActionInput(true, true);
+	ShooterMovement->RecordFireInput(false);
+	TargetLeanAlpha = CurrentLeanAlpha = PresentedLeanAlpha = 0.0f;
+	GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
+	ApplyLeanPresentation();
+	UpdateLeanExposureCollision();
+	// 이전 행동만 중지한다. 이동/피격 등 다른 시스템의 몽타주와 타이머는 건드리지 않는다.
+	for (EShooterMontageAction Action : {EShooterMontageAction::Fire, EShooterMontageAction::Reload,
+		EShooterMontageAction::Slide, EShooterMontageAction::MeleeAttack})
+	{
+		StopFirstPersonMontage(GetActionMontage(Action, true));
+		StopThirdPersonMontage(GetActionMontage(Action, false));
+	}
+}
+
+void AShooterCharacter::ClientFinishWeaponEquip_Implementation(uint32 Generation)
+{
+	if (Generation != EquipActionGeneration) return;
+	bAwaitingServerEquipCompletion = false;
+	// None 복제가 중간에 합쳐져도 소유자는 서버 완료를 확실하게 받는다.
+	EndActionLock(EShooterActionLock::Equip);
+	RefreshActionIntentsAfterEquip();
+}
+
+void AShooterCharacter::ResetWeaponEquipForLifecycle()
+{
+	TGuardValue<bool> PreparingGuard(bPreparingWeaponEquip, true);
+	if (InventoryComponent && HasAuthority()) InventoryComponent->CancelPendingWeaponSwitch();
+	if (HasAuthority()) MulticastCancelWeaponEquip(EquipActionGeneration + 1);
+	else MulticastCancelWeaponEquip_Implementation(EquipActionGeneration);
+}
+
+void AShooterCharacter::MulticastCancelWeaponEquip_Implementation(uint32 Generation)
+{
+	if (Generation < EquipActionGeneration) return;
+	TGuardValue<bool> PreparingGuard(bPreparingWeaponEquip, true);
+	EquipActionGeneration = Generation;
+	bAwaitingServerEquipCompletion = false;
+	WeaponActionNotifyContexts.Reset();
+	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::None;
+	FirstPersonSwitchLowerAlpha = 0.0f;
+	ActiveProceduralSwitchId = 0;
+	WeaponAtSwitchStart.Reset();
+	WeaponExpectedOnRaise.Reset();
+	bProceduralEquipRaiseOnly = false;
+	bProceduralEquipExpectedWeaponUnmapped = false;
+	// 새 수명은 이전 Equip 완료/Notify를 받지 않는다. 다른 시스템의 잠금은 그대로 둔다.
+	EndActionLock(EShooterActionLock::Equip);
+}
+
 void AShooterCharacter::BeginActionLock(EShooterActionLock NewLock)
 {
 	// 새 행동은 이전 달리기 복귀 공격을 취소한다. 잠금 종료 뒤 첫 발이 늦게 튀어나오지 않는다.
@@ -3225,7 +3322,7 @@ void AShooterCharacter::RefreshActionIntentsAfterEquip()
 	CombatComponent->RefreshWeaponMode();
 	// 서버 잠금과 소유자 Raise는 서로 다른 순서로 끝날 수 있다. 마지막으로 끝난 경계가
 	// 현재 홀드만 재평가하며, 과거 입력을 다시 주입하거나 새 ADS 명령을 만들지 않는다.
-	if (ActionLock != EShooterActionLock::Equip && !IsWeaponSwitchInProgress())
+	if (!IsWeaponEquipInputBlocked())
 	{
 		if (!Cast<ARangedWeaponBase>(CurrentWeapon)) CombatComponent->StopAimInternal();
 		CombatComponent->RestoreAimIfRequested();
@@ -3236,7 +3333,9 @@ void AShooterCharacter::RefreshActionIntentsAfterEquip()
 void AShooterCharacter::FinishEquipAction(uint32 Generation)
 {
 	// 이전 교체의 지연 완료가 새 Equip 잠금을 풀지 못하게 한다.
-	if (Generation == EquipActionGeneration) EndActionLock(EShooterActionLock::Equip);
+	if (Generation != EquipActionGeneration) return;
+	EndActionLock(EShooterActionLock::Equip);
+	if (HasAuthority()) ClientFinishWeaponEquip(Generation);
 }
 
 bool AShooterCharacter::ApplyDamageInternal(
@@ -3429,7 +3528,7 @@ void AShooterCharacter::HandleFireShotAnimation()
 		return;
 	}
 
-	ClientPlayFirstPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType());
+	ClientPlayFirstPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType(), CurrentWeapon, EquipActionGeneration);
 }
 
 void AShooterCharacter::HandleMeleeAttackAnimation()
@@ -3442,7 +3541,7 @@ void AShooterCharacter::HandleMeleeAttackAnimation()
 		return;
 	}
 
-	ClientPlayFirstPersonActionMontage(EShooterMontageAction::MeleeAttack, GetWeaponType());
+	ClientPlayFirstPersonActionMontage(EShooterMontageAction::MeleeAttack, GetWeaponType(), CurrentWeapon, EquipActionGeneration);
 }
 
 void AShooterCharacter::StartLeanUpdate()
@@ -3776,8 +3875,9 @@ void AShooterCharacter::TryStartAttack()
 	}
 }
 
-void AShooterCharacter::ServerStartAttack_Implementation()
+void AShooterCharacter::ServerStartAttack_Implementation(AWeaponBase* ExpectedWeapon, uint32 EquipGeneration)
 {
+	if (ExpectedWeapon != CurrentWeapon || EquipGeneration != EquipActionGeneration) return;
 	if (CombatComponent)
 	{
 		CombatComponent->TryStartAttack();
@@ -3803,8 +3903,9 @@ void AShooterCharacter::TryStopAttack()
 }
 
 
-void AShooterCharacter::ServerStopAttack_Implementation()
+void AShooterCharacter::ServerStopAttack_Implementation(AWeaponBase* ExpectedWeapon, uint32 EquipGeneration)
 {
+	if (ExpectedWeapon != CurrentWeapon || EquipGeneration != EquipActionGeneration) return;
 	if (CombatComponent)
 	{
 		CombatComponent->TryStopAttack();
@@ -3889,6 +3990,7 @@ void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
 
 void AShooterCharacter::HandleDeath()
 {
+	ResetWeaponEquipForLifecycle();
 	ResetWeaponWallAvoidance();
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
@@ -4214,6 +4316,7 @@ void AShooterCharacter::PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, E
 			EMontagePlayReturnType::MontageLength,
 			0.0f,
 			false);
+		RecordWeaponActionMontage(FirstPersonMesh, Montage);
 		if (SectionName != NAME_None && Montage->IsValidSectionName(SectionName))
 		{
 			FirstPersonAnimInstance->Montage_JumpToSection(SectionName, Montage);
@@ -4290,6 +4393,7 @@ void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, E
 				EMontagePlayReturnType::MontageLength,
 				0.0f,
 				false);
+			RecordWeaponActionMontage(GetMesh(), Montage);
 			UE_LOG(
 				LogTemp,
 				Warning,
@@ -4387,7 +4491,7 @@ void AShooterCharacter::StopSplitMontages(UAnimMontage* FirstPersonMontage, UAni
 
 void AShooterCharacter::PlayEquipPresentation()
 {
-	if (!CanStartAction(EShooterActionLock::Equip))
+	if (ActionLock != EShooterActionLock::Equip && !CanStartAction(EShooterActionLock::Equip))
 	{
 		return;
 	}
@@ -4400,9 +4504,11 @@ void AShooterCharacter::PlayEquipPresentation()
 		ThirdPersonMontage && ThirdPersonMontage->IsValidSectionName(ThirdPersonSectionName)
 			? GetMontageSectionDurationOrFullLength(ThirdPersonMontage, ThirdPersonSectionName) : 0.0f;
 	// 3P 에셋이 없어도 1P Procedural Raise 시간 이후 잠금은 정상 종료한다.
-	const float EquipLockDuration = FMath::Max(FirstPersonSwitchRaiseDuration, ThirdPersonEquipLockDuration);
+	const float EquipLockDuration = FMath::Max(
+		FMath::IsFinite(FirstPersonSwitchRaiseDuration) ? FirstPersonSwitchRaiseDuration : 0.0f,
+		FMath::IsFinite(ThirdPersonEquipLockDuration) ? ThirdPersonEquipLockDuration : 0.0f);
 
-	BeginActionLock(EShooterActionLock::Equip);
+	if (ActionLock != EShooterActionLock::Equip) BeginWeaponEquip();
 
 	UE_LOG(
 		LogTemp,
@@ -4433,7 +4539,7 @@ void AShooterCharacter::PlayEquipPresentation()
 	}
 	else
 	{
-		EndActionLock(EShooterActionLock::Equip);
+		FinishEquipAction(EquipActionGeneration);
 	}
 }
 
@@ -4450,7 +4556,7 @@ int32 AShooterCharacter::BeginProceduralWeaponSwitch()
 	}
 	else
 	{
-		ClientBeginProceduralWeaponSwitch(SwitchId);
+		ClientBeginProceduralWeaponSwitch(SwitchId, CurrentWeapon, EquipActionGeneration);
 	}
 	return SwitchId;
 }
@@ -4522,7 +4628,7 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 	if (FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::Lowering)
 	{
 		const float T = FMath::Clamp(FirstPersonSwitchVisualElapsed /
-			FMath::Max(FirstPersonSwitchLowerDuration, 0.05f), 0.0f, 1.0f);
+			(FMath::IsFinite(FirstPersonSwitchLowerDuration) ? FMath::Max(FirstPersonSwitchLowerDuration, 0.05f) : 0.05f), 0.0f, 1.0f);
 		FirstPersonSwitchLowerAlpha = FMath::SmoothStep(0.0f, 1.0f, T);
 		if (T >= 1.0f && !bFirstPersonSwitchConfirmSent)
 		{
@@ -4558,7 +4664,7 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 	else if (FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::Raising)
 	{
 		const float T = FMath::Clamp(FirstPersonSwitchVisualElapsed /
-			FMath::Max(FirstPersonSwitchRaiseDuration, 0.05f), 0.0f, 1.0f);
+			(FMath::IsFinite(FirstPersonSwitchRaiseDuration) ? FMath::Max(FirstPersonSwitchRaiseDuration, 0.05f) : 0.05f), 0.0f, 1.0f);
 		FirstPersonSwitchLowerAlpha = FirstPersonSwitchRaiseStartAlpha *
 			(1.0f - FMath::SmoothStep(0.0f, 1.0f, T));
 		if (T >= 1.0f)
@@ -4575,13 +4681,17 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 	}
 }
 
-void AShooterCharacter::ClientBeginProceduralWeaponSwitch_Implementation(int32 SwitchId)
+void AShooterCharacter::ClientBeginProceduralWeaponSwitch_Implementation(int32 SwitchId, AWeaponBase* PreviousWeapon, uint32 Generation)
 {
+	if (!IsLocallyControlled() || Generation != EquipActionGeneration || IsDead() || IsSuitTransitionBlocked()) return;
 	StartLocalProceduralWeaponSwitch(SwitchId);
+	// CurrentWeapon 복제가 RPC보다 먼저 도착해도 Lower의 이전 무기 기준은 서버가 넘긴 값을 사용한다.
+	WeaponAtSwitchStart = PreviousWeapon;
 }
 
 void AShooterCharacter::ClientCancelProceduralWeaponSwitch_Implementation(int32 SwitchId)
 {
+	if (!IsLocallyControlled()) return;
 	if (SwitchId == ActiveProceduralSwitchId)
 	{
 		FailedProceduralSwitchId = SwitchId;
@@ -4592,6 +4702,7 @@ void AShooterCharacter::ClientCancelProceduralWeaponSwitch_Implementation(int32 
 
 void AShooterCharacter::ClientBeginProceduralEquipRaise_Implementation(AWeaponBase* ExpectedWeapon, AWeaponBase* PreviousWeapon)
 {
+	if (!IsLocallyControlled() || IsDead() || IsSuitTransitionBlocked()) return;
 	StartLocalProceduralEquipRaise(ExpectedWeapon, PreviousWeapon);
 }
 
@@ -4622,17 +4733,24 @@ void AShooterCharacter::PlayProceduralSwitchThirdPersonEquip(EWeaponType Previou
 				*PairSection.ToString(), *SectionName.ToString());
 		}
 	}
+	const float MontageDuration = Montage && Montage->IsValidSectionName(SectionName)
+		? GetMontageSectionDurationOrFullLength(Montage, SectionName) : 0.0f;
 	const float EquipLockDuration = FMath::Max(
-		Montage && Montage->IsValidSectionName(SectionName)
-			? GetMontageSectionDurationOrFullLength(Montage, SectionName)
-			: 0.0f,
-		FirstPersonSwitchRaiseDuration);
+		FMath::IsFinite(MontageDuration) ? MontageDuration : 0.0f,
+		FMath::IsFinite(FirstPersonSwitchRaiseDuration) ? FirstPersonSwitchRaiseDuration : 0.0f);
 
 	// Switch가 없으면 3P 재생은 건너뛰되 1P Raise와 장착 잠금 종료는 유지한다.
 	MulticastPlayThirdPersonSwitchRaise(EquippedWeaponType, SectionName);
 	FTimerDelegate EquipEndDelegate;
 	EquipEndDelegate.BindUObject(this, &AShooterCharacter::FinishEquipAction, EquipActionGeneration);
-	GetWorldTimerManager().SetTimer(ActionLockTimerHandle, EquipEndDelegate, EquipLockDuration, false);
+	if (EquipLockDuration > 0.0f)
+	{
+		GetWorldTimerManager().SetTimer(ActionLockTimerHandle, EquipEndDelegate, EquipLockDuration, false);
+	}
+	else
+	{
+		FinishEquipAction(EquipActionGeneration);
+	}
 }
 
 void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex)
@@ -4643,10 +4761,10 @@ void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex
 	}
 }
 
-void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId, bool bHoldSprint, bool bFireHeld)
+void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId, bool bHoldSprint, bool bFireHeld, uint32 EquipGeneration)
 {
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())
-		->ApplyActionInput(InputRequest, InputEpoch, bSprintIntent, bNewAiming, AimSwitchId, bHoldSprint, bFireHeld);
+		->ApplyActionInput(InputRequest, InputEpoch, bSprintIntent, bNewAiming, AimSwitchId, bHoldSprint, bFireHeld, EquipGeneration);
 }
 
 void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting, uint32 InputRequest, uint32 InputEpoch)
@@ -4716,8 +4834,10 @@ void AShooterCharacter::ServerSetLeanTarget_Implementation(float NewLeanAlpha)
 	SetLeanTarget(NewLeanAlpha, false);
 }
 
-void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)
+void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType, AWeaponBase* ExpectedWeapon, uint32 EquipGeneration)
 {
+	if (ExpectedWeapon != CurrentWeapon || EquipGeneration != EquipActionGeneration || IsWeaponEquipInputBlocked()) return;
+	if (Action == EShooterMontageAction::Reload && !IsReloading()) return;
 	if (Action == EShooterMontageAction::Reload && GetActionMontage(EShooterMontageAction::Reload, true) && FirstPersonMesh)
 	{
 		if (UAnimInstance* FirstPersonAnimInstance = FirstPersonMesh->GetAnimInstance())

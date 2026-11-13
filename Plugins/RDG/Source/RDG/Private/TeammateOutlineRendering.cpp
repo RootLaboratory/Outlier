@@ -189,6 +189,9 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 	FRDGTextureRef SceneDepth, const FTeammateOutlineResources& Resources)
 {
 	if (!Resources || Resources->Builder != &GraphBuilder || !Resources->Masks[0] || !SceneDepth || !SceneColor.IsValid()) return SceneColor;
+	// 카메라 Fade는 Tonemap에서 이미 적용됐다. 완전 암전에서는 디버그 출력도 원본 화면을 보존한다.
+	const float CameraFade = FMath::Clamp(View.OverlayColor.A, 0.0f, 1.0f);
+	if (CameraFade >= 1.0f) return SceneColor;
 	const FViewInfo& RenderView = static_cast<const FViewInfo&>(View);
 	auto* Parameters = GraphBuilder.AllocParameters<FTeammateOutlineCS::FParameters>();
 	Parameters->View = View.ViewUniformBuffer;
@@ -227,7 +230,8 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 	Parameters->FirstPersonDepthTexture = MaskOrEmpty(static_cast<int32>(EMask::FirstPerson),
 		Parameters->FirstPersonMin, Parameters->FirstPersonSize);
 	const auto& Settings = Resources->Settings;
-	Parameters->OutlineColor = FVector4f(Settings.Color);
+	// 배경을 다시 Fade하면 이중 적용된다. 새로 합성하는 선 색에만 같은 Fade를 반영한다.
+	Parameters->OutlineColor = FVector4f(FMath::Lerp(Settings.Color, View.OverlayColor, CameraFade));
 	Parameters->Style = FVector4f(FMath::Clamp(Settings.VisibleThickness, 0.0f, 4.0f),
 		FMath::Clamp(Settings.OccludedThickness, 0.0f, 4.0f), FMath::Clamp(Settings.VisibleStrength, 0.0f, 1.0f),
 		FMath::Clamp(Settings.OccludedStrength, 0.0f, 1.0f));

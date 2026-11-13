@@ -387,7 +387,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOutlierBoneSightDefaultsTest,
 bool FOutlierBoneSightDefaultsTest::RunTest(const FString& Parameters)
 {
 	using namespace OutlierBoneSightTests;
-	TestFalse(TEXT("Unrelated hacked turrets retain their existing default sight path"),
+	TestTrue(TEXT("Turrets use their finite Head/Body sight interface"),
 		AAutoTurret::StaticClass()->ImplementsInterface(UAISightTargetInterface::StaticClass()));
 	const TCHAR* Classes[] = {
 		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"),

@@ -3672,13 +3672,17 @@ bool URoomCombatSubsystem::CompleteInitialDetectionPreparation(
 
 bool URoomCombatSubsystem::IsEnemyAttackBlocked(AEnemyBase* Enemy) const
 {
-	// 빙의체의 플레이어 입력은 막지 않고, 이 Room의 배치 AI만 합류 준비 동안 보류한다.
+	// 빙의체와 이미 아군으로 제외된 배치는 적 Encounter의 합류 준비에 묶이지 않는다.
 	if (!Enemy || Enemy->IsEnemyPossessed())
 	{
 		return false;
 	}
 	const FRoomCombatEnemyRegistration* Registration =
 		RegisteredEnemies.Find(TWeakObjectPtr<AEnemyBase>(Enemy));
+	if (Registration && Registration->bExcludedAsAlly)
+	{
+		return false;
+	}
 	const FRoomCombatRuntime* Runtime = Registration
 		? RoomRuntimes.Find(Registration->RoomTag)
 		: nullptr;
