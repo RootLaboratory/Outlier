@@ -25,6 +25,7 @@ public:
 	void UnregisterSource(UHeatHazeSourceComponent* Source);
 
 	void GatherHeatHazeSources(TArray<FHeatHazeSourceData>& OutSources) const;
+
 private:
 
 	void CompactHeatSources();

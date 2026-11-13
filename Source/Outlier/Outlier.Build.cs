@@ -44,7 +44,8 @@ public class Outlier : ModuleRules
 
         PrivateDependencyModuleNames.AddRange(new string[]
         {
-            "SlateCore"
+            "SlateCore",
+            "RDG"
         });
 
         if (Target.bBuildEditor)

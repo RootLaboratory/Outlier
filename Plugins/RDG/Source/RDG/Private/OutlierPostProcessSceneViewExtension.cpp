@@ -38,6 +38,21 @@ DECLARE_GPU_STAT_NAMED(OutlierADSSightOutputCopy, TEXT("OutlierADS_OutputCopy"))
 
 namespace
 {
+// ViewFamily가 GT→RT로 복사될 때 함께 전달된다. 프레임 사이에 RDG 참조를 재사용하지 않는다.
+struct FTeammateOutlineFamilyData final : ISceneViewFamilyExtentionData
+{
+	static constexpr const TCHAR* GSubclassIdentifier = TEXT("Outlier.TeammateOutline");
+	virtual const TCHAR* GetSubclassIdentifier() const override { return GSubclassIdentifier; }
+	struct FEntry
+	{
+		const FOutlierPostProcessSceneViewExtension* Owner = nullptr;
+		TSharedPtr<FTeammateOutlineViewResources, ESPMode::ThreadSafe> Resources;
+		// Family 조회는 const이며, 이 깊이 참조만 해당 프레임의 렌더 스레드에서 채운다.
+		mutable FRDGTextureRef SceneDepth = nullptr;
+	};
+	TMap<int32, FEntry> Views;
+};
+
 TAutoConsoleVariable<int32> CVarADSBlurGpuStats(
 	TEXT("rdg.ADSBlur.GpuStats"),
 	0,
@@ -82,6 +97,33 @@ void FOutlierPostProcessSceneViewExtension::SetupView(FSceneViewFamily& InViewFa
 
 void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFamily& InViewFamily)
 {
+	if (InViewFamily.bIsMainViewFamily)
+	{
+		if (ULocalPlayer* Player = LocalPlayer.Get())
+		{
+			UWorld* World = Player->GetWorld();
+			if (World && TeammateOutlineWorld.Get() == World && World->GetNetMode() != NM_DedicatedServer && InViewFamily.Scene == World->Scene)
+			{
+				bool bMasksQueued = false;
+				for (const FSceneView* View : InViewFamily.Views)
+				{
+					if (View->PlayerIndex != Player->GetControllerId() || View->bIsSceneCapture
+						|| !TeammateOutlineData.bEnabled || bTeammateOutlineSuppressed) continue;
+					auto Resources = FRDGTeammateOutlineRendering::QueueMasks(InViewFamily, *View, TeammateOutlineData);
+					if (Resources.IsValid())
+					{
+						auto& Entry = InViewFamily.GetOrCreateExtentionData<FTeammateOutlineFamilyData>()->Views.FindOrAdd(View->PlayerIndex);
+						Entry.Owner = this;
+						Entry.Resources = Resources;
+						bMasksQueued = true;
+					}
+				}
+				// 설정만으로 기존 선을 내리지 않는다. 실제 View에 마스크를 등록한 뒤 전환하고,
+				// 대상 없음/지원하지 않는 View/출력 억제 시에는 기존 스텐실 경로를 복원한다.
+				TeammateOutlineData.OnMasksQueued.ExecuteIfBound(bMasksQueued);
+			}
+		}
+	}
 
 	if (ULocalPlayer* LP = LocalPlayer.Get())
 	{
@@ -120,7 +162,10 @@ bool FOutlierPostProcessSceneViewExtension::IsActiveThisFrame_Internal(const FSc
 
 void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostProcessingPass PassId, const FSceneView& View, FAfterPassCallbackDelegateArray& InOutPassCallbacks, bool bIsPassEnabled)
 {
-	if (!ShouldRenderAnyEffect())
+	const auto* OutlineFamily = View.Family ? View.Family->GetExtentionData<FTeammateOutlineFamilyData>() : nullptr;
+	const auto* OutlineEntry = OutlineFamily ? OutlineFamily->Views.Find(View.PlayerIndex) : nullptr;
+	const bool bHasOutline = OutlineEntry && OutlineEntry->Owner == this;
+	if (!ShouldRenderAnyEffect() && !bHasOutline)
 	{
 		if (!FRDGExplosionVolumeVisualizePass::IsEnabled())
 		{
@@ -131,6 +176,12 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 	if (!IsTargetLocalPlayerView(View))
 	{
 		return;
+	}
+	// 게임 화면에 합성한 뒤 기존 사망 Fade/Black이 덮도록, 해당 콜백들보다 먼저 등록한다.
+	if (bHasOutline && PassId == EPostProcessingPass::Tonemap)
+	{
+		InOutPassCallbacks.Add(FAfterPassCallbackDelegate::CreateRaw(this,
+			&FOutlierPostProcessSceneViewExtension::TeammateOutlineCallback_RenderThread));
 	}
 
 	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DualKawaseBlur.bEnabled)
@@ -261,6 +312,13 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 
 void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView, const FPostProcessingInputs& Inputs)
 {
+	if (auto* FamilyData = InView.Family->GetExtentionData<FTeammateOutlineFamilyData>())
+	{
+		if (auto* Entry = FamilyData->Views.Find(InView.PlayerIndex))
+		{
+			Entry->SceneDepth = Inputs.SceneTextures ? (*Inputs.SceneTextures)->SceneDepthTexture : nullptr;
+		}
+	}
 	CachedADSSightHardMask = nullptr;
 	CachedADSSightSoftMask = nullptr;
 	CachedADSPreDoFSceneColor = nullptr;
@@ -378,6 +436,37 @@ void FOutlierPostProcessSceneViewExtension::UpdateHeatHazeSources(const TArray<F
 {
 	FScopeLock Lock(&HeatHazeSourcesCriticalSection);
 	CachedHeatHazeSources = InSources;
+}
+
+void FOutlierPostProcessSceneViewExtension::UpdateTeammateOutlineData(const FTeammateOutlineViewData& Data, UWorld* SourceWorld)
+{
+	check(IsInGameThread());
+	TeammateOutlineData = Data;
+	TeammateOutlineWorld = SourceWorld;
+}
+
+void FOutlierPostProcessSceneViewExtension::SetTeammateOutlineSuppressed(bool bSuppressed)
+{
+	check(IsInGameThread());
+	bTeammateOutlineSuppressed = bSuppressed;
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::TeammateOutlineCallback_RenderThread(
+	FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const auto* Family = View.Family->GetExtentionData<FTeammateOutlineFamilyData>();
+	const auto* Entry = Family ? Family->Views.Find(View.PlayerIndex) : nullptr;
+	if (!Entry || !Entry->SceneDepth) return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	const FScreenPassTexture Color = FScreenPassTexture::CopyFromSlice(GraphBuilder, Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+	if (!Color.IsValid()) return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	FScreenPassTexture Output = FRDGTeammateOutlineRendering::Composite(GraphBuilder, View, Color, Entry->SceneDepth, Entry->Resources);
+	// 마지막 후처리 콜백에는 엔진이 지정한 출력 타깃을 존중해야 backbuffer까지 결과가 전달된다.
+	if (Inputs.OverrideOutput.IsValid())
+	{
+		AddDrawTexturePass(GraphBuilder, View, Output, Inputs.OverrideOutput);
+		return Inputs.OverrideOutput;
+	}
+	return Output;
 }
 
 bool FOutlierPostProcessSceneViewExtension::ShouldRenderAnyEffect() const
