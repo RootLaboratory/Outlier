@@ -30,14 +30,10 @@ struct FInputKeyTextureDataRow;
  *
  * 이 위젯이 생성되는 시점(NativeConstruct/SetWatchedInputAction 호출 시점)과
  * Enhanced Input이 실제로 IMC를 등록/재구성 완료하는 시점 사이엔 순서 보장이
- * 없다 — 그래서 "생성될 때 한 번 조회하고 끝"이 아니라, 조회에 실패하면
- * UEnhancedInputLocalPlayerSubsystem::ControlMappingsRebuiltDelegate(매핑이
- * 실제로 재구성될 때 엔진이 쏘는 이벤트)를 구독해뒀다가, 데이터가 유효해지는
- * 시점에 알아서 다시 시도한다. 이미 데이터가 유효하면(=바로 조회 성공) 이
- * 델리게이트는 구독하지 않는다. 즉 "언제 만들어지든/언제 IA가 꽂히든 상관없이
- * 알아서 맞는 값을 보여준다"를 이 클래스 하나가 보장하므로, 이걸 쓰는 쪽
- * (UILayerKeyHintWidget, InteractKeyWidget, 그 외 나중에 생길 것들)은 타이밍을
- * 신경 쓸 필요가 없다.
+ * 없다. 액션의 키를 표시하는 동안 ControlMappingsRebuiltDelegate를 구독하여
+ * 최초 조회 성공 후에도 활성 매핑 변경에 맞춰 다시 조회한다.
+ * 고정 키·고정 문구·액션 없음 상태에서는 구독을 해제하고,
+ * 액션 표시로 돌아오면 다시 연결한다. NativeDestruct에서도 연결을 해제한다.
  *
  * SettingWidget에서 키 리바인드가 커밋되면 ULocalPlayerSettingsSubsystem::
  * OnInputActionKeyChanged가 브로드캐스트되고, 이 위젯은 그 이벤트를 구독하고
