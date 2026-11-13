@@ -89,13 +89,16 @@ bool FOutlierSightBoneCacheLifetimeTest::RunTest(const FString& Parameters)
 	FOutlierSightBoneCache First;
 	FOutlierSightBoneCache Second;
 	First.Resolve(FirstMesh, Names);
+	const uint32 FirstRevision = First.GetRevision();
 	const int32* CachedData = First.GetBoneIndices().GetData();
 	for (int32 Query = 0; Query < 100; ++Query)
 	{
 		TestTrue(TEXT("Unchanged registration stays valid"), First.Resolve(FirstMesh, Names));
 		TestTrue(TEXT("Repeated queries reuse the index storage"), First.GetBoneIndices().GetData() == CachedData);
+		TestEqual(TEXT("Stable registration preserves its observation revision"), First.GetRevision(), FirstRevision);
 	}
 	TestTrue(TEXT("A different mesh is revalidated"), First.Resolve(SecondMesh, Names));
+	TestTrue(TEXT("Mesh replacement advances the observation revision"), First.GetRevision() != FirstRevision);
 	OutlierSightBoneTests::CheckIndex(*this, TEXT("New mesh head index replaces old index"), First, 0, 2);
 	Second.Resolve(FirstMesh, Names);
 	OutlierSightBoneTests::CheckIndex(*this, TEXT("Another target keeps its own mesh index"), Second, 0, 1);

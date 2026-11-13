@@ -5,6 +5,7 @@
 #include "Engine/EngineTypes.h"
 #include "GameplayTagContainer.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "TimerManager.h"
 #include "OutlierArenaInstance.h"
 #include "OutlierArenaSubsystem.generated.h"
 
@@ -14,6 +15,7 @@ class ULevelStreamingDynamic;
 class AActor;
 class FDataValidationContext;
 class UOutlierAudioSubsystem;
+class AOutlierDeathDebrisActor;
 
 UENUM(BlueprintType)
 enum class EOutlierGameplayReloadPhase : uint8
@@ -64,8 +66,16 @@ public:
 	void ReleaseArena();
 	void EnsureArenaLoaded();
 	uint32 ReserveGameplayGeneration();
+	void CancelGameplayGeneration(uint32 Generation);
+	bool CommitGameplayGeneration(uint32 Generation);
 	bool ReloadGameplayLevels(uint32 Generation, bool bWaitForClientAcks);
 	bool BeginClientGameplayReload(uint32 Generation);
+	bool SynchronizeClientGameplayGeneration(uint32 Generation);
+	// 원본 Enemy의 풀 반환/파괴와 독립적이되, 확정된 Gameplay 세대 안에서만 유지한다.
+	bool IsDeathDebrisGenerationCurrent(uint32 Generation) const;
+	FTimerHandle ScheduleDeathDebris(uint32 Generation, float Delay, FTimerDelegate Callback);
+	bool RegisterDeathDebrisActor(AOutlierDeathDebrisActor* Debris, uint32 Generation);
+	void UnregisterDeathDebrisActor(AOutlierDeathDebrisActor* Debris);
 	void AllowGameplayLevelLoad(uint32 Generation);
 	bool RetryStalledGameplayReload(uint32 Generation);
 	void FailGameplayReload(uint32 Generation, EOutlierGameplayReloadFailure Failure);
@@ -74,6 +84,7 @@ public:
 
 	bool IsGameplayLevelsConfigured() const;
 	bool IsGameplayLevelsReady() const;
+	bool IsGameplayReloadBootstrapReady() const;
 	bool IsGameplayReloadUnloaded(uint32 Generation) const;
 	void SuspendGameplayVisibilityForConnection(APlayerController* PlayerController) const;
 	ULevel* GetArenaLoadedLevel() const;
@@ -112,6 +123,13 @@ public:
 	FOnArenaGameplayReloadFailed OnArenaGameplayReloadFailed;
 
 private:
+	void ClearDeathDebris();
+	TMap<uint64, FTimerHandle> PendingDeathDebris;
+	TSet<TWeakObjectPtr<AOutlierDeathDebrisActor>> DeathDebrisActors;
+	uint64 NextDeathDebrisRequestId = 0;
+	bool bDeathDebrisReleased = false;
+	friend class FOutlierDeathDebrisLifecycleTest;
+	friend class FEnemyPoolRuntimeTest;
 	friend class FOutlierArenaMusicPreloadTest;
 	uint64 RequestLevelMusicPreload(const TSoftObjectPtr<UWorld>& Map);
 	void SetLevelMusicPreload(ULevelStreaming* Level, const TSoftObjectPtr<UWorld>& Map, bool bLoaded);
@@ -133,6 +151,8 @@ private:
 		// TArray<uint8> UnloadedLevelLogged;
 		// TArray<uint8> ShownLevelLogged;
 		TWeakObjectPtr<ULevel> StableArenaLevel;
+		// 확정 후 스냅샷/페어 준비가 끝나야 실제 unload를 진행한다.
+		bool bUnloadRequested = false;
 		bool bCanLoad = false;
 		bool bUnloaded = false;
 		bool bGCRequested = false;
@@ -171,6 +191,16 @@ private:
 	TArray<TSoftObjectPtr<UWorld>> GameplaySublevels;
 	TSoftObjectPtr<UWorld> ArenaLevel;
 	uint32 GameplayGeneration = 0;
+	uint32 LastReservedGameplayGeneration = 0;
+	uint32 ReservedGameplayGeneration = 0;
+	friend class FOutlierArenaGenerationTransitionTest;
+	friend class FOutlierPresetGuideLifecycleTest;
+	friend class FLevel1SuitUpgradeDoorTest;
+	friend class FStatAllocatorCompletionTest;
+	friend class FEnemyAdaptationRuntimeRegistrationTest;
+	friend class FEnemyAdaptationGenerationDamageTest;
+	friend class FOutlierArenaRecoveryWatchdogTest;
+	friend class FOutlierClientReloadRecoveryTest;
 	bool bGameplayLevelsResolved = false;
 	bool bInitialGameplayLevelsRequested = false;
 	bool bPreloadAfterRelease = false;

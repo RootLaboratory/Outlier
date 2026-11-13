@@ -30,6 +30,7 @@ bool NearlyEqualRow(
 		&& FMath::IsNearlyEqual(A.CooldownSeconds, B.CooldownSeconds)
 		&& FMath::IsNearlyEqual(A.MovementSpeedBonusPercent, B.MovementSpeedBonusPercent)
 		&& FMath::IsNearlyEqual(A.ExitSpeedBuffDurationSeconds, B.ExitSpeedBuffDurationSeconds)
+		&& A.ShadowChainRequiredKills == B.ShadowChainRequiredKills
 		&& FMath::IsNearlyEqual(A.CastTimeSeconds, B.CastTimeSeconds)
 		&& FMath::IsNearlyEqual(A.MaxPartnerDistance, B.MaxPartnerDistance)
 		&& FMath::IsNearlyEqual(A.PartnerOffset, B.PartnerOffset)
@@ -57,6 +58,11 @@ bool RequireValidAutoAimDiameterWidthRatio(float Value, FString& OutError)
 
 bool FOutlierShooterSuitConfig::IsValid(FString& OutError) const
 {
+	if (Stealth.ShadowChainRequiredKills < 1)
+	{
+		OutError = TEXT("Stealth.ShadowChainRequiredKills must be at least 1");
+		return false;
+	}
 	return RequireNonNegative(MaxPartnerDistance, TEXT("Common.MaxPartnerDistance"), OutError)
 		&& RequireNonNegative(QuantumLeap.CastTimeSeconds, TEXT("QuantumLeap.CastTimeSeconds"), OutError)
 		&& RequireNonNegative(QuantumLeap.DurationSeconds, TEXT("QuantumLeap.DurationSeconds"), OutError)

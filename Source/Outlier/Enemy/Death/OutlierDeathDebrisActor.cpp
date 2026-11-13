@@ -4,6 +4,7 @@
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "Outlier.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "TimerManager.h"
 
 AOutlierDeathDebrisActor::AOutlierDeathDebrisActor()
@@ -28,12 +29,15 @@ AOutlierDeathDebrisActor* AOutlierDeathDebrisActor::SpawnLocalDebris(
 	const UGeometryCollection* RestCollection,
 	const FTransform& SpawnTransform,
 	const FVector& InheritedVelocity,
-	const FGeometryCollectionDeathProfile& Profile)
+	const FGeometryCollectionDeathProfile& Profile,
+	uint32 GameplayGeneration)
 {
-	if (!World || !RestCollection)
+	if (!World || !RestCollection || World->GetNetMode() == NM_DedicatedServer)
 	{
 		return nullptr;
 	}
+	UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+	if (!Arena || !Arena->IsDeathDebrisGenerationCurrent(GameplayGeneration)) return nullptr;
 
 	FActorSpawnParameters SpawnParameters;
 	SpawnParameters.SpawnCollisionHandlingOverride =
@@ -48,9 +52,16 @@ AOutlierDeathDebrisActor* AOutlierDeathDebrisActor::SpawnLocalDebris(
 	{
 		return nullptr;
 	}
+	// 생성 진입점에서도 검증하여 지연 콜백이 세대 정리를 지나 파편을 다시 남기지 못하게 한다.
+	if (!Arena->RegisterDeathDebrisActor(Debris, GameplayGeneration))
+	{
+		Debris->Destroy();
+		return nullptr;
+	}
 
 	if (!Debris->BeginDebris(RestCollection, InheritedVelocity, Profile))
 	{
+		Arena->UnregisterDeathDebrisActor(Debris);
 		Debris->Destroy();
 		return nullptr;
 	}
@@ -61,6 +72,18 @@ AOutlierDeathDebrisActor* AOutlierDeathDebrisActor::SpawnLocalDebris(
 	}
 
 	return Debris;
+}
+
+void AOutlierDeathDebrisActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UWorld* World = GetWorld())
+	{
+		if (UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>())
+		{
+			Arena->UnregisterDeathDebrisActor(this);
+		}
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 bool AOutlierDeathDebrisActor::BeginDebris(

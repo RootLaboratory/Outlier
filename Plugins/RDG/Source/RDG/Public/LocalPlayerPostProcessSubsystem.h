@@ -6,6 +6,7 @@
 #include "DeathTransitionSequence.h"
 #include "RHIResources.h"
 #include "Tickable.h"
+#include "TeammateOutlineRendering.h"
 #include "LocalPlayerPostProcessSubsystem.generated.h"
 
 class FOutlierPostProcessSceneViewExtension;
@@ -69,6 +70,8 @@ public:
 	void ResetAllPostProcess(bool bPreserveDeathTransition = false);
 	void BeginEndingPresentation();
 	bool IsEndingPresentationActive() const;
+	void SetTeammateOutlineData(const FTeammateOutlineViewData& Data, UWorld* SourceWorld = nullptr);
+	void ClearTeammateOutlineData(UWorld* SourceWorld = nullptr);
 
 	// 메뉴가 열린 동안 Slate 이후 효과의 출력만 숨긴다. 원본 설정/타임라인은 유지한다.
 	// 사망/빙의/리스폰 화면 전환은 계속 그려 콜백과 암막 상태를 보존한다.
@@ -277,6 +280,7 @@ private:
 	FPostProcessStrctureUI UIPostProcessParameters;
 
 	TSharedPtr<FOutlierPostProcessSceneViewExtension, ESPMode::ThreadSafe> ViewExtension;
+	TWeakObjectPtr<UWorld> TeammateOutlineSourceWorld;
 
 	uint8 bDirty : 1 = false;
 	uint8 bOverlayRequested : 1 = false;

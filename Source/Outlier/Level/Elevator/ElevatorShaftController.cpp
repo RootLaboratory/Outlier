@@ -1,5 +1,6 @@
 #include "Level/Elevator/ElevatorShaftController.h"
 #include "Level/Elevator/ElevatorShaftSection.h"
+#include "Explosion/ExplosiveProp.h"
 #include "Interaction/InteractableDoor.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
@@ -205,6 +206,7 @@ void AElevatorShaftController::BeginPlay()
 	ResolveArrivalActors();
 	Clock = GetWorld()->GetGameState();
 	DepartureControllerTransform = GetActorTransform();
+	if (HasAuthority()) InitializeTransportProps();
 	ControllerSectionOffset = DepartureControllerTransform.GetRelativeTransform(
 		EntranceSection ? EntranceSection->GetActorTransform() : DepartureControllerTransform);
 	// 암전 중에는 바닥/고정 외벽도 함께 옮긴다. 기존 BP에 저장된 Static 설정도 보완한다.
@@ -264,6 +266,13 @@ void AElevatorShaftController::BeginPlay()
 
 void AElevatorShaftController::EndPlay(const EEndPlayReason::Type Reason)
 {
+	// 아래 구조물 복귀 경로가 해제 중인 별도 레벨 액터까지 옮기지 않도록 먼저 기록을 버린다.
+	TransportedPropTransforms.Reset();
+	for (const TWeakObjectPtr<AExplosiveProp>& Prop : RegisteredTransportProps)
+	{
+		if (Prop.IsValid()) Prop->UnregisterElevatorTransport(this);
+	}
+	RegisteredTransportProps.Reset();
 	StopCollisionDiagnostics();
 	GetWorldTimerManager().ClearTimer(CombatStartTimer);
 	GetWorldTimerManager().ClearAllTimersForObject(this);
@@ -1334,6 +1343,12 @@ bool AElevatorShaftController::ValidateExit(AFirstPersonCharacter* Pawn, const F
 
 void AElevatorShaftController::TryTeleportPair()
 {
+	// 통의 BeginPlay가 저장된 폭발 상태를 적용한다. 복원 전 상태로 이동 대상을 정하지 않는다.
+	if (!AreTransportPropsReady())
+	{
+		AbortTransitionWithReason(TEXT("TransportPropsNotReady"));
+		return;
+	}
 	AFirstPersonCharacter* Shooter = ShooterController.IsValid() ? Cast<AFirstPersonCharacter>(ShooterController->GetPawn()) : nullptr;
 	AFirstPersonCharacter* Partner = PartnerController.IsValid() ? Cast<AFirstPersonCharacter>(PartnerController->GetPawn()) : nullptr;
 	if (!Shooter || !Partner || !ShooterExitTarget || !PartnerExitTarget)
@@ -1407,6 +1422,84 @@ void AElevatorShaftController::TryTeleportPair()
 	PrepareArrival();
 }
 
+bool AElevatorShaftController::IsTransportPropValid(const AExplosiveProp* Prop) const
+{
+	return IsValid(Prop) && !Prop->IsActorBeingDestroyed() && Prop->GetWorld() == GetWorld()
+		&& Prop->HasAuthority() && Prop->GetRootComponent() && !Prop->GetParentActor()
+		&& !Prop->GetAttachParentActor() && !Prop->IsMountedOnSelfDestructDrone();
+}
+
+void AElevatorShaftController::InitializeTransportProps()
+{
+	if (!HasAuthority() || bTransportPropsInitialized) return;
+	bTransportPropsInitialized = true;
+	TSet<AExplosiveProp*> Seen;
+	for (AExplosiveProp* Prop : TransportExplosiveProps)
+	{
+		if (!IsTransportPropValid(Prop) || Seen.Contains(Prop))
+		{
+			UE_LOG(LogElevatorShaft, Warning, TEXT("%s: ignored invalid or duplicate transport prop %s."),
+				*GetName(), *GetNameSafe(Prop));
+			continue;
+		}
+		Seen.Add(Prop);
+		if (!Prop->RegisterElevatorTransport(this))
+		{
+			UE_LOG(LogElevatorShaft, Warning, TEXT("%s: transport prop %s already belongs to another controller."),
+				*GetName(), *GetNameSafe(Prop));
+			continue;
+		}
+		RegisteredTransportProps.Add(Prop);
+	}
+}
+
+bool AElevatorShaftController::AreTransportPropsReady() const
+{
+	for (const TWeakObjectPtr<AExplosiveProp>& Prop : RegisteredTransportProps)
+	{
+		if (IsTransportPropValid(Prop.Get()) && !Prop->HasActorBegunPlay()) return false;
+	}
+	return true;
+}
+
+void AElevatorShaftController::MoveTransportProps(const FVector& Translation)
+{
+	InitializeTransportProps();
+	for (const TWeakObjectPtr<AExplosiveProp>& Entry : RegisteredTransportProps)
+	{
+		AExplosiveProp* Prop = Entry.Get();
+		if (!IsTransportPropValid(Prop) || Prop->IsExploded()) continue;
+		const FTransform Original = Prop->GetActorTransform();
+		FTransform Target = Original;
+		Target.AddToTranslation(Translation);
+		Prop->FlushNetDormancy();
+		if (Prop->SetActorTransform(Target, false, nullptr, ETeleportType::TeleportPhysics))
+		{
+			TransportedPropTransforms.Emplace(Prop, Original);
+		}
+		else
+		{
+			UE_LOG(LogElevatorShaft, Warning, TEXT("%s: failed to move transport prop %s."), *GetName(), *Prop->GetName());
+		}
+		Prop->ForceNetUpdate();
+	}
+}
+
+void AElevatorShaftController::RestoreTransportProps()
+{
+	// 실제로 옮긴 통만 원위치로 되돌린다. 이동 후 폭발했더라도 좌표만 복구하고 폭발 상태는 유지한다.
+	for (const TPair<TWeakObjectPtr<AExplosiveProp>, FTransform>& Entry : TransportedPropTransforms)
+	{
+		if (AExplosiveProp* Prop = Entry.Key.Get(); IsTransportPropValid(Prop))
+		{
+			Prop->FlushNetDormancy();
+			Prop->SetActorTransform(Entry.Value, false, nullptr, ETeleportType::TeleportPhysics);
+			Prop->ForceNetUpdate();
+		}
+	}
+	TransportedPropTransforms.Reset();
+}
+
 void AElevatorShaftController::SetControllerAtArrival(bool bArrival)
 {
 	if (bControllerAtArrival == bArrival) return;
@@ -1419,6 +1512,12 @@ void AElevatorShaftController::SetControllerAtArrival(bool bArrival)
 	// 차단막만 Controller 회전을 상속하면 외벽의 구멍과 어긋나므로 함께 보정한다.
 	// 직접 소유한 충돌체만 보정하여 Section 안의 연출 벽과 문은 기존 정렬을 유지한다.
 	const FVector Translation = Target.GetLocation() - GetActorLocation();
+	// 구조물은 각 머신에서 맞추지만, 독립 폭발통은 서버가 한 번 옮기고 위치 복제로 전달한다.
+	if (HasAuthority())
+	{
+		if (bArrival) MoveTransportProps(Translation);
+		else RestoreTransportProps();
+	}
 	TInlineComponentArray<UPrimitiveComponent*> OwnedPrimitives;
 	GetComponents(OwnedPrimitives, false);
 	TArray<TPair<UPrimitiveComponent*, FTransform>> FixedCollisionTransforms;
@@ -1762,12 +1861,37 @@ EDataValidationResult AElevatorShaftController::IsDataValid(FDataValidationConte
 	{
 		return Parent;
 	}
+	bool bInvalidTransport = false;
+	TSet<const AExplosiveProp*> Seen;
+	for (const AExplosiveProp* Prop : TransportExplosiveProps)
+	{
+		if (!IsTransportPropValid(Prop) || Seen.Contains(Prop))
+		{
+			Context.AddError(FText::FromString(FString::Printf(
+				TEXT("TransportExplosiveProps contains an invalid, attached or duplicate prop: %s."), *GetNameSafe(Prop))));
+			bInvalidTransport = true;
+			continue;
+		}
+		Seen.Add(Prop);
+		// 배치 오류만 에디터에서 찾는다. 런타임은 통의 등록 소유권으로 중복을 차단한다.
+		for (TActorIterator<AElevatorShaftController> It(GetWorld()); It; ++It)
+		{
+			if (*It != this && It->TransportExplosiveProps.Contains(Prop))
+			{
+				Context.AddError(FText::FromString(FString::Printf(
+					TEXT("Transport prop %s is also registered to %s."), *Prop->GetName(), *It->GetName())));
+				bInvalidTransport = true;
+				break;
+			}
+		}
+	}
 	FString Error;
 	if (!ValidateConfiguration(Error))
 	{
 		Context.AddError(FText::FromString(Error));
 		return EDataValidationResult::Invalid;
 	}
-	return Parent == EDataValidationResult::Invalid ? Parent : EDataValidationResult::Valid;
+	return bInvalidTransport || Parent == EDataValidationResult::Invalid
+		? EDataValidationResult::Invalid : EDataValidationResult::Valid;
 }
 #endif

@@ -19,6 +19,7 @@ public class RDG : ModuleRules
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Internal"),
+				Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Private"),
 				Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Internal/PostProcess")
 			}
 			);

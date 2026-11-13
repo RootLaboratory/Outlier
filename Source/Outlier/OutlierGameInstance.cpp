@@ -20,6 +20,11 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "Containers/Ticker.h"
+#include "Engine/GameViewportClient.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Text/STextBlock.h"
 
 void UOutlierGameInstance::Init()
 {
@@ -68,6 +73,8 @@ void UOutlierGameInstance::Init()
 		NetworkFailureHandle = GEngine->OnNetworkFailure().AddUObject(
 			this,
 			&UOutlierGameInstance::HandleNetworkFailure);
+		TravelFailureHandle = GEngine->OnTravelFailure().AddUObject(
+			this, &UOutlierGameInstance::HandleTravelFailure);
 	}
 }
 
@@ -137,6 +144,7 @@ bool UOutlierGameInstance::StoreLocalSaveCredentials(
 
 void UOutlierGameInstance::Shutdown()
 {
+	RemoveArenaRecoveryFailureNotice();
 	if (ArenaWorkerBootstrapTickerHandle.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(ArenaWorkerBootstrapTickerHandle);
@@ -153,20 +161,29 @@ void UOutlierGameInstance::Shutdown()
 		GEngine->OnNetworkFailure().Remove(NetworkFailureHandle);
 		NetworkFailureHandle.Reset();
 	}
+	if (GEngine && TravelFailureHandle.IsValid())
+	{
+		GEngine->OnTravelFailure().Remove(TravelFailureHandle);
+		TravelFailureHandle.Reset();
+	}
 
 	Super::Shutdown();
 }
 
 void UOutlierGameInstance::NotifyArenaHandoffStarted(const FString& ArenaUrl)
 {
+	ArenaRecoveryFailureReason.Reset();
+	RemoveArenaRecoveryFailureNotice();
+	bArenaRecoveryExitRequested = false;
+	bLobbyReturnInFlight = false;
+	LobbyReturnDeadlineSeconds = 0.0;
 	bArenaHandoffActive = true;
 	bLobbyRecoveryQueued = false;
 	bLobbyRecoveryAttempted = false;
 	// 재접속도 처음 Handoff와 같은 MatchId/PlayerId/Role 옵션을 보내야 Worker가
 	// 시작된 매치의 원래 자리에 다시 받아주므로 주소 전체를 보관한다.
 	LastArenaHandoffUrl = ArenaUrl;
-	bArenaReconnectActive = false;
-	ArenaReconnectDeadlineSeconds = 0.0;
+	CompleteArenaReconnectAttempt();
 }
 
 void UOutlierGameInstance::NotifyListenReconnectToken(const FGuid& Token)
@@ -187,15 +204,10 @@ void UOutlierGameInstance::NotifyListenReconnectToken(const FGuid& Token)
 	}
 	LastListenReconnectUrl = FString::Printf(TEXT("%s?ListenReconnect=%s"),
 		*Address, *Token.ToString());
+	bArenaRecoveryExitRequested = false;
 	// Listen은 별도 Arena 월드가 아닌 스트리밍 인스턴스이므로 맵 이름 대신
 	// 새 서버 Controller의 이 RPC 수신을 재접속 성공 신호로 사용한다.
-	bArenaReconnectActive = false;
-	ArenaReconnectDeadlineSeconds = 0.0;
-	if (ArenaReconnectTickerHandle.IsValid())
-	{
-		FTSTicker::GetCoreTicker().RemoveTicker(ArenaReconnectTickerHandle);
-		ArenaReconnectTickerHandle.Reset();
-	}
+	CompleteArenaReconnectAttempt();
 	UE_LOG(LogTemp, Display, TEXT("[ListenReconnect] Guest reconnect route is ready"));
 }
 
@@ -205,6 +217,75 @@ void UOutlierGameInstance::PrepareForExplicitLeave()
 	// 이전 Worker URL로 재접속하면 안 된다. Travel 전에 Handoff 수명을 여기서 끝낸다.
 	ResetArenaHandoffState();
 	ResetListenReconnectState();
+	bLobbyReturnInFlight = false;
+	LobbyReturnDeadlineSeconds = 0.0;
+}
+
+void UOutlierGameInstance::HandleArenaRecoveryFailure(const FString& Reason)
+{
+	SetArenaRecoveryFailureReason(Reason);
+	UE_LOG(LogTemp, Warning, TEXT("[ArenaReturn] Recovery failed: %s"), *Reason);
+	ReturnAfterArenaRecoveryFailure(bArenaHandoffActive);
+}
+
+void UOutlierGameInstance::SetArenaRecoveryFailureReason(const FString& Reason)
+{
+	ArenaRecoveryFailureReason = Reason;
+}
+
+void UOutlierGameInstance::RemoveArenaRecoveryFailureNotice()
+{
+	if (ArenaRecoveryFailureNotice.IsValid() && ArenaRecoveryFailureViewport.IsValid())
+	{
+		ArenaRecoveryFailureViewport->RemoveViewportWidgetContent(ArenaRecoveryFailureNotice.ToSharedRef());
+	}
+	ArenaRecoveryFailureNotice.Reset();
+	ArenaRecoveryFailureViewport.Reset();
+}
+
+void UOutlierGameInstance::ShowArenaRecoveryFailureNotice()
+{
+	UGameViewportClient* Viewport = GetGameViewportClient();
+	if (ArenaRecoveryFailureReason.IsEmpty() || !Viewport || ArenaRecoveryFailureNotice.IsValid()) return;
+	const TWeakObjectPtr<UOutlierGameInstance> WeakThis(this);
+	// 기존 GameOver UI가 없어도 복귀한 화면에서 실패 이유를 확인할 수 있다.
+	// 명시적 이탈 정리는 이 문구를 지우지 않고, 확인하거나 새 매치에 진입할 때만 끝낸다.
+	ArenaRecoveryFailureNotice = SNew(SBorder)
+		.Padding(24.0f)
+		.HAlign(HAlign_Center).VAlign(VAlign_Center)
+		.BorderBackgroundColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.9f))
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 16.0f)
+			[
+				SNew(STextBlock).Text(FText::FromString(ArenaRecoveryFailureReason)).WrapTextAt(640.0f)
+			]
+			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+			[
+				SNew(SButton).Text(NSLOCTEXT("Outlier", "RecoveryFailureDismiss", "확인"))
+				.OnClicked_Lambda([WeakThis]()
+				{
+					if (UOutlierGameInstance* Instance = WeakThis.Get())
+					{
+						Instance->ArenaRecoveryFailureReason.Reset();
+						Instance->RemoveArenaRecoveryFailureNotice();
+					}
+					return FReply::Handled();
+				})
+			]
+		];
+	ArenaRecoveryFailureViewport = Viewport;
+	Viewport->AddViewportWidgetContent(ArenaRecoveryFailureNotice.ToSharedRef(), 1000);
+}
+
+void UOutlierGameInstance::ReturnAfterArenaRecoveryFailure(bool bReturnToLobby)
+{
+	if (bArenaRecoveryExitRequested) return;
+	bArenaRecoveryExitRequested = true;
+	// 실패 안내나 서버 RPC가 다시 들어와도 이전 매치 재접속은 이 경계에서 끝난다.
+	PrepareForExplicitLeave();
+	if (bReturnToLobby && TravelToLobby(GetWorld())) return;
+	if (GetWorld()) ReturnToMainMenu();
 }
 
 void UOutlierGameInstance::RequestQuitAfterExplicitLeave()
@@ -238,24 +319,25 @@ void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	if (bLobbyRecoveryQueued)
 	{
 		bLobbyRecoveryQueued = false;
-		TravelToLobby(LoadedWorld);
+		if (!TravelToLobby(LoadedWorld)) HandleArenaRecoveryFailure(TEXT("Lobby recovery unavailable"));
 		return;
+	}
+	if (bLobbyReturnInFlight && LoadedWorld->GetNetMode() == NM_Client
+		&& LoadedWorld->GetNetDriver() && LoadedWorld->GetNetDriver()->ServerConnection)
+	{
+		bLobbyReturnInFlight = false;
+		CompleteArenaReconnectAttempt();
 	}
 
 	if (bArenaHandoffActive)
 	{
 		const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
-		if (Settings && Settings->IsArenaWorld(LoadedWorld))
+		if (Settings && Settings->IsArenaWorld(LoadedWorld) && LoadedWorld->GetNetMode() == NM_Client
+			&& LoadedWorld->GetNetDriver() && LoadedWorld->GetNetDriver()->ServerConnection)
 		{
 			// 접속에 성공하면 현재 재시도만 끝낸다. Handoff 표식과 URL은 Worker에 머무는 동안
 			// 유지해야 이후 다시 연결이 끊겨도 같은 매치로 재접속할 수 있다.
-			bArenaReconnectActive = false;
-			ArenaReconnectDeadlineSeconds = 0.0;
-			if (ArenaReconnectTickerHandle.IsValid())
-			{
-				FTSTicker::GetCoreTicker().RemoveTicker(ArenaReconnectTickerHandle);
-				ArenaReconnectTickerHandle.Reset();
-			}
+			CompleteArenaReconnectAttempt();
 		}
 		else if (!bArenaReconnectActive)
 		{
@@ -270,6 +352,7 @@ void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		ResetListenReconnectState();
 	}
 
+	ShowArenaRecoveryFailureNotice();
 	if (bTriedConnect)
 	{
 		return;
@@ -300,14 +383,31 @@ void UOutlierGameInstance::HandleNetworkFailure(
 	ENetworkFailure::Type FailureType,
 	const FString& ErrorString)
 {
-	(void)NetDriver;
+	(void)ErrorString;
+	if (World && World->GetGameInstance() != this) return;
+	if ((bArenaReconnectTravelInFlight || bLobbyReturnInFlight)
+		&& NetDriver && NetDriver == ArenaReconnectPreviousNetDriver.Get()) return;
+	if (bLobbyReturnInFlight)
+	{
+		bLobbyReturnInFlight = false;
+		CompleteArenaReconnectAttempt();
+		if (GetWorld()) ReturnToMainMenu();
+		return;
+	}
+	if (bArenaRecoveryExitRequested) return;
+	if (bArenaReconnectTravelInFlight)
+	{
+		bArenaReconnectTravelInFlight = false;
+		const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+		ArenaReconnectNextAttemptSeconds = FPlatformTime::Seconds()
+			+ (Settings ? FMath::Max(Settings->ArenaWorkerReconnectRetrySeconds, 0.1f) : 2.0f);
+	}
 	// 명시적 이탈은 미리 재접속 정보를 지운다. 네트워크 장애만 원래 자리로 재시도한다.
 	if (bArenaHandoffActive && !LastArenaHandoffUrl.IsEmpty())
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("[ArenaReconnect] Arena connection lost. Retrying within grace period Type=%s Error=%s"),
-			ENetworkFailure::ToString(FailureType),
-			*ErrorString);
+			TEXT("[ArenaReconnect] Arena connection lost. Retrying within grace period Type=%s"),
+			ENetworkFailure::ToString(FailureType));
 		ScheduleArenaReconnect();
 		return;
 	}
@@ -315,17 +415,16 @@ void UOutlierGameInstance::HandleNetworkFailure(
 		&& (bArenaReconnectActive || (World && World->GetNetMode() == NM_Client)))
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("[ListenReconnect] Connection lost. Retrying within grace period Type=%s Error=%s"),
-			ENetworkFailure::ToString(FailureType), *ErrorString);
+			TEXT("[ListenReconnect] Connection lost. Retrying within grace period Type=%s"),
+			ENetworkFailure::ToString(FailureType));
 		ScheduleArenaReconnect();
 		return;
 	}
 	if (!bArenaHandoffActive && World && World->GetNetMode() == NM_Client)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("[ArenaReturn] Listen host connection ended. Returning client to Title Type=%s Error=%s"),
-			ENetworkFailure::ToString(FailureType),
-			*ErrorString);
+			TEXT("[ArenaReturn] Listen host connection ended. Returning client to Title Type=%s"),
+			ENetworkFailure::ToString(FailureType));
 		ReturnToMainMenu();
 		return;
 	}
@@ -336,13 +435,61 @@ void UOutlierGameInstance::HandleNetworkFailure(
 	}
 
 	UE_LOG(LogTemp, Warning,
-		TEXT("[ArenaReturn] Arena connection failed. Lobby recovery queued Type=%s Error=%s"),
-		ENetworkFailure::ToString(FailureType),
-		*ErrorString);
+		TEXT("[ArenaReturn] Arena connection failed. Lobby recovery queued Type=%s"),
+		ENetworkFailure::ToString(FailureType));
+}
+
+void UOutlierGameInstance::HandleTravelFailure(
+	UWorld* World, ETravelFailure::Type FailureType, const FString& ErrorString)
+{
+	(void)ErrorString;
+	if (World && World->GetGameInstance() != this) return;
+	if (bLobbyReturnInFlight)
+	{
+		bLobbyReturnInFlight = false;
+		CompleteArenaReconnectAttempt();
+		if (GetWorld()) ReturnToMainMenu();
+		return;
+	}
+	if (!bArenaReconnectActive || bArenaRecoveryExitRequested) return;
+	// Engine 오류 문자열에는 접속 URL 옵션이 포함될 수 있으므로 재접속 키를 로그에 복사하지 않는다.
+	UE_LOG(LogTemp, Warning, TEXT("[ArenaReconnect] Travel failed Type=%s"), ETravelFailure::ToString(FailureType));
+	if (bArenaReconnectTravelInFlight)
+	{
+		bArenaReconnectTravelInFlight = false;
+		const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+		ArenaReconnectNextAttemptSeconds = FPlatformTime::Seconds()
+			+ (Settings ? FMath::Max(Settings->ArenaWorkerReconnectRetrySeconds, 0.1f) : 2.0f);
+	}
+}
+
+void UOutlierGameInstance::EnsureArenaReconnectTicker()
+{
+	if (!ArenaReconnectTickerHandle.IsValid())
+	{
+		// 월드 Pause/Travel 중에도 최초 장애의 전체 제한을 감시한다.
+		ArenaReconnectTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateUObject(this, &UOutlierGameInstance::HandleArenaReconnectTick), 0.1f);
+	}
+}
+
+void UOutlierGameInstance::CompleteArenaReconnectAttempt()
+{
+	bArenaReconnectActive = false;
+	bArenaReconnectTravelInFlight = false;
+	ArenaReconnectDeadlineSeconds = 0.0;
+	ArenaReconnectNextAttemptSeconds = 0.0;
+	ArenaReconnectPreviousNetDriver.Reset();
+	if (!bLobbyReturnInFlight && ArenaReconnectTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(ArenaReconnectTickerHandle);
+		ArenaReconnectTickerHandle.Reset();
+	}
 }
 
 void UOutlierGameInstance::ScheduleArenaReconnect()
 {
+	if (bArenaRecoveryExitRequested || (LastArenaHandoffUrl.IsEmpty() && LastListenReconnectUrl.IsEmpty())) return;
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	// 연속 NetworkFailure마다 마감 시간을 다시 늘리면 Worker보다 오래 재시도하게 된다.
 	// 최초 실패에서만 Deadline을 잡는다. 서버도 같은 유예 설정을 쓰지만 Logout 감지 시점은 다를 수 있다.
@@ -351,63 +498,55 @@ void UOutlierGameInstance::ScheduleArenaReconnect()
 		bArenaReconnectActive = true;
 		ArenaReconnectDeadlineSeconds = FPlatformTime::Seconds()
 			+ (Settings ? FMath::Max(Settings->ArenaWorkerReconnectGraceSeconds, 1.0f) : 30.0f);
+		ArenaReconnectNextAttemptSeconds = FPlatformTime::Seconds()
+			+ (Settings ? FMath::Max(Settings->ArenaWorkerReconnectRetrySeconds, 0.1f) : 2.0f);
 	}
-	if (!ArenaReconnectTickerHandle.IsValid())
-	{
-		const float RetrySeconds = Settings
-			? FMath::Max(Settings->ArenaWorkerReconnectRetrySeconds, 0.1f)
-			: 2.0f;
-		ArenaReconnectTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-			FTickerDelegate::CreateUObject(this, &UOutlierGameInstance::HandleArenaReconnectTick),
-			RetrySeconds);
-	}
+	EnsureArenaReconnectTicker();
 }
 
 bool UOutlierGameInstance::HandleArenaReconnectTick(float DeltaTime)
 {
 	(void)DeltaTime;
-	// ClientTravel이 현재 World를 교체할 수 있으므로 Ticker는 매 시도마다 한 번만 실행한다.
-	// 실패하면 NetworkFailure가 다음 시도를 다시 예약하고, 성공하면 PostLoadMap이 상태를 정리한다.
-	ArenaReconnectTickerHandle.Reset();
+	const double Now = FPlatformTime::Seconds();
+	if (bLobbyReturnInFlight)
+	{
+		if (Now < LobbyReturnDeadlineSeconds) return true;
+		bLobbyReturnInFlight = false;
+		ArenaReconnectTickerHandle.Reset();
+		if (GetWorld()) ReturnToMainMenu();
+		return false;
+	}
 	const bool bWorkerReconnect = bArenaHandoffActive && !LastArenaHandoffUrl.IsEmpty();
 	const FString& ReconnectUrl = bWorkerReconnect ? LastArenaHandoffUrl : LastListenReconnectUrl;
 	if (!bArenaReconnectActive || ReconnectUrl.IsEmpty())
 	{
+		ArenaReconnectTickerHandle.Reset();
 		return false;
 	}
 
 	UWorld* World = GetWorld();
-	if (FPlatformTime::Seconds() >= ArenaReconnectDeadlineSeconds)
+	if (Now >= ArenaReconnectDeadlineSeconds)
 	{
-		bArenaReconnectActive = false;
-		if (!bWorkerReconnect)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[ListenReconnect] Retry grace expired; returning to Title"));
-			ResetListenReconnectState();
-			ReturnToMainMenu();
-			return false;
-		}
-		UE_LOG(LogTemp, Warning, TEXT("[ArenaReconnect] Reconnect grace expired; returning to Lobby"));
-		if (TryQueueLobbyRecovery())
-		{
-			bLobbyRecoveryQueued = false;
-			TravelToLobby(World);
-			ResetArenaHandoffState();
-		}
+		UE_LOG(LogTemp, Warning, TEXT("[ArenaReconnect] Grace expired; ending the previous match"));
+		SetArenaRecoveryFailureReason(TEXT("연결을 복구하지 못해 매치를 종료했습니다."));
+		ReturnAfterArenaRecoveryFailure(bWorkerReconnect);
 		return false;
 	}
+	// Travel이 멈춰도 위의 Deadline은 계속 검사한다. 완료/실패 전에는 새 Travel을 겹치지 않는다.
+	if (bArenaReconnectTravelInFlight || Now < ArenaReconnectNextAttemptSeconds) return true;
 
 	APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
 	if (!PlayerController)
 	{
-		ScheduleArenaReconnect();
-		return false;
+		return true;
 	}
 
 	UE_LOG(LogTemp, Display, TEXT("[%s] Retrying connection"),
 		bWorkerReconnect ? TEXT("ArenaReconnect") : TEXT("ListenReconnect"));
+	bArenaReconnectTravelInFlight = true;
+	ArenaReconnectPreviousNetDriver = World->GetNetDriver();
 	PlayerController->ClientTravel(ReconnectUrl, TRAVEL_Absolute);
-	return false;
+	return bArenaReconnectActive;
 }
 
 void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
@@ -504,6 +643,7 @@ bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
 
 void UOutlierGameInstance::HandlePreLoadMap(const FString& MapName)
 {
+	RemoveArenaRecoveryFailureNotice();
 	if (IsRunningDedicatedServer()) return;
 	// Loading Widget 표시
 }
@@ -542,6 +682,12 @@ bool UOutlierGameInstance::TravelToLobby(UWorld* World)
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReturn] Traveling to Lobby %s"),
 		*LobbyAddress);
+	bArenaRecoveryExitRequested = true;
+	bLobbyReturnInFlight = true;
+	LobbyReturnDeadlineSeconds = FPlatformTime::Seconds() + 30.0;
+	// 기존 매치 연결의 종료 통보가 로비 연결 실패로 처리되지 않게 분리한다.
+	ArenaReconnectPreviousNetDriver = World->GetNetDriver();
+	EnsureArenaReconnectTicker();
 	PlayerController->ClientTravel(LobbyAddress, TRAVEL_Absolute);
 	return true;
 }
@@ -557,8 +703,11 @@ void UOutlierGameInstance::ResetArenaHandoffState()
 	bLobbyRecoveryQueued = false;
 	bLobbyRecoveryAttempted = false;
 	bArenaReconnectActive = false;
+	bArenaReconnectTravelInFlight = false;
 	ArenaReconnectDeadlineSeconds = 0.0;
+	ArenaReconnectNextAttemptSeconds = 0.0;
 	LastArenaHandoffUrl.Reset();
+	ArenaReconnectPreviousNetDriver.Reset();
 }
 
 void UOutlierGameInstance::ResetListenReconnectState()
@@ -572,6 +721,9 @@ void UOutlierGameInstance::ResetListenReconnectState()
 			ArenaReconnectTickerHandle.Reset();
 		}
 		bArenaReconnectActive = false;
+		bArenaReconnectTravelInFlight = false;
 		ArenaReconnectDeadlineSeconds = 0.0;
+		ArenaReconnectNextAttemptSeconds = 0.0;
+		ArenaReconnectPreviousNetDriver.Reset();
 	}
 }

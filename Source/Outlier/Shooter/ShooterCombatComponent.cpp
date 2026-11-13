@@ -58,6 +58,7 @@ void UShooterCombatComponent::BeginPlay()
 void UShooterCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(OverchargeFireRecoveryTimerHandle);
+	ClearPendingSprintExitFire();
 	UnbindReloadMontageEndedDelegates();
 	UnbindWeaponReuseCooldownObserver();
 	Super::EndPlay(EndPlayReason);
@@ -409,51 +410,137 @@ bool UShooterCombatComponent::IsSprintBlockedByAttack() const
 
 void UShooterCombatComponent::QueueSprintExitFire(AShooterCharacter& ShooterCharacter)
 {
+	// 첫 Press만 슬롯을 만든다. 복귀 중 추가 클릭은 홀드만 갱신하고 공격을 적재하지 않는다.
+	if (bPendingSprintExitFire) return;
+	const auto* Input = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter.GetCharacterMovement());
+	const uint32 Request = Input->GetActionInputRequest();
+	const uint32 Epoch = Input->GetMovementInputEpoch();
+	if (!BeginSprintExitFire(ShooterCharacter.CurrentWeapon, Request, Epoch)) return;
+	if (!ShooterCharacter.HasAuthority())
+	{
+		ShooterCharacter.ServerBeginSprintExitFire(ShooterCharacter.CurrentWeapon, Request, Epoch);
+	}
+}
+
+bool UShooterCombatComponent::BeginSprintExitFire(AWeaponBase* Weapon, uint32 Request, uint32 Epoch)
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter || Request == 0) return false;
+	const auto* Input = CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
+	if (Epoch != Input->GetMovementInputEpoch()
+		|| (LastSprintExitEpoch == Epoch && static_cast<int32>(Request - LastSprintExitRequest) <= 0)) return false;
+
+	// 거절한 요청도 소비한다. 중복 RPC가 제한 해제 뒤 과거 첫 발을 되살리지 못한다.
+	LastSprintExitEpoch = Epoch;
+	LastSprintExitRequest = Request;
+	if (bPendingSprintExitFire || !IsValid(Weapon) || Weapon != Shooter->CurrentWeapon
+		|| !Cast<ARangedWeaponBase>(Weapon) || !CanFireInCurrentState()
+		|| Shooter->IsWeaponSwitchInProgress() || !Weapon->CanAttack() || Weapon->IsAttacking()) return false;
+
 	bPendingSprintExitFire = true;
 	bWantsToFire = true;
+	PendingSprintExitWeapon = Weapon;
+	PendingSprintExitRequest = Request;
+	PendingSprintExitEpoch = Epoch;
+	SprintExitFireDeadline = GetWorld()->GetTimeSeconds() + SprintExitFireTimeout;
 
-	if (ShooterCharacter.IsSprinting())
+	if (Shooter->IsSprinting())
 	{
-		ShooterCharacter.MovementComponent->SuspendSprintForCombat();
-		const auto* Input = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter.GetCharacterMovement());
-		if (!ShooterCharacter.HasAuthority() && !Input->IsLiveHoldSprintInput())
-		{
-			const auto* Movement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter.GetCharacterMovement());
-			// 발사 대기로 취소한 순번을 함께 보낸다. 늦은 취소 RPC가 이후 Toggle ON을 덮지 않는다.
-			ShooterCharacter.ServerSetSprintState(false, Movement->GetActionInputRequest(), Movement->GetMovementInputEpoch());
-		}
-
-		ShooterCharacter.RefreshMovementState();
+		Shooter->MovementComponent->SuspendSprintForCombat();
+		Shooter->RefreshMovementState();
 	}
 
-	ShooterCharacter.GetWorldTimerManager().ClearTimer(PendingSprintExitFireTimerHandle);
-	ShooterCharacter.GetWorldTimerManager().SetTimer(
+	// 소유자는 기존 짧은 타이머로 포즈 복귀를 기다린다. 원격 서버는 준비 통보를 기다리되
+	// 소유자가 사라진 요청은 한 번의 만료 타이머로 정리한다. 서버는 1P 알파를 읽지 않는다.
+	const bool bOwner = Shooter->IsLocallyControlled();
+	Shooter->GetWorldTimerManager().SetTimer(
 		PendingSprintExitFireTimerHandle,
 		this,
-		&UShooterCombatComponent::RetryPendingSprintExitFire,
-		FMath::Max(SprintExitFireRetryInterval, KINDA_SMALL_NUMBER),
+		bOwner ? &UShooterCombatComponent::RetryPendingSprintExitFire : &UShooterCombatComponent::CancelPendingSprintExitFire,
+		bOwner ? FMath::Max(SprintExitFireRetryInterval, KINDA_SMALL_NUMBER) : SprintExitFireTimeout,
 		false
 	);
+	return true;
 }
 
 void UShooterCombatComponent::RetryPendingSprintExitFire()
 {
-	if (!bPendingSprintExitFire || !bWantsToFire)
+	if (!bPendingSprintExitFire) return;
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	const auto* Input = Shooter ? CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement()) : nullptr;
+	if (!Shooter || PendingSprintExitWeapon.Get() != Shooter->CurrentWeapon
+		|| !PendingSprintExitWeapon.IsValid() || PendingSprintExitEpoch != Input->GetMovementInputEpoch()
+		|| GetWorld()->GetTimeSeconds() >= SprintExitFireDeadline
+		|| !CanFireInCurrentState() || Shooter->IsWeaponSwitchInProgress()
+		|| !PendingSprintExitWeapon->CanAttack())
 	{
-		ClearPendingSprintExitFire();
+		CancelPendingSprintExitFire();
 		return;
 	}
 
-	TryStartAttack();
+	if (ShouldDelayFireForSprintExit(*Shooter))
+	{
+		Shooter->GetWorldTimerManager().SetTimer(PendingSprintExitFireTimerHandle, this,
+			&UShooterCombatComponent::RetryPendingSprintExitFire,
+			FMath::Max(SprintExitFireRetryInterval, KINDA_SMALL_NUMBER), false);
+		return;
+	}
+
+	// 재시도는 새 Press가 아니다. Release 이후에도 첫 발만 전달하며 Fire 홀드를 올리지 않는다.
+	if (Shooter->HasAuthority()) ResolveSprintExitFire(PendingSprintExitRequest, PendingSprintExitEpoch, true);
+	else
+	{
+		Shooter->ServerResolveSprintExitFire(PendingSprintExitRequest, PendingSprintExitEpoch, true);
+		ClearPendingSprintExitFire();
+	}
+}
+
+void UShooterCombatComponent::ResolveSprintExitFire(uint32 Request, uint32 Epoch, bool bFire)
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter || !Shooter->HasAuthority() || !bPendingSprintExitFire
+		|| Request != PendingSprintExitRequest || Epoch != PendingSprintExitEpoch) return;
+	const auto* Input = CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
+	ARangedWeaponBase* Weapon = Cast<ARangedWeaponBase>(PendingSprintExitWeapon.Get());
+	const bool bCanFire = bFire && Epoch == Input->GetMovementInputEpoch()
+		&& GetWorld()->GetTimeSeconds() < SprintExitFireDeadline && Weapon && Weapon == Shooter->CurrentWeapon
+		&& CanFireInCurrentState() && !Shooter->IsWeaponSwitchInProgress() && Weapon->CanAttack();
+
+	// 실행 전에 슬롯을 소비하므로 중복 준비 통보와 발사 콜백은 같은 요청을 재실행하지 못한다.
+	const bool bRepeat = bFireInputHeld;
+	ClearPendingSprintExitFire();
+	if (bCanFire)
+	{
+		// 슬롯 소비와 실제 무기 시작 사이에도 Hold Sprint가 먼저 복구되지 않게 한다.
+		bWantsToFire = true;
+		StartAttackInternal();
+		if (!bRepeat) Weapon->ReleaseAttack();
+	}
+	Shooter->RefreshMovementState();
+}
+
+void UShooterCombatComponent::CancelPendingSprintExitFire()
+{
+	if (!bPendingSprintExitFire) return;
+	if (AShooterCharacter* Shooter = GetShooterCharacter(); Shooter && !Shooter->HasAuthority())
+	{
+		Shooter->ServerResolveSprintExitFire(PendingSprintExitRequest, PendingSprintExitEpoch, false);
+	}
+	ClearPendingSprintExitFire();
 }
 
 void UShooterCombatComponent::ClearPendingSprintExitFire()
 {
 	bPendingSprintExitFire = false;
+	PendingSprintExitWeapon.Reset();
+	PendingSprintExitRequest = 0;
+	PendingSprintExitEpoch = 0;
+	bWantsToFire = false;
 
-	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
+	// 컴포넌트가 GC되는 종료 경계에서는 소유자 World만 남아 있을 수 있다.
+	if (UWorld* World = GetWorld(); World && PendingSprintExitFireTimerHandle.IsValid())
 	{
-		ShooterCharacter->GetWorldTimerManager().ClearTimer(PendingSprintExitFireTimerHandle);
+		World->GetTimerManager().ClearTimer(PendingSprintExitFireTimerHandle);
 	}
 }
 
@@ -480,6 +567,7 @@ void UShooterCombatComponent::TryStartAttack()
 	}
 	if (ShooterCharacter->IsDead()) return;
 	if (ShooterCharacter->GetWeaponType() != EWeaponType::Melee) UpdateFireInput(true);
+	if (bPendingSprintExitFire) return;
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 
@@ -489,7 +577,13 @@ void UShooterCombatComponent::TryStartAttack()
 		return;
 	}
 
-	ClearPendingSprintExitFire();
+	StartAttackInternal();
+}
+
+void UShooterCombatComponent::StartAttackInternal()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter) return;
 
 	if (!ShooterCharacter->HasAuthority())
 	{
@@ -562,8 +656,8 @@ void UShooterCombatComponent::TryStopAttack()
 	UpdateFireInput(false);
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
-	ClearPendingSprintExitFire();
-	bWantsToFire = false;
+	// Release는 연사만 끝낸다. 이미 수락한 첫 발은 별도 슬롯에서 복귀를 기다린다.
+	if (!bPendingSprintExitFire) bWantsToFire = false;
 	// 입력 해제는 서버에 전달하되 현재 휘두르기는 완료하고 다음 반복만 막는다.
 	if (ShooterCharacter->GetWeaponType() == EWeaponType::Melee)
 	{
@@ -724,7 +818,7 @@ void UShooterCombatComponent::RefreshCombatState()
 	if (ShooterCharacter->WeaponMode != EWeaponMode::Melee
 		&& ShooterCharacter->CurrentWeapon
 		&& !ShooterCharacter->CurrentWeapon->IsAttacking()
-		&& bWantsToFire)
+		&& bWantsToFire && !bPendingSprintExitFire)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s %s RefreshCombatState clearing stale fire intent"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
 		bWantsToFire = false;
@@ -1358,7 +1452,7 @@ void UShooterCombatComponent::ClearInputIntent()
 {
 	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(OverchargeFireRecoveryTimerHandle);
 	bFireInputHeld = false;
-	ClearPendingSprintExitFire();
+	CancelPendingSprintExitFire();
 	bWantsToAim = false;
 	bWantsToFire = false;
 	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())

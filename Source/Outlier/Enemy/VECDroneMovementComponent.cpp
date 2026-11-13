@@ -13,8 +13,6 @@
 
 namespace
 {
-TAutoConsoleVariable<float> CVarGunDroneBodyDownPitchScale(TEXT("outlier.Enemy.GunBodyDownPitchScale"), 0.5f,
-	TEXT("Downward visual aim pitch scale for AI gun drones targeting a Shooter [0, 1]. Does not change shot direction."));
 TAutoConsoleVariable<int32> CVarDroneAimClientDebug(TEXT("outlier.Enemy.AimClientDebug"), 1,
 	TEXT("Client drone aim diagnostics: 0=off, 1=rendered combat gun drones, at most every 0.5s plus phase changes."));
 }
@@ -202,12 +200,13 @@ bool UVECDroneMovementComponent::IsAIAimPresentationActive() const
 	const AVECDrone* Drone = GetVECDroneOwner();
 	return Drone && !Drone->IsEnemyPossessed()
 		&& Drone->GetRuntimeStat().Type == EEnemyType::Gun
-		&& Drone->GetAttackPhase() == EEnemyAttackPhase::Firing;
+		&& Drone->IsCombatAimPresentationOwned();
 }
 
 bool UVECDroneMovementComponent::ShouldApplyMeshPitchTilt() const
 {
-	// 사격 중에는 상위 조준 축이 Pitch를 전담한다. 이동/반동 기울기를 더하면 총구 외형이 아래로 벗어난다.
+	// 발사가 보류되어 Phase가 Idle이어도 서버가 조준을 소유하면 상위 축이 Pitch를 전담한다.
+	// 이동/반동 기울기를 더하면 실제 총열이 서버의 기준 탄도에서 벗어난다.
 	// 내부 기울기 계산은 계속 진행해 사격 종료 후 현재 비행 상태의 연출로 복귀한다.
 	return !IsAIAimPresentationActive();
 }
@@ -253,19 +252,12 @@ void UVECDroneMovementComponent::UpdateAIFacingPitch(float DeltaTime)
 	// GetBaseAimRotation()은 빙의 중엔 플레이어 카메라 Pitch, AI 주행 중엔 AIController가
 	// RotateTowardLocation 등으로 설정한 ControlRotation.Pitch를 반환한다 — 즉 "누가 조종하든"
 	// 같은 소스에서 Pitch를 읽어 이 회전축에 반영할 수 있다.
-	// 슈터를 겨냥할 때만 하향 몸통 각도를 줄인다. 탄도와 다른 대상·상향 조준 자세는 유지한다.
-	// 대상 구분은 서버에서 복제하므로 AIController가 없는 클라이언트도 같은 외형을 표시한다.
-	const bool bScaleGunBodyPitch = !Drone->IsEnemyPossessed() && Drone->GetRuntimeStat().Type == EEnemyType::Gun
-		&& Drone->IsAimingAtShooter() && !Drone->IsNoiseDirectionFacing();
+	// 하향각도 서버 기준 방향 그대로 표시한다. 외형만 반각으로 줄이면 총열과 탄도가 달라진다.
 	float DesiredPitch = FMath::ClampAngle(
 		Drone->GetBaseAimRotation().Pitch,
 		-89.0f,
 		89.0f
 	);
-	if (bScaleGunBodyPitch && DesiredPitch < 0.0f)
-	{
-		DesiredPitch *= FMath::Clamp(CVarGunDroneBodyDownPitchScale.GetValueOnGameThread(), 0.0f, 1.0f);
-	}
 	// 이동 기울기를 즉시 없애면 확인 진입/종료 때 자세가 튄다. 기존 축은 유지하고 점진적으로 상쇄한다.
 	NoiseFacingTiltWeight = FMath::FInterpTo(NoiseFacingTiltWeight, Drone->IsNoiseDirectionFacing() ? 1.0f : 0.0f,
 		DeltaTime, AIFacingPitchInterpSpeed);
@@ -276,7 +268,8 @@ void UVECDroneMovementComponent::UpdateAIFacingPitch(float DeltaTime)
 		BaseAIFacingPitchRotation.Pitch + DesiredPitch
 	);
 
-	// 사격 중에는 보정된 외형 목표각을 즉시 적용한다. 클라이언트도 복제된 Phase와 조준각을 사용한다.
+	// 조준 소유권이 있는 동안에는 이미 속도 제한된 조준각을 바로 표시한다.
+	// Phase와 독립된 서버 소유권/복제 Pitch를 사용해 사격 보류 때 비행 기울기로 돌아가지 않는다.
 	if (IsAIAimPresentationActive())
 	{
 		PitchRoot->SetRelativeRotation(TargetRotation);

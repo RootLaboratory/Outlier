@@ -17,6 +17,7 @@ class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBas
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
 	friend class FShooterSprintInputModeTest;
+	friend class FShooterSprintReloadTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -52,12 +53,22 @@ protected:
 	TWeakObjectPtr<UAnimMontage> ActiveThirdPersonReloadMontage;
 
 	uint8 bPendingSprintExitFire : 1 = false;
+	TWeakObjectPtr<AWeaponBase> PendingSprintExitWeapon;
+	uint32 PendingSprintExitRequest = 0;
+	uint32 PendingSprintExitEpoch = 0;
+	uint32 LastSprintExitRequest = 0;
+	uint32 LastSprintExitEpoch = 0;
+	double SprintExitFireDeadline = 0.0;
+
+	// 기본 복귀 보간보다 넉넉한 상한이다. 멎은 애니메이션을 무한히 재시도하지 않는다.
+	static constexpr float SprintExitFireTimeout = 2.0f;
 
 	bool IsActionLockBlockingAimFire(const AShooterCharacter& ShooterCharacter) const;
 	bool ShouldDelayFireForSprintExit(const AShooterCharacter& ShooterCharacter) const;
 	void QueueSprintExitFire(AShooterCharacter& ShooterCharacter);
 	void RetryPendingSprintExitFire();
 	void ClearPendingSprintExitFire();
+	void StartAttackInternal();
 	void BindReloadMontageEndedDelegates();
 	void UnbindReloadMontageEndedDelegates();
 	void BindWeaponReuseCooldownObserver();
@@ -90,6 +101,10 @@ public:
 	void ApplyAimInput(bool bNewWantsToAim);
 	void TryStartAttack();
 	void TryStopAttack();
+	// 소유자는 복귀 준비만 알린다. 요청 수락/취소와 실제 발사는 서버가 검증한다.
+	bool BeginSprintExitFire(AWeaponBase* Weapon, uint32 Request, uint32 Epoch);
+	void ResolveSprintExitFire(uint32 Request, uint32 Epoch, bool bFire);
+	void CancelPendingSprintExitFire();
 	void CancelMeleeAttack();
 	void HandleWeaponAttackStopped();
 	void HandleAutoReloadRequested();

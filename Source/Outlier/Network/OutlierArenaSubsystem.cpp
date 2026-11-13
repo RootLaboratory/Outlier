@@ -1,5 +1,6 @@
 #include "Network/OutlierArenaSubsystem.h"
 #include "Audio/OutlierAudioSubsystem.h"
+#include "Enemy/Death/OutlierDeathDebrisActor.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -118,6 +119,9 @@ void UOutlierArenaSubsystem::PreloadInitiallyRequestedLevelMusic()
 
 void UOutlierArenaSubsystem::Deinitialize()
 {
+	bDeathDebrisReleased = true;
+	ClearDeathDebris();
+	ReservedGameplayGeneration = 0;
 	ClearLevelMusicPreloads();
 	CachedAudioSubsystem.Reset();
 	BgmPreloadMappings.Reset();
@@ -410,6 +414,7 @@ bool UOutlierArenaSubsystem::CreateListenGameplayLevels()
 
 void UOutlierArenaSubsystem::EnsureArenaLoaded()
 {
+	bDeathDebrisReleased = false;
 	if (AOutlierGameMode::IsDirectPairTestWorld(GetWorld()))
 	{
 		RefreshArenaReadyState();
@@ -452,14 +457,19 @@ FOutlierArenaInstance* UOutlierArenaSubsystem::AcquireArena()
 		return nullptr;
 	}
 	Arena.bInUse = true;
+	bDeathDebrisReleased = false;
 	return &Arena;
 }
 
 void UOutlierArenaSubsystem::ReleaseArena()
 {
+	bDeathDebrisReleased = true;
+	ClearDeathDebris();
 	ClearLevelMusicPreloads();
+	ReservedGameplayGeneration = 0;
 	Arena.bInUse = false;
 	Arena.PairId = INDEX_NONE;
+	PendingGameplayReload.Reset();
 	OnArenaReleased.Broadcast();
 	if (!Arena.StreamingLevel)
 	{
@@ -467,7 +477,6 @@ void UOutlierArenaSubsystem::ReleaseArena()
 	}
 	Arena.bReady = false;
 	bArenaShownBroadcast = false;
-	PendingGameplayReload.Reset();
 	bPreloadAfterRelease = true;
 	for (ULevelStreaming* Level : GameplayStreamingLevels)
 	{
@@ -555,6 +564,14 @@ bool UOutlierArenaSubsystem::IsGameplayLevelsReady() const
 	return !PendingGameplayReload.IsSet() && AreGameplayLevelsShown();
 }
 
+bool UOutlierArenaSubsystem::IsGameplayReloadBootstrapReady() const
+{
+	// 새 연결도 스트리밍 목록만 확보되면 unload/GC 절차에 참여할 수 있다.
+	// 서브레벨 표시까지 요구하면 서버의 load 승인과 클라이언트 unload ACK가 서로를 기다린다.
+	return GetArenaLoadedLevel() && IsGameplayLevelsConfigured()
+		&& GameplayStreamingLevels.Num() == GameplaySublevels.Num();
+}
+
 bool UOutlierArenaSubsystem::IsArenaContentReady() const
 {
 	return Arena.bReady && IsGameplayLevelsReady();
@@ -596,15 +613,122 @@ uint32 UOutlierArenaSubsystem::ReserveGameplayGeneration()
 		UE_LOG(LogTemp, Warning, TEXT("[DirectPairTest] Gameplay reload is unavailable; restart PIE to reset the test map"));
 		return 0;
 	}
-	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client || PendingGameplayReload.IsSet())
+	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client || PendingGameplayReload.IsSet()
+		|| ReservedGameplayGeneration != 0 || !AreGameplayLevelsShown() || !GetArenaLoadedLevel())
 	{
 		return 0;
 	}
-	if (++GameplayGeneration == 0)
+	// 예약은 현재 실행을 바꾸지 않는다. 취소한 토큰도 지연 요청과 구분하기 위해 재발급하지 않는다.
+	if (++LastReservedGameplayGeneration == 0)
 	{
-		++GameplayGeneration;
+		++LastReservedGameplayGeneration;
 	}
-	return GameplayGeneration;
+	ReservedGameplayGeneration = LastReservedGameplayGeneration;
+	return ReservedGameplayGeneration;
+}
+
+void UOutlierArenaSubsystem::CancelGameplayGeneration(uint32 Generation)
+{
+	if (Generation != 0 && ReservedGameplayGeneration == Generation)
+	{
+		ReservedGameplayGeneration = 0;
+	}
+}
+
+bool UOutlierArenaSubsystem::SynchronizeClientGameplayGeneration(uint32 Generation)
+{
+	if (!GetWorld() || GetWorld()->GetNetMode() != NM_Client) return false;
+	if (Generation == GameplayGeneration) return true;
+	// 정상 재접속은 구세대 레벨이 없는 새 클라이언트다. 서버 로딩 RPC의 세대만 수락하며,
+	// 이미 참여 중인 리로드를 건너뛰거나 지연 요청으로 세대를 되돌리지 않는다.
+	if (PendingGameplayReload.IsSet() || !IsGameplayGenerationNewer(Generation, GameplayGeneration)) return false;
+	GameplayGeneration = Generation;
+	LastReservedGameplayGeneration = Generation;
+	ClearDeathDebris();
+	return true;
+}
+
+bool UOutlierArenaSubsystem::IsDeathDebrisGenerationCurrent(uint32 Generation) const
+{
+	return !bDeathDebrisReleased && GetWorld() && Generation == GameplayGeneration;
+}
+
+FTimerHandle UOutlierArenaSubsystem::ScheduleDeathDebris(
+	uint32 Generation, float Delay, FTimerDelegate Callback)
+{
+	FTimerHandle Handle;
+	if (!IsDeathDebrisGenerationCurrent(Generation) || GetWorld()->GetNetMode() == NM_DedicatedServer
+		|| !Callback.IsBound() || Delay <= 0.0f) return Handle;
+
+	const uint64 RequestId = ++NextDeathDebrisRequestId;
+	GetWorld()->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+		[this, Generation, RequestId, Callback = MoveTemp(Callback)]() mutable
+		{
+			// 취소 직전에 복사된 콜백도 등록/세대를 함께 검사한다. 같은 월드가 남아 있어도 재생하지 않는다.
+			if (PendingDeathDebris.Remove(RequestId) == 0 || !IsDeathDebrisGenerationCurrent(Generation)) return;
+			Callback.ExecuteIfBound();
+		}), Delay, false);
+	PendingDeathDebris.Add(RequestId, Handle);
+	return Handle;
+}
+
+bool UOutlierArenaSubsystem::RegisterDeathDebrisActor(AOutlierDeathDebrisActor* Debris, uint32 Generation)
+{
+	if (!IsValid(Debris) || Debris->GetWorld() != GetWorld()
+		|| !IsDeathDebrisGenerationCurrent(Generation) || GetWorld()->GetNetMode() == NM_DedicatedServer) return false;
+	DeathDebrisActors.Add(Debris);
+	return true;
+}
+
+void UOutlierArenaSubsystem::UnregisterDeathDebrisActor(AOutlierDeathDebrisActor* Debris)
+{
+	DeathDebrisActors.Remove(Debris);
+}
+
+void UOutlierArenaSubsystem::ClearDeathDebris()
+{
+	// 먼저 소유 목록을 비운다. Destroy/타이머 정리의 재진입에서도 같은 연출을 두 번 처리하지 않는다.
+	TMap<uint64, FTimerHandle> Timers = MoveTemp(PendingDeathDebris);
+	TSet<TWeakObjectPtr<AOutlierDeathDebrisActor>> Actors = MoveTemp(DeathDebrisActors);
+	if (!Timers.IsEmpty() || !Actors.IsEmpty())
+	{
+		UE_LOG(LogTemp, Display, TEXT("[DeathDebris] Clear Generation=%u Timers=%d Actors=%d"),
+			GameplayGeneration, Timers.Num(), Actors.Num());
+	}
+	if (UWorld* World = GetWorld())
+	{
+		for (auto& Entry : Timers) World->GetTimerManager().ClearTimer(Entry.Value);
+	}
+	for (const TWeakObjectPtr<AOutlierDeathDebrisActor>& Entry : Actors)
+	{
+		if (AOutlierDeathDebrisActor* Debris = Entry.Get()) Debris->Destroy();
+	}
+}
+
+bool UOutlierArenaSubsystem::CommitGameplayGeneration(uint32 Generation)
+{
+	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client || Generation == 0
+		|| Generation != ReservedGameplayGeneration || PendingGameplayReload.IsSet()
+		|| !AreGameplayLevelsShown() || !GetArenaLoadedLevel())
+	{
+		return false;
+	}
+
+	// 여기부터 이전 실행으로 돌아가지 않는다. 새 Actor 생성 전에 구세대 수명을 함께 닫는다.
+	GameplayGeneration = Generation;
+	ReservedGameplayGeneration = 0;
+	ClearDeathDebris();
+	PendingGameplayReload.Emplace();
+	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	Pending.Generation = Generation;
+	Pending.Phase = EOutlierGameplayReloadPhase::WaitingForUnload;
+	Pending.PhaseStartTime = FPlatformTime::Seconds();
+	Pending.ReloadStartTime = Pending.PhaseStartTime;
+	CaptureGameplayReloadActors(Pending);
+	Arena.bReady = false;
+	OnArenaGameplayReloadStarted.Broadcast(Generation);
+	return PendingGameplayReload.IsSet() && PendingGameplayReload->Generation == Generation
+		&& PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::WaitingForUnload;
 }
 
 void UOutlierArenaSubsystem::CaptureGameplayReloadActors(FPendingGameplayReload& Pending)
@@ -675,7 +799,9 @@ bool UOutlierArenaSubsystem::ReloadGameplayLevels(uint32 Generation, bool bWaitF
 	// Listen은 Title에 동적으로 만든 Arena 지형과 게임플레이 레벨 중 뒤의 목록만 전환한다.
 	// 게임플레이 서브레벨이 하나 이상 등록된 맵만 리로드할 수 있다.
 	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client || Generation == 0
-		|| Generation != GameplayGeneration || PendingGameplayReload.IsSet()
+		|| Generation != GameplayGeneration || !PendingGameplayReload.IsSet()
+		|| PendingGameplayReload->Generation != Generation || PendingGameplayReload->bUnloadRequested
+		|| PendingGameplayReload->Phase != EOutlierGameplayReloadPhase::WaitingForUnload
 		|| !AreGameplayLevelsShown() || !GetArenaLoadedLevel())
 	{
 		UE_LOG(LogTemp, Error,
@@ -685,20 +811,14 @@ bool UOutlierArenaSubsystem::ReloadGameplayLevels(uint32 Generation, bool bWaitF
 			AreGameplayLevelsShown() ? 1 : 0, *GetNameSafe(GetArenaLoadedLevel()));
 		return false;
 	}
-	PendingGameplayReload.Emplace();
 	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	Pending.Generation = Generation;
-	Pending.Phase = EOutlierGameplayReloadPhase::WaitingForUnload;
-	Pending.PhaseStartTime = FPlatformTime::Seconds();
-	Pending.ReloadStartTime = Pending.PhaseStartTime;
+	Pending.bUnloadRequested = true;
 	Pending.bCanLoad = !bWaitForClientAcks;
-	CaptureGameplayReloadActors(Pending);
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReload][%s] Gen=%u UnloadRequested WaitClientAcks=%d"),
 		GetArenaReloadRole(GetWorld()), Generation, bWaitForClientAcks ? 1 : 0);
 	Arena.bReady = false;
 	ResetPostProcessForGameplayReload(GetWorld());
-	OnArenaGameplayReloadStarted.Broadcast(Generation);
 	RequestGameplayLevelsLoaded(false);
 	EnsureArenaPollTicker();
 	return true;
@@ -708,9 +828,7 @@ bool UOutlierArenaSubsystem::BeginClientGameplayReload(uint32 Generation)
 {
 	if (!GetWorld() || GetWorld()->GetNetMode() != NM_Client
 		|| !IsGameplayGenerationNewer(Generation, GameplayGeneration)
-		|| PendingGameplayReload.IsSet() || !IsGameplayLevelsConfigured()
-		|| GameplayStreamingLevels.Num() != GameplaySublevels.Num()
-		|| !GetArenaLoadedLevel())
+		|| PendingGameplayReload.IsSet() || !IsGameplayReloadBootstrapReady())
 	{
 		UE_LOG(LogTemp, Error,
 			TEXT("[ArenaReload][Client] Reject client reload Gen=%u CurrentGen=%u Phase=%s Levels=%d/%d Persistent=%s"),
@@ -721,9 +839,12 @@ bool UOutlierArenaSubsystem::BeginClientGameplayReload(uint32 Generation)
 		return false;
 	}
 	GameplayGeneration = Generation;
+	LastReservedGameplayGeneration = Generation;
+	ClearDeathDebris();
 	PendingGameplayReload.Emplace();
 	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
 	Pending.Generation = Generation;
+	Pending.bUnloadRequested = true;
 	Pending.Phase = EOutlierGameplayReloadPhase::WaitingForUnload;
 	Pending.PhaseStartTime = FPlatformTime::Seconds();
 	Pending.ReloadStartTime = Pending.PhaseStartTime;
@@ -732,6 +853,11 @@ bool UOutlierArenaSubsystem::BeginClientGameplayReload(uint32 Generation)
 	Arena.bReady = false;
 	ResetPostProcessForGameplayReload(GetWorld());
 	OnArenaGameplayReloadStarted.Broadcast(Generation);
+	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Generation != Generation
+		|| PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::Failed)
+	{
+		return false;
+	}
 	RequestGameplayLevelsLoaded(false);
 	EnsureArenaPollTicker();
 	return true;
@@ -1011,14 +1137,17 @@ void UOutlierArenaSubsystem::FailGameplayReload(
 {
 	if (!PendingGameplayReload.IsSet())
 	{
-		if (Generation == 0 || Generation != GameplayGeneration)
+		// 서버 streaming이 끝나도 페어 ready 대기는 남을 수 있다. 그 실행의 실패만 허용한다.
+		const AOutlierGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
+		if (Generation != GameplayGeneration || !Mode || !Mode->IsGameplayReloadInProgress(Generation))
 		{
 			return;
 		}
 		PendingGameplayReload.Emplace();
 		PendingGameplayReload->Generation = Generation;
 	}
-	if (PendingGameplayReload->Generation != Generation
+	// 완료된 실행이나 취소한 예약의 지연 실패는 현재 전환을 종료하지 않는다.
+	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Generation != Generation
 		|| PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::Failed)
 	{
 		return;
@@ -1039,6 +1168,20 @@ bool UOutlierArenaSubsystem::RetryStalledGameplayReload(uint32 Generation)
 	}
 	PendingGameplayReload->bIsStalled = false;
 	PendingGameplayReload->PhaseStartTime = FPlatformTime::Seconds();
+	// 같은 단계의 원하는 스트리밍 상태만 다시 요청한다. 이전 Actor/세대 캡처는 반복하지 않는다.
+	if (PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::WaitingForUnload)
+	{
+		RequestGameplayLevelsLoaded(false);
+	}
+	else if (PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::WaitingForStreaming)
+	{
+		RequestGameplayLevelsLoaded(true);
+	}
+	else if (PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::WaitingForGCPurge && GEngine)
+	{
+		GEngine->ForceGarbageCollection(true);
+	}
+	EnsureArenaPollTicker();
 	OnArenaGameplayReloadResumed.Broadcast(Generation);
 	return true;
 }
@@ -1083,7 +1226,7 @@ bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
 		CreateListenGameplayLevels();
 	}
 
-	if (PendingGameplayReload.IsSet()
+	if (PendingGameplayReload.IsSet() && PendingGameplayReload->bUnloadRequested
 		&& PendingGameplayReload->Phase != EOutlierGameplayReloadPhase::Failed)
 	{
 		FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
@@ -1147,8 +1290,15 @@ bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
 					(FPlatformTime::Seconds() - Pending.ReloadStartTime) * 1000.0);
 				Pending.bUnloaded = true;
 				SetGameplayReloadPhase(EOutlierGameplayReloadPhase::WaitingForClientAcks);
-				OnArenaGameplayUnloaded.Broadcast(Pending.Generation);
-				OnArenaGameplayGCReady.Broadcast(Pending.Generation);
+				const uint32 UnloadedGeneration = Pending.Generation;
+				OnArenaGameplayUnloaded.Broadcast(UnloadedGeneration);
+				// 외부 콜백이 종료/실패시킨 실행에 GCReady를 뒤이어 발행하지 않는다.
+				if (PendingGameplayReload.IsSet()
+					&& PendingGameplayReload->Generation == UnloadedGeneration
+					&& PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::WaitingForClientAcks)
+				{
+					OnArenaGameplayGCReady.Broadcast(UnloadedGeneration);
+				}
 			}
 		}
 		else if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForClientAcks
@@ -1197,7 +1347,8 @@ bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
 			OnArenaGameplayReady.Broadcast(CompletedGeneration);
 		}
 
-		if (PendingGameplayReload.IsSet())
+		if (PendingGameplayReload.IsSet()
+			&& PendingGameplayReload->Phase != EOutlierGameplayReloadPhase::Failed)
 		{
 			const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 			const double StallSeconds = Settings

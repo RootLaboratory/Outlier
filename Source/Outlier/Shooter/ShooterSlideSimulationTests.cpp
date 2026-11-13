@@ -561,6 +561,7 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		Response.SlideSnapshot.Elapsed = 0.375f;
 		Response.SlideSnapshot.CurrentSpeed = 379.2f;
 		Response.SlideSnapshot.bCrouched = true;
+		Response.SlideSnapshot.bRelocation = true;
 		Response.JumpSnapshot.JumpCount = 1;
 		Response.JumpSnapshot.Coyote.RemainingTime = 0.025f;
 		Response.JumpSnapshot.bSlideJumpRejected = true;
@@ -572,6 +573,7 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Slide correction deserializes"), ReceivedResponse.Serialize(*Movement, ResponseReader, nullptr));
 		TestFalse(TEXT("Slide correction roundtrip has no archive error"), ResponseWriter.IsError() || ResponseReader.IsError());
 		const auto& Snapshot = ReceivedResponse.SlideSnapshot;
+		TestTrue(TEXT("Correction preserves relocation input policy"), Snapshot.bRelocation);
 		TestTrue(TEXT("Correction preserves active Slide"), Snapshot.bActive);
 		TestTrue(TEXT("Correction preserves Hold policy"), Snapshot.bHoldSprint);
 		TestTrue(TEXT("Correction preserves held Fire"), Snapshot.bFireHeld);
@@ -1126,6 +1128,86 @@ bool FShooterSlideLifecycleTest::RunTest(const FString& Parameters)
 		Fixture.Shooter->EndActionLock(EShooterActionLock::Reload);
 		Fixture.CheckRestored(*this);
 		AddInfo(TEXT("[SlideLifecycleTest] Case=Ownership Epoch=3 NextRequestBaseline=81"));
+	}
+	// 순간이동 보정은 실제 앉기 자세와 입력 의도를 별도로 복원한다.
+	// 계속 누른 입력은 새 epoch에서도 유지하고, 이미 놓은 입력은 서버의 과거 홀드로 되살리지 않는다.
+	for (bool bStillHeld : {true, false})
+	{
+		FFixture Fixture;
+		if (!Fixture.Initialize(*this)) return false;
+		auto* Movement = Fixture.Movement;
+		Fixture.Input->StopSlide(ESlideEndReason::ForcedCancel);
+		Fixture.Shooter->SetRole(ROLE_AutonomousProxy);
+		ON_SCOPE_EXIT { Fixture.Shooter->SetRole(ROLE_Authority); };
+		Movement->LiveMovementInput.bCrouch = bStillHeld;
+		Movement->LiveMovementInput.CrouchRequest = 10;
+		FShooterSlideSnapshot ServerRelocation;
+		ServerRelocation.AppliedInput.Epoch = Movement->MovementEpoch + 1;
+		ServerRelocation.AppliedInput.bCrouch = true;
+		ServerRelocation.AppliedInput.CrouchRequest = ServerRelocation.ProcessedCrouchRequest = 10;
+		ServerRelocation.bCrouchHeld = true;
+		ServerRelocation.bCrouched = true;
+		ServerRelocation.bRelocation = true;
+		ServerRelocation.bActive = false;
+		Movement->RestoreSlideSnapshot(ServerRelocation);
+		TestEqual(TEXT("Relocation correction adopts the new movement epoch"),
+			Movement->MovementEpoch, ServerRelocation.AppliedInput.Epoch);
+		TestTrue(TEXT("Relocation correction restores the actual crouched capsule"), bool(Fixture.Shooter->bIsCrouched));
+		TestEqual(TEXT("New epoch preserves only a still-held local crouch input"),
+			Movement->LiveMovementInput.bCrouch, bStillHeld);
+
+		// 다음 이동 입력까지 적용해야 홀드 유실/해제 입력 부활을 실제 의도 상태에서 확인할 수 있다.
+		Movement->bUsingMovementInput = true;
+		Movement->MoveInput = Movement->LiveMovementInput;
+		Movement->ApplyMovementInput();
+		Movement->bUsingMovementInput = false;
+		TestEqual(TEXT("Movement after relocation keeps the latest crouch intent"), Fixture.Input->WantsToCrouch(), bStillHeld);
+		TestEqual(TEXT("Engine crouch request follows the latest input after correction"), bool(Movement->bWantsToCrouch), bStillHeld);
+		TestFalse(TEXT("Crouched relocation correction cannot restart Slide"), Movement->IsSlideSimulating());
+		AddInfo(FString::Printf(TEXT("[SlideLifecycleTest] Case=RelocationCrouch HeldBeforeCorrection=%d HeldAfterMovement=%d"),
+			bStillHeld, Fixture.Input->WantsToCrouch()));
+	}
+	// 보정 기준 이후의 새 Press와 Press 후 Release는 순간이동에서만 새 위치로 이어진다.
+	// 일반 수명주기 변경에서는 기존처럼 과거 입력/요청을 모두 정리한다.
+	for (int32 Case = 0; Case < 4; ++Case)
+	{
+		FFixture Fixture;
+		if (!Fixture.Initialize(*this)) return false;
+		auto* Movement = Fixture.Movement;
+		Fixture.Input->StopSlide(ESlideEndReason::ForcedCancel);
+		Fixture.Shooter->SetRole(ROLE_AutonomousProxy);
+		ON_SCOPE_EXIT { Fixture.Shooter->SetRole(ROLE_Authority); };
+		const bool bRelocation = Case < 2;
+		const bool bNewPressHeld = Case != 1;
+		Movement->LiveMovementInput.CrouchRequest = Case == 3 ? 10 : 11;
+		Movement->LiveMovementInput.bCrouch = bNewPressHeld;
+		Movement->LiveMovementInput.bSprint = true;
+		Movement->LiveMovementInput.bSprintAtCrouch = true;
+		FShooterSlideSnapshot ServerSnapshot;
+		ServerSnapshot.AppliedInput.Epoch = Movement->MovementEpoch + 1;
+		ServerSnapshot.AppliedInput.CrouchRequest = ServerSnapshot.ProcessedCrouchRequest = 10;
+		ServerSnapshot.AppliedInput.bCrouch = ServerSnapshot.bCrouchHeld = Case == 3;
+		ServerSnapshot.bCrouched = true;
+		ServerSnapshot.bRelocation = bRelocation;
+		Movement->RestoreSlideSnapshot(ServerSnapshot);
+		TestEqual(TEXT("Only relocation preserves a newer crouch request"),
+			Movement->LiveMovementInput.CrouchRequest, bRelocation ? uint32(11) : uint32(0));
+		TestEqual(TEXT("Relocation preserves the latest press or release value"),
+			Movement->LiveMovementInput.bCrouch, bRelocation && bNewPressHeld);
+		TestFalse(TEXT("Epoch change does not carry old Sprint into a new crouch request"),
+			Movement->LiveMovementInput.bSprint || Movement->LiveMovementInput.bSprintAtCrouch);
+
+		Movement->bUsingMovementInput = true;
+		Movement->MoveInput = Movement->LiveMovementInput;
+		Movement->ApplyMovementInput();
+		Movement->bUsingMovementInput = false;
+		TestEqual(TEXT("Movement applies a newer relocation press or release exactly as held"),
+			Fixture.Input->WantsToCrouch(), bRelocation && bNewPressHeld);
+		TestFalse(TEXT("Replayed crouch after epoch change cannot revive Slide"), Movement->IsSlideSimulating());
+		if (bRelocation)
+			TestEqual(TEXT("New relocation crouch request is consumed by movement"), Movement->ProcessedCrouchRequest, uint32(11));
+		AddInfo(FString::Printf(TEXT("[SlideLifecycleTest] Case=NewCrouchAfterCorrection Relocation=%d PressHeld=%d EffectiveHeld=%d"),
+			bRelocation, bNewPressHeld, Fixture.Input->WantsToCrouch()));
 	}
 
 	// 실제 충돌은 Walking이 처리한다. 연결되지 않은 WallCancel 정책은 자동으로 활성화하지 않는다.

@@ -14,6 +14,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SceneComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Engine/Engine.h"
@@ -178,6 +179,204 @@ bool FOutlierBoneSightOcclusionTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Original URO restored"), Mesh->bEnableUpdateRateOptimizations);
 	}
 	Sight.Shutdown();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOutlierBoneSightHeadExposureTest,
+	"Outlier.Enemy.SightRuntime.HeadExposureAndObserverSnapshots",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierBoneSightHeadExposureTest::RunTest(const FString& Parameters)
+{
+	using namespace OutlierBoneSightTests;
+	FWorld Fixture;
+	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	AActor* ObserverA = Fixture.World->SpawnActor<AActor>();
+	AActor* ObserverB = Fixture.World->SpawnActor<AActor>();
+	USkeletalMesh* Asset = LoadBody();
+	if (!Target || !ObserverA || !ObserverB || !TestNotNull(TEXT("Actual Shooter TP mesh"), Asset)) return false;
+	USkeletalMeshComponent* Mesh = MakeMesh(*Target, Asset);
+	FOutlierBoneSight Sight;
+	ON_SCOPE_EXIT { Sight.Shutdown(); };
+	FOutlierSightBoneCache Registration;
+	const TArray<FName> Names = { TEXT("head"), TEXT("spine_03"), TEXT("pelvis"),
+		TEXT("clavicle_l"), TEXT("clavicle_r"), TEXT("calf_l"), TEXT("calf_r") };
+	const FName Body[] = { TEXT("spine_03"), TEXT("pelvis"), TEXT("clavicle_l"), TEXT("clavicle_r") };
+	const FOutlierSightBoneRoles Roles{ TEXT("head"), MakeArrayView(Body) };
+	if (!TestTrue(TEXT("Seven real Shooter bones resolve"), Registration.Resolve(Asset, Names))) return false;
+	FCanBeSeenFromContext Context;
+	Context.ObserverLocation = FVector(1000, 1000, 300);
+	Context.IgnoreActor = ObserverA;
+	FVector Seen;
+	int32 Sync = 0, Async = 0;
+	float Strength = 0;
+	const auto Query = [&](bool bShooterRoles = true)
+	{
+		Sync = Async = 0;
+		return Sight.Query(*Target, Mesh, Registration, Context, Seen, Sync, Async, Strength, {}, bShooterRoles ? &Roles : nullptr);
+	};
+	Query();
+	Mesh->RefreshBoneTransforms();
+	TArray<UBoxComponent*> Blockers;
+	// 실제 광선마다 작은 충돌체를 두어 머리만 열린 배치를 만든다. 새 예외가 Trace 수를 늘려서는 안 된다.
+	for (int32 Index = 0; Index < Names.Num(); ++Index)
+	{
+		AActor* Wall = Fixture.World->SpawnActor<AActor>();
+		UBoxComponent* Box = NewObject<UBoxComponent>(Wall);
+		Wall->SetRootComponent(Box);
+		Box->SetBoxExtent(FVector(0.02));
+		Box->SetCollisionEnabled(Index == 0 ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryOnly);
+		Box->SetCollisionResponseToAllChannels(ECR_Ignore);
+		Box->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+		Box->SetWorldLocation((Context.ObserverLocation + Mesh->GetBoneTransform(Registration.GetBoneIndices()[Index]).GetLocation()) * 0.5);
+		Box->RegisterComponent();
+		Blockers.Add(Box);
+	}
+	TestTrue(TEXT("Shooter head alone passes the actual occlusion query"), Query() == UAISense_Sight::EVisibilityResult::Visible);
+	TestEqual(TEXT("Head exception preserves actual strength 1/7"), Strength, 1.0f / 7.0f);
+	TestEqual(TEXT("Head exception still traces exactly seven bones"), Sync, 7);
+	FOutlierSightObservation A, B;
+	TestTrue(TEXT("Observer A has a fresh exposure snapshot"), Sight.GetObservation(ObserverA, Mesh, Registration, A));
+	TestEqual(TEXT("Only head is exposed to A"), A.HeadPoints.Num(), 1);
+	TestTrue(TEXT("Head identity accompanies its point"), A.HeadBoneIndices.Num() == 1
+		&& A.HeadBoneIndices[0] == Registration.GetBoneIndices()[0]);
+	TestEqual(TEXT("No body points leaked through cover"), A.BodyPoints.Num(), 0);
+	TestTrue(TEXT("No-role targets keep the existing half threshold"), Query(false) == UAISense_Sight::EVisibilityResult::NotVisible);
+	Query();
+	Context.ObserverLocation = FVector(-1000, -1000, 300);
+	Context.IgnoreActor = ObserverB;
+	TestTrue(TEXT("Second observer sees all parts from the other side"), Query() == UAISense_Sight::EVisibilityResult::Visible);
+	TestTrue(TEXT("Observer B has its own snapshot"), Sight.GetObservation(ObserverB, Mesh, Registration, B));
+	TestEqual(TEXT("B sees all four body points"), B.BodyPoints.Num(), 4);
+	TestEqual(TEXT("B body identities match point count"), B.BodyBoneIndices.Num(), B.BodyPoints.Num());
+	TestTrue(TEXT("B query does not replace A exposure"), Sight.GetObservation(ObserverA, Mesh, Registration, A) && A.BodyPoints.IsEmpty());
+	Context.ObserverLocation = FVector(1000, 1000, 300);
+	Context.IgnoreActor = ObserverA;
+	Blockers[0]->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	TestTrue(TEXT("Full cover removes direct visibility"), Query() == UAISense_Sight::EVisibilityResult::NotVisible);
+	TestTrue(TEXT("Failed query replaces A with an empty current snapshot"), Sight.GetObservation(ObserverA, Mesh, Registration, A)
+		&& !A.bSightVisible && A.HeadPoints.IsEmpty() && A.BodyPoints.IsEmpty() && A.OtherPoints.IsEmpty());
+	Blockers[2]->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	TestTrue(TEXT("One body point alone still fails discovery"), Query() == UAISense_Sight::EVisibilityResult::NotVisible);
+	TestTrue(TEXT("Failed discovery still records actual exposed body for existing tracking"),
+		Sight.GetObservation(ObserverA, Mesh, Registration, A) && !A.bSightVisible && A.BodyPoints.Num() == 1);
+	TestTrue(TEXT("Body identity remains pelvis when earlier points are hidden"), A.BodyBoneIndices.Num() == 1
+		&& A.BodyBoneIndices[0] == Registration.GetBoneIndices()[2]);
+	const uint32 OldEpoch = A.Epoch;
+	for (UBoxComponent* Box : Blockers) Box->GetOwner()->Destroy();
+	const TArray<FName> HeadOnly = { TEXT("head") };
+	Registration.Resolve(Asset, HeadOnly);
+	TestFalse(TEXT("Registration replacement invalidates old snapshots before another query"), Sight.GetObservation(ObserverA, Mesh, Registration, A));
+	TestTrue(TEXT("Explicit roles tolerate a valid subset registration"), Query() == UAISense_Sight::EVisibilityResult::Visible);
+	TestTrue(TEXT("Subset registration starts a new exposure epoch"), Sight.GetObservation(ObserverA, Mesh, Registration, A)
+		&& A.Epoch != OldEpoch && A.HeadPoints.Num() == 1 && A.BodyPoints.IsEmpty());
+	++GFrameCounter;
+	Fixture.World->Tick(LEVELTICK_All, 0.3f);
+	TestFalse(TEXT("Observation expires even if another pose completes"), Sight.GetObservation(ObserverA, Mesh, Registration, A));
+	Mesh->RefreshBoneTransforms();
+	Query();
+	TestTrue(TEXT("A new real query refreshes the snapshot"), Sight.GetObservation(ObserverA, Mesh, Registration, A));
+	Sight.Shutdown();
+	TestFalse(TEXT("Shutdown invalidates observer data"), Sight.GetObservation(ObserverA, Mesh, Registration, A));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyHeadExposurePerceptionChainTest,
+	"Outlier.Enemy.SightRuntime.HeadExposurePerceptionAwarenessAndPreparation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyHeadExposurePerceptionChainTest::RunTest(const FString& Parameters)
+{
+	using namespace OutlierBoneSightTests;
+	FWorld Fixture(true);
+	UClass* EnemyClass = LoadClass<AVECDrone>(nullptr, TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	UClass* TargetClass = LoadClass<AShooterCharacter>(nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!EnemyClass || !TargetClass) return false;
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AVECDrone* Enemy = Fixture.World->SpawnActor<AVECDrone>(EnemyClass, FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
+	AShooterCharacter* Target = Fixture.World->SpawnActor<AShooterCharacter>(TargetClass, FVector(500, 0, 0), FRotator::ZeroRotator, Spawn);
+	if (!Enemy || !Target) return false;
+	for (ACharacter* Actor : { static_cast<ACharacter*>(Enemy), static_cast<ACharacter*>(Target) })
+	{
+		Actor->GetCharacterMovement()->DisableMovement();
+		Actor->GetMesh()->SetAnimInstanceClass(nullptr);
+	}
+	Target->SetCanBeDamaged(false);
+	AEnemyAIController* Controller = Cast<AEnemyAIController>(Enemy->GetController());
+	UAIPerceptionSystem* Perception = UAIPerceptionSystem::GetCurrent(Fixture.World);
+	if (!Controller || !Perception) return false;
+	FCanBeSeenFromContext Context;
+	Context.IgnoreActor = Enemy;
+	Context.ObserverLocation = Enemy->GetPawnViewLocation();
+	FVector Seen;
+	int32 Sync = 0, Async = 0;
+	float Strength = 0;
+	Target->CanBeSeenFrom(Context, Seen, Sync, Async, Strength);
+	Target->GetMesh()->RefreshBoneTransforms();
+	const TConstArrayView<int32> Bones = Target->ResolveSightBoneRegistration().GetBoneIndices();
+	if (!TestEqual(TEXT("Integration uses the real seven-bone Shooter registration"), Bones.Num(), 7)) return false;
+	TArray<UBoxComponent*> Blockers;
+	for (const int32 Bone : Bones)
+	{
+		AActor* Wall = Fixture.World->SpawnActor<AActor>();
+		UBoxComponent* Box = NewObject<UBoxComponent>(Wall);
+		Wall->SetRootComponent(Box);
+		Box->SetBoxExtent(FVector(0.02));
+		Box->SetCollisionEnabled(Target->GetMesh()->GetBoneName(Bone) == TEXT("head")
+			? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryOnly);
+		Box->SetCollisionResponseToAllChannels(ECR_Ignore);
+		Box->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+		Box->SetWorldLocation((Context.ObserverLocation + Target->GetMesh()->GetBoneTransform(Bone).GetLocation()) * 0.5);
+		Box->RegisterComponent();
+		Blockers.Add(Box);
+	}
+	TestTrue(TEXT("Actual Shooter wrapper reports head-only sight"),
+		Target->CanBeSeenFrom(Context, Seen, Sync, Async, Strength) == UAISense_Sight::EVisibilityResult::Visible);
+	TestEqual(TEXT("Integration starts with real strength 1/7"), Strength, 1.0f / 7.0f);
+	UAIPerceptionSystem::RegisterPerceptionStimuliSource(Fixture.World, UAISense_Sight::StaticClass(), Target);
+	const auto Step = [&]
+	{
+		++GFrameCounter;
+		Fixture.World->Tick(LEVELTICK_All, 0.025f);
+		Perception->Tick(0.025f);
+	};
+	// 감지 bool을 주입하지 않는다. 실제 Sight callback과 저장된 Alert Tree로 인지 수치를 채운다.
+	for (int32 Index = 0; Index < 40 && Enemy->GetCombatState() != EEnemyCombatState::Alert; ++Index) Step();
+	if (!TestTrue(TEXT("Head-only real perception enters Alert"), Enemy->GetCombatState() == EEnemyCombatState::Alert)) return false;
+	for (int32 Index = 0; Index < 4; ++Index) Step();
+	TestTrue(TEXT("Head visibility accumulates instead of instantly completing awareness"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
+	for (int32 Index = 0; Index < 40 && !Enemy->IsInCombat(); ++Index) Step();
+	if (!TestTrue(TEXT("Head-only perception completes awareness through the production Tree"), Enemy->IsInCombat())) return false;
+	Enemy->GetStateTreeComponent()->StopLogic(TEXT("Controlled head-only preparation boundary"));
+	TestTrue(TEXT("Head-only visibility reaches the actual tracked target"),
+		Enemy->GetTrackedTarget() == Target && Controller->IsTargetDirectlyVisible(Target));
+	Enemy->ResetTargetAttackContinuity();
+	FOutlierSightObservation Observation;
+	TestFalse(TEXT("Observer attack lifecycle reset invalidates its old exposure snapshot"), Target->GetObservedAimPoints(Enemy, Observation));
+	// 회차가 바뀐 뒤에는 새 실제 Sight 조회가 있어야 부위 조준 정보를 다시 사용할 수 있다.
+	Context.ObserverLocation = Enemy->GetPawnViewLocation();
+	Target->CanBeSeenFrom(Context, Seen, Sync, Async, Strength);
+	Enemy->BeginTargetAttackPreparation(0.1f);
+	Enemy->AdvanceTargetAttackPreparation(0.05f);
+	TestTrue(TEXT("Real head-only direct visibility advances the first telegraph"),
+		FMath::IsNearlyEqual(Enemy->GetTargetAttackPreparationRemaining(), 0.05f));
+	Enemy->AdvanceTargetAttackPreparation(0.05f);
+	TestTrue(TEXT("Head-only observation can finish the first telegraph"), Enemy->IsTargetAttackPreparationComplete());
+	TestTrue(TEXT("The actual AI observer still has only the head exposure"), Target->GetObservedAimPoints(Enemy, Observation)
+		&& Observation.HeadPoints.Num() == 1 && Observation.BodyPoints.IsEmpty() && Observation.OtherPoints.IsEmpty());
+	// 부분 등록 wrapper 검증도 실제 포즈가 진행되는 월드에서 한다. 메시 등록 전용 fixture와 분리한다.
+	FArrayProperty* SightBones = FindFProperty<FArrayProperty>(Target->GetClass(), TEXT("SightBones"));
+	if (!TestNotNull(TEXT("Registered Sight list is inspectable"), SightBones)) return false;
+	*SightBones->ContainerPtrToValuePtr<TArray<FName>>(Target) = { TEXT("head") };
+	TestTrue(TEXT("Shooter head-only registration is visible through the public Sight wrapper"),
+		Target->CanBeSeenFrom(Context, Seen, Sync, Async, Strength) == UAISense_Sight::EVisibilityResult::Visible);
+	TestTrue(TEXT("Shooter public aim API returns the observer's registered head"),
+		Target->GetObservedAimPoints(Enemy, Observation) && Observation.HeadPoints.Num() == 1);
+	Target->GetMesh()->SetSkeletalMeshAsset(LoadObject<USkeletalMesh>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/3_Meshes/SKM_Player_01.SKM_Player_01")));
+	TestFalse(TEXT("Shooter public aim API rejects snapshots from the previous mesh"),
+		Target->GetObservedAimPoints(Enemy, Observation));
 	return true;
 }
 
@@ -433,6 +632,8 @@ bool FEnemySightAlertIntegrationTest::RunTest(const FString& Parameters)
 	APartnerCharacter* Partner = Fixture.World->SpawnActor<APartnerCharacter>(PartnerClass, FVector(500, -300, 0), FRotator::ZeroRotator, Spawn);
 	if (!Shooter || !Partner) return false;
 	Controller->Possess(Enemy);
+	// 이 검사는 거리 곡선과 독립적인 기존 감소·경계·수명 계약을 고정 속도로 검증한다.
+	const_cast<FEnemyStat&>(Enemy->GetRuntimeStat()).AwarenessNearFillDuration = 1.0f;
 	const auto Stimulate = [&](AActor* Target, bool bVisible)
 	{
 		const FAIStimulus Stimulus(*GetDefault<UAISense_Sight>(), 1.0f,
@@ -551,6 +752,53 @@ bool FEnemySightAlertIntegrationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyDistanceAwarenessIntegrationTest,
+	"Outlier.Enemy.SightRuntime.DistanceAwareness",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyDistanceAwarenessIntegrationTest::RunTest(const FString& Parameters)
+{
+	OutlierBoneSightTests::FWorld Fixture;
+	AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>();
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	if (!Enemy || !Controller || !Target) return false;
+	USceneComponent* Root = NewObject<USceneComponent>(Target);
+	Target->SetRootComponent(Root);
+	Root->RegisterComponent();
+	Controller->Possess(Enemy);
+	const FVector Receiver(0, 0, 200);
+	const auto ObserveAt = [&](double Time, const FVector& Position, bool bVisible)
+	{
+		Fixture.World->TimeSeconds = Time;
+		Target->SetActorLocation(Position);
+		Controller->ObserveInitialSight(*Enemy, *Target, bVisible, &Receiver);
+	};
+	const auto Progress = [&]()
+	{
+		return Controller->AwarenessTargets.FindChecked(Target).Progress.GetAwareness();
+	};
+	ObserveAt(0.0, Receiver + FVector(1500, 0, 0), true);
+	ObserveAt(0.2, Receiver + FVector(300, 0, 0), true);
+	TestTrue(TEXT("Controller preserves the previous far interval when the target approaches"), FMath::IsNearlyEqual(Progress(), 0.2, 0.00001));
+	ObserveAt(0.3, Receiver + FVector(300, 0, 0), false);
+	TestTrue(TEXT("Controller applies near acceleration only to the following visible interval"), FMath::IsNearlyEqual(Progress(), 0.6, 0.00001));
+	const auto& HiddenState = Controller->AwarenessTargets.FindChecked(Target);
+	const FVector LastSeen = HiddenState.LastSeenLocation;
+	ObserveAt(0.5, Receiver + FVector(10000, 0, 0), false);
+	TestTrue(TEXT("Hidden movement decays awareness without observing a new location"), FMath::IsNearlyEqual(Progress(), 0.5, 0.00001));
+	TestTrue(TEXT("Hidden movement cannot update the sight snapshot"), Controller->AwarenessTargets.FindChecked(Target).LastSeenLocation.Equals(LastSeen));
+	for (int32 Query = 0; Query < 100; ++Query) ObserveAt(0.5, Receiver, false);
+	TestTrue(TEXT("Repeated controller observations cannot multiply elapsed time"), FMath::IsNearlyEqual(Progress(), 0.5, 0.00001));
+	Controller->ResetInitialAwareness();
+	ObserveAt(1.0, Receiver + FVector(0, 0, 900), true);
+	ObserveAt(1.25, Receiver + FVector(0, 0, 900), true);
+	TestTrue(TEXT("Controller uses 3D receiver distance for the interpolated rate"), FMath::IsNearlyEqual(Progress(), 0.4, 0.00001));
+	Controller->UnPossess();
+	TestEqual(TEXT("Unpossess clears distance observation ownership"), Controller->AwarenessTargets.Num(), 0);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyHearingAwarenessIntegrationTest,
 	"Outlier.Enemy.SightRuntime.HearingAccumulationAndLifetime",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -570,6 +818,8 @@ bool FEnemyHearingAwarenessIntegrationTest::RunTest(const FString& Parameters)
 	APartnerCharacter* Partner = Fixture.World->SpawnActor<APartnerCharacter>(PartnerClass, FVector(500, -300, 0), FRotator::ZeroRotator, Spawn);
 	if (!Shooter || !Partner) return false;
 	Controller->Possess(Enemy);
+	// 시각/청각의 중복 합산과 수명을 검사한다. 거리별 속도는 별도 Controller 검사에서 다룬다.
+	const_cast<FEnemyStat&>(Enemy->GetRuntimeStat()).AwarenessNearFillDuration = 1.0f;
 	const FVector HeardLocation(300, 100, 0);
 	const auto Hear = [&](AActor* Target, float Age = 0.0f)
 	{
@@ -764,7 +1014,8 @@ bool FEnemySightStateTreeTest::RunTest(const FString& Parameters)
 		};
 		for (int32 Index = 0; Index < 40 && Enemy->GetCombatState() != EEnemyCombatState::Alert; ++Index) Step();
 		if (!TestTrue(FString::Printf(TEXT("Actual bone perception enters Alert for %s"), TargetPath), Enemy->GetCombatState() == EEnemyCombatState::Alert)) return false;
-		for (int32 Index = 0; Index < 16; ++Index) Step();
+		// 근거리 인지의 최단 시간(0.25초)보다 짧게 노출한다. 기존 0.4초는 새 곡선에서 이미 발견 완료다.
+		for (int32 Index = 0; Index < 4; ++Index) Step();
 		TestTrue(TEXT("Partial exposure has not committed Combat"), Enemy->GetCombatState() == EEnemyCombatState::Alert);
 		TestTrue(TEXT("Production common tree selects Alert"), Tree->GetActiveStateNames().Contains(TEXT("Alert")));
 		AActor* Wall = Fixture.World->SpawnActor<AActor>();
@@ -788,8 +1039,15 @@ bool FEnemySightStateTreeTest::RunTest(const FString& Parameters)
 		Target->SetActorLocation(Enemy->GetActorLocation()
 			+ FRotator(0.0f, Enemy->GetViewRotation().Yaw, 0.0f).Vector() * 500.0f);
 		Box->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		const FEnemyStat& Stat = Enemy->GetRuntimeStat();
+		const double ExpectedFillDuration = OutlierEnemySight::ResolveSightFillDuration(
+			FVector::Distance(Enemy->GetPawnViewLocation(), Target->GetActorLocation()),
+			Stat.AwarenessNearFillDuration, Stat.AwarenessFillDuration, Stat.AwarenessNearDistance, Stat.AwarenessFarDistance);
+		const double RediscoveryStartedAt = Fixture.World->GetTimeSeconds();
 		for (int32 Index = 0; Index < 80 && !Enemy->IsInCombat(); ++Index) Step();
 		TestTrue(TEXT("Real rediscovery fills awareness and enters Combat"), Enemy->IsInCombat());
+		TestTrue(TEXT("Actual perception and production tree respect the distance fill duration within evaluation latency"),
+			Fixture.World->GetTimeSeconds() - RediscoveryStartedAt <= ExpectedFillDuration + 0.15);
 		Step(); Step();
 		TestFalse(TEXT("Combat event exits production Alert state"), Tree->GetActiveStateNames().Contains(TEXT("Alert")));
 	}

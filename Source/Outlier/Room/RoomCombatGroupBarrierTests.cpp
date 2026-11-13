@@ -129,10 +129,50 @@ void CheckBarrierPresentation(FAutomationTestBase& Test, ARoomCombatBarrier* Bar
 	const auto* Box = CastChecked<UBoxComponent>(Barrier->GetRootComponent());
 	Test.TestEqual(TEXT("Blocking collision follows authoritative state"), Box->GetCollisionEnabled(),
 		bBlocked ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-	const auto* Visual = Barrier->FindComponentByClass<UStaticMeshComponent>();
 	const auto* Hidden = FindFProperty<FBoolProperty>(USceneComponent::StaticClass(), TEXT("bHiddenInGame"));
-	Test.TestEqual(TEXT("Visual hidden state follows authoritative state"), Hidden->GetPropertyValue_InContainer(Visual), !bBlocked);
+	TInlineComponentArray<UStaticMeshComponent*> VisualMeshes;
+	Barrier->GetComponents(VisualMeshes);
+	for (const UStaticMeshComponent* Visual : VisualMeshes)
+	{
+		Test.TestEqual(FString::Printf(TEXT("%s hidden state follows authoritative state"), *Visual->GetName()),
+			Hidden->GetPropertyValue_InContainer(Visual), !bBlocked);
+	}
 }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBarrierDuplicatedVisualsTest, "Outlier.Room.GroupBarrier.DuplicatedVisuals",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBarrierDuplicatedVisualsTest::RunTest(const FString& Parameters)
+{
+	FGroupBarrierWorld Fixture;
+	Fixture.AddRoom(BarrierA);
+	AEnemyBase* Enemy = Fixture.AddEnemy(BarrierA);
+	ARoomCombatBarrier* Barrier = Fixture.World->SpawnActorDeferred<ARoomCombatBarrier>(
+		ARoomCombatBarrier::StaticClass(), FTransform::Identity);
+	*FindFProperty<FStructProperty>(ARoomCombatBarrier::StaticClass(), TEXT("RoomTag"))
+		->ContainerPtrToValuePtr<FGameplayTag>(Barrier) = BarrierA;
+	UStaticMeshComponent* Original = Barrier->FindComponentByClass<UStaticMeshComponent>();
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		UStaticMeshComponent* Duplicate = DuplicateObject<UStaticMeshComponent>(Original, Barrier);
+		Barrier->AddInstanceComponent(Duplicate);
+		// 원본의 형제 또는 자식으로 배치해도 같은 상태를 적용해야 한다.
+		Duplicate->SetupAttachment(Index == 0 ? Barrier->GetRootComponent() : Original);
+		Duplicate->SetHiddenInGame(false);
+		Duplicate->RegisterComponent();
+	}
+	Barrier->FinishSpawning(FTransform::Identity);
+	if (!Barrier->HasActorBegunPlay()) Barrier->DispatchBeginPlay();
+	TInlineComponentArray<UStaticMeshComponent*> VisualMeshes;
+	Barrier->GetComponents(VisualMeshes);
+	TestEqual(TEXT("Original and two instance duplicates are present"), VisualMeshes.Num(), 3);
+	CheckBarrierPresentation(*this, Barrier, false);
+	TestTrue(TEXT("Combat starts"), Fixture.Start(BarrierA));
+	CheckBarrierPresentation(*this, Barrier, true);
+	Fixture.Combat->NotifyEnemyDefeated(Enemy);
+	CheckBarrierPresentation(*this, Barrier, false);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGroupBarrierParticipationTest, "Outlier.Room.GroupBarrier.Participation",
@@ -268,6 +308,41 @@ bool FGroupBarrierTopologyTest::RunTest(const FString& Parameters)
 	CheckBarrierPresentation(*this, Shared, true);
 	Test.Combat->NotifyEnemyDefeated(Legacy);
 	CheckBarrierPresentation(*this, Shared, false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBarrierSafetyGeometryTest, "Outlier.Room.BarrierSafety.DisabledRotatedGeometry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBarrierSafetyGeometryTest::RunTest(const FString& Parameters)
+{
+	FGroupBarrierWorld Fixture;
+	ARoomCombatBarrier* Barrier = Fixture.AddBarrier(BarrierA);
+	UBoxComponent* Box = CastChecked<UBoxComponent>(Barrier->GetRootComponent());
+	Box->SetBoxExtent(FVector(100, 100, 100));
+	Barrier->SetActorRotation(FRotator(25, 45, 15));
+	TestEqual(TEXT("Safety geometry works before physics collision is enabled"), Box->GetCollisionEnabled(), ECollisionEnabled::NoCollision);
+	TestTrue(TEXT("Disabled rotated OBB detects an interior capsule"), Barrier->OverlapsJoinCapsule(FVector::ZeroVector, 20, 70));
+	const FVector Corner = Box->GetComponentTransform().TransformPosition(FVector(119, 119, 0));
+	TestFalse(TEXT("Expanded AABB corner outside the capsule radius remains clear"), Barrier->OverlapsJoinCapsule(Corner, 20, 20));
+	const FVector Face = Box->GetComponentTransform().TransformPosition(FVector(115, 0, 0));
+	TestTrue(TEXT("Rounded capsule radius intersects an OBB face"), Barrier->OverlapsJoinCapsule(Face, 20, 20));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBarrierSafetySharedRoomTest, "Outlier.Room.BarrierSafety.SharedUnregisteredRoom",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBarrierSafetySharedRoomTest::RunTest(const FString& Parameters)
+{
+	FGroupBarrierWorld Fixture;
+	Fixture.AddRoom(BarrierA);
+	Fixture.AddEnemy(BarrierA);
+	TestTrue(TEXT("Registered group member starts combat"), Fixture.Start(BarrierA));
+	// 출입구가 속한 형제 방은 WP에서 아직 등록되지 않았지만 그룹 전투는 진행 중이다.
+	ARoomCombatBarrier* Shared = Fixture.AddBarrier(BarrierC);
+	TestEqual(TEXT("Safety uses the registered active group member"), Fixture.Combat->FindBarrierClosureRoom(Shared), BarrierA.GetTag());
+	CheckBarrierPresentation(*this, Shared, true);
 	return true;
 }
 

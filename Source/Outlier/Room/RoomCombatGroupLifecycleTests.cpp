@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
 
 #include "Components/BoxComponent.h"
+#include "CoreGlobals.h"
 #include "Components/CapsuleComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
@@ -295,6 +296,16 @@ bool FGroupLifecycleReconnectTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Actual destination has a registration token"), Context.DestinationRoomRegistrationId.IsValid());
 	TestEqual(TEXT("Event-only anchor room still waits for trigger"), Test.Combat->GetRoomState(LifecycleC), ERoomCombatState::WaitingForTrigger);
 	TestFalse(TEXT("Reconnect does not recruit the anchor room"), Test.Combat->IsRoomCombatReserved(LifecycleC));
+	// 새 최초 발각 EQS와 달리 재접속은 기존 동기 8방향 정책을 유지한다.
+	// 바닥 없는 Partner 비행과 첫 후보(기준 Yaw 뒤쪽)를 함께 고정해 정책 전파를 검출한다.
+	const float Offset = Player->GetCapsuleComponent()->GetScaledCapsuleRadius()
+		+ Anchor->GetCapsuleComponent()->GetScaledCapsuleRadius() + 50.0f;
+	TestTrue(TEXT("Reconnect keeps the legacy first rear candidate without requiring a floor"),
+		Player->GetActorLocation().Equals(Anchor->GetActorLocation() - Anchor->GetActorForwardVector() * Offset, 0.1f));
+	const FVector Rejoined = Player->GetActorLocation();
+	TestTrue(TEXT("Repeated reconnect placement is idempotent"), Test.Combat->TryPlaceReconnectingPlayer(Player, Anchor, Context));
+	TestTrue(TEXT("Repeated placement retains the accepted position"), Player->GetActorLocation().Equals(Rejoined));
+	TestEqual(TEXT("Reconnect does not start initial-detection preparation"), Test.Combat->GetRoomState(LifecycleC), ERoomCombatState::WaitingForTrigger);
 	const FGuid PreviousGroupId = Context.CombatGroupId;
 	const FGuid PreviousDestinationId = Context.DestinationRoomRegistrationId;
 	Test.Combat->UnregisterRoom(Test.Rooms[LifecycleC]);
@@ -441,6 +452,139 @@ bool FGroupLifecycleResumeTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Reentrant Reset clears every group reservation"), Test.Combat->HasActiveCombatReservation());
 	TestEqual(TEXT("Reentrant Reset discards restored pending spawn work"), Test.Combat->GetPendingSpawnCount(LifecycleB), 0);
 	TestFalse(TEXT("Reentrant Reset invalidates the old reconnect lifetime"), Test.Combat->IsReconnectContextCurrent(BeforeReset));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCheckpointCleanupPreflightTest, "Outlier.Room.CheckpointCleanup.Preflight",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCheckpointCleanupPreflightTest::RunTest(const FString& Parameters)
+{
+	FGroupLifecycleWorld Test;
+	Test.AddRoom(LifecycleA);
+	Test.AddRoom(LifecycleB);
+	Test.AddEnemy(LifecycleA);
+	Test.AddEnemy(LifecycleB);
+	TestTrue(TEXT("A starts"), Test.Start(LifecycleA));
+	TestTrue(TEXT("B starts"), Test.Start(LifecycleB));
+	FString Reason;
+	TestFalse(TEXT("Legacy/default option blocks cleanup"), Test.Combat->CanFinishCombatForCheckpoint(Reason));
+	TestFalse(TEXT("Default is OFF"), Test.Definition->RoomDefinitions[0].bFinishCombatOnCheckpointSave);
+	Test.Definition->RoomDefinitions[0].bFinishCombatOnCheckpointSave = true;
+	TestFalse(TEXT("Mixed permissions reject the entire plan"), Test.Combat->FinishCombatForCheckpoint());
+	TestEqual(TEXT("Enabled A keeps its enemy on preflight failure"), Test.Combat->GetAliveEnemyCount(LifecycleA), 1);
+	TestEqual(TEXT("A has not completed"), Test.Combat->GetRoomState(LifecycleA), ERoomCombatState::Combat);
+	Test.Definition->RoomDefinitions[1].bFinishCombatOnCheckpointSave = true;
+	TestTrue(TEXT("All blockers can be cleaned"), Test.Combat->CanFinishCombatForCheckpoint(Reason));
+	TestTrue(TEXT("Whole group finishes"), Test.Combat->FinishCombatForCheckpoint());
+	TestFalse(TEXT("All reservations are released"), Test.Combat->HasActiveCombatReservation());
+	TestTrue(TEXT("A completion is captured in live world progress"), Test.Saves->HasWorldProgress(
+		EOutlierWorldProgressType::CompletedEncounter, LifecycleA.GetTag().GetTagName()));
+	TestTrue(TEXT("B completion is captured in live world progress"), Test.Saves->HasWorldProgress(
+		EOutlierWorldProgressType::CompletedEncounter, LifecycleB.GetTag().GetTagName()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCheckpointCleanupLifecycleTest, "Outlier.Room.CheckpointCleanup.Lifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCheckpointCleanupLifecycleTest::RunTest(const FString& Parameters)
+{
+	FGroupLifecycleWorld Test;
+	Test.AddRoom(LifecycleA, {LifecyclePhase(), LifecyclePhase(ERoomCombatPhaseStartPolicy::HackTrigger),
+		LifecyclePhase(ERoomCombatPhaseStartPolicy::Automatic)});
+	Test.AddRoom(LifecycleB);
+	Test.AddEnemy(LifecycleA);
+	AEnemyBase* FutureEnemy = Test.AddEnemy(LifecycleB);
+	for (auto& Entry : Test.Definition->RoomDefinitions) Entry.bFinishCombatOnCheckpointSave = true;
+	TestTrue(TEXT("A begins"), Test.Start(LifecycleA));
+	int32 Cleared = 0;
+	bool bNestedRejected = false;
+	bool bStartRejected = false;
+	Test.Combat->CombatEventObserverForTesting = [&](FGameplayTag, ERoomCombatEvent Event, int32)
+	{
+		if (Event != ERoomCombatEvent::RoomCleared) return;
+		++Cleared;
+		bNestedRejected = !Test.Combat->FinishCombatForCheckpoint();
+		bStartRejected = !Test.Start(LifecycleB);
+	};
+	TestTrue(TEXT("Full encounter finishes without automatic continuation"), Test.Combat->FinishCombatForCheckpoint());
+	TestTrue(TEXT("Completion callback cannot nest cleanup"), bNestedRejected);
+	TestTrue(TEXT("Completion callback cannot start another combat"), bStartRejected);
+	TestEqual(TEXT("Room completion occurs once"), Cleared, 1);
+	TestEqual(TEXT("Future room remains dormant"), Test.Combat->GetRoomState(LifecycleB), ERoomCombatState::Dormant);
+	TestFalse(TEXT("Future enemy is preserved"), FutureEnemy->IsActorBeingDestroyed());
+	TestEqual(TEXT("A is fully cleared"), Test.Combat->GetRoomState(LifecycleA), ERoomCombatState::Cleared);
+	Test.Combat->RetryPendingSpawnsForTesting();
+	TestTrue(TEXT("Retry with no combat is idempotent"), Test.Combat->FinishCombatForCheckpoint());
+	TestEqual(TEXT("Retry does not repeat events"), Cleared, 1);
+	TestEqual(TEXT("No late automatic wave request"), Test.Combat->GetPendingSpawnCount(LifecycleA), 0);
+	Test.Combat->CombatEventObserverForTesting = nullptr;
+	Test.Combat->ResetRuntimeCombatState();
+	Test.Combat->RegisterRoom(Test.Rooms.FindChecked(LifecycleA), LifecycleA);
+	TestEqual(TEXT("Reload from completion progress cannot restart A"), Test.Combat->GetRoomState(LifecycleA), ERoomCombatState::Cleared);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCheckpointCleanupResetTest, "Outlier.Room.CheckpointCleanup.ResetAndPreparation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCheckpointCleanupResetTest::RunTest(const FString& Parameters)
+{
+	FGroupLifecycleWorld Test;
+	Test.AddRoom(LifecycleA);
+	Test.AddEnemy(LifecycleA);
+	Test.Definition->RoomDefinitions[0].bFinishCombatOnCheckpointSave = true;
+	FRoomCombatPreparationContext Context;
+	TestTrue(TEXT("Preparation reserves the room"), Test.Combat->BeginInitialDetectionPreparation(LifecycleA, Test.Requester, Context));
+	Test.Combat->CombatEventObserverForTesting = [&](FGameplayTag, ERoomCombatEvent Event, int32)
+	{
+		if (Event == ERoomCombatEvent::RoomCleared) Test.Combat->ResetRuntimeCombatState();
+	};
+	TestFalse(TEXT("Reset during completion invalidates cleanup result"), Test.Combat->FinishCombatForCheckpoint());
+	TestFalse(TEXT("Old preparation cannot resurrect the room"), Test.Combat->CompleteInitialDetectionPreparation(Context));
+	TestFalse(TEXT("Cleanup guard is restored after interruption"), Test.Combat->IsCheckpointCleanupInProgress());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCheckpointCleanupPendingTest, "Outlier.Room.CheckpointCleanup.PendingAndHolds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCheckpointCleanupPendingTest::RunTest(const FString& Parameters)
+{
+	for (ERoomCombatPhaseStartPolicy Policy : {ERoomCombatPhaseStartPolicy::HackTrigger, ERoomCombatPhaseStartPolicy::ExternalTrigger})
+	{
+		FGroupLifecycleWorld Test;
+		Test.AddRoom(LifecycleA, {LifecyclePhase(Policy), LifecyclePhase(ERoomCombatPhaseStartPolicy::Automatic)});
+		Test.Definition->RoomDefinitions[0].bFinishCombatOnCheckpointSave = true;
+		ARoomCombatSpawnPoint* Point = Test.World->SpawnActor<ARoomCombatSpawnPoint>();
+		Point->SetForceSpawnLocationFailureForTesting(true);
+		const FGameplayTag Activation = Policy == ERoomCombatPhaseStartPolicy::HackTrigger ? LifecycleA.GetTag() : FGameplayTag();
+		Test.Combat->RegisterSpawnPoint(Point, LifecycleA, FGameplayTagContainer(), Activation);
+		FRoomCombatTriggerContext Context;
+		TestTrue(TEXT("Triggered context"), Test.Combat->CreateTriggerContext(Test.Requester, LifecycleA, Activation, Context));
+		const FGuid HoldId = FGuid::NewGuid();
+		if (Policy == ERoomCombatPhaseStartPolicy::ExternalTrigger)
+		{
+			TestTrue(TEXT("Transition hold acquired"), Test.Combat->AcquireEncounterCheckpointHold(Context, HoldId));
+		}
+		TestTrue(TEXT("Triggered phase starts with deferred work"), Test.Combat->StartTriggeredSequenceWithSpawnDelay(Test.Requester, Context, 1.0f));
+		FString Reason;
+		if (Policy == ERoomCombatPhaseStartPolicy::ExternalTrigger)
+		{
+			TestFalse(TEXT("Transition hold blocks cleanup"), Test.Combat->CanFinishCombatForCheckpoint(Reason));
+		}
+		Test.Combat->ReleaseEncounterCheckpointHold(LifecycleA, HoldId);
+		TestTrue(TEXT("Deferred trigger can be cleaned after hold release"), Test.Combat->FinishCombatForCheckpoint());
+		++GFrameCounter;
+		Test.World->GetTimerManager().Tick(0.0f);
+		++GFrameCounter;
+		Test.World->GetTimerManager().Tick(2.0f);
+		Test.Combat->RetryPendingSpawnsForTesting();
+		TestEqual(TEXT("No deferred spawn after cleanup"), Test.Combat->GetPendingSpawnCount(LifecycleA), 0);
+		TestEqual(TEXT("No activation after cleanup"), Test.Combat->GetPendingActivationCount(LifecycleA), 0);
+		TestEqual(TEXT("Remaining automatic phase is skipped"), Test.Combat->GetRoomState(LifecycleA), ERoomCombatState::Cleared);
+	}
 	return true;
 }
 

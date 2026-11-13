@@ -144,7 +144,9 @@ namespace FlightPathfinding
 		TFunction<bool(const FVector&, const FVector&)> IsRegionClear = {});
 	// 게임 스레드 전용. 월드 공유 예산/FIFO와 세션당 프레임 한 번 제한을 적용한다.
 	// A* 슬라이스에는 최소 68 checks가 필요하다. CoarseCellSize는 재개 검색에서 사용하지 않는다.
-	OUTLIER_API bool AdvanceSearch(UWorld& World, FFlightPathSearch& Search, int32 SliceChecks, double SliceMs);
+	// 반환값은 완료 여부다. 실제 실행 차례를 받은 경우만 bExecutionGranted를 켜며 대기/취소 완료와 구분한다.
+	OUTLIER_API bool AdvanceSearch(UWorld& World, FFlightPathSearch& Search, int32 SliceChecks, double SliceMs,
+		bool* bExecutionGranted = nullptr);
 #if WITH_DEV_AUTOMATION_TESTS
 	// 테스트 월드의 Task 예산만 교체한다. 에셋과 다른 PIE 월드에는 적용하지 않는다.
 	struct FTestCost
@@ -181,6 +183,10 @@ namespace FlightPathfinding
 
 	// 경유점 추종 중 실제 위치에서 다음 지점까지 검사한다. A*는 실행하지 않는다.
 	OUTLIER_API EFlightPathStatus CheckSegment(
+		UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request);
+	// 이미 통과 가능한 경로에서 두 캡슐이 비켜 갈 여유만 분류한다. 실패는 이동 불가 판정이 아니다.
+	// 호출자는 공유 스케줄러 안에서 실행하고 반환된 검사/시간 비용을 자신의 예산에 합산한다.
+	OUTLIER_API FFlightPathResult CheckPassingSpace(
 		UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request);
 
 	// 서버 게임 스레드에서 실제 캡슐과 선택적 방 경계를 검증한 뒤 경로를 반환한다.

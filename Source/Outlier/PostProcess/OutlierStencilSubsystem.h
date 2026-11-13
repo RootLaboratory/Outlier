@@ -1,11 +1,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/EngineTypes.h"
+#include "Components/PrimitiveComponent.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "OutlierStencilSubsystem.generated.h"
 
 class UMeshComponent;
+class APlayerController;
+class AFirstPersonCharacter;
 
 // Scripts/Editor/ApplyOutlinePolicy.py와 공유한다. 관리 표식으로 ADS(3)와 기존
 // 에셋 스텐실을 게임 외곽선 패스에서 제외한다. 하위 2비트는 스캔 유형을 나타낸다.
@@ -60,6 +62,14 @@ public:
 
 	/** 플레이어 쌍 연결(캐릭터, 역할, 빙의)이 바뀌었을 때 호출한다. 다음 Tick에 한 번만 다시 찾는다. */
 	void MarkTeammatesDirty();
+	/** 등록 변경 때만 수집하고 렌더러에는 Component의 약한 참조/Primitive ID를 전달한다. */
+	void GatherOutlineMeshes(const APlayerController* Viewer, TArray<UMeshComponent*>& OutTeammateMeshes,
+		TArray<UMeshComponent*>& OutFirstPersonMeshes) const;
+	static void GatherCharacterOutlineMeshes(const AFirstPersonCharacter* Character, bool bFirstPerson,
+		TArray<UMeshComponent*>& OutMeshes);
+	FSimpleMulticastDelegate OnTeammateMeshesChanged;
+	/** 독립 패스가 pair 외곽선을 맡을 때만 기존 스텐실의 pair 팀원 비트를 해제한다. */
+	void SetIndependentPairOutlineEnabled(bool bEnabled);
 	/** 해킹된 터렛처럼 플레이어 쌍 외의 팀원을 등록하거나 해제한다. ResetTransientEffects에 지워지지 않는다. */
 	void SetActorTeammate(AActor* Target, bool bTeammate);
 
@@ -74,6 +84,7 @@ private:
 	TSet<TWeakObjectPtr<AActor>> RegisteredTeammates;
 	TMap<TWeakObjectPtr<UMeshComponent>, FOutlierStencilMeshState> MeshStates;
 	bool bTeammatesDirty = true;
+	bool bIndependentPairOutlineEnabled = false;
 	float FallbackElapsed = 0.f;
 	bool RefreshPairTeammates();
 	FOutlierStencilMeshState& TrackMesh(UMeshComponent* Mesh);

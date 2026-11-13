@@ -23,6 +23,7 @@ class OUTLIER_API UShooterFirstPersonAnimInstance : public UAnimInstance
 {
 	GENERATED_BODY()
 	friend class FOutlierShooterPresentationAnimationTest;
+	friend class FShooterSprintReloadTest;
 
 public:
 	virtual void NativeInitializeAnimation() override;
@@ -58,6 +59,7 @@ protected:
 
 	void UpdateFirstPersonProceduralValues(float DeltaSeconds);
 	void UpdateFirstPersonProceduralRuntime(float DeltaSeconds);
+	float GetReloadSprintPoseScale() const;
 	void BlendWeaponSwitchProceduralPose(float DeltaSeconds);
 	void UpdateFirstPersonDiagnostics(float DeltaSeconds, bool bWeaponChanged);
 	void LogFirstPersonDiagnostics(const TCHAR* Reason) const;

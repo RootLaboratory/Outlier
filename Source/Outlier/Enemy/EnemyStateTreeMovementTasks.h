@@ -76,6 +76,10 @@ struct FEnemyFlyToLocationTaskInstanceData
 	// 후퇴 EQS의 스냅샷을 전달한다. 다른 이동에는 끄고, 후퇴는 A* / 정확한 목적지만 사용한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bConstrainRetreatPath = false;
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bAllowShortRetreat = false;
+	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
+	FVector RetreatStart = FVector::ZeroVector;
 	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
 	FVector RetreatOrigin = FVector::ZeroVector;
 	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
@@ -120,6 +124,13 @@ struct FEnemyFlyToLocationTaskInstanceData
 	EEnemyCombatState CapturedMovementState = EEnemyCombatState::NonCombat;
 	int32 CapturedMovementGeneration = 0;
 	int32 CapturedMovementLease = 0;
+	// 전술 목적지의 회차를 이동에도 인계한다. 0인 순찰·수색·귀환은 기존 수명을 따른다.
+	uint64 CapturedCombatTacticalSerial = 0;
+	uint64 CapturedCombatReservationRequest = 0;
+	bool bTacticalSightReposition = false;
+	// 에셋의 선회/후퇴 옵션과 분리해 검증된 혼합 A* 경로만 재사용한다.
+	bool bCombatNavigationPath = false;
+	bool bCombatNavigationProgressOnly = false;
 	UPROPERTY(Transient)
 	FGameplayTag PathRoomTag;
 	UPROPERTY(Transient)
@@ -151,6 +162,7 @@ struct FEnemyFlyToLocationTaskInstanceData
 	FVector LastDestination = FVector::ZeroVector;
 	UPROPERTY(Transient)
 	bool bOwnsMovement = false;
+	bool bDiagnosticMovementReported = false;
 	FVector LastPathPosition = FVector::ZeroVector;
 	// 조사 회전의 통과 검사와 최종 실패 문맥은 경로 배열 정리 이후에도 인계할 수 있어야 한다.
 	FVector LastNoiseProgressLocation = FVector::ZeroVector;
@@ -163,6 +175,9 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bNoiseSearchReady = false;
 	uint64 CapturedNoiseSerial = 0;
+	// 수색/귀환 회차가 바뀐 뒤 도착한 경로 결과는 새 행동에 적용하지 않는다.
+	uint64 CapturedSearchSerial = 0;
+	uint64 CapturedReturnHomeSerial = 0;
 };
 
 // 지상 NavMesh에 투영하지 않는다. 설정에 따라 직접 이동하거나 검증된 비행 경로를 추종한다.
@@ -198,6 +213,7 @@ namespace EnemyFlightTesting
 	OUTLIER_API EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data);
 	OUTLIER_API EStateTreeRunStatus TickPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime);
 	OUTLIER_API bool CheckDirectBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime);
+	OUTLIER_API void PrepareSpeedLimits(FEnemyFlyToLocationTaskInstanceData& Data);
 	OUTLIER_API void Stop(FEnemyFlyToLocationTaskInstanceData& Data);
 }
 #endif

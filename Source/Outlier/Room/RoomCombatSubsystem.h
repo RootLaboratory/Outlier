@@ -17,6 +17,8 @@ class AFirstPersonCharacter;
 class URoomCombatDefinition;
 class UOutlierAbilitySystemComponent;
 class AOutlierPlayerState;
+class UPlayerRelocationQuery;
+struct FPlayerRelocationResult;
 struct FOutlierRoomPhaseProgress;
 enum class ERoomJoinRejection : uint8;
 // 요청 동안 확보하는 약한 공간 문맥이며 Room 등록 변경 시 다시 만든다.
@@ -273,6 +275,10 @@ public:
 	int32 GetFirstExternalTriggerPhaseIndex(FGameplayTag RoomTag) const;
 	// 업그레이드 문이 닫힌 뒤, 해제 옵션이 있는 선행 InitialDetection 차수만 보상 없이 정리한다.
 	bool FinishInitialPhaseForUpgrade(ARoomVolume* RoomVolume, int32 GameplayGeneration);
+	// 모든 후보를 부작용 없이 검증한 뒤 허용된 활성 Room 전체를 종료한다.
+	bool CanFinishCombatForCheckpoint(FString& OutReason) const;
+	bool FinishCombatForCheckpoint();
+	bool IsCheckpointCleanupInProgress() const { return bCheckpointCleanupInProgress; }
 #if WITH_EDITOR
 	// PIE 테스터 전용: 다음 차수를 시작하지 않고 방 전체를 정리/완료한다.
 	bool FinishRoomCombatForEditor(FGameplayTag RoomTag);
@@ -297,6 +303,11 @@ public:
 	void UnregisterSpawnPoint(ARoomCombatSpawnPoint* SpawnPoint);
 	void RegisterBarrier(ARoomCombatBarrier* Barrier);
 	void UnregisterBarrier(ARoomCombatBarrier* Barrier);
+	// true는 즉시 안전함이다. false이면 비동기 완료를 기다리거나 닫힘을 보류한다.
+	bool PrepareBarrierClosure(FGameplayTag RoomTag, TFunction<bool()> IsCurrent,
+		TFunction<void(bool)> Completion);
+	FGameplayTag FindBarrierClosureRoom(const ARoomCombatBarrier* Barrier) const;
+	FGameplayTag ResolveBarrierClosureRoom(const ARoomCombatBarrier* Barrier) const;
 	bool RegisterWaveTurret(
 		AAutoTurret* Turret,
 		FGameplayTag RoomTag,
@@ -330,6 +341,7 @@ public:
 		FRoomCombatPreparationContext& OutContext);
 	bool CompleteInitialDetectionPreparation(const FRoomCombatPreparationContext& Context);
 	bool CancelInitialDetectionPreparation(const FRoomCombatPreparationContext& Context);
+	// true는 실제 전투 진입 완료다. 강제 합류 EQS가 pending이면 false를 유지하고 완료 뒤 AI 전파를 재개한다.
 	bool TryStartInitialDetectionForPlayers(FGameplayTag RoomTag);
 	// 추적 적의 현재 위치만 검사한다. 전투 소속과 Wave 명단은 원래 방에 유지한다.
 	bool TryStartCombatFromPursuit(AEnemyBase* Enemy, FGameplayTag EnteredRoomTag);
@@ -379,6 +391,33 @@ public:
 #endif
 
 private:
+	struct FBarrierClosurePreparation
+	{
+		FGuid Id;
+		FGuid RegistrationId;
+		int32 Generation = 0;
+		TFunction<bool()> IsCurrent;
+		TFunction<void(bool)> Completion;
+		TArray<TWeakObjectPtr<AFirstPersonCharacter>> Players;
+		TArray<TWeakObjectPtr<ARoomVolume>> Rooms;
+		TArray<FVector> Destinations;
+		TArray<bool> Crouched;
+		TArray<FGuid> CandidateQueries;
+		int32 NextPlayer = 0;
+		bool bNearbyCandidates = true;
+	};
+	TMap<FGameplayTag, FBarrierClosurePreparation> BarrierClosurePreparations;
+	UPROPERTY(Transient)
+	TMap<FGameplayTag, TObjectPtr<UPlayerRelocationQuery>> BarrierClosureQueries;
+	// 앞 플레이어의 바닥/자세 결과도 두 플레이어를 배치하는 순간까지 보존한다.
+	UPROPERTY(Transient)
+	TMap<FGuid, TObjectPtr<UPlayerRelocationQuery>> BarrierClosureCandidateQueries;
+	bool IsBarrierClosureCurrent(FGameplayTag RoomTag, FGuid Id) const;
+	bool HasBarrierOccupants(FGameplayTag RoomTag) const;
+	void AdvanceBarrierClosure(FGameplayTag RoomTag, FGuid Id);
+	void FinishBarrierClosure(FGameplayTag RoomTag, bool bSafe);
+	bool IsBarrierDestinationSafe(FGameplayTag RoomTag, FGuid Id, int32 PlayerIndex,
+		const FVector& Location, float Radius, float HalfHeight) const;
 	// 합류 시도별 효과만 소유한다. 같은 태그를 쓰는 스킬 무적은 이 문맥에서 제거하지 않는다.
 	struct FForcedJoinProtection
 	{
@@ -415,8 +454,33 @@ private:
 	bool IsPlayerInsideRoom(const AFirstPersonCharacter* Player, const ARoomVolume* Room) const;
 	ARoomVolume* FindPlayerRoomInCombatGroup(const AFirstPersonCharacter* Player, FGameplayTag CombatRoomTag) const;
 	bool CompleteInitialDetectionPreparation(const FRoomCombatPreparationContext& Context,
-		TFunctionRef<bool()> IsJoinCurrent);
-	bool TryStartInitialDetectionForPlayers(FGameplayTag RoomTag, TFunctionRef<bool()> IsRequestCurrent);
+		TFunction<bool()> IsJoinCurrent);
+	bool TryStartInitialDetectionForPlayers(FGameplayTag RoomTag, TFunction<bool()> IsRequestCurrent);
+	// 한 준비 시도의 비동기 수명만 보관한다. 이동/보호/전투 확정은 완료 경로가 순서대로 수행한다.
+	struct FInitialDetectionJoin
+	{
+		FRoomCombatPreparationContext Preparation;
+		TWeakObjectPtr<AFirstPersonCharacter> MovingPlayer;
+		TWeakObjectPtr<AFirstPersonCharacter> Anchor;
+		TWeakObjectPtr<AOutlierPlayerState> PairState;
+		TWeakObjectPtr<ARoomVolume> DestinationRoom;
+		FGameplayTag DestinationRoomTag;
+		FGameplayTag OtherRoomTag;
+		FTransform Reference;
+		TFunction<bool()> IsCurrent;
+		double Deadline = 0;
+		double RealDeadline = 0;
+		FTimerHandle Timeout;
+	};
+	TMap<FGuid, FInitialDetectionJoin> InitialDetectionJoins;
+	UPROPERTY(Transient)
+	TMap<FGuid, TObjectPtr<UPlayerRelocationQuery>> InitialDetectionQueries;
+	bool IsInitialDetectionJoinCurrent(FGuid Id) const;
+	void StartInitialDetectionJoinQuery(FGuid Id, bool bFallback);
+	void CompleteInitialDetectionJoinQuery(FGuid Id, bool bFallback, const FPlayerRelocationResult& Result);
+	void ClearInitialDetectionJoin(FGuid Id);
+	void CancelInitialDetectionJoinsForRoom(FGameplayTag RoomTag);
+	bool IsCombatJoinCapsuleSafe(const ARoomVolume* Room, const FVector& Location, float Radius, float HalfHeight) const;
 	bool HasAlivePreplacedEnemy(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	bool IsSafeJoinDestination(const AFirstPersonCharacter* MovingPlayer,
 		const AFirstPersonCharacter* Anchor, const ARoomVolume* Room,
@@ -426,6 +490,7 @@ private:
 		FVector& OutLocation, FString* OutRejectionSummary = nullptr) const;
 	TArray<TWeakObjectPtr<ARoomCombatBarrier>> RegisteredBarriers;
 	bool CanRunServerGameplay() const;
+	bool CollectCheckpointCleanupRooms(TArray<FRoomCombatTriggerContext>& OutRooms, FString& OutReason) const;
 	bool HasPendingSpawns(FGameplayTag RoomTag) const;
 	bool HasPendingWaveWork(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	bool IsActiveCombatRuntime(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
@@ -500,5 +565,6 @@ private:
 	TSet<FGameplayTag> ReservedCombatRooms;
 	FTimerHandle SpawnRetryTimer;
 	bool bResettingRuntime = false;
+	bool bCheckpointCleanupInProgress = false;
 	bool bRestoredAutomaticStartAllowed = false;
 };

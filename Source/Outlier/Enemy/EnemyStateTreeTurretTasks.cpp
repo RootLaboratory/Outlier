@@ -150,9 +150,9 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::EnterState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
-	AActor* Target = ResolveTrackedTarget(Data.Turret, Data.TargetActor);
+	AActor* Target = Data.Turret ? Data.Turret->GetTrackedTarget() : nullptr;
 	if (!Data.Turret || !Data.Turret->HasAuthority() || !IsValid(Target)
-		|| !IsValid(Data.Turret->GetCurrentWeapon()))
+		|| !Data.Turret->UsesNormalTurretAttackPolicy())
 	{
 		if (AAutoTurret::IsTurretDiagnosticsEnabled())
 		{
@@ -166,10 +166,12 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::EnterState(
 		return EStateTreeRunStatus::Failed;
 	}
 	Data.TargetActor = Target;
+	Data.ActiveTarget = Target;
+	Data.Turret->RefreshCombatAimPoint();
 	Data.LastValidAimLocation = Data.Turret->GetCombatAimPoint(Target);
-	Data.ElapsedTime = 0.0f;
 	Data.Phase = EEnemyTurretBurstTaskPhase::TelegraphAndTracking;
 	Data.bAttackStarted = false;
+	Data.Turret->BeginTargetAttackPreparation(Data.Turret->GetTurretBehavior().TelegraphDuration);
 	Data.Turret->SetAttackPhase(EEnemyAttackPhase::Telegraph);
 	return EStateTreeRunStatus::Running;
 }
@@ -179,38 +181,88 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::Tick(FStateTreeExecutionContext& 
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	AAutoTurret* Turret = Data.Turret;
 	ARangedWeaponBase* Weapon = Turret ? Turret->GetCurrentWeapon() : nullptr;
-	if (!Turret || !Turret->HasAuthority() || !Weapon)
+	if (!Turret || !Turret->HasAuthority() || !Weapon || !Turret->UsesNormalTurretAttackPolicy())
 	{
 		return EStateTreeRunStatus::Failed;
 	}
 
-	const bool bCanUpdateTrackedAim =
-		// 피격 확인은 비커밋 연사 조준보다 우선한다. 레이저 커밋 Task는 별도로 유지한다.
-		!Turret->HasHitResponse() && (
-		Data.Phase == EEnemyTurretBurstTaskPhase::TelegraphAndTracking
-		|| Data.Phase == EEnemyTurretBurstTaskPhase::BurstFiring);
-	if (Turret->HasHitResponse()) return EStateTreeRunStatus::Running;
-	if (bCanUpdateTrackedAim
-		&& ResolveTrackedTarget(Turret, Data.TargetActor) == Data.TargetActor)
+	AActor* Target = Turret->GetTrackedTarget();
+	if (!IsValid(Target))
 	{
-		Data.LastValidAimLocation = Turret->GetCombatAimPoint(Data.TargetActor);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (Data.ActiveTarget.Get() != Target)
+	{
+		// 같은 Task가 유지돼도 이전 대상 버스트를 먼저 닫는다. 시작한 회복은 다시 연장하지 않는다.
+		if (Data.bAttackStarted && Weapon->GetCurrentBurstShotCount() > 0 && !Weapon->IsOnPostBurstCooldown())
+		{
+			Weapon->ForceTargetAttackPostBurstCooldown();
+		}
+		Turret->PauseTargetAttack();
+		Turret->StopFireMontage();
+		Data.ActiveTarget = Target;
+		Data.TargetActor = Target;
+		Data.bAttackStarted = false;
+		Data.Phase = EEnemyTurretBurstTaskPhase::TelegraphAndTracking;
+		Turret->BeginTargetAttackPreparation(Turret->GetTurretBehavior().TelegraphDuration);
+		Turret->SetAttackPhase(EEnemyAttackPhase::Telegraph);
+	}
+	if (Turret->HasTargetAttackAttemptExpired())
+	{
+		// 첫 탄부터의 예외 기한은 피격/사선 보류 중에도 만료된다. 무기 공통 회복으로 한 번만 인계한다.
+		Turret->FinishTargetAttackAttempt();
+		if (Weapon->GetCurrentBurstShotCount() > 0 && !Weapon->IsOnPostBurstCooldown())
+		{
+			Weapon->ForceTargetAttackPostBurstCooldown();
+		}
+		Turret->PauseTargetAttack();
+		Turret->StopFireMontage();
+		Data.bAttackStarted = false;
+		Data.Phase = EEnemyTurretBurstTaskPhase::Cooling;
+		Turret->SetAttackPhase(EEnemyAttackPhase::Recover);
+	}
+	if (Turret->HasHitResponse())
+	{
+		return EStateTreeRunStatus::Running;
+	}
+	const AEnemyAIController* AI = Cast<AEnemyAIController>(Turret->GetController());
+	const bool bDirect = Turret->IsPlayerCurrentlyVisible() && AI && AI->IsTargetDirectlyVisible(Target);
+	if (bDirect)
+	{
+		Turret->RefreshCombatAimPoint();
+		Data.LastValidAimLocation = Turret->GetCombatAimPoint(Target);
 	}
 	Turret->UpdateTurretAimAtLocation(Data.LastValidAimLocation, DeltaTime, true);
+	if (!bDirect && Data.Phase == EEnemyTurretBurstTaskPhase::BurstFiring)
+	{
+		// 추적 유예는 조준 기억만 유지한다. 숨은 대상에게 남은 탄을 발사하지 않는다.
+		if (Weapon->GetCurrentBurstShotCount() > 0 && !Weapon->IsOnPostBurstCooldown())
+		{
+			Weapon->ForceTargetAttackPostBurstCooldown();
+		}
+		Turret->PauseTargetAttack();
+		Turret->StopFireMontage();
+		Data.bAttackStarted = false;
+		Data.Phase = EEnemyTurretBurstTaskPhase::TelegraphAndTracking;
+	}
 
 	if (Data.Phase == EEnemyTurretBurstTaskPhase::TelegraphAndTracking)
 	{
-		Data.ElapsedTime += DeltaTime;
-		if (Data.ElapsedTime < Turret->GetTurretBehavior().TelegraphDuration)
+		// 전조는 Pawn의 대상별 이력에 누적한다. 회전·무기 회복과 병렬이며 숨은 시간은 제외한다.
+		Turret->AdvanceTargetAttackPreparation(DeltaTime);
+		if (!bDirect || !Turret->IsTargetAttackPreparationComplete())
 		{
 			return EStateTreeRunStatus::Running;
 		}
-		if (!Weapon->CanAttack() || !Turret->CanAttackTrackedTarget(Data.TargetActor))
+		// 고정 터렛은 이동 EQS 대신 현재 직접 시야의 사격 대안을 평가한다. 예외도 남은 무기 버스트 이내다.
+		Turret->PrepareTargetAttackAttempt(Weapon->GetTargetBurstRemainingSeconds());
+		if (!Weapon->CanAttack() || !Turret->IsTurretAttackAimReady(Target) || !Turret->CanAttackTrackedTarget(Target))
 		{
 			return EStateTreeRunStatus::Running;
 		}
 		// Fire 몽타주와 총구 그룹 모두 첫 그룹에서 같은 사이클을 시작하도록 애니메이션을 먼저 재생한다.
 		Turret->PlayFireMontage();
-		if (!Turret->StartAttackTarget(Data.TargetActor))
+		if (!Turret->StartAttackTarget(Target))
 		{
 			Turret->StopFireMontage();
 			return EStateTreeRunStatus::Failed;
@@ -222,6 +274,7 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::Tick(FStateTreeExecutionContext& 
 
 	if (Data.Phase == EEnemyTurretBurstTaskPhase::BurstFiring)
 	{
+		Turret->PrepareTargetAttackAttempt(Weapon->GetTargetBurstRemainingSeconds());
 		Turret->UpdateAttackLocation(Data.LastValidAimLocation);
 		if (Weapon->IsAttacking())
 		{
@@ -237,6 +290,8 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::Tick(FStateTreeExecutionContext& 
 		return EStateTreeRunStatus::Running;
 	}
 	Turret->SetAttackPhase(EEnemyAttackPhase::Idle);
+	// 전용 버스트와 기존 회복이 모두 끝난 경계에서만 새 위협을 채택한다.
+	Turret->RefreshTargetTrackingAtSelectionBoundary();
 	return EStateTreeRunStatus::Succeeded;
 }
 
@@ -248,13 +303,21 @@ void FEnemyTurretBurstFireTask::ExitState(
 	{
 		return;
 	}
-	ARangedWeaponBase* Weapon = Data.Turret->GetCurrentWeapon();
-	if (Data.bAttackStarted && Weapon && Weapon->IsAttacking()
-		&& Weapon->GetCurrentBurstShotCount() > 0)
+	if (Data.ActiveTarget.Get() != Data.Turret->GetTrackedTarget())
 	{
-		Weapon->ForcePostBurstCooldown();
+		// 늦게 끝난 이전 대상의 Task는 새 대상의 예외 구간/무기 회복을 정리하지 않는다.
+		return;
 	}
-	Data.Turret->StopCurrentAttack();
+	Data.Turret->FinishTargetAttackAttempt();
+	ARangedWeaponBase* Weapon = Data.Turret->GetCurrentWeapon();
+	if (Data.bAttackStarted && Weapon
+		&& Weapon->GetCurrentBurstShotCount() > 0 && !Weapon->IsOnPostBurstCooldown())
+	{
+		Weapon->ForceTargetAttackPostBurstCooldown();
+	}
+	// Base에서 먼저 pause한 뒤 Exit가 호출돼도 같은 회복을 시작한다. 연사 기한은 남긴다.
+	Data.Turret->PauseTargetAttack();
+	Data.Turret->SetAttackPhase(EEnemyAttackPhase::Idle);
 	Data.Turret->StopFireMontage();
 }
 
@@ -406,6 +469,7 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 		return EStateTreeRunStatus::Running;
 	}
 	Turret->SetAttackPhase(EEnemyAttackPhase::Idle);
+	Turret->RefreshTargetTrackingAtSelectionBoundary();
 	if (AAutoTurret::IsTurretDiagnosticsEnabled())
 	{
 		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Laser] CycleComplete Turret=%s Weapon=%s"), *GetNameSafe(Turret), *GetNameSafe(Weapon));

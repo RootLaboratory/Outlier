@@ -1,4 +1,6 @@
 #include "OutlierGameMode.h"
+#include "OutlierGameInstance.h"
+#include "Network/OutlierGenerationNetworkProbe.h"
 #include "Outlier.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
@@ -9,6 +11,7 @@
 #include "Save/OutlierCheckpoint.h"
 #include "Save/OutlierCheckpointSnapshot.h"
 #include "Save/PresetPlayerStart.h"
+#include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
 #include "Upgrade/PresetNodeProvideRow.h"
 #include "Upgrade/OutlierPresetStageIds.h"
 #include "Engine/DataTable.h"
@@ -582,15 +585,9 @@ bool AOutlierGameMode::StartCheckpointRestart(
 	return ReloadArenaAndRespawnPair(
 		ShooterPlayerState, PartnerPlayerState,
 		Snapshot.ShooterSpawnTransform, Snapshot.PartnerSpawnTransform,
-		/*bRestoreCheckpointSnapshot=*/true, INDEX_NONE,
-		[this, SaveSubsystem, ShooterPlayerState, PartnerPlayerState, Snapshot,
-			BeforeReload = MoveTemp(BeforeReload)]()
+		/*bRestoreCheckpointSnapshot=*/true, INDEX_NONE, MoveTemp(BeforeReload),
+		[this, SaveSubsystem, ShooterPlayerState, PartnerPlayerState, Snapshot]()
 		{
-			if (BeforeReload && !BeforeReload())
-			{
-				return false;
-			}
-
 			if (UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem =
 				GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
 			{
@@ -641,7 +638,6 @@ bool AOutlierGameMode::StartCheckpointRestart(
 			PartnerPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
 
 			ResetRuntimeCombatStateForRespawn();
-			return true;
 		});
 }
 
@@ -695,6 +691,11 @@ void AOutlierGameMode::InitGameState()
 
 void AOutlierGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (ArenaRecoveryTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(ArenaRecoveryTickerHandle);
+		ArenaRecoveryTickerHandle.Reset();
+	}
 	GameOverWorldPause.Reset(GetWorld());
 	ClearSettingsWorldPause();
 	CheckpointRestartVote.Reset();
@@ -840,7 +841,9 @@ bool AOutlierGameMode::HandleArenaWorkerPairSetupTick(float DeltaTime)
 
 bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint, bool bRefreshSnapshot)
 {
-	if (!HasAuthority() || !Controller || !Checkpoint || Checkpoint->GetCheckpointId().IsNone())
+	if (!HasAuthority() || bCheckpointCommitInProgress || !IsValid(Controller) || !IsValid(Checkpoint)
+		|| Checkpoint->GetWorld() != GetWorld() || Checkpoint->GetCheckpointId().IsNone()
+		|| !Checkpoint->CanCaptureSnapshot(Controller, bRefreshSnapshot))
 	{
 		return false;
 	}
@@ -857,7 +860,8 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 	AOutlierPlayerState* PartnerPS = TriggeringPS->IsPartnerPlayer()
 		? TriggeringPS
 		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
-	if (!ShooterPS)
+	if (!ShooterPS || !PartnerPS || PairId == INDEX_NONE || ShooterPS->GetPairId() != PairId
+		|| PartnerPS->GetPairId() != PairId)
 	{
 		return false;
 	}
@@ -870,28 +874,13 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 			*Checkpoint->GetCheckpointId().ToString());
 		return false;
 	}
+	TGuardValue<bool> CommitGuard(bCheckpointCommitInProgress, true);
 	const UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>()
 		: nullptr;
-	if (EnemyRoomSubsystem && EnemyRoomSubsystem->HasActiveCombat())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[Checkpoint] Commit rejected while combat is active Id=%s"),
-			*Checkpoint->GetCheckpointId().ToString());
-		return false;
-	}
-	const URoomCombatSubsystem* RoomCombatSubsystem = GetWorld()
+	URoomCombatSubsystem* RoomCombatSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
 		: nullptr;
-	if (RoomCombatSubsystem
-		&& RoomCombatSubsystem->HasActiveCombatReservation())
-	{
-		// 생존 적이 잠시 0명이더라도 다음 Wave를 기다리는 중이면 체크포인트를 확정하지 않는다.
-		UE_LOG(LogTemp, Warning,
-			TEXT("[Checkpoint] Commit rejected while a Room Wave is active Id=%s"),
-			*Checkpoint->GetCheckpointId().ToString());
-		return false;
-	}
 
 	UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
@@ -906,6 +895,30 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 			TEXT("[Checkpoint] Commit rejected because stable Id validation failed"));
 		return false;
 	}
+	const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	const int32 Generation = Arena ? static_cast<int32>(Arena->GetGameplayGeneration()) : INDEX_NONE;
+	auto CanCapture = [&]()
+	{
+		AShooterCharacter* Shooter = ShooterPS->GetShooterCharacter();
+		APartnerCharacter* Partner = PartnerPS->GetPartnerCharacter();
+		AController* ShooterController = GetControllerFromPlayerState(ShooterPS);
+		AController* PartnerController = GetControllerFromPlayerState(PartnerPS);
+		return IsPairGameplayReady() && PairId == ActiveMatchPairId && IsValid(Checkpoint)
+			&& Checkpoint->CanCaptureSnapshot(Controller, bRefreshSnapshot)
+			&& SaveSubsystem->HasValidStableIds() && Arena
+			&& static_cast<int32>(Arena->GetGameplayGeneration()) == Generation
+			&& IsValid(Shooter) && !Shooter->IsDead() && IsValid(Partner)
+			&& ShooterController && ShooterController->GetPawn() == Shooter
+			&& PartnerController && PartnerController->GetPawn() == Partner;
+	};
+	FString CleanupReason;
+	if (!CanCapture() || !RoomCombatSubsystem
+		|| !RoomCombatSubsystem->CanFinishCombatForCheckpoint(CleanupReason))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Save/cleanup preflight rejected Id=%s Reason=%s"),
+			*Checkpoint->GetCheckpointId().ToString(), *CleanupReason);
+		return false;
+	}
 
 	FOutlierCheckpointSnapshot Snapshot;
 	if (!BuildPairCheckpointSnapshot(
@@ -915,13 +928,27 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 		false,
 		Checkpoint->GetSpawnTransform(),
 		Checkpoint->GetPartnerSpawnTransform(),
-		Snapshot))
+		Snapshot) || !SaveSubsystem->CanCommitDurableCheckpointSnapshot(Snapshot, bRefreshSnapshot))
 	{
+		return false;
+	}
+	// 캡처 가능 여부까지 확인한 다음 제거한다. 완료 알림이 Reset/Reload하면 저장하지 않는다.
+	if (!RoomCombatSubsystem->FinishCombatForCheckpoint() || !CanCapture()
+		|| RoomCombatSubsystem->HasActiveCombatReservation()
+		|| (EnemyRoomSubsystem && EnemyRoomSubsystem->HasActiveCombat())
+		|| !BuildPairCheckpointSnapshot(ShooterPS, PartnerPS, Checkpoint->GetCheckpointId(), false,
+			Checkpoint->GetSpawnTransform(), Checkpoint->GetPartnerSpawnTransform(), Snapshot))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Cleanup/final capture interrupted; previous save retained"));
 		return false;
 	}
 	Snapshot.SaveReason = EOutlierCheckpointSaveReason::Trigger;
 	Snapshot.RoomTag = Checkpoint->GetCombatRoomTag();
 	Snapshot.NextPhaseIndex = Snapshot.RoomTag.IsValid() ? 0 : INDEX_NONE;
+	if (SaveSubsystem->HasWorldProgress(EOutlierWorldProgressType::CompletedEncounter, Snapshot.RoomTag.GetTagName()))
+	{
+		Snapshot.NextPhaseIndex = INDEX_NONE;
+	}
 	// 업그레이드 추가 저장도 이미 완료한 차수를 보존한다. 입구 저장이라고 Phase0으로 되돌리지 않는다.
 	if (const FOutlierRoomPhaseProgress* Progress = Snapshot.RoomPhaseProgress.Find(Snapshot.RoomTag))
 	{
@@ -946,6 +973,12 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 	FGameplayTag RoomTag, int32 NextPhaseIndex,
 	bool bEncounterCleared, int32 GameplayGeneration)
 {
+	const URoomCombatSubsystem* CheckpointCombat = GetWorld()
+		? GetWorld()->GetSubsystem<URoomCombatSubsystem>() : nullptr;
+	if (bCheckpointCommitInProgress || (CheckpointCombat && CheckpointCombat->IsCheckpointCleanupInProgress()))
+	{
+		return false;
+	}
 	UWorld* World = GetWorld();
 	UOutlierSaveSubSystem* Saves = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
@@ -1196,7 +1229,7 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 	AOutlierPlayerState* TriggeringPS = Controller->GetPlayerState<AOutlierPlayerState>();
 	if (!TriggeringPS)
 	{
-		RespawnPairAtCheckpoint(Controller);
+		FailGameOverTransition();
 		return;
 	}
 
@@ -1231,9 +1264,7 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 
 	if (Controllers.IsEmpty())
 	{
-		GameOverWorldPause.Reset(GetWorld());
-		GameOverActivePairs.Remove(PairId);
-		RespawnPairAtCheckpoint(Controller);
+		if (!StartGameOverCheckpointFallback(Controller)) FailGameOverTransition();
 		return;
 	}
 
@@ -1285,7 +1316,7 @@ void AOutlierGameMode::OnClientGameOverUnavailable(
 	// 한쪽의 UI 실패 통보만으로 상대 동의를 우회하지 않는다. 양쪽 모두 UI가 없을 때만 폴백한다.
 	if (GameOverWorldPause.AreAllUIsUnavailable())
 	{
-		if (!BeginGameOverTransition() || !RespawnPairAtCheckpoint(Controller))
+		if (!StartGameOverCheckpointFallback(Controller))
 		{
 			FailGameOverTransition();
 		}
@@ -1294,6 +1325,22 @@ void AOutlierGameMode::OnClientGameOverUnavailable(
 	{
 		FailGameOverTransition();
 	}
+}
+
+bool AOutlierGameMode::StartGameOverCheckpointFallback(AController* Controller)
+{
+	// UI가 없어도 정상 Continue의 스냅샷 사전 검증과 세대 전환을 그대로 사용한다.
+	// 저장/소유권이 잘못된 경우 Pawn만 부활시키거나 새 게임으로 대체하지 않는다.
+	bCheckpointRestartInProgress = true;
+	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Restarting;
+	if (StartCheckpointRestart(Cast<AFirstPersonPlayerController>(Controller), [this]()
+		{ return !GameOverWorldPause.IsActive() || BeginGameOverTransition(); }))
+	{
+		return true;
+	}
+	bCheckpointRestartInProgress = false;
+	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Rejected;
+	return false;
 }
 
 void AOutlierGameMode::OnClientGameOverPendingUnavailable(
@@ -1627,15 +1674,21 @@ void AOutlierGameMode::FinishGameOverFlow()
 
 void AOutlierGameMode::FailGameOverTransition()
 {
+	if (bArenaRecoveryEnding) return;
+	bArenaRecoveryEnding = true;
 	// Pawn 제거 후 실패나 한쪽 UI 부재는 선택 화면만 복구해도 정상 합의를 할 수 없다. 세션을 종료한다.
 	UE_LOG(LogTemp, Error, TEXT("[GameOver] Unrecoverable arena state; leaving arena"));
-	for (const TWeakObjectPtr<APlayerController>& Target : GameOverWorldPause.GetControllers())
-	{
-		if (AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(Target.Get()))
-		{
-			Controller->ClientPrepareForArenaExit();
-		}
-	}
+	ClearArenaGameplayReloadDelegates();
+	ClearPendingArenaReloadPawns();
+	PendingGameplayUnloadPlayers.Reset();
+	ReadyGameplayUnloadPlayers.Reset();
+	ReadyGameplayPossessPlayers.Reset();
+	bArenaReloadInProgress = false;
+	bServerArenaReloadReady = false;
+	bResumeRoomPhasesAfterReload = false;
+	ArenaReconnectDeadline = 0.0;
+	ClearListenReconnectPawn();
+	FinishCheckpointRestart();
 	FinishGameOverFlow();
 	ClearSettingsWorldPause();
 	if (IsArenaWorkerProcess())
@@ -1645,6 +1698,18 @@ void AOutlierGameMode::FailGameOverTransition()
 	else
 	{
 		bListenHostReturnRequested = true;
+		if (UOutlierGameInstance* GI = GetGameInstance<UOutlierGameInstance>())
+		{
+			GI->SetArenaRecoveryFailureReason(TEXT("매치 복구에 실패하여 타이틀로 돌아갑니다."));
+		}
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (AFirstPersonPlayerController* PC = Cast<AFirstPersonPlayerController>(It->Get()))
+			{
+				if (PC->IsLocalController()) PC->ClientPrepareForArenaExit();
+				else PC->ClientArenaRecoveryFailed(false, TEXT("매치 복구에 실패하여 타이틀로 돌아갑니다."));
+			}
+		}
 		ReturnToMainMenuHost();
 	}
 }
@@ -2418,14 +2483,18 @@ void AOutlierGameMode::PossessMatchedPawn(
 	{
 		// Possess 전이라 클라는 아직 자기 Pawn 위치를 모른다. 서버가 이미 계산해둔
 		// 실제 스폰 위치를 같이 넘겨서, 클라가 레벨 액터를 추측해서 찾지 않게 한다.
-		FirstPersonController->ClientArenaLoad(SpawnLocation, 0);
+		FirstPersonController->ClientArenaLoad(SpawnLocation, 0,
+			GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration());
 	}
 }
 
 
 
-void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 GameplayGeneration)
+void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 GameplayGeneration, uint32 ReconnectRequestId)
 {
+#if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
+	if (OutlierGenerationTesting::ShouldHoldAck(PC, false)) return;
+#endif
 	if (!PC)
 	{
 		UE_LOG(LogTemp, Warning,
@@ -2437,6 +2506,13 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 		UE_LOG(LogTemp, Warning,
 			TEXT("[ArenaReload][Server] RejectReadyACK PC=%s Gen=%u Expected=%u"),
 			*GetNameSafe(PC), GameplayGeneration, PendingGameplayGeneration);
+		return;
+	}
+	const uint32 ExpectedRequest = PendingReconnectRequestIds.FindRef(PC);
+	if (ExpectedRequest != ReconnectRequestId)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[ArenaReload] Reject ready request PC=%s Request=%u Expected=%u"),
+			*GetNameSafe(PC), ReconnectRequestId, ExpectedRequest);
 		return;
 	}
 	if (!bArenaReloadInProgress && GameplayGeneration != 0)
@@ -2498,12 +2574,14 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 			ArenaReloadStartedAt > 0.0 ? (Now - ArenaReloadStartedAt) * 1000.0 : -1.0,
 			bServerArenaReloadReady ? 1 : 0); */
 	}
-	if (bArenaReloadInProgress && !bServerArenaReloadReady)
+	if (bArenaReloadInProgress && !bDispatchingArenaPossessions)
 	{
+		if (!ReadyGameplayPossessPlayers.Contains(PC)) MarkArenaReloadProgress();
 		ReadyGameplayPossessPlayers.Add(PC);
 		UE_LOG(LogTemp, Display,
 			TEXT("[ArenaReload][Server] HoldPossessUntilServerReady PC=%s Gen=%u"),
 			*GetNameSafe(PC), GameplayGeneration);
+		TryCompleteArenaPossessions();
 		return;
 	}
 	ReadyGameplayPossessPlayers.Remove(PC);
@@ -2524,6 +2602,12 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 	PendingReconnectRequestIds.Remove(PC);
 
 	PC->Possess(Pawn);
+	MarkArenaReloadProgress();
+	if (Pawn == ListenGuestReconnectPawn.Get())
+	{
+		bListenGuestDisconnected = false;
+		ListenGuestReconnectPawn = nullptr;
+	}
 	TryStartInitialSaveRestore();
 	if (bArenaReloadInProgress)
 	{
@@ -2538,6 +2622,9 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 
 void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint32 GameplayGeneration)
 {
+#if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
+	if (OutlierGenerationTesting::ShouldHoldAck(PC, true)) return;
+#endif
 	// 클라이언트의 서브레벨 언로드/옛 Actor GC 완료를 세대별로 집계한다.
 	if (!bArenaReloadInProgress || !PC || PC->IsLocalController()
 		|| GameplayGeneration == 0 || GameplayGeneration != PendingGameplayGeneration
@@ -2568,6 +2655,7 @@ void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint
 		return;
 	}
 	ReadyGameplayUnloadPlayers.Add(PC);
+	MarkArenaReloadProgress();
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReload][Server] UnloadACK PC=%s Gen=%u ACK=%d/%d ServerUnloaded=%d TotalMs=%.1f"),
 		*GetNameSafe(PC), GameplayGeneration, ReadyGameplayUnloadPlayers.Num(),
@@ -2929,6 +3017,42 @@ void AOutlierGameMode::HandleStartingNewPlayer_Implementation(APlayerController*
 	Super::HandleStartingNewPlayer_Implementation(NewPlayer);
 }
 
+bool AOutlierGameMode::PreserveGameplayPawnForReconnect(APlayerController* PlayerController)
+{
+	// 리로드 중에는 이전 세대 Pawn을 보존하지 않는다. 새 Pawn은 Logout에서
+	// PendingPossessions의 항목을 옮기므로 두 경로가 서로 덮어쓰지 않는다.
+	if (!HasAuthority() || bArenaReloadInProgress || !PlayerController) return false;
+	const AOutlierPlayerState* State = PlayerController->GetPlayerState<AOutlierPlayerState>();
+	if (!State || !State->GetTemporaryPlayerId().IsValid()) return false;
+	const FGuid PlayerId = State->GetTemporaryPlayerId();
+	const bool bWorkerReconnect = IsArenaWorkerProcess() && bArenaWorkerPairStarted
+		&& !bArenaWorkerMatchCompleting && ArenaWorkerAdmission.MatchId.IsValid()
+		&& (PlayerController == ArenaWorkerShooterController.Get()
+			|| PlayerController == ArenaWorkerPartnerController.Get());
+	const bool bListenReconnect = GetNetMode() == NM_ListenServer && !bListenHostReturnRequested
+		&& !PlayerController->IsLocalController() && ListenGuestReconnectToken.IsValid()
+		&& PlayerId == ListenGuestPlayerId;
+	if (!bWorkerReconnect && !bListenReconnect) return false;
+
+	// 빙의 중인 적은 AI로 돌려보내고 원래 Partner를 보존한다.
+	if (APartnerPlayerController* Partner = Cast<APartnerPlayerController>(PlayerController);
+		Partner && Cast<AEnemyBase>(Partner->GetPawn()))
+	{
+		Partner->ReleaseEnemyPossessionForDisconnect();
+	}
+	AFirstPersonCharacter* Pawn = Cast<AFirstPersonCharacter>(PlayerController->GetPawn());
+	if (!IsValid(Pawn) || Pawn->IsActorBeingDestroyed()) return false;
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(Pawn))
+	{
+		Shooter->ClearInputIntent();
+	}
+	ArenaWorkerReconnectDamageStates.Add(PlayerId, Pawn->CanBeDamaged());
+	Pawn->SetCanBeDamaged(false);
+	PlayerController->UnPossess();
+	if (bWorkerReconnect) ArenaWorkerReconnectPawns.Add(PlayerId, Pawn);
+	else ListenGuestReconnectPawn = Pawn;
+	return true;
+}
 void AOutlierGameMode::Logout(AController* Exiting)
 {
 	APlayerController* ExitingPlayer = Cast<APlayerController>(Exiting);
@@ -3023,26 +3147,7 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		}
 		else if (!bArenaReloadInProgress)
 		{
-			// 재접속은 사망/체크포인트 재시작이 아니다. Pawn을 Controller에서 분리해
-			// 현재 체력·탄약·장비를 보존하고, 새 Controller의 스트리밍 ACK 후 다시 Possess한다.
-			if (APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(ExitingPlayer))
-			{
-				if (Cast<AEnemyBase>(PartnerController->GetPawn()))
-				{
-					PartnerController->ReleaseEnemyPossessionForDisconnect();
-				}
-			}
-			if (AFirstPersonCharacter* Pawn = Cast<AFirstPersonCharacter>(ExitingPlayer->GetPawn()))
-			{
-				if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(Pawn))
-				{
-					Shooter->ClearInputIntent();
-				}
-				ArenaWorkerReconnectDamageStates.Add(ExitingArenaPlayerId, Pawn->CanBeDamaged());
-				Pawn->SetCanBeDamaged(false);
-				ExitingPlayer->UnPossess();
-				ArenaWorkerReconnectPawns.Add(ExitingArenaPlayerId, Pawn);
-			}
+			PreserveGameplayPawnForReconnect(ExitingPlayer);
 		}
 		PendingLocalPossessions.Remove(ExitingPlayer);
 		// ClientUnloadRequestedAt.Remove(ExitingPlayer);
@@ -3078,27 +3183,12 @@ void AOutlierGameMode::Logout(AController* Exiting)
 			}
 			PendingPossessions.Remove(ExitingPlayer);
 		}
-		else if (APawn* Pawn = ExitingPlayer->GetPawn())
+		else if (!bArenaReloadInProgress)
 		{
-			if (APartnerPlayerController* Partner = Cast<APartnerPlayerController>(ExitingPlayer);
-				Partner && Cast<AEnemyBase>(Pawn))
-			{
-				Partner->ReleaseEnemyPossessionForDisconnect();
-				Pawn = Partner->GetPawn();
-			}
-			if (AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(Pawn))
-			{
-				if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(Character))
-				{
-					Shooter->ClearInputIntent();
-				}
-				ArenaWorkerReconnectDamageStates.Add(ListenGuestPlayerId, Character->CanBeDamaged());
-				Character->SetCanBeDamaged(false);
-				ExitingPlayer->UnPossess();
-				ListenGuestReconnectPawn = Character;
-			}
+			PreserveGameplayPawnForReconnect(ExitingPlayer);
 		}
 		bListenGuestDisconnected = IsValid(ListenGuestReconnectPawn.Get());
+		if (bListenGuestDisconnected) ScheduleArenaWorkerReconnectTimeout();
 		// 이전 연결의 unload/possess ACK는 새 연결을 대신할 수 없다.
 		PendingGameplayUnloadPlayers.Remove(ExitingPlayer);
 		ReadyGameplayUnloadPlayers.Remove(ExitingPlayer);
@@ -3435,9 +3525,11 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	AOutlierPlayerState* PartnerPlayerState,
 	const FTransform& ShooterSpawn,
 	const FTransform& PartnerSpawn,
-	bool bRestoreCheckpointSnapshot, int32 PresetNodeCount, TFunction<bool()> BeforeRespawn)
+	bool bRestoreCheckpointSnapshot, int32 PresetNodeCount, TFunction<bool()> BeforeRespawn,
+	TFunction<void()> ApplyRestore)
 {
-	if (!HasAuthority() || !ShooterPlayerState || !ShooterClass || !PartnerClass)
+	if (!HasAuthority() || !ShooterPlayerState || !ShooterClass || !PartnerClass
+		|| ShooterClass->HasAnyClassFlags(CLASS_Abstract) || PartnerClass->HasAnyClassFlags(CLASS_Abstract))
 	{
 		return false;
 	}
@@ -3467,14 +3559,20 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	for (const AController* Controller : { InitialShooterController, InitialPartnerController })
 	{
 		const APlayerController* PlayerController = Cast<APlayerController>(Controller);
-		if (PlayerController && !PlayerController->IsLocalController()
-			&& !PlayerController->IsA<AFirstPersonPlayerController>())
+		if (!PlayerController || (!PlayerController->IsLocalController()
+			&& !PlayerController->IsA<AFirstPersonPlayerController>()))
 		{
 			UE_LOG(LogTemp, Error,
 				TEXT("[ArenaReload][Server] Reject remote PC without reload RPC: %s"),
 				*GetNameSafe(PlayerController));
 			return false;
 		}
+	}
+	// 안내 큐의 완료/취소 콜백에서 Preset을 중첩 시작하지 않는다. 사전 거절은 기존 안내를 보존한다.
+	if (bApplyPresetLoadout)
+	{
+		AOutlierWorldGuideManager* Guides = AOutlierWorldGuideManager::Find(GetWorld());
+		if (Guides && !Guides->CanClearGuides()) return false;
 	}
 	const uint32 ReloadGeneration = ArenaSubsystem->ReserveGameplayGeneration();
 	if (ReloadGeneration == 0)
@@ -3484,7 +3582,57 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	}
 	if (BeforeRespawn && !BeforeRespawn())
 	{
+		ArenaSubsystem->CancelGameplayGeneration(ReloadGeneration);
 		return false;
+	}
+	if (GameOverWorldPause.IsActive() && !GameOverWorldPause.IsTransitioning()
+		&& !BeginGameOverTransition())
+	{
+		ArenaSubsystem->CancelGameplayGeneration(ReloadGeneration);
+		return false;
+	}
+
+	// 1) 사전 거절은 여기까지다. 확정부터는 동일 세대의 실패 경로만 사용한다.
+	PendingGameplayGeneration = ReloadGeneration;
+	bArenaReloadInProgress = true;
+	bClearPresetGuidesAfterReload = bApplyPresetLoadout;
+	bPresetGuideCleanupDeferred = false;
+	ArenaReloadStartedAt = FPlatformTime::Seconds();
+	ArenaReloadLastProgressAt = ArenaReloadStartedAt;
+	ArenaReloadLastRecoveryAt = ArenaReloadStartedAt;
+	ArenaReloadRecoveryAttempts = 0;
+	LastObservedReloadPhase = EOutlierGameplayReloadPhase::WaitingForUnload;
+	EnsureArenaRecoveryWatchdog();
+	if (!GameplayReadyHandle.IsValid())
+	{
+		GameplayReadyHandle = ArenaSubsystem->OnArenaGameplayReady.AddUObject(
+			this, &AOutlierGameMode::HandleServerArenaGameplayReady);
+		ArenaReloadStalledHandle = ArenaSubsystem->OnArenaGameplayReloadStalled.AddUObject(
+			this, &AOutlierGameMode::HandleArenaGameplayReloadStalled);
+		ArenaReloadResumedHandle = ArenaSubsystem->OnArenaGameplayReloadResumed.AddUObject(
+			this, &AOutlierGameMode::HandleArenaGameplayReloadResumed);
+		ArenaReloadFailedHandle = ArenaSubsystem->OnArenaGameplayReloadFailed.AddUObject(
+			this, &AOutlierGameMode::HandleArenaGameplayReloadFailed);
+	}
+	if (!ArenaSubsystem->CommitGameplayGeneration(ReloadGeneration))
+	{
+		ArenaSubsystem->CancelGameplayGeneration(ReloadGeneration);
+		if (bArenaReloadInProgress)
+		{
+			HandleArenaGameplayReloadFailed(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
+		}
+		return true;
+	}
+	// 이전 수명을 닫은 뒤 저장 상태를 적용한다. 새 Pawn/배치 Actor는 복원된 값만 읽는다.
+	if (ApplyRestore)
+	{
+		ApplyRestore();
+	}
+	// 복원 중 delegate가 현재 리로드를 종료했다면 새 페어 생성으로 이어가지 않는다.
+	if (!bArenaReloadInProgress || PendingGameplayGeneration != ReloadGeneration
+		|| ArenaSubsystem->GetGameplayReloadPhase() != EOutlierGameplayReloadPhase::WaitingForUnload)
+	{
+		return true;
 	}
 	if (bApplyPresetLoadout)
 	{
@@ -3495,11 +3643,6 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		{
 			PartnerPlayerState->SetAcquiredSuit(true);
 		}
-	}
-	if (GameOverWorldPause.IsActive() && !GameOverWorldPause.IsTransitioning()
-		&& !BeginGameOverTransition())
-	{
-		return false;
 	}
 	ClearSettingsWorldPause();
 	// 모든 사전 검증을 통과한 뒤에만 프리셋 진행을 소비한다. 복구 가능한 실패는 기존 노드를 유지한다.
@@ -3579,7 +3722,6 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		// 기존 Pawn을 정리한 뒤의 실패는 투표 거절로 되돌릴 수 없다.
 		// 이 Generation을 실패로 고정하고 환경별 fail-closed 종료 경로로 보낸다.
 		ArenaSubsystem->FailGameplayReload(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
-		HandleArenaGameplayReloadFailed(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
 		return true;
 	}
 
@@ -3640,7 +3782,6 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		NewShooter->Destroy();
 		NewPartner->Destroy();
 		ArenaSubsystem->FailGameplayReload(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
-		HandleArenaGameplayReloadFailed(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
 		return true;
 	}
 	if (bRestoreCheckpointSnapshot)
@@ -3671,7 +3812,6 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	AController* ShooterController = GetControllerFromPlayerState(ShooterPlayerState);
 	AController* PartnerController = GetControllerFromPlayerState(PartnerPlayerState);
 
-	ArenaReloadStartedAt = FPlatformTime::Seconds();
 	bServerArenaReloadReady = false;
 	PendingGameplayUnloadPlayers.Reset();
 	ReadyGameplayUnloadPlayers.Reset();
@@ -3730,7 +3870,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		}
 	}
 
-	// 5) 로컬 possess 대기 바인딩 + 서버측 리로드 시작
+	// 5) PS 복원 상태를 동기화하고 서버측 스트리밍 리로드를 시작한다.
 	// 이어하기는 복원된 PS, Preset은 유지된 PS를 주입한다. 새 배치 슈트는 저장 스냅샷을 읽지 않는다.
 	if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr)
@@ -3738,29 +3878,12 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		SaveSubsystem->SyncCurrentSuitState(ShooterPlayerState);
 		SaveSubsystem->SyncCurrentLoadoutState(ShooterPlayerState);
 	}
-	bArenaReloadInProgress = true;
-	if (!GameplayReadyHandle.IsValid())
-	{
-		GameplayReadyHandle = ArenaSubsystem->OnArenaGameplayReady.AddUObject(
-			this, &AOutlierGameMode::HandleServerArenaGameplayReady);
-		ArenaReloadStalledHandle = ArenaSubsystem->OnArenaGameplayReloadStalled.AddUObject(
-			this, &AOutlierGameMode::HandleArenaGameplayReloadStalled);
-		ArenaReloadResumedHandle = ArenaSubsystem->OnArenaGameplayReloadResumed.AddUObject(
-			this, &AOutlierGameMode::HandleArenaGameplayReloadResumed);
-		ArenaReloadFailedHandle = ArenaSubsystem->OnArenaGameplayReloadFailed.AddUObject(
-			this, &AOutlierGameMode::HandleArenaGameplayReloadFailed);
-	}
-
 	if (!ArenaSubsystem->ReloadGameplayLevels(
 		ReloadGeneration, PendingGameplayUnloadPlayers.Num() > 0))
 	{
 		UE_LOG(LogTemp, Error, TEXT("[ReloadArenaAndRespawnPair] Failed to start Generation=%u"), ReloadGeneration);
-		if (ArenaSubsystem->GetGameplayReloadPhase() != EOutlierGameplayReloadPhase::Failed)
-		{
-			HandleArenaGameplayReloadFailed(
-				ReloadGeneration,
-				EOutlierGameplayReloadFailure::InvalidRuntime);
-		}
+		ArenaSubsystem->FailGameplayReload(
+			ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
 	}
 
 	return true;
@@ -4091,7 +4214,8 @@ void AOutlierGameMode::TryResumeListenGuestAfterReconnect(APlayerController* Rec
 		{
 			const uint32 RequestId = ++NextReconnectRequestId;
 			PendingReconnectRequestIds.Add(ReconnectedPlayer, RequestId);
-			GuestController->ClientArenaLoad(GuestPawn->GetActorLocation(), RequestId);
+			GuestController->ClientArenaLoad(GuestPawn->GetActorLocation(), RequestId,
+				GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration());
 		}
 	}
 	UE_LOG(LogTemp, Display, TEXT("[ListenReconnect] Guest accepted; waiting for Room streaming ACK"));
@@ -4114,8 +4238,7 @@ void AOutlierGameMode::ClearListenReconnectPawn()
 void AOutlierGameMode::ScheduleArenaWorkerReconnectTimeout()
 {
 	// 두 번째 이탈이나 반복 통보로 유예를 연장하지 않는다. 기존 타이머가 있으면 최초 마감을 유지한다.
-	if (bArenaWorkerMatchCompleting
-		|| GetWorldTimerManager().IsTimerActive(ArenaWorkerReconnectTimerHandle))
+	if (bArenaWorkerMatchCompleting || bArenaRecoveryEnding || ArenaReconnectDeadline > 0.0)
 	{
 		return;
 	}
@@ -4124,12 +4247,8 @@ void AOutlierGameMode::ScheduleArenaWorkerReconnectTimeout()
 	const float GraceSeconds = Settings
 		? FMath::Max(Settings->ArenaWorkerReconnectGraceSeconds, 1.0f)
 		: 30.0f;
-	GetWorldTimerManager().SetTimer(
-		ArenaWorkerReconnectTimerHandle,
-		this,
-		&AOutlierGameMode::HandleArenaWorkerReconnectTimeout,
-		GraceSeconds,
-		false);
+	ArenaReconnectDeadline = FPlatformTime::Seconds() + GraceSeconds;
+	EnsureArenaRecoveryWatchdog();
 	UE_LOG(LogTemp, Warning,
 		TEXT("[ArenaWorker] Player disconnected; waiting %.1f seconds for reconnect Match=%s"),
 		GraceSeconds,
@@ -4255,7 +4374,8 @@ bool AOutlierGameMode::ValidateReconnectPawn(
 			{
 				const uint32 RequestId = ++NextReconnectRequestId;
 				PendingReconnectRequestIds.Add(PlayerController, RequestId);
-				FirstPersonController->ClientArenaLoad(Player->GetActorLocation(), RequestId);
+				FirstPersonController->ClientArenaLoad(Player->GetActorLocation(), RequestId,
+					GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration());
 			}
 			return false;
 		}
@@ -4288,7 +4408,8 @@ bool AOutlierGameMode::ValidateReconnectPawn(
 			{
 				const uint32 RequestId = ++NextReconnectRequestId;
 				PendingReconnectRequestIds.Add(PlayerController, RequestId);
-				FirstPersonController->ClientArenaLoad(Player->GetActorLocation(), RequestId);
+				FirstPersonController->ClientArenaLoad(Player->GetActorLocation(), RequestId,
+					GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration());
 			}
 			return false;
 		}
@@ -4447,13 +4568,8 @@ void AOutlierGameMode::TryResumeArenaWorkerAfterReconnect(APlayerController* Rec
 					SpawnLocation);
 			}
 		}
-		if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
-			? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-			: nullptr;
-			ArenaSubsystem && ArenaSubsystem->IsGameplayReloadStalled(PendingGameplayGeneration))
-		{
-			ArenaSubsystem->RetryStalledGameplayReload(PendingGameplayGeneration);
-		}
+		// 재접속 자체는 복구 횟수/정체 시각을 초기화하지 않는다. 페어 감시자가 같은 작업을 계속 소유한다.
+		EnsureArenaRecoveryWatchdog();
 	}
 	else
 	{
@@ -4504,7 +4620,8 @@ void AOutlierGameMode::TryResumeArenaWorkerAfterReconnect(APlayerController* Rec
 			{
 				const uint32 RequestId = ++NextReconnectRequestId;
 				PendingReconnectRequestIds.Add(PlayerController, RequestId);
-				FirstPersonController->ClientArenaLoad(SpawnLocation, RequestId);
+				FirstPersonController->ClientArenaLoad(SpawnLocation, RequestId,
+					GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration());
 			}
 		}
 	}
@@ -4564,12 +4681,128 @@ void AOutlierGameMode::HandleArenaWorkerAutoComplete()
 	}
 }
 
+void AOutlierGameMode::EnsureArenaRecoveryWatchdog()
+{
+	if (!ArenaRecoveryTickerHandle.IsValid() && !bArenaRecoveryEnding)
+	{
+		// 월드 Pause/TimeDilation과 무관하게 복구 작업이 살아 있는 동안만 감시한다.
+		ArenaRecoveryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateUObject(this, &AOutlierGameMode::TickArenaRecovery), 0.1f);
+	}
+}
+
+void AOutlierGameMode::MarkArenaReloadProgress()
+{
+	if (bArenaReloadInProgress) ArenaReloadLastProgressAt = FPlatformTime::Seconds();
+}
+
+bool AOutlierGameMode::TickArenaRecovery(float DeltaTime)
+{
+	(void)DeltaTime;
+	if (bArenaRecoveryEnding || bArenaWorkerMatchCompleting || bListenHostReturnRequested)
+	{
+		ArenaRecoveryTickerHandle.Reset();
+		return false;
+	}
+	const double Now = FPlatformTime::Seconds();
+	const bool bReconnectPending = bListenGuestDisconnected
+		|| !ArenaWorkerDisconnectedPlayerIds.IsEmpty() || !ArenaWorkerReconnectPawns.IsEmpty()
+		|| !PendingReconnectContexts.IsEmpty() || !PendingPossessions.IsEmpty();
+	if (ArenaReconnectDeadline > 0.0)
+	{
+		if (!bReconnectPending) ArenaReconnectDeadline = 0.0;
+		else if (Now >= ArenaReconnectDeadline)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[ArenaRecovery] Reconnect deadline expired Gen=%u"), PendingGameplayGeneration);
+			ArenaRecoveryTickerHandle.Reset();
+			FailGameOverTransition();
+			return false;
+		}
+	}
+	if (bArenaReloadInProgress)
+	{
+		const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+		const double TotalLimit = Settings ? FMath::Max(double(Settings->ArenaGameplayReloadFailureSeconds), 1.0) : 60.0;
+		const double StallLimit = Settings ? FMath::Max(double(Settings->ArenaGameplayReloadStallSeconds), 1.0) : 15.0;
+		UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+		const EOutlierGameplayReloadPhase Phase = Arena ? Arena->GetGameplayReloadPhase() : EOutlierGameplayReloadPhase::Failed;
+		if (Phase != LastObservedReloadPhase)
+		{
+			LastObservedReloadPhase = Phase;
+			MarkArenaReloadProgress();
+		}
+		const bool bTotalExpired = Now - ArenaReloadStartedAt >= TotalLimit;
+		const bool bStalled = Now - FMath::Max(ArenaReloadLastProgressAt, ArenaReloadLastRecoveryAt) >= StallLimit;
+		if (bTotalExpired || (bStalled && ArenaReloadRecoveryAttempts >= 2))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[ArenaRecovery] Failed Gen=%u Phase=%s Attempts=%d Elapsed=%.1f Reason=%s"),
+				PendingGameplayGeneration, *UEnum::GetValueAsString(Phase), ArenaReloadRecoveryAttempts,
+				Now - ArenaReloadStartedAt, bTotalExpired ? TEXT("TotalDeadline") : TEXT("RecoveryExhausted"));
+			ArenaRecoveryTickerHandle.Reset();
+			if (Arena) Arena->FailGameplayReload(PendingGameplayGeneration, EOutlierGameplayReloadFailure::WorkerStallTimeout);
+			else HandleArenaGameplayReloadFailed(PendingGameplayGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
+			return false;
+		}
+		if (bStalled)
+		{
+			++ArenaReloadRecoveryAttempts;
+			ArenaReloadLastRecoveryAt = Now;
+			UE_LOG(LogTemp, Warning, TEXT("[ArenaRecovery] Retry Gen=%u Phase=%s Attempt=%d/2 Elapsed=%.1f"),
+				PendingGameplayGeneration, *UEnum::GetValueAsString(Phase), ArenaReloadRecoveryAttempts, Now - ArenaReloadStartedAt);
+			RetryArenaReload();
+		}
+	}
+	if (!bArenaReloadInProgress && ArenaReconnectDeadline == 0.0)
+	{
+		ArenaRecoveryTickerHandle.Reset();
+		return false;
+	}
+	return true;
+}
+
+void AOutlierGameMode::RetryArenaReload()
+{
+	if (UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>())
+	{
+		Arena->RetryStalledGameplayReload(PendingGameplayGeneration);
+	}
+	// 같은 세대의 누락된 단계만 재전달한다. 스냅샷/Pawn/세대를 새로 만들지 않는다.
+	for (const auto& Entry : PendingPossessions)
+	{
+		AFirstPersonPlayerController* PC = Cast<AFirstPersonPlayerController>(Entry.Key.Get());
+		if (!PC || PC->IsLocalController()) continue;
+		PC->ClientRetryArenaGameplayReload(PendingGameplayGeneration);
+		if (!PendingGameplayUnloadPlayers.Contains(PC))
+		{
+			PC->ClientActivateArenaGameplayLevels(PendingGameplayGeneration);
+		}
+	}
+}
+
+void AOutlierGameMode::OnClientArenaGameplayReloadFailed(APlayerController* PC, uint32 GameplayGeneration)
+{
+	if (!bArenaReloadInProgress && GameplayGeneration == 0 && PC
+		&& (PendingReconnectRequestIds.Contains(PC) || PendingReconnectContexts.Contains(PC)))
+	{
+		FailGameOverTransition();
+		return;
+	}
+	if (!bArenaReloadInProgress || GameplayGeneration != PendingGameplayGeneration
+		|| !PC || !PendingPossessions.Contains(PC)) return;
+	if (UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>())
+	{
+		Arena->FailGameplayReload(GameplayGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
+	}
+	else HandleArenaGameplayReloadFailed(GameplayGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
+}
+
 void AOutlierGameMode::HandleServerArenaGameplayReady(uint32 GameplayGeneration)
 {
-	if (!bArenaReloadInProgress || GameplayGeneration != PendingGameplayGeneration)
+	if (!bArenaReloadInProgress || bServerArenaReloadReady || GameplayGeneration != PendingGameplayGeneration)
 	{
 		return;
 	}
+	MarkArenaReloadProgress();
 	CompleteServerArenaReload();
 }
 
@@ -4583,34 +4816,10 @@ void AOutlierGameMode::HandleArenaGameplayReloadStalled(
 		return;
 	}
 
-	UE_LOG(LogTemp, Error,
-		TEXT("[ArenaLevels] Reload remains stalled without automatic recovery: %s"),
-		*Diagnostic);
-	if (!IsArenaWorkerProcess())
-	{
-		return;
-	}
-
-	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
-	const float StallSeconds = Settings
-		? FMath::Max(Settings->ArenaGameplayReloadStallSeconds, 1.0f)
-		: 15.0f;
-	const float FailureSeconds = Settings
-		? FMath::Max(Settings->ArenaGameplayReloadFailureSeconds, StallSeconds)
-		: 60.0f;
-	const float RemainingSeconds = FMath::Max(FailureSeconds - StallSeconds, 0.1f);
-	GetWorldTimerManager().SetTimer(
-		ArenaWorkerReloadFailureTimerHandle,
-		this,
-		&AOutlierGameMode::HandleArenaWorkerReloadStallTimeout,
-		RemainingSeconds,
-		false);
-
-	UE_LOG(LogTemp, Error,
-		TEXT("[ArenaWorker][Levels] Generation=%u Phase=%s will fail after %.1f additional seconds"),
-		GameplayGeneration,
-		*UEnum::GetValueAsString(Phase),
-		RemainingSeconds);
+	UE_LOG(LogTemp, Warning, TEXT("[ArenaRecovery] Stalled Gen=%u Phase=%s Diagnostic=%s"),
+		GameplayGeneration, *UEnum::GetValueAsString(Phase), *Diagnostic);
+	// 재시도 횟수와 전체 제한은 서버 페어 작업 하나가 소유한다. 클라이언트 수만큼 소비하지 않는다.
+	EnsureArenaRecoveryWatchdog();
 }
 
 void AOutlierGameMode::HandleArenaGameplayReloadResumed(uint32 GameplayGeneration)
@@ -4626,7 +4835,7 @@ void AOutlierGameMode::HandleArenaGameplayReloadFailed(
 	uint32 GameplayGeneration,
 	EOutlierGameplayReloadFailure Failure)
 {
-	if (GameplayGeneration != PendingGameplayGeneration)
+	if (!bArenaReloadInProgress || GameplayGeneration != PendingGameplayGeneration)
 	{
 		return;
 	}
@@ -4647,19 +4856,9 @@ void AOutlierGameMode::HandleArenaGameplayReloadFailed(
 		TEXT("Gameplay reload failed. Generation=%u Failure=%s"),
 		GameplayGeneration,
 		*UEnum::GetValueAsString(Failure));
-	if (GameOverWorldPause.IsTransitioning())
-	{
-		FailGameOverTransition();
-	}
-	else if (IsArenaWorkerProcess())
-	{
-		BeginArenaWorkerReleaseShutdown();
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] %s"), *Diagnostic);
-	}
+	UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] %s"), *Diagnostic);
 	ClearArenaGameplayReloadDelegates();
+	FailGameOverTransition();
 }
 
 void AOutlierGameMode::HandleArenaWorkerReloadStallTimeout()
@@ -4716,6 +4915,11 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown(
 			if (AFirstPersonPlayerController* FirstPersonController =
 				Cast<AFirstPersonPlayerController>(PlayerController))
 			{
+				if (bArenaRecoveryEnding)
+				{
+					FirstPersonController->ClientArenaRecoveryFailed(true, TEXT("매치 복구에 실패하여 로비로 돌아갑니다."));
+					continue;
+				}
 				// 의도된 Worker 종료를 다음 NetworkFailure가 장애로 되돌리지 않도록
 				// 두 클라이언트 모두 Travel 전에 로컬 재접속 상태를 먼저 정리한다.
 				FirstPersonController->ClientPrepareForArenaExit();
@@ -4740,6 +4944,9 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown(
 
 void AOutlierGameMode::ClearArenaGameplayReloadDelegates()
 {
+	GetWorldTimerManager().ClearTimer(PresetGuideCleanupTimerHandle);
+	bClearPresetGuidesAfterReload = false;
+	bPresetGuideCleanupDeferred = false;
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
@@ -4822,6 +5029,39 @@ void AOutlierGameMode::CompleteServerArenaReload()
 		UE_LOG(LogTemp, Error,
 			TEXT("[ArenaReload][Server] Gen=%u Ready event arrived while gameplay levels are not ready"),
 			PendingGameplayGeneration);
+		return;
+	}
+	if (bClearPresetGuidesAfterReload)
+	{
+		const uint32 Generation = PendingGameplayGeneration;
+		AOutlierWorldGuideManager* Guides = AOutlierWorldGuideManager::Find(GetWorld());
+		// 새 레벨의 BeginPlay 등록까지 끝난 뒤 정리한다. 이후 overlap 복구/Possess가 선택 레벨 안내를 시작한다.
+		if (Guides && !Guides->TryClearGuides(false))
+		{
+			if (!bPresetGuideCleanupDeferred)
+			{
+				// 큐 변경 콜백의 스택을 벗어나는 한 번의 지연이다. 무시된 Clear로 Ready를 발행하지 않는다.
+				bPresetGuideCleanupDeferred = true;
+				PresetGuideCleanupTimerHandle = GetWorldTimerManager().SetTimerForNextTick(
+					FTimerDelegate::CreateWeakLambda(this, [this, Generation]()
+					{
+						PresetGuideCleanupTimerHandle.Invalidate();
+						if (IsGameplayReloadInProgress(Generation) && !bServerArenaReloadReady)
+							CompleteServerArenaReload();
+					}));
+			}
+			else if (!PresetGuideCleanupTimerHandle.IsValid())
+			{
+				HandleArenaGameplayReloadFailed(Generation, EOutlierGameplayReloadFailure::InvalidRuntime);
+			}
+			return;
+		}
+		// 취소 통보에서 실패/종료한 전환은 Ready/Possess로 되살리지 않는다.
+		if (!IsGameplayReloadInProgress(Generation)) return;
+		bClearPresetGuidesAfterReload = false;
+		GetWorldTimerManager().ClearTimer(PresetGuideCleanupTimerHandle);
+		UE_LOG(LogTemp, Log, TEXT("[PresetGuide] Cleared active/pending guides Gen=%u Manager=%s"),
+			Generation, *GetNameSafe(Guides));
 	}
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReload][Server] Gen=%u ServerLevelsReady=%d TotalMs=%.1f RemotePending=%d LocalPending=%d"),
@@ -4834,6 +5074,26 @@ void AOutlierGameMode::CompleteServerArenaReload()
 	// 누락된 태그/입장 알림을 복구한다. Preset 로드, 체크포인트 재시작, 저장 이어하기가
 	// 모두 이 경로를 공유하며, 방은 저장된 전투 태그가 아니라 현재 overlap으로 결정한다.
 	RefreshRoomOverlapAssignments();
+	bServerArenaReloadReady = true;
+	TryCompleteArenaPossessions();
+}
+
+void AOutlierGameMode::TryCompleteArenaPossessions()
+{
+	if (!bArenaReloadInProgress || !bServerArenaReloadReady || bDispatchingArenaPossessions
+		|| ReadyGameplayPossessPlayers.Num() < PendingPossessions.Num()
+		|| !ArenaWorkerDisconnectedPlayerIds.IsEmpty()
+		|| (bListenGuestDisconnected && !PendingPossessions.FindKey(ListenGuestReconnectPawn.Get()))) return;
+	for (const auto& Entry : PendingPossessions)
+	{
+		if (!ValidateReconnectPawn(Entry.Key.Get(), Entry.Value.Get()))
+		{
+			ReadyGameplayPossessPlayers.Remove(Entry.Key);
+			return;
+		}
+	}
+	// 서버와 원격 페어가 모두 준비된 뒤 한 경계에서 Possess한다. 빠른 한쪽만 먼저 입력을 재개하지 않는다.
+	TGuardValue<bool> DispatchGuard(bDispatchingArenaPossessions, true);
 
 	// Listen Host의 로컬 Pawn은 서버 준비 완료에서 Possess한다. 원격 클라이언트의 준비 통보와 분리한다.
 	for (auto It = PendingLocalPossessions.CreateIterator(); It; ++It)
@@ -4859,7 +5119,7 @@ void AOutlierGameMode::CompleteServerArenaReload()
 	{
 		if (APlayerController* PC = ReadyPlayer.Get())
 		{
-			OnClientArenaReady(PC, PendingGameplayGeneration);
+			OnClientArenaReady(PC, PendingGameplayGeneration, PendingReconnectRequestIds.FindRef(PC));
 		}
 	}
 	TryFinishArenaReload();
@@ -4873,6 +5133,7 @@ void AOutlierGameMode::TryFinishArenaReload()
 		|| !PendingLocalPossessions.IsEmpty()
 		|| !PendingPossessions.IsEmpty()
 		|| !ReadyGameplayPossessPlayers.IsEmpty()
+		|| bListenGuestDisconnected
 		|| !ArenaWorkerDisconnectedPlayerIds.IsEmpty()
 		|| !ArenaWorkerReconnectPawns.IsEmpty())
 	{

@@ -16,10 +16,12 @@
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/GameInstance.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
 #include "Weapon/FirstPickupDiagnostics.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/OverlapResult.h"
@@ -678,6 +680,10 @@ void AFirstPersonCharacter::OnRep_CurrentWeapon()
 	CurrentWeaponType = CurrentWeapon ? CurrentWeapon->GetWeaponType() : EWeaponType::Unarmed;
 	LastReplicatedWeapon = CurrentWeapon;
 	OnWeaponChanged.Broadcast(CurrentWeaponType);
+	if (UOutlierStencilSubsystem* Outlines = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>())
+	{
+		Outlines->MarkTeammatesDirty();
+	}
 }
 
 void AFirstPersonCharacter::TryStartAttack()
@@ -747,6 +753,14 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 
 	LastReplicatedWeapon = CurrentWeapon;
 	ForceNetUpdate();
+	// nullptr 장착에는 OnWeaponChanged가 없으므로 해제도 같은 경로에서 캐시를 무효화한다.
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		if (UOutlierStencilSubsystem* Outlines = GetWorld()->GetSubsystem<UOutlierStencilSubsystem>())
+		{
+			Outlines->MarkTeammatesDirty();
+		}
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 

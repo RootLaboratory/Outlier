@@ -65,7 +65,11 @@ void UShooterMovementComponent::SetSprintIntent(bool bSprint)
 	bWantsToSprint = bSprint && !ShooterCharacter->IsDead() && !ShooterCharacter->IsSuitTransitionBlocked();
 	if (bWantsToSprint && CanSprint())
 	{
-		if (!bHoldSprintInput) ShooterCharacter->TryStopAttack();
+		if (!bHoldSprintInput)
+		{
+			if (ShooterCharacter->CombatComponent) ShooterCharacter->CombatComponent->CancelPendingSprintExitFire();
+			ShooterCharacter->TryStopAttack();
+		}
 		ShooterCharacter->StopLean();
 	}
 	RefreshMovementState();
@@ -505,8 +509,10 @@ bool UShooterMovementComponent::CanSprint() const
 		&& !ShooterCharacter->WantsToAim()
 		&& (!bHoldSprintInput || (!ShooterCharacter->IsAiming()
 			&& (!ShooterCharacter->CombatComponent || !ShooterCharacter->CombatComponent->IsSprintBlockedByAttack())))
-		&& !ShooterCharacter->IsReloading()
-		&& (!ShooterCharacter->IsActionLocked() || ShooterCharacter->GetActionLock() == EShooterActionLock::Equip);
+		// Reload 잠금은 공격/ADS에 남겨 두고, 달리기 자격에만 예외를 둔다.
+		&& (!ShooterCharacter->IsActionLocked()
+			|| ShooterCharacter->GetActionLock() == EShooterActionLock::Equip
+			|| ShooterCharacter->GetActionLock() == EShooterActionLock::Reload);
 }
 
 float UShooterMovementComponent::GetStealthSpeedMultiplier() const

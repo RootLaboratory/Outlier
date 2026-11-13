@@ -15,6 +15,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "EnvironmentQuery/EnvQueryManager.h"
 #include "EngineUtils.h"
 #include "GameFramework/GameStateBase.h"
 #include "HAL/IConsoleManager.h"
@@ -2481,6 +2482,32 @@ bool FRoomCombatGameplayActorReloadTest::RunTest(const FString& Parameters)
 	{
 		NewTurret->Destroy();
 	}
+	// 전체 Encounter 정리는 개별 터렛 처치 목록 없이 저장된다. 실제 복원 API를 거쳐
+	// Room 전/후 등록 모두에서 남은 터렛과 배치 적이 재등장하지 않는지 대조한다.
+	const FOutlierWorldProgressSnapshot CompletedProgress = Save->GetCurrentWorldProgress();
+	Save->RestoreCurrentDestroyedTurretIds(TSet<FName>());
+	for (bool bRoomFirst : {true, false})
+	{
+		Save->RestoreCurrentWorldProgress(CompletedProgress);
+		ARoomVolume* CompletedRoom = bRoomFirst ? SpawnRoom() : nullptr;
+		AEnemyBase* RemainingEnemy = SpawnEnemy();
+		AAutoTurret* RemainingTurret = SpawnTurret();
+		ARoomCombatSpawnPoint* CompletedPoint = SpawnPoint();
+		TestTrue(TEXT("Completed encounter suppresses placed Enemy before or after Room registration"),
+			RemainingEnemy && RemainingEnemy->IsActorBeingDestroyed());
+		TestTrue(TEXT("Completed encounter suppresses an unrecorded surviving turret"),
+			RemainingTurret && RemainingTurret->IsActorBeingDestroyed());
+		if (!bRoomFirst) CompletedRoom = SpawnRoom();
+		TestEqual(TEXT("Completed restore remains cleared"), Combat->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+		TestEqual(TEXT("Completed restore has no live enemies"), Combat->GetAliveEnemyCount(RoomTag), 0);
+		TestEqual(TEXT("Completed restore has no remaining turret registration"),
+			Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 1), 0);
+		TestTrue(TEXT("Completed restore clears SpawnPoint"), CompletedPoint && CompletedPoint->IsRoomCleared());
+		TestTrue(TEXT("Restore cleanup does not manufacture turret kills"), Save->GetCurrentDestroyedTurretIds().IsEmpty());
+		Combat->ResetRuntimeCombatState();
+		if (IsValid(CompletedRoom)) CompletedRoom->Destroy();
+		if (IsValid(CompletedPoint)) CompletedPoint->Destroy();
+	}
 	Save->SetWorldProgressState(
 		EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName(), false);
 	Save->RestoreCurrentDestroyedTurretIds(TSet<FName>());
@@ -3046,6 +3073,7 @@ bool FRoomCombatInitialDetectionRecoveryTest::RunTest(const FString& Parameters)
 	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
 	World->SetGameInstance(GameInstance);
 	GameInstance->Init();
+	World->CreateAISystem();
 	World->SetGameMode(FURL());
 	World->InitializeActorsForPlay(FURL());
 	ON_SCOPE_EXIT
@@ -3056,6 +3084,13 @@ bool FRoomCombatInitialDetectionRecoveryTest::RunTest(const FString& Parameters)
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
+	};
+	UEnvQueryManager* QueryManager = UEnvQueryManager::GetCurrent(World);
+	if (!TestNotNull(TEXT("Recovery world EQS manager"), QueryManager)) return false;
+	auto CompleteJoinQueries = [QueryManager]
+	{
+		// 합류 결과만 완료한다. 준비/재시도 시간이나 Pawn 이동 시뮬레이션은 진행하지 않는다.
+		for (int32 Index = 0; Index < 100; ++Index) QueryManager->Tick(0.01f);
 	};
 
 	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
@@ -3092,20 +3127,35 @@ bool FRoomCombatInitialDetectionRecoveryTest::RunTest(const FString& Parameters)
 	*TagProperty->ContainerPtrToValuePtr<FGameplayTag>(Room) = RoomTag;
 	*TagProperty->ContainerPtrToValuePtr<FGameplayTag>(OtherRoom) = OtherTag;
 	OtherRoom->SetActorLocation(FVector(10000, 0, 0));
+	// 집계용 적을 기준 Shooter와 겹쳐 두면 모든 가림 Trace가 시작부터 적 캡슐에 막힌다.
+	// 실제 전투 배치처럼 기준 위치를 비워 두고, 적은 각 방의 다른 위치에 둔다.
+	Enemy->SetActorLocation(FVector(0, 400, 0));
+	OtherEnemy->SetActorLocation(FVector(10000, 400, 0));
 	Shooter->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
 	Partner->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
 	PlayerState->SetShooterCharacter(Shooter);
 	PlayerState->SetPartnerCharacter(Partner);
+	PlayerState->SetAcquiredSuit(true);
 	GameState->PlayerArray.AddUnique(PlayerState);
 	Combat->SetCombatDefinitionForTesting(Definition);
 	TestTrue(TEXT("Room registers"), Combat->RegisterRoom(Room, RoomTag));
 	Combat->RegisterPreplacedEnemy(Enemy);
+	ARoomCombatBarrier* JoinBarrier = SpawnTestBarrier(World, RoomTag);
+	if (!TestNotNull(TEXT("Forced join barrier"), JoinBarrier)) return false;
+	JoinBarrier->SetActorLocation(FVector(0, 0, -10000));
 
 	// 중심은 방 안이지만 합류 캡슐 전체를 수용할 수 없는 방으로 실제 탐색 실패를 만든다.
 	Box->SetBoxExtent(FVector(20, 20, 20));
 	const FVector OriginalPartnerLocation = Partner->GetActorLocation();
 	TestFalse(TEXT("Unsafe nearby and missing fallback reject production join"),
 		Combat->TryStartInitialDetectionForPlayers(RoomTag));
+	TestEqual(TEXT("EQS acceptance keeps the room preparing until its result"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::Preparing);
+	TestTrue(TEXT("Pending join still blocks enemy attack"), Combat->IsEnemyAttackBlocked(Enemy));
+	TestFalse(TEXT("Pending join does not close the barrier"), JoinBarrier->IsBlocked());
+	TestFalse(TEXT("Pending join grants no protection"), Partner->GetOutlierAbilitySystemComponent()
+		->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	CompleteJoinQueries();
 	TestEqual(TEXT("Failed join releases Preparing"), Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
 	TestFalse(TEXT("Failed join releases its reservation"), Combat->GetActiveCombatRoomTag().IsValid());
 	TestFalse(TEXT("Failed join leaves barriers open"), Combat->IsExitBlocked(RoomTag));
@@ -3119,8 +3169,9 @@ bool FRoomCombatInitialDetectionRecoveryTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Detection inside the one-second interval is rejected"), Combat->TryStartInitialDetectionForPlayers(RoomTag));
 	for (int32 TickIndex = 0; TickIndex < 6; ++TickIndex) World->Tick(LEVELTICK_All, 0.1f);
 	TestEqual(TEXT("Time passing alone does not retry"), Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
-	TestTrue(TEXT("A new detection after the interval joins and starts combat"),
+	TestFalse(TEXT("A new detection after the interval starts a pending join"),
 		Combat->TryStartInitialDetectionForPlayers(RoomTag));
+	CompleteJoinQueries();
 	TestTrue(TEXT("Partner actually joined the room"), Room->ContainsWorldLocation(Partner->GetActorLocation()));
 	TestEqual(TEXT("Successful retry enters combat"), Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
 
