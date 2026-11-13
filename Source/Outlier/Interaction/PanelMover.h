@@ -174,4 +174,5 @@ private:
 	friend class FPanelPlayerCarryTest;
 	friend class FPanelCrushSafetyTest;
 	friend class FPanelMotionReplicationTest;
+	friend class FPanelLegacyMotionTest;
 };

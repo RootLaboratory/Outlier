@@ -102,9 +102,10 @@ bool APanelMover::MoveToTarget()
 	CacheMovingCollision();
 	StartLocation = GetActorLocation();
 	TargetLocation = TargetLocationActor->GetActorLocation();
-	if (MovingCollision.IsEmpty() || TargetLocation.ContainsNaN())
+	// 충돌이 없는 기존 연출용 패널도 이동한다. 접촉 처리는 수집된 충돌체에만 적용한다.
+	if (TargetLocation.ContainsNaN())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PanelMover] %s rejected: missing collision or invalid target"), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("[PanelMover] %s rejected: invalid target location"), *GetName());
 		return false;
 	}
 

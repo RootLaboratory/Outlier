@@ -320,4 +320,57 @@ bool FPanelMotionReplicationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPanelLegacyMotionTest,
+	"Outlier.Interaction.Panel.LegacyWithoutQueryCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FPanelLegacyMotionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPanelSafetyWorld Fixture;
+	if (!TestNotNull(TEXT("Legacy motion world exists"), Fixture.World)) return false;
+	for (const ECollisionEnabled::Type Collision : { ECollisionEnabled::NoCollision, ECollisionEnabled::PhysicsOnly })
+	{
+		APanelMover* Panel = Fixture.World->SpawnActor<APanelMover>();
+		ATargetPoint* Target = Fixture.World->SpawnActor<ATargetPoint>();
+		if (!TestNotNull(TEXT("Legacy panel exists"), Panel)
+			|| !TestNotNull(TEXT("Legacy target exists"), Target)) return false;
+		Panel->Supporter->SetCollisionEnabled(Collision);
+		Panel->PanelMesh->SetCollisionEnabled(Collision);
+		Panel->TargetLocationActor = Target;
+		Target->SetActorLocation(FVector(200.0f, 0.0f, 100.0f));
+		Panel->MoveDuration = 1.0f;
+		Panel->DispatchBeginPlay();
+		TestTrue(TEXT("Legacy panel has no query collision"), Panel->MovingCollision.IsEmpty());
+		if (!TestTrue(TEXT("Legacy move is accepted"), Panel->MoveToTarget())) return false;
+		static_cast<AActor*>(Panel)->Tick(0.25f);
+		TestTrue(TEXT("Legacy panel interpolates"), Panel->GetActorLocation().Equals(Target->GetActorLocation() * 0.25f, 0.1f));
+		static_cast<AActor*>(Panel)->Tick(0.5f);
+		static_cast<AActor*>(Panel)->Tick(0.25f);
+		TestTrue(TEXT("Legacy panel reaches target"), Panel->GetActorLocation().Equals(Target->GetActorLocation(), 0.1f));
+		TestTrue(TEXT("Legacy move completes"), Panel->bMoveFinished);
+		TestFalse(TEXT("Completed legacy panel stops ticking"), Panel->IsActorTickEnabled());
+		TestTrue(TEXT("Completion publishes final position"), Panel->ReplicatedMotion.Location.Equals(Target->GetActorLocation(), 0.1f));
+		TestFalse(TEXT("Completed snapshot stops motion"), Panel->ReplicatedMotion.bMoving);
+		TestFalse(TEXT("Legacy panel remains one-shot"), Panel->MoveToTarget());
+
+		Panel->SetActorLocation(FVector::ZeroVector);
+		Panel->bIsMoved = false;
+		Panel->bMoveStarted = false;
+		Panel->bMoveFinished = false;
+		Panel->MoveDuration = 0.0f;
+		TestTrue(TEXT("Instant legacy move is accepted"), Panel->MoveToTarget());
+		TestTrue(TEXT("Instant legacy move reaches target"), Panel->GetActorLocation().Equals(Target->GetActorLocation()));
+		TestTrue(TEXT("Instant legacy move completes"), Panel->bMoveFinished);
+
+		Panel->SetActorLocation(FVector::ZeroVector);
+		Panel->bMoveFinished = false;
+		Panel->SnapToTarget();
+		TestTrue(TEXT("Legacy checkpoint restore reaches target"), Panel->GetActorLocation().Equals(Target->GetActorLocation()));
+		TestFalse(TEXT("Legacy checkpoint restore does not wait"), Panel->bRestorePending);
+		TestTrue(TEXT("Legacy checkpoint restore completes"), Panel->bMoveFinished);
+	}
+	return true;
+}
+
 #endif
