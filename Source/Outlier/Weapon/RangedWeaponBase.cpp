@@ -1642,15 +1642,21 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(const FWeaponShotSnap
 	}
 	if (Shot.bShooterWallShot)
 	{
-		// 월드 선분은 과거 발사의 스냅샷이다. 무기 교체/메시 갱신과 무관하게 한 번만 재생한다.
-		if (CachedVisualSubsystem && WeaponTrail)
-			CachedVisualSubsystem->SpawnBeamTrail(WeaponTrail, Shot.Start, Shot.End);
 		AShooterCharacter* Shooter = Cast<AShooterCharacter>(Shot.Shooter);
 		const bool bCurrentEquipment = IsValid(Shooter) && WeaponOwner == Shooter && IsEquipped()
 			&& !Shooter->IsDead() && Shooter->GetCurrentWeapon() == this
 			&& Shooter->GetWallShotEquipmentRevision() == Shot.EquipmentRevision;
+		// 원격 3인칭만 표시 중인 총구에서 시작한다. 1인칭/이전 장착 발사는 서버 스냅샷을 유지한다.
+		FVector TrailStart = Shot.Start;
+		if (bCurrentEquipment && !Shooter->IsLocallyControlled()
+			&& ThirdPersonWeaponMesh && ThirdPersonWeaponMesh->DoesSocketExist(MuzzleSocketName))
+		{
+			TrailStart = ThirdPersonWeaponMesh->GetSocketLocation(MuzzleSocketName);
+		}
+		if (CachedVisualSubsystem && WeaponTrail)
+			CachedVisualSubsystem->SpawnBeamTrail(WeaponTrail, TrailStart, Shot.End);
 		if (!bCurrentEquipment) return;
-		// 현재 장착에만 붙는 섬광/메시 반동은 세대를 확인한다. 월드 Trail은 소켓에서 다시 만들지 않는다.
+		// 현재 장착에만 붙는 섬광/메시 반동은 세대를 확인한다. Trail은 위에서 한 번만 재생한다.
 		if (UShooterAnimInstance* Anim = Cast<UShooterAnimInstance>(Shooter->GetMesh()->GetAnimInstance()))
 			Anim->AddThirdPersonRecoil(RecoilMultiplier * GetThirdPersonProceduralRecoilMultiplier()
 				* GetUpgradeRecoilMultiplier(), NormalizedShotDirection);
