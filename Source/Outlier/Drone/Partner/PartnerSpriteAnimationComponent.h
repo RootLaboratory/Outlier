@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -25,13 +23,13 @@ struct FPartnerSpriteAnimationData
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	TObjectPtr<UTexture2D> Texture = nullptr;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1"))
 	int32 Rows = 1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1"))
 	int32 Columns = 1;
 };
 
@@ -56,6 +54,15 @@ public:
 
 	/** 사망/재부팅 중에는 다른 표정과 타이머보다 감은 눈을 우선한다. 서버 전용이다. */
 	void SetDeathEmotionActive(bool bActive);
+
+	/** 표정에 지정된 스프라이트 시트를 찾는다. 시퀀스처럼 컴포넌트 밖에서 같은 데이터를 쓸 때 사용한다. */
+	const FPartnerSpriteAnimationData* FindEmotionSprite(EPartnerEmotion Emotion) const
+	{
+		return EmotionSprites.Find(Emotion);
+	}
+
+	const FName& GetMaterialSlotName() const { return MaterialSlotName; }
+	const FName& GetTextureParameterName() const { return TextureParameterName; }
 
 protected:
 	virtual void BeginPlay() override;

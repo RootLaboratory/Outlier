@@ -1,5 +1,4 @@
 #include "UI/HackCandidateLayerWidget.h"
-#include "Blueprint/WidgetLayoutLibrary.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
@@ -46,40 +45,10 @@ void UHackCandidateLayerWidget::SetHackHoldProgress(float Progress)
 
 void UHackCandidateLayerWidget::UpdateHackHoldLayout()
 {
-	APlayerController* PC = GetOwningPlayer();
-	if (!PC || !IsValid(HeldActor) || !HeldInfoWidget) return;
-	const FVector2D ViewSize = UWidgetLayoutLibrary::GetPlayerScreenWidgetGeometry(PC).GetLocalSize();
-	if (ViewSize.X <= 0 || ViewSize.Y <= 0) return;
-	const FVector Target = IHackableInterface::ResolveHackTargetLocation(HeldActor);
-	FVector ViewLocation;
-	FRotator ViewRotation;
-	PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
-	FVector2D ScreenPoint;
-	if (!UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(PC, Target, ScreenPoint, true))
+	if (HeldInfoWidget)
 	{
-		// Projection fails behind the camera. Keep the info on the corresponding screen edge.
-		const FVector LocalDirection = ViewRotation.UnrotateVector(Target - ViewLocation);
-		FVector2D EdgeDirection(LocalDirection.Y, -LocalDirection.Z);
-		if (!EdgeDirection.Normalize()) EdgeDirection = FVector2D(0.0, 1.0);
-		ScreenPoint = ViewSize * 0.5 + EdgeDirection * (ViewSize.X + ViewSize.Y);
+		HeldInfoWidget->UpdateHudTracking();
 	}
-	FVector2D Size = HeldInfoWidget->GetDesiredSize();
-	Size.X = FMath::Max(Size.X, double(HeldInfoWidget->GetWidgetWidth()));
-	Size.Y = FMath::Max(Size.Y, double(HeldInfoWidget->GetMinWidgetHeight()));
-	FVector2D Position;
-	float Scale;
-	HudPresentation.CalculateLayout(ScreenPoint, ViewSize, Size,
-		FVector::Distance(ViewLocation, Target), Position, Scale);
-	if (UCanvasPanelSlot* InfoSlot = Cast<UCanvasPanelSlot>(HeldInfoWidget->Slot))
-	{
-		InfoSlot->SetAutoSize(false);
-		InfoSlot->SetAlignment(FVector2D::ZeroVector);
-		InfoSlot->SetPosition(Position);
-		InfoSlot->SetSize(Size);
-		InfoSlot->SetZOrder(10);
-	}
-	HeldInfoWidget->SetRenderTransformPivot(FVector2D::ZeroVector);
-	HeldInfoWidget->SetRenderScale(FVector2D(Scale));
 }
 
 void UHackCandidateLayerWidget::BindHackComponent(UPartnerHackComponent* InHackComponent)
@@ -109,6 +78,12 @@ void UHackCandidateLayerWidget::ClearMarkers()
 
 	MarkerWidgets.Reset();
 	UpdateCandidateNullVisibility();
+}
+
+UHackCandidateMarkerWidget* UHackCandidateLayerWidget::FindMarker(AActor* TargetActor) const
+{
+	const TObjectPtr<UHackCandidateMarkerWidget>* Marker = TargetActor ? MarkerWidgets.Find(TargetActor) : nullptr;
+	return Marker ? Marker->Get() : nullptr;
 }
 
 void UHackCandidateLayerWidget::UpdateCandidateNullVisibility()

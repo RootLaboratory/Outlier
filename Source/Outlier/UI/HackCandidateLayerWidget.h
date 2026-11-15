@@ -26,6 +26,7 @@ public:
 	void AddCandidate(AActor* TargetActor, UHackableComponent* HackableComponent);
 	void RemoveCandidate(AActor* TargetActor, UHackableComponent* HackableComponent);
 	void ClearMarkers();
+	UHackCandidateMarkerWidget* FindMarker(AActor* TargetActor) const;
 	void BeginHackHold(AActor* TargetActor, UHackableInfoWidget* InfoWidget);
 	void EndHackHold();
 	void SetHackHoldProgress(float Progress);

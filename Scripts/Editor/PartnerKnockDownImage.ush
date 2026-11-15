@@ -1,0 +1,45 @@
+// Partner HUD 이미지(Image Brush)용 KnockDown 연출.
+// Progress 0(다운 직후) -> 1(재부팅 완료). 글리치 세기 = (1 - Progress)^IntensityPower.
+// 채움선은 텍스처의 유효(불투명) 영역 FillStartV -> FillEndV 안에서만 움직인다(기본: 몸체 아래 끝 -> 위 끝).
+//  - 채워진 줄: 원본 색, 글리치 없음
+//  - 아직 안 채워진 줄: HUD Grayout 과 같은 Tone(GrayAmount) + 글리치
+// 다운이 아닐 때 코드가 Progress = 1, GrayAmount = 0 을 넣으므로 원본 이미지와 동일하게 그려진다.
+float P = saturate(Progress);
+float I = pow(saturate(1.0 - P), max(IntensityPower, 0.0001));
+
+// 채움: V 는 위 0 / 아래 1. Start > End 면 아래에서 위로, Start < End 면 위에서 아래로 차오른다.
+float FillV = lerp(FillStartV, FillEndV, P);
+float Filled = (FillEndV < FillStartV ? UV.y >= FillV : UV.y <= FillV) ? 1.0 : 0.0;
+// Progress 1 이면 유효 영역 밖(여백)까지 전부 원본으로 둔다.
+Filled = P >= 1.0 ? 1.0 : Filled;
+float Ig = I * (1.0 - Filled);
+
+// 줄 단위 밀림: 줄마다, GlitchFrameRate 프레임마다 새 난수. 채워진 줄은 밀리지 않는다.
+float Frame = floor(Time * max(GlitchFrameRate, 1.0));
+float Band = floor(UV.y * max(RowCount, 1.0));
+float Rand = frac(sin(dot(float2(Band, Frame), float2(12.9898, 78.233))) * 43758.5453);
+float Pick = frac(sin(dot(float2(Band + 17.0, Frame), float2(39.3468, 11.1351))) * 24634.6345);
+float Shift = Pick < Ig * RowChance ? (Rand * 2.0 - 1.0) * MaxRowShift * Ig : 0.0;
+float2 BaseUV = UV + float2(Shift, 0.0);
+
+// RGB 어긋남(CA): R은 왼쪽, B는 오른쪽에서 읽는다.
+float2 Offset = float2(MaxRGBOffset * Ig, 0.0);
+float4 SR = Texture2DSample(Tex, TexSampler, BaseUV - Offset);
+float4 SG = Texture2DSample(Tex, TexSampler, BaseUV);
+float4 SB = Texture2DSample(Tex, TexSampler, BaseUV + Offset);
+float3 Src = float3(SR.r, SG.g, SB.b);
+float Alpha = max(SR.a, max(SG.a, SB.a));
+
+// 안 채워진 줄은 HUD Grayout 과 같은 톤(HudGrayout.ush)으로 그린다.
+float Lum = dot(Src, float3(0.299, 0.587, 0.114));
+float Tone = saturate((Lum - 0.5) * GrayContrast + 0.5) * GrayBrightness;
+float Gray = saturate(GrayAmount) * (1.0 - Filled);
+float3 Color = lerp(Src, Tone.xxx, Gray);
+Alpha *= lerp(1.0, GrayOpacity, Gray);
+
+// 채움 경계선. 진행 중에만 보인다.
+float Edge = (P > 0.0 && P < 1.0 && abs(UV.y - FillV) < EdgeWidthV) ? EdgeOpacity : 0.0;
+Color = lerp(Color, EdgeColor.rgb, Edge);
+
+// Image 의 Tint / ColorAndOpacity(Vertex Color)를 유지한다. VertexColor 기본 출력은 RGB 뿐이라 A 는 따로 받는다.
+return float4(Color * Tint, Alpha * TintAlpha);

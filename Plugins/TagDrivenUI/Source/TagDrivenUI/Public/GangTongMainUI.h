@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -38,6 +36,8 @@ private:
 public:
 	// 자기 PlayerState의 슈트 상태: true는 모든 Layer, false는 예외 Layer만 표시한다.
 	void SetSuitGatedModulesEnabled(bool bEnabled);
+	// 인트로 중 게임 HUD를 숨기면서 이벤트 안내 레이어는 유지한다.
+	void SetIntroHudHidden(bool bHidden);
 
 	virtual void ApplyExceptionVisibility() override;
 	virtual void ModulesControl(bool Flag) override;
@@ -55,6 +55,8 @@ public:
 private:
 	void RefreshKnockDownVisibility();
 	bool bKnockedDown = false;
+	bool bIntroHudHidden = false;
+	bool bRequestedModulesActive = false;
 
 	// 다운 중 HUD 회색 정도. Left / Right Grayout Retainer 와 Partner Image 시작 상태에 같은 값이 들어간다.
 	UPROPERTY(EditDefaultsOnly, Category = "KnockDown", meta = (ClampMin = "0.0", ClampMax = "1.0"))

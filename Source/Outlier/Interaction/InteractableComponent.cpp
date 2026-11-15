@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #include "Interaction/InteractableComponent.h"
 
 #include "UI/TargetPointHudWidget.h"
@@ -188,7 +186,14 @@ void UInteractableComponent::UpdateWidgetPresentation()
 	{
 		const FVector Point = GetInteractionWidgetLocation();
 		HudLayer->UpdateContent(InteractInfoWidget, bInfoShown, Point, InteractInfoWidgetDrawSize);
-		HudLayer->UpdateContent(InteractKeyWidget, bKeyShown, Point, InteractKeyWidgetDrawSize);
+		// 현재 입력 모드에 상호작용 키 매핑이 없으면 표시 요청(bKeyShown)은 유지한 채 건너뛴다.
+		const bool bShowKey = bKeyShown && InteractKeyWidget && InteractKeyWidget->HasDisplayableKey();
+		HudLayer->UpdateContent(InteractKeyWidget, bShowKey, Point, InteractKeyWidgetDrawSize);
+		// 첫 표시에서 레이어가 붙으며 위젯이 생성되면 그때 키 조회 결과가 정해지므로 한 번 더 확인한다.
+		if (bShowKey && !InteractKeyWidget->HasDisplayableKey())
+		{
+			HudLayer->UpdateContent(InteractKeyWidget, false, Point, InteractKeyWidgetDrawSize);
+		}
 		HudLayer->UpdateContent(InteractionLockedWidget, bLockedShown, Point, InteractionLockedWidgetDrawSize);
 		HudLayer->UpdateContent(InteractionOutlineWidget, bOutlineShown, Point, InteractionOutlineWidgetDrawSize);
 	}
@@ -213,6 +218,10 @@ void UInteractableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		Subsystem->UnregisterWidgetOwner(this);
 	}
 	CancelAllHoldSessions();
+	if (InteractKeyWidget)
+	{
+		InteractKeyWidget->OnDisplayableKeyChanged.RemoveAll(this);
+	}
 	ClearInteractionDescActor();
 	InteractionLockedWidgetDeactivate();
 	InteractionOutlineWidgetDeactivate();
@@ -1045,6 +1054,11 @@ UUserWidget* UInteractableComponent::EnsureInteractKeyWidget(APlayerController* 
 	{
 		InteractKeyHudWidget = CreateHudWidget(PlayerController, InteractKeyWidgetClass);
 		InteractKeyWidget = Cast<UInteractKeyWidget>(InteractKeyHudWidget);
+		if (InteractKeyWidget)
+		{
+			// 입력 모드 전환으로 키 매핑이 생기거나 빠지는 즉시 표시를 갱신한다.
+			InteractKeyWidget->OnDisplayableKeyChanged.AddUObject(this, &UInteractableComponent::UpdateWidgetPresentation);
+		}
 	}
 	return InteractKeyHudWidget;
 }

@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -12,6 +10,7 @@
  * 
  */
 class UAbilityIconUI;
+class UShooterMainWidget;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UBorder;
@@ -32,6 +31,7 @@ class OUTLIER_API UShooterAbilityUI : public UEventDrivenUI
 
 public:
 	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 public:
@@ -76,6 +76,12 @@ public:
 	FOnShooterAbilitySelected OnAbilitySelected;
 	
 private:
+	void InitializeWheelMaterial();
+	void UpdateMaterialLayout(FVector2D OuterSize, FVector2D InnerSize);
+	void UpdateCrosshairVisibility();
+	UFUNCTION()
+	void HandleVisibilityChanged(ESlateVisibility InVisibility);
+	TWeakObjectPtr<UShooterMainWidget> SuppressedCrosshairHUD;
 	bool TryCalculateCoordinate(float& OutAngleDeg);
 	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag);
 	FGameplayTag GetAbilityTagByAngle(float AngleDeg) const;

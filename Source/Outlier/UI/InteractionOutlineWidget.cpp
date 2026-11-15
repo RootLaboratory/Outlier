@@ -3,6 +3,12 @@
 #include "Components/Image.h"
 #include "Engine/Texture2D.h"
 
+UInteractionOutlineWidget::UInteractionOutlineWidget(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	HudPresentation.bKeepBehindCamera = true;
+}
+
 void UInteractionOutlineWidget::NativePreConstruct()
 {
 	Super::NativePreConstruct();

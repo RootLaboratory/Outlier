@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -18,6 +16,7 @@ class UTextBlock;
 class UTexture2D;
 class UDataTable;
 struct FInputKeyTextureDataRow;
+class SInputKeyFrame;
 
 /**
  * 특정 Input Action 하나의 현재 바인딩 키를 보여주는 공용 부품.
@@ -61,6 +60,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "UI|Input")
 	UInputAction* GetWatchedInputAction() const { return WatchedInputAction; }
 
+	/**
+	 * 생성된 뒤 마지막 조회에서 표시할 키를 찾지 못해 MissingKeyText로 빠졌으면 true.
+	 * 현재 입력 모드에 IA 매핑이 없을 때(예: 다른 모드 전용 IMC만 활성)도 여기에 해당한다.
+	 * 아직 생성 전이면 판단할 수 없으므로 false다.
+	 */
+	UFUNCTION(BlueprintPure, Category = "UI|Input")
+	bool IsMissingKey() const { return bIsMissingKey; }
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMissingKeyChanged, bool /*bIsMissingKey*/);
+	/** IsMissingKey 값이 바뀔 때만 브로드캐스트한다. */
+	FOnMissingKeyChanged OnMissingKeyChanged;
+
 	// 키 대신 임의의 텍스트("Ready" 등)를 강제로 보여주고 싶을 때 사용.
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetTextOverride(const FText& InOverrideText);
@@ -80,6 +91,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetBorderImage(UTexture2D* NewImage);
 
+	/** Scaled 154x154 key frame. Clears NonFrameTexture and the legacy background. */
+	UFUNCTION(BlueprintSetter, Category = "UI|Input")
+	void SetFrameTexture(UTexture2D* Texture);
+
+	/** Background using the existing brush/margin calculation. Clears FrameTexture. */
+	UFUNCTION(BlueprintSetter, Category = "UI|Input")
+	void SetNonFrameTexture(UTexture2D* Texture);
+
 	UFUNCTION(BlueprintSetter, Category = "UI|Input")
 	void SetKeyTextColor(FLinearColor NewColor);
 
@@ -89,16 +108,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetDisplayHeight(float NewHeight);
 
+	/** Center the shared Latin cap line rather than the font's full ascent/descent box. */
+	UFUNCTION(BlueprintSetter, Category = "UI|Layout")
+	void SetUseCaplineAlignment(bool bEnabled);
+
 	UFUNCTION(BlueprintPure, Category = "UI|Input")
-	UTexture2D* GetBorderImage() const { return BorderImage; }
+	UTexture2D* GetBorderImage() const;
 
 	/** 이미지 키 크기 또는 DisplayHeight 기준 폰트로 측정한 라벨 너비에 맞춘 텍스트 키 크기. */
 	UFUNCTION(BlueprintPure, Category = "UI|Input")
 	FVector2D GetKeyDisplaySize() const;
 
 protected:
+	virtual TSharedRef<SWidget> RebuildWidget() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 	// WBP에서 Border의 Content를 원하는 Image/Overlay 등으로 구성할 수 있게
 	// Border 자체를 BindWidget으로 노출한다.
@@ -108,11 +136,19 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> KeyText;
 
-	// WBP 파생 클래스에서 이미지 텍스처를 주입하면 Border Brush에 반영된다.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
+	/** 154x154 / corner 8px. Corners scale with height; only the middle stretches. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetFrameTexture, Category = "UI|Input")
+	TObjectPtr<UTexture2D> FrameTexture;
+
+	/** Non-frame background. Retains FrameSliceMargin and the existing rendering. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetNonFrameTexture, Category = "UI|Input")
+	TObjectPtr<UTexture2D> NonFrameTexture;
+
+	// Retained for serialized assets and old BP callers; migrate assignments to the two fields above.
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use FrameTexture or NonFrameTexture."))
 	TObjectPtr<UTexture2D> BorderImage;
 
-	/** 켜면 BorderImage를 배경으로 유지하고 표시명 DT의 키 텍스트를 함께 표시한다. BorderImage가 없으면 이미지 DT의 프레임을 사용한다. 끄면 이미지 DT의 bShowKeyText 설정을 따른다. */
+	/** 켜면 지정한 FrameTexture/NonFrameTexture 배경과 키 텍스트를 함께 표시한다. 배경이 없으면 DT의 프레임을 사용한다. 끄면 DT의 bShowKeyText 설정을 따른다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetShowKeyTextWithImage, Category = "UI|Input")
 	bool bShowKeyTextWithImage = false;
 
@@ -138,6 +174,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "0.1", ClampMax = "1.0"))
 	float TextHeightRatio = 0.75f;
 
+	/** H defines one common cap line for A-Z and mixed-case key names; never recenter each label. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetUseCaplineAlignment, Category = "UI|Layout")
+	bool bUseCaplineAlignment = true;
+
 	/** 라벨이 정사각형 키를 넘을 때만 좌우에 각각 추가하는 여백. DisplayHeight에 대한 비율이다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float LongLabelSidePaddingRatio = 0.15f;
@@ -162,14 +202,23 @@ protected:
 	FText MissingKeyText;
 
 private:
+	friend class SInputKeyFrame;
+	bool PaintScaledFrame(const FGeometry& Geometry, FSlateWindowElementList& Elements,
+		int32 LayerId, const FWidgetStyle& Style, bool bParentEnabled) const;
+
+	// Owns the texture reference and tint while Border's ordinary background is suppressed.
+	UPROPERTY(Transient)
+	FSlateBrush ScaledFrameBrush;
+
+	bool bDrawScaledFrame = false;
+
 	UFUNCTION()
 	void HandleInputActionKeyChanged(UInputAction* ChangedInputAction, FKey NewKey);
 
 	UFUNCTION()
 	void HandleControlMappingsRebuilt();
 
-	// RefreshDisplayedKey를 시도해서, 실패하면(아직 매핑이 없으면) 재구성
-	// 완료 델리게이트를 구독해서 기다리고, 성공하면 그 구독을 해제한다.
+	// 액션 키를 갱신하고, 조회 성공 후에도 활성 매핑의 변경을 구독한다.
 	void EnsureWatchedKeyIsResolved();
 
 	void BindSettingsSubsystem();
@@ -181,12 +230,17 @@ private:
 	void ShowKeyText(const FText& Text, FKey Key = FKey());
 	void ShowKeyImage(const FInputKeyTextureDataRow& Row);
 	void RefreshKeyLayout();
+	void RefreshKeyTextAlignment(float FontScale = 1.f);
+	void RefreshKeyTextAlignmentForPaint(const FGeometry& Geometry);
 	/** DisplayHeight에 맞춘 KeyText 폰트. Slate 폰트 측정을 사용할 수 없으면 false. */
 	bool GetFittedKeyFont(FSlateFontInfo& OutFont) const;
 	FMargin GetTextBorderPadding() const;
 	bool ShowResolvedKey(FKey Key);
 	void BindControlMappingsRebuiltDelegate();
 	void UnbindControlMappingsRebuiltDelegate();
+	void SetIsMissingKey(bool bNewIsMissingKey);
+
+	bool bIsMissingKey = false;
 
 	UPROPERTY(Transient)
 	FText TextOverride;
@@ -213,6 +267,9 @@ private:
 	/** WBP에 지정된 KeyText 폰트. 크기만 DisplayHeight 기준으로 덮어쓴다. */
 	FSlateFontInfo DefaultKeyFont;
 	bool bHasDefaultKeyFont = false;
+
+	FVector2D DefaultKeyTextTranslation = FVector2D::ZeroVector;
+	bool bHasDefaultKeyTextTranslation = false;
 
 	bool bUseExplicitKey = false;
 

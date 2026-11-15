@@ -1,9 +1,8 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #include "Drone/Partner/PartnerSpriteAnimationComponent.h"
 
 #include "Components/SkeletalMeshComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerFaceBlueprintLibrary.h"
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Net/UnrealNetwork.h"
@@ -37,21 +36,7 @@ void UPartnerSpriteAnimationComponent::BeginPlay()
 		return;
 	}
 
-	int32 MaterialIndex = Mesh->GetMaterialIndex(MaterialSlotName);
-	// 정확한 슬롯 이름을 우선하고, 없으면 Eye_001 같은 접두사 일치 슬롯을 사용한다.
-	if (MaterialIndex == INDEX_NONE && !MaterialSlotName.IsNone())
-	{
-		const FString SlotPrefix = MaterialSlotName.ToString();
-		const TArray<FName> SlotNames = Mesh->GetMaterialSlotNames();
-		for (int32 Index = 0; Index < SlotNames.Num(); ++Index)
-		{
-			if (SlotNames[Index].ToString().StartsWith(SlotPrefix, ESearchCase::IgnoreCase))
-			{
-				MaterialIndex = Index;
-				break;
-			}
-		}
-	}
+	const int32 MaterialIndex = UPartnerFaceBlueprintLibrary::FindFaceMaterialIndex(Mesh, MaterialSlotName);
 	if (MaterialIndex == INDEX_NONE)
 	{
 		UE_LOG(
@@ -365,14 +350,8 @@ bool UPartnerSpriteAnimationComponent::ApplyEmotionTexture(EPartnerEmotion Emoti
 		return false;
 	}
 
-	SpriteMID->SetTextureParameterValue(TextureParameterName, Data->Texture.Get());
-	SpriteMID->SetScalarParameterValue(TEXT("Rows"), static_cast<float>(Data->Rows));
-	SpriteMID->SetScalarParameterValue(TEXT("Columns"), static_cast<float>(Data->Columns));
-
-	SpriteMID->SetScalarParameterValue(
-		TEXT("AnimationStartTime"),
-		GetWorld()->GetTimeSeconds()
-	);
+	UPartnerFaceBlueprintLibrary::ApplyFaceSprite(
+		SpriteMID, *Data, TextureParameterName, GetWorld()->GetTimeSeconds());
 
 	// 적용 대상이 다른 머티리얼로 교체됐는지 표정 변경 시에만 확인한다.
 	const APartnerCharacter* Partner = Cast<APartnerCharacter>(GetOwner());

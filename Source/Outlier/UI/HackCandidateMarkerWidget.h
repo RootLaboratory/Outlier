@@ -22,6 +22,7 @@ public:
 	UHackableInfoWidget* ReleaseInfoForHackHold();
 	float GetHackHoldDuration(float BaseDuration) const;
 	void SetProjectionVisible(bool bVisible);
+	void SetInfoShown(bool bShown);
 	void UpdateHudLayout(const FTargetPointHudSettings& Settings);
 
 protected:

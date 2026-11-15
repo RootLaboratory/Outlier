@@ -1,6 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
-
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Drone/Partner/HackGameplayTags.h"
@@ -23,7 +20,24 @@
 #include "UI/HackMiniGameWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/UILayerGameplayTags.h"
-#include "Enemy/EnemyBase.h"
+#include "Components/MeshComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Components/SkinnedMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "MaterialShared.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
+
+const FName UPartnerHackComponent::CursorBodyTag(TEXT("HackCursorBody"));
+const FName UPartnerHackComponent::CursorIgnoreTag(TEXT("HackCursorIgnore"));
+
+namespace PartnerHackCursor
+{
+	// 적 실드처럼 외곽선에서 제외하는 보조 메시는 커서 몸체로도 보지 않는다.
+	const FName StencilExcludeTag(TEXT("Outlier.StencilExclude"));
+	constexpr float MinTraceLength = 5000.0f;
+}
 
 UPartnerHackComponent::UPartnerHackComponent()
 {
@@ -74,6 +88,7 @@ void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	DestroyHackMiniGameWidget();
 	DestroyCandidateLayerWidget();
 	ClearHackCandidates();
+	ClearCursorHighlight();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -82,6 +97,7 @@ void UPartnerHackComponent::DismissActorBasedWidgets_Implementation()
 	ResetLocalHackHoldProgress();
 	DestroyHackMiniGameWidget();
 	DestroyCandidateLayerWidget();
+	ClearCursorHighlight();
 }
 
 void UPartnerHackComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -115,6 +131,10 @@ void UPartnerHackComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 
 	UpdateLocalHackHold();
 	RefreshHackCandidates();
+	if (!HeldHackActor)
+	{
+		UpdateCursorHackHover();
+	}
 }
 
 void UPartnerHackComponent::TryHack_Implementation()
@@ -640,8 +660,10 @@ bool UPartnerHackComponent::TryBeginHackHold()
 	if (HeldHackActor) return true;
 	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled()
 		|| !PartnerCharacter->CanAcceptInput() || !GetWorld()
-		|| !bHackCandidateSearchActive || !IsValid(HoveredMarkerWidget)
-		|| !IsValid(CandidateLayerWidget)) return false;
+		|| !bHackCandidateSearchActive || !IsValid(CandidateLayerWidget)) return false;
+	// 커서를 옮긴 프레임에 R을 눌러도 그 순간 가리키는 대상으로 시작하도록 hover를 즉시 다시 판정한다.
+	UpdateCursorHackHover();
+	if (!IsValid(HoveredMarkerWidget)) return false;
 
 	FVector2D ScreenLocation;
 	UHackableComponent* Hackable = ResolveHackableComponent(HoveredHackActor);
@@ -656,11 +678,15 @@ bool UPartnerHackComponent::TryBeginHackHold()
 	CandidateLayerWidget->BeginHackHold(HeldHackActor, Info);
 	HoveredHackActor = nullptr;
 	HoveredMarkerWidget = nullptr;
+	MarkerHoveredActor = nullptr;
+	MarkerHoveredWidget = nullptr;
 	// Held info belongs to the layer, independently of candidate overlap and marker lifetime.
 	for (int32 Index = HackCandidateActors.Num() - 1; Index >= 0; --Index)
 	{
 		if (HackCandidateActors[Index] == HeldHackActor) RemoveHackCandidateAt(Index);
 	}
+	// 홀드 중에는 hover 대신 홀드 대상에 하이라이트를 유지한다.
+	RefreshCursorHighlight();
 	ServerBeginHackHold(HeldHackActor, LocalHoldId);
 	return true;
 }
@@ -668,15 +694,300 @@ bool UPartnerHackComponent::TryBeginHackHold()
 void UPartnerHackComponent::NotifyHackMarkerHovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
 {
 	if (!MarkerWidget || !TargetActor || HeldHackActor) return;
-	HoveredMarkerWidget = MarkerWidget;
-	HoveredHackActor = TargetActor;
+	MarkerHoveredWidget = MarkerWidget;
+	MarkerHoveredActor = TargetActor;
+	UpdateCursorHackHover();
 }
 
-void UPartnerHackComponent::NotifyHackMarkerUnhovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
+void UPartnerHackComponent::NotifyHackMarkerUnhovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor, bool bMarkerDestroying)
 {
-	if (HoveredMarkerWidget != MarkerWidget || HoveredHackActor != TargetActor) return;
-	HoveredMarkerWidget = nullptr;
-	HoveredHackActor = nullptr;
+	if (MarkerHoveredWidget == MarkerWidget)
+	{
+		MarkerHoveredWidget = nullptr;
+		MarkerHoveredActor = nullptr;
+	}
+	if (HoveredMarkerWidget != MarkerWidget) return;
+	if (bMarkerDestroying || HeldHackActor)
+	{
+		// 파괴 중인 마커는 다시 찾지 않는다. 정보창은 마커가 함께 정리한다.
+		HoveredMarkerWidget = nullptr;
+		HoveredHackActor = nullptr;
+		RefreshCursorHighlight();
+		return;
+	}
+	// 마커에서 같은 대상의 몸체로 커서가 넘어가도 정보창이 깜빡이지 않도록 바로 다시 판정한다.
+	UpdateCursorHackHover();
+}
+
+void UPartnerHackComponent::UpdateCursorHackHover()
+{
+	if (!bHackCandidateSearchActive || HeldHackActor || !PartnerCharacter || !PartnerCharacter->IsLocallyControlled())
+	{
+		SetHoveredHackTarget(nullptr);
+		return;
+	}
+	AActor* Target = ResolveCursorHackTarget();
+	if (!Target && IsValid(MarkerHoveredWidget) && HackCandidateActors.Contains(MarkerHoveredActor.Get()))
+	{
+		Target = MarkerHoveredActor;
+	}
+	SetHoveredHackTarget(Target);
+}
+
+void UPartnerHackComponent::SetHoveredHackTarget(AActor* TargetActor)
+{
+	UHackCandidateMarkerWidget* Marker = TargetActor && IsValid(CandidateLayerWidget)
+		? CandidateLayerWidget->FindMarker(TargetActor) : nullptr;
+	// 투영되지 않아 숨긴 마커는 커서 선택에서도 제외한다.
+	if (!IsValid(Marker) || Marker->GetVisibility() == ESlateVisibility::Collapsed)
+	{
+		Marker = nullptr;
+		TargetActor = nullptr;
+	}
+	if (TargetActor != HoveredHackActor || Marker != HoveredMarkerWidget)
+	{
+		if (IsValid(HoveredMarkerWidget))
+		{
+			HoveredMarkerWidget->SetInfoShown(false);
+		}
+		HoveredHackActor = TargetActor;
+		HoveredMarkerWidget = Marker;
+		if (Marker)
+		{
+			Marker->SetInfoShown(true);
+		}
+	}
+	RefreshCursorHighlight();
+}
+
+AActor* UPartnerHackComponent::ResolveCursorHackTarget() const
+{
+	if (!PartnerCharacter || HackCandidateActors.IsEmpty()) return nullptr;
+	const APlayerController* PC = Cast<APlayerController>(PartnerCharacter->GetController());
+	FVector Start;
+	FVector Direction;
+	if (!PC || !PC->IsLocalController() || !PC->DeprojectMousePositionToWorld(Start, Direction)) return nullptr;
+	return ResolveCursorHackTargetAlongRay(Start, Direction);
+}
+
+AActor* UPartnerHackComponent::ResolveCursorHackTargetAlongRay(const FVector& Start, const FVector& Direction) const
+{
+	if (HackCandidateActors.IsEmpty() || Direction.IsNearlyZero()) return nullptr;
+	const float TraceLength = FMath::Max(CachedAbilityData.EffectiveRange * 2.0f, PartnerHackCursor::MinTraceLength);
+	const FVector End = Start + Direction * TraceLength;
+
+	AActor* PreciseTarget = nullptr;
+	float PreciseDistance = TNumericLimits<float>::Max();
+	AActor* BoundsTarget = nullptr;
+	float BoundsDistance = TNumericLimits<float>::Max();
+	TArray<UPrimitiveComponent*> Bodies;
+	for (AActor* Candidate : HackCandidateActors)
+	{
+		if (!IsValid(Candidate) || Candidate->IsHidden()) continue;
+		Bodies.Reset();
+		GatherCursorBodyComponents(Candidate, Bodies);
+		for (UPrimitiveComponent* Body : Bodies)
+		{
+			// 1) 실제 콜리전 형상(피직스 에셋·메시 콜리전)과 교차하는지 본다. 채널·오브젝트 타입 설정과 무관하다.
+			FHitResult Hit;
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(PartnerHackCursorBody), true);
+			if (Body->LineTraceComponent(Hit, Start, End, Params))
+			{
+				const float Distance = FVector::Dist(Start, Hit.Location);
+				if (Distance < PreciseDistance && HasClearCursorPath(Start, Hit.Location))
+				{
+					PreciseDistance = Distance;
+					PreciseTarget = Candidate;
+				}
+				continue;
+			}
+			// 2) 콜리전이 없거나 빗나가면 메시 경계 상자로 보조 판정한다.
+			FVector HitLocation;
+			FVector HitNormal;
+			float HitTime = 0.0f;
+			if (FMath::LineExtentBoxIntersection(Body->Bounds.GetBox(), Start, End, FVector::ZeroVector,
+				HitLocation, HitNormal, HitTime))
+			{
+				const float Distance = HitTime * TraceLength;
+				if (Distance < BoundsDistance && HasClearCursorPath(Start, HitLocation))
+				{
+					BoundsDistance = Distance;
+					BoundsTarget = Candidate;
+				}
+			}
+		}
+	}
+	// 앞쪽 후보의 넉넉한 경계 상자가 뒤쪽 후보의 정확한 몸체 판정을 가로채지 않도록 정밀 판정을 우선한다.
+	return PreciseTarget ? PreciseTarget : BoundsTarget;
+}
+
+bool UPartnerHackComponent::HasClearCursorPath(const FVector& Start, const FVector& End) const
+{
+	UWorld* World = GetWorld();
+	if (!World) return false;
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PartnerHackCursorBlock), false);
+	TArray<AActor*> ChildActors;
+	if (PartnerCharacter)
+	{
+		Params.AddIgnoredActor(PartnerCharacter);
+		PartnerCharacter->GetAllChildActors(ChildActors);
+		Params.AddIgnoredActors(ChildActors);
+	}
+	// 후보 자신의 캡슐·조명 등이 몸체 앞에서 벽으로 잡히지 않도록 후보와 그 자식 액터는 벽 판정에서 뺀다.
+	for (AActor* Candidate : HackCandidateActors)
+	{
+		if (!IsValid(Candidate)) continue;
+		Params.AddIgnoredActor(Candidate);
+		ChildActors.Reset();
+		Candidate->GetAllChildActors(ChildActors);
+		Params.AddIgnoredActors(ChildActors);
+	}
+
+	// 횟수 제한 없이 후보 교차 지점까지 확인한다. 반복마다 맞은 제외 대상을
+	// 무시 목록에 추가하므로, 실제 장애물 또는 이 구간의 무충돌 결과에서 끝난다.
+	while (true)
+	{
+		FHitResult Hit;
+		if (!World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+		{
+			// 후보 교차 지점까지 실제로 검사를 끝낸 경우에만 선택을 허용한다.
+			return true;
+		}
+		if (AActor* HitActor = Hit.GetActor(); IsCursorIgnoredActor(HitActor))
+		{
+			// 클래스 제외는 액터 전체에 적용한다.
+			Params.AddIgnoredActor(HitActor);
+		}
+		else if (UPrimitiveComponent* HitComponent = Hit.GetComponent();
+			HitComponent && HitComponent->ComponentHasTag(CursorIgnoreTag))
+		{
+			// 컴포넌트 태그는 같은 액터의 다른 차폐 메시까지 제외하지 않는다.
+			Params.AddIgnoredComponent(HitComponent);
+		}
+		else
+		{
+			return false;
+		}
+	}
+}
+
+bool UPartnerHackComponent::IsCursorIgnoredActor(const AActor* HitActor) const
+{
+	if (!HitActor) return false;
+	for (const TSubclassOf<AActor>& IgnoredClass : CursorIgnoredActorClasses)
+	{
+		if (IgnoredClass && HitActor->IsA(IgnoredClass)) return true;
+	}
+	return false;
+}
+
+bool UPartnerHackComponent::IsCursorVisibleMesh(const UPrimitiveComponent* Component)
+{
+	// 커서 판정과 하이라이트에는 표시 가능한 몸체 메시만 사용한다.
+	const UMeshComponent* Mesh = Cast<UMeshComponent>(Component);
+	return IsValid(Mesh)
+		&& (Mesh->IsA<USkinnedMeshComponent>() || Mesh->IsA<UStaticMeshComponent>())
+		&& Mesh->IsRegistered() && Mesh->IsVisible() && !Mesh->bHiddenInGame
+		&& !Mesh->bOnlyOwnerSee && Mesh->bRenderInMainPass
+		&& !Mesh->ComponentHasTag(PartnerHackCursor::StencilExcludeTag)
+		&& !Mesh->ComponentHasTag(CursorIgnoreTag);
+}
+
+void UPartnerHackComponent::GatherCursorBodyComponents(AActor* Actor, TArray<UPrimitiveComponent*>& OutBodies)
+{
+	if (!IsValid(Actor)) return;
+	// 액터가 직접 소유한 컴포넌트만 본다. ChildActor(조명 등)의 컴포넌트는 포함되지 않는다.
+	TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
+	for (UPrimitiveComponent* Primitive : Primitives)
+	{
+		if (IsValid(Primitive) && Primitive->IsRegistered()
+			&& !Primitive->ComponentHasTag(CursorIgnoreTag)
+			&& Primitive->ComponentHasTag(CursorBodyTag))
+		{
+			OutBodies.Add(Primitive);
+		}
+	}
+	if (!OutBodies.IsEmpty()) return;
+	for (UPrimitiveComponent* Primitive : Primitives)
+	{
+		if (IsCursorVisibleMesh(Primitive))
+		{
+			OutBodies.Add(Primitive);
+		}
+	}
+}
+
+void UPartnerHackComponent::RefreshCursorHighlight()
+{
+	AActor* Desired = nullptr;
+	if (bHackCandidateSearchActive)
+	{
+		Desired = HeldHackActor ? HeldHackActor.Get() : HoveredHackActor.Get();
+	}
+	if (Desired == HighlightedActor.Get()) return;
+	ClearCursorHighlight();
+	ApplyCursorHighlight(Desired);
+}
+
+void UPartnerHackComponent::ApplyCursorHighlight(AActor* TargetActor)
+{
+	if (!IsValid(TargetActor)) return;
+	HighlightedActor = TargetActor;
+	UMaterialInterface* HighlightMaterial = HackTrackingHighlightMaterial;
+	if (!HighlightMaterial) return;
+
+	// 스켈레탈 메시에는 해당 용도로 컴파일된 머티리얼만 적용한다.
+	const UMaterial* BaseMaterial = HighlightMaterial->GetMaterial();
+	const bool bSkeletalUsable = BaseMaterial
+		&& (BaseMaterial->bUsedAsSpecialEngineMaterial || BaseMaterial->GetUsageByFlag(MATUSAGE_SkeletalMesh));
+
+	// 머티리얼의 Time 노드(게임 시간)와 같은 기준으로 hover 시작 시각을 넣는다. 파라미터가 없는 머티리얼엔 영향 없음.
+	if (!HighlightMID || HighlightMID->Parent != HighlightMaterial)
+	{
+		HighlightMID = UMaterialInstanceDynamic::Create(HighlightMaterial, this);
+	}
+	UMaterialInterface* OverlayMaterial = HighlightMaterial;
+	if (HighlightMID)
+	{
+		static const FName HoverStartTimeParam(TEXT("HoverStartTime"));
+		HighlightMID->SetScalarParameterValue(HoverStartTimeParam, GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f);
+		OverlayMaterial = HighlightMID;
+	}
+
+	TInlineComponentArray<UMeshComponent*> Meshes(TargetActor);
+	for (UMeshComponent* Mesh : Meshes)
+	{
+		if (!IsCursorVisibleMesh(Mesh)) continue;
+		if (Mesh->IsA<USkinnedMeshComponent>() && !bSkeletalUsable)
+		{
+			if (!bLoggedHighlightSkeletalUsage)
+			{
+				bLoggedHighlightSkeletalUsage = true;
+				UE_LOG(LogTemp, Warning,
+					TEXT("[PartnerHack] Skipping highlight on skeletal meshes: enable Used with Skeletal Mesh on %s"),
+					*HighlightMaterial->GetPathName());
+			}
+			continue;
+		}
+		FPartnerHackCursorHighlightState& State = HighlightedMeshes.AddDefaulted_GetRef();
+		State.Mesh = Mesh;
+		State.OriginalMaterial = Mesh->GetOverlayMaterial();
+		Mesh->SetOverlayMaterial(OverlayMaterial);
+	}
+}
+
+void UPartnerHackComponent::ClearCursorHighlight()
+{
+	for (const FPartnerHackCursorHighlightState& State : HighlightedMeshes)
+	{
+		if (UMeshComponent* Mesh = State.Mesh.Get())
+		{
+			Mesh->SetOverlayMaterial(State.OriginalMaterial.Get());
+		}
+	}
+	HighlightedMeshes.Reset();
+	HighlightedActor.Reset();
 }
 
 bool UPartnerHackComponent::CanMaintainHackHold(AActor* Actor, const FHackQueryContext& Context) const
@@ -716,6 +1027,7 @@ void UPartnerHackComponent::ResetLocalHackHoldProgress(bool bNotifyServer)
 	HackHoldDuration = 0.0f;
 	if (CandidateLayerWidget) CandidateLayerWidget->EndHackHold();
 	if (bWasHolding && bNotifyServer) ServerEndHackHold(LocalHoldId);
+	RefreshCursorHighlight();
 }
 
 void UPartnerHackComponent::ServerBeginHackHold_Implementation(AActor* TargetActor, uint32 HoldId)
@@ -876,8 +1188,11 @@ void UPartnerHackComponent::StopHackCandidateSearch()
 	ServerHoldId = 0;
 	HoveredMarkerWidget = nullptr;
 	HoveredHackActor = nullptr;
+	MarkerHoveredWidget = nullptr;
+	MarkerHoveredActor = nullptr;
 
 	bHackCandidateSearchActive = false;
+	ClearCursorHighlight();
 	DestroyCandidateLayerWidget();
 	ClearHackCandidates();
 	LastDebugCandidateCount = INDEX_NONE;
@@ -1301,11 +1616,17 @@ void UPartnerHackComponent::RemoveHackCandidateAt(int32 Index)
 		CandidateLayerWidget->RemoveCandidate(Actor, HackableComponent);
 	}
 
+	if (Actor && MarkerHoveredActor == Actor)
+	{
+		MarkerHoveredWidget = nullptr;
+		MarkerHoveredActor = nullptr;
+	}
 	if (Actor && HoveredHackActor == Actor)
 	{
 		ResetLocalHackHoldProgress();
 		HoveredMarkerWidget = nullptr;
 		HoveredHackActor = nullptr;
+		RefreshCursorHighlight();
 	}
 
 	if (bDebugHack)
