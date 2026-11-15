@@ -226,6 +226,11 @@ void AHackTargetPointNetworkProbe::Tick(float DeltaSeconds)
 	}
 	if (!Partner) return;
 	if (!HackComponent) HackComponent = Partner->FindComponentByClass<UPartnerHackComponent>();
+	if (FParse::Param(FCommandLine::Get(), TEXT("OutlierPoolHackUI")))
+	{
+		TickPoolHackUI();
+		return;
+	}
 	if (HasAuthority()) ServerTick();
 	else ClientTick();
 	SampleTurretDeployment();
@@ -240,7 +245,12 @@ void AHackTargetPointNetworkProbe::Write(const TSharedRef<FJsonObject>& Row)
 	Row->SetBoolField(TEXT("authority"), HasAuthority());
 	Row->SetNumberField(TEXT("case"), CaseIndex);
 	Row->SetNumberField(TEXT("worldTime"), GetWorld()->GetTimeSeconds());
-	if (CaseIndex >= 0 && CaseIndex < UE_ARRAY_COUNT(HackTargetProbe::Cases))
+	if (FParse::Param(FCommandLine::Get(), TEXT("OutlierPoolHackUI")) && CaseIndex >= 0 && CaseIndex < 3)
+	{
+		const TCHAR* Names[] = { TEXT("ReturnDuringMiniGame"), TEXT("SameFrameReuseDuringMiniGame"), TEXT("ReturnDuringPossessionTransition") };
+		Row->SetStringField(TEXT("name"), Names[CaseIndex]);
+	}
+	else if (CaseIndex >= 0 && CaseIndex < UE_ARRAY_COUNT(HackTargetProbe::Cases))
 		Row->SetStringField(TEXT("name"), HackTargetProbe::Cases[CaseIndex].Name);
 	FString Json;
 	FJsonSerializer::Serialize(Row, TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json));
@@ -677,6 +687,11 @@ void AHackTargetPointNetworkProbe::ServerObserve_Implementation(int32 ObservedCa
 	if (!HackTargetProbe::Enabled() || ObservedCase != CaseIndex) return;
 	TSharedPtr<FJsonObject> Row;
 	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Observation), Row)) return;
+	if (FParse::Param(FCommandLine::Get(), TEXT("OutlierPoolHackUI")))
+	{
+		if (int32(Row->GetNumberField(TEXT("phase"))) == Phase) OwnerObservation = Row;
+		return;
+	}
 	if (Phase == 2 && Row->GetStringField(TEXT("event")) == TEXT("Cleanup"))
 	{
 		bClientCleaned = Row->GetBoolField(TEXT("clean"));

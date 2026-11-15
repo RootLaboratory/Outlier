@@ -148,6 +148,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = "GAS")
 	TObjectPtr<UOutlierPartnerCombatAttributeSet> CombatAttributeSet;
 
+	// 빙의 성공 시 업그레이드 배율과 곱해 전달한다. Partner 본체 공격에는 사용하지 않는다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Possession", meta = (ClampMin = "1.0"))
+	float BasePossessionDamageMultiplier = 1.0f;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UPartnerVitalityComponent> PartnerVitalityComponent;
 
@@ -647,6 +651,12 @@ public:
 		return OutlierAbilitySystemComponent;
 	}
 	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
+	float GetBasePossessionDamageMultiplier() const
+	{
+		return FMath::IsFinite(BasePossessionDamageMultiplier)
+			? FMath::Max(1.0f, BasePossessionDamageMultiplier) : 1.0f;
+	}
+	float GetPossessedWeaponDamageMultiplier() const;
 	virtual void GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const override;
 	const UOutlierPartnerMovementAttributeSet* GetMobilityAttributeSet() const { return MobilityAttributeSet; }
 	UPartnerVitalityComponent* GetPartnerVitalityComponent() const { return PartnerVitalityComponent; }

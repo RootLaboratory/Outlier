@@ -4,6 +4,9 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "Drone/Partner/HackableComponent.h"
+#include "Drone/Partner/HackGameplayTags.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "Camera/CameraActor.h"
 #include "Components/SceneComponent.h"
@@ -48,12 +51,15 @@ struct FProbe
 	int32 CaseIndex = -1;
 	double ReadyAt = -1, CaseStart = 0;
 	float LastDelta = 0;
+	bool bCheckHackState = false, bHackStateDirtied = false;
+	TMap<UClass*, FGameplayTagContainer> InitialHackTags;
 
 	bool Enabled()
 	{
 		if (!bReadParameters)
 		{
 			bReadParameters = true;
+			bCheckHackState = FParse::Param(FCommandLine::Get(), TEXT("OutlierPoolHackState"));
 			FParse::Value(FCommandLine::Get(), TEXT("OutlierPoolNetworkProbe="), Role);
 			FParse::Value(FCommandLine::Get(), TEXT("OutlierPoolProbeOutput="), Output);
 			if (!Output.IsEmpty()) IFileManager::Get().MakeDirectory(*FPaths::GetPath(Output), true);
@@ -131,7 +137,16 @@ struct FProbe
 		if (!Current.IsValid()) { Event(TEXT("LeaseFailed"), World); bFinished = true; return; }
 		Current->SetNetUpdateFrequency(CaseIndex % 3 == 1 ? 5 : 30);
 		Current->GetCharacterMovement()->bRunPhysicsWithNoController = true;
-		CaseStart = World->GetTimeSeconds(); bReturned = false; bMoving = false;
+		if (bCheckHackState)
+		{
+			const FGameplayTagContainer& Tags = Current->GetHackableComponent()->HackTags;
+			if (const FGameplayTagContainer* Initial = InitialHackTags.Find(Current->GetClass()))
+			{
+				if (Tags != *Initial) { Event(TEXT("HackResetFailed"), World); bFinished = true; return; }
+			}
+			else InitialHackTags.Add(Current->GetClass(), Tags);
+		}
+		CaseStart = World->GetTimeSeconds(); bReturned = false; bMoving = false; bHackStateDirtied = false;
 		Event(TEXT("Leased"), World);
 	}
 
@@ -155,12 +170,30 @@ struct FProbe
 			if (CaseIndex < 0 || World->GetTimeSeconds() - CaseStart > 3.8) StartCase(World);
 			if (bFinished || !Current.IsValid()) return;
 			const double Age = World->GetTimeSeconds() - CaseStart;
+			if (bCheckHackState && !bHackStateDirtied && Age >= 2.0 && !bReturned
+				&& Current->GetEnemyPoolState() == EEnemyPoolState::CombatActive)
+			{
+				// 네트워크 검증 전용 오염이다. 실제 해킹/빙의 성공 경로는 PoolHackState 자동화가 검증한다.
+				UHackableComponent* Hackable = Current->GetHackableComponent();
+				Hackable->MarkAsHackedOnce();
+				Hackable->HackTags.RemoveTag(HackGameplayTags::Target::Possessable());
+				Hackable->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
+				Hackable->HackTags.AddTag(OutlierGameplayTags::State::Locked());
+				Current->ForceNetUpdate();
+				bHackStateDirtied = true;
+				Event(TEXT("HackStateDirtied"), World);
+			}
 			if (!bReturned && Age >= 2.8)
 			{
 				Event(TEXT("Returning"), World);
 				bReturned = World->GetSubsystem<UEnemyPoolSubsystem>()->ReturnEnemy(Current.Get(),
 					Current->GetPoolGameplayGeneration(), Current->GetPoolLeaseSerial());
 				if (!bReturned) { Event(TEXT("ReturnFailed"), World); bFinished = true; }
+				else if (bCheckHackState && CaseIndex % 3 == 1)
+				{
+					// 같은 프레임에 재대여하여 클라이언트가 Idle을 건너뛰어도 새 태그로 수렴하는지 확인한다.
+					StartCase(World);
+				}
 			}
 			else if (!bReturned && Current->GetEnemyPoolState() == EEnemyPoolState::CombatActive)
 			{
@@ -211,6 +244,14 @@ struct FProbe
 			Row->SetNumberField(TEXT("netMode"), int32(World->GetNetMode())); Row->SetBoolField(TEXT("authority"), Drone->HasAuthority());
 			Row->SetNumberField(TEXT("generation"), Drone->GetPoolGameplayGeneration()); Row->SetNumberField(TEXT("lease"), Drone->GetPoolLeaseSerial());
 			Row->SetNumberField(TEXT("state"), int32(Drone->GetEnemyPoolState())); Row->SetBoolField(TEXT("hidden"), Drone->IsHidden());
+			if (bCheckHackState)
+			{
+				const UHackableComponent* Hackable = Drone->GetHackableComponent();
+				Row->SetBoolField(TEXT("hackedOnce"), Hackable->HasHackTag(OutlierGameplayTags::State::HackedOnce()));
+				Row->SetBoolField(TEXT("locked"), Hackable->HasHackTag(OutlierGameplayTags::State::Locked()));
+				Row->SetBoolField(TEXT("possessable"), Hackable->HasHackTag(HackGameplayTags::Target::Possessable()));
+				Row->SetBoolField(TEXT("nonPossessable"), Hackable->HasHackTag(HackGameplayTags::Target::NonPossessable()));
+			}
 			Row->SetNumberField(TEXT("meshOffset"), Offset.Size()); Row->SetNumberField(TEXT("tiltPitch"), Tilt.Pitch); Row->SetNumberField(TEXT("tiltRoll"), Tilt.Roll);
 			Row->SetNumberField(TEXT("capsuleError"), FVector::Distance(Drone->GetActorLocation(), SpawnLocation(Case)));
 			Row->SetNumberField(TEXT("speed"), Drone->GetVelocity().Size()); Row->SetNumberField(TEXT("delta"), LastDelta);

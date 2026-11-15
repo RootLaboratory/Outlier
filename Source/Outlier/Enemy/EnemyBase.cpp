@@ -623,7 +623,7 @@ bool AEnemyBase::BeginPoolLease(
 	const FTransform& SpawnTransform,
 	int32 LeaseSerial)
 {
-	if (!HasAuthority() || PoolState != EEnemyPoolState::Idle
+	if (!HasAuthority() || bPoolReturnInProgress || PoolState != EEnemyPoolState::Idle
 		|| !OwningPoolSubsystem.IsValid() || LeaseSerial == 0)
 	{
 		return false;
@@ -651,6 +651,10 @@ bool AEnemyBase::BeginPoolLease(
 	ResetPatrolPoints();
 	InitializeFromEnemyStatRow();
 	ResetPoolRuntimeState();
+	if (HackableComponent)
+	{
+		HackableComponent->ResetPoolHackState();
+	}
 
 	SetPoolState(EEnemyPoolState::SpawnPresentation);
 	ForceNetUpdate();
@@ -800,14 +804,39 @@ void AEnemyBase::CompletePoolDeathPresentation(
 
 void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 {
-	if (!HasAuthority() || !MatchesPoolLease(GameplayGeneration, LeaseSerial))
+	if (!HasAuthority() || bPoolReturnInProgress || !MatchesPoolLease(GameplayGeneration, LeaseSerial))
 	{
 		return;
 	}
+	// 취소/종료 알림은 동기 재진입할 수 있다. 정리가 끝날 때까지 이 Actor의 새 대여를 막는다.
+	TGuardValue<bool> ReturningGuard(bPoolReturnInProgress, true);
+	FlushNetDormancy();
+	TWeakObjectPtr<APartnerPlayerController> PendingPartnerController;
+	if (APartnerCharacter* Partner = PossessionInstigatorPartner.Get())
+	{
+		PendingPartnerController = Cast<APartnerPlayerController>(Partner->GetController());
+	}
+	if (HackableComponent)
+	{
+		HackableComponent->NotifyHackTargetUnavailable();
+	}
+	if (!IsValid(this) || !MatchesPoolLease(GameplayGeneration, LeaseSerial)) return;
+	// unavailable 구독자가 Pending 상태를 먼저 지워도 Controller의 화면 전환 정리는 놓치지 않는다.
+	if (APartnerPlayerController* PartnerController = PendingPartnerController.Get())
+	{
+		PartnerController->CancelEnemyPossessionForPool(this);
+	}
+	if (APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(GetController()))
+	{
+		PartnerController->ReleaseEnemyPossessionForCleanup();
+	}
+	CancelPossessionProcess();
+	if (!IsValid(this) || !MatchesPoolLease(GameplayGeneration, LeaseSerial)) return;
 
 	ClearAlertClue();
 	ClearHitClues();
 	ResetHackEffectForPool();
+	if (!IsValid(this) || !MatchesPoolLease(GameplayGeneration, LeaseSerial)) return;
 
 	// 생존 상태의 전투 이탈도 원래 위치에 파편을 남긴다. 사망 경로의 요청은 중복하지 않는다.
 	if (PoolState == EEnemyPoolState::CombatActive && !bDeathCleanupPerformed)
@@ -845,6 +874,12 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 	StopCurrentAttack();
 	PrepareForPoolIdle();
 	SetPoolState(EEnemyPoolState::Idle);
+	if (!IsValid(this) || !MatchesPoolLease(GameplayGeneration, LeaseSerial)) return;
+	// StateTree ExitState/자폭 정리가 태그를 만진 뒤 마지막으로 기준 상태를 복원한다.
+	if (HackableComponent)
+	{
+		HackableComponent->ResetPoolHackState();
+	}
 	SetActorLocation(FVector(0.0, 0.0, -1000000.0), false, nullptr, ETeleportType::TeleportPhysics);
 	PoolGameplayGeneration = 0;
 	PoolLeaseSerial = 0;

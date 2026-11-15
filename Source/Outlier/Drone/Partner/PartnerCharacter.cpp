@@ -456,6 +456,13 @@ void APartnerCharacter::UnbindPartnerCooldownUIObserver()
 	PartnerHackChargesChangedHandle.Reset();
 }
 
+float APartnerCharacter::GetPossessedWeaponDamageMultiplier() const
+{
+	const float UpgradeMultiplier = OutlierAbilitySystemComponent
+		? OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierPartnerCombatAttributeSet::GetHackedDroneDamageMultiplierAttribute()) : 1.0f;
+	return GetBasePossessionDamageMultiplier() * (FMath::IsFinite(UpgradeMultiplier) ? FMath::Max(0.0f, UpgradeMultiplier) : 1.0f);
+}
+
 void APartnerCharacter::GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const
 {
 	OutModifiers = CachedWeaponDamageModifiers;

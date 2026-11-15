@@ -293,6 +293,7 @@ public:
 	bool MatchesPoolLease(int32 GameplayGeneration, int32 LeaseSerial) const;
 	void FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial);
 	void InvalidatePoolLease();
+	bool IsPoolReturnInProgress() const { return bPoolReturnInProgress; }
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Pool")
 	void CompletePoolSpawnPresentation(int32 GameplayGeneration, int32 LeaseSerial);
@@ -1600,6 +1601,7 @@ protected:
 #endif
 
 	TWeakObjectPtr<UEnemyPoolSubsystem> OwningPoolSubsystem;
+	bool bPoolReturnInProgress = false;
 	struct FSourceMeshVisibility
 	{
 		TWeakObjectPtr<USceneComponent> Component;
