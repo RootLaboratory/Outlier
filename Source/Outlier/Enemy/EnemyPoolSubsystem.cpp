@@ -3,6 +3,7 @@
 #include "Enemy/AutoTurret.h"
 #include "Components/CapsuleComponent.h"
 #include "Enemy/EnemyBase.h"
+#include "Drone/Partner/HackableComponent.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
@@ -158,6 +159,11 @@ AEnemyBase* UEnemyPoolSubsystem::CreatePoolEnemy(FEnemyPoolBucket& Bucket)
 	// BeginPlay 전에 표시해야 배치 적 등록과 StateTree 자동 시작 경로를 건너뛴다.
 	Enemy->PrepareForPoolSpawn(this);
 	UGameplayStatics::FinishSpawningActor(Enemy, ParkingTransform);
+	// Construction/BeginPlay의 인스턴스 설정까지 확정된 뒤, 첫 대여 전에 원본을 저장한다.
+	if (UHackableComponent* Hackable = Enemy->GetHackableComponent())
+	{
+		Hackable->InitializePoolHackState();
+	}
 	Bucket.IdleEnemies.Add(Enemy);
 
 	UE_LOG(LogTemp, Display,
@@ -254,19 +260,27 @@ bool UEnemyPoolSubsystem::ReturnEnemy(
 	int32 LeaseSerial)
 {
 	// 같은 Actor가 다시 대여됐을 수 있다. 이전 연출의 늦은 반환은 현재 대여를 건드리지 않는다.
-	if (!IsValid(Enemy) || !Enemy->MatchesPoolLease(GameplayGeneration, LeaseSerial))
+	if (!IsValid(Enemy) || Enemy->IsPoolReturnInProgress() || !Enemy->MatchesPoolLease(GameplayGeneration, LeaseSerial))
 	{
 		return false;
 	}
 
 	FEnemyPoolBucket* Bucket = Buckets.Find(Enemy->GetClass());
-	if (!Bucket || !Bucket->LeasedEnemies.Remove(Enemy))
+	if (!Bucket || !Bucket->LeasedEnemies.Contains(Enemy))
 	{
 		return false;
 	}
 
 	Enemy->FinishPoolReturn(GameplayGeneration, LeaseSerial);
-	Bucket->IdleEnemies.AddUnique(Enemy);
+	// 종료 알림에서 풀 파괴/다른 클래스 대여로 Buckets가 바뀔 수 있어 이전 포인터를 재사용하지 않는다.
+	if (!IsValid(Enemy)) return true;
+	Bucket = Buckets.Find(Enemy->GetClass());
+	if (Bucket && Enemy->GetEnemyPoolState() == EEnemyPoolState::Idle
+		&& Enemy->GetPoolLeaseSerial() == 0)
+	{
+		Bucket->LeasedEnemies.Remove(Enemy);
+		Bucket->IdleEnemies.AddUnique(Enemy);
+	}
 	return true;
 }
 

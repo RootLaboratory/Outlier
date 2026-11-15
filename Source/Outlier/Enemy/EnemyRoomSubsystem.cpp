@@ -200,7 +200,8 @@ void UEnemyRoomSubsystem::RefreshEnemyRegistration(AEnemyBase* Enemy)
 	RegisteredEnemyKeys.Add(EnemyPtr, NewKey);
 }
 
-bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy)
+bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy,
+	AActor* Source)
 {
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_Client || !RoomTag.IsValid())
@@ -231,7 +232,7 @@ bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 		}
 	}
 	CombatRooms.Add(RoomTag);
-	CombatRoomLastKnownLocations.Add(RoomTag, PlayerLocation);
+	CombatRoomLastKnownLocations.Add(RoomTag, {PlayerLocation, Source});
 
 	CompactRegisteredEnemies(RoomTag);
 	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
@@ -241,7 +242,8 @@ bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 		{
 			AEnemyBase* Enemy = EnemyPtr.Get();
-			if (!IsValid(Enemy) || Enemy == ExcludeEnemy)
+			// 등록은 팀 변경 후의 재감지/정리에도 필요하다. 적 방 전투 수신 자격만 따로 검사한다.
+			if (!IsValid(Enemy) || Enemy == ExcludeEnemy || !Enemy->CanUseRoomTargetSharing())
 			{
 				continue;
 			}
@@ -250,13 +252,12 @@ bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 			{
 				// 대기/등장/사망 연출 중인 풀 개체는 완료 콜백에서 따로 동기화한다.
 				if (Enemy->GetEnemyPoolState() != EEnemyPoolState::CombatActive
-					|| Enemy->IsDead() || Enemy->IsAIControlSuppressed()
-					|| !Enemy->CanUseRoomTargetSharing())
+					|| Enemy->IsDead() || Enemy->IsAIControlSuppressed())
 				{
 					continue;
 				}
 			}
-			Enemy->EnterCombatFromRoom(PlayerLocation, false);
+			Enemy->EnterCombatFromRoom(PlayerLocation, false, false, Source);
 		}
 	}
 
@@ -522,6 +523,46 @@ void UEnemyRoomSubsystem::NotifyTargetActorRemoved(AActor* TargetActor)
 	RefreshDetectionTarget(TargetActor);
 }
 
+void UEnemyRoomSubsystem::SetPresentationTargetProtected(AActor* TargetActor, bool bProtected)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || !IsValid(TargetActor)) return;
+	if (bProtected)
+	{
+		// 청각만으로 시작된 전투에는 ContactState가 없을 수 있다. 좌표 자체의 출처로 먼저 정리한다.
+		for (auto It = CombatRoomLastKnownLocations.CreateIterator(); It; ++It)
+		{
+			if (It.Value().Source.Get() == TargetActor) It.RemoveCurrent();
+		}
+		// 보호 시작은 일반 시야 상실이 아니다. 옛 공유 좌표를 수색 사건으로 게시하지 않는다.
+		for (auto& Pair : TargetContactStates)
+		{
+			auto& State = Pair.Value;
+			State.TargetObservations.Remove(TargetActor);
+			for (auto It = State.DirectObservers.CreateIterator(); It; ++It)
+			{
+				if (It.Value().TargetActor.Get() == TargetActor) It.RemoveCurrent();
+			}
+			if (State.TargetActor.Get() == TargetActor)
+			{
+				World->GetTimerManager().ClearTimer(State.ForcedShareTimerHandle);
+				State.TargetActor.Reset();
+				State.bSharedContactActive = false;
+			}
+		}
+		CompactAllRegisteredEnemies();
+		for (const auto& Room : RegisteredEnemiesByRoom)
+		{
+			for (const auto& Enemy : Room.Value)
+			{
+				if (Enemy.IsValid()) Enemy->ForgetPresentationTarget(TargetActor);
+			}
+		}
+	}
+	// 해제도 캐시 초기화를 거쳐 현재 위치에서 새 시야 판정을 요청한다.
+	RefreshDetectionTarget(TargetActor);
+}
+
 void UEnemyRoomSubsystem::RefreshDetectionTarget(AActor* TargetActor)
 {
 	UWorld* World = GetWorld();
@@ -556,7 +597,8 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 {
 	if (CombatRooms.Contains(RoomTag))
 	{
-		CombatRoomLastKnownLocations.Add(RoomTag, TargetLocation);
+		const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
+		CombatRoomLastKnownLocations.Add(RoomTag, {TargetLocation, ContactState ? ContactState->TargetActor.Get() : nullptr});
 	}
 	if (FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
 	{
@@ -605,7 +647,9 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 			// 첫 발각의 Alert 확인이 끝나기 전에는 방 전투를 앞서 시작하지 않는다.
 			if (CombatRooms.Contains(RoomTag) && Enemy->GetCombatState() != EEnemyCombatState::Returning)
 			{
-				Enemy->EnterCombatFromRoom(TargetLocation, false);
+				const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
+				Enemy->EnterCombatFromRoom(TargetLocation, false, false,
+					ContactState ? ContactState->TargetActor.Get() : nullptr);
 			}
 			else if (Enemy->GetCombatState() != EEnemyCombatState::Combat
 				&& Enemy->GetCombatState() != EEnemyCombatState::Returning
@@ -621,7 +665,8 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 		}
 
 		const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
-		Enemy->ApplySharedTargetContact(TargetLocation, false, ContactState ? ContactState->SharedRevision : 0);
+		Enemy->ApplySharedTargetContact(TargetLocation, false, ContactState ? ContactState->SharedRevision : 0,
+			ContactState ? ContactState->TargetActor.Get() : nullptr);
 	}
 }
 
@@ -653,7 +698,8 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetLost(FGameplayTag RoomTag)
 	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 	{
 		AEnemyBase* Enemy = EnemyPtr.Get();
-		if (!IsValid(Enemy))
+		// 획득과 상실의 수신 대상을 맞춘다. 해킹/리셋의 직접 공유 정리 호출은 그대로 둔다.
+		if (!IsValid(Enemy) || !Enemy->CanUseRoomTargetSharing())
 		{
 			continue;
 		}
@@ -794,7 +840,8 @@ bool UEnemyRoomSubsystem::TrySelectRoomTarget(
 
 void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 {
-	if (!IsValid(Enemy) || !Enemy->HasAuthority())
+	// 재등록도 방 전파와 같은 자격을 따른다. 아군의 자체 관측 위치를 적 방 좌표로 덮어쓰지 않는다.
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !Enemy->CanUseRoomTargetSharing())
 	{
 		return;
 	}
@@ -813,8 +860,9 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 		return;
 	}
 
-	const FVector* LastKnownLocation = CombatRoomLastKnownLocations.Find(RoomTag);
-	if (!ContactState && !LastKnownLocation)
+	const FEnemyRoomLastKnownLocation* LastKnownLocation = CombatRoomLastKnownLocations.Find(RoomTag);
+	// 보호로 마지막 관측이 폐기됐으면 남아 있는 ContactState의 옛 좌표로 증원 수색을 시작하지 않는다.
+	if (!LastKnownLocation && (!ContactState || !ContactState->TargetActor.IsValid()))
 	{
 		if (Enemy->IsPoolManaged())
 		{
@@ -825,14 +873,15 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 		}
 		return;
 	}
-	// 새 증원도 방의 마지막 전투 위치를 받아 합류한다.
+	// 풀 등장 완료 콜백은 CombatActive 전환 전에 등록한다. 기존 순서대로 합류 정보를 먼저 준비한다.
 	// 현재 공유가 끊겼다면 직접 시야를 만들지 않고 마지막 위치를 수색한다.
-	const FVector TargetLocation = ContactState
-		? ContactState->LastReportedLocation : *LastKnownLocation;
-	Enemy->EnterCombatFromRoom(TargetLocation, false, true);
+	// 가장 최근에 기록한 좌표와 출처를 한 쌍으로 인계한다. 이전 Contact의 출처와 섞지 않는다.
+	const FVector TargetLocation = LastKnownLocation ? LastKnownLocation->Location : ContactState->LastReportedLocation;
+	AActor* Source = LastKnownLocation ? LastKnownLocation->Source.Get() : ContactState->TargetActor.Get();
+	Enemy->EnterCombatFromRoom(TargetLocation, false, true, Source);
 	if (ContactState && ContactState->bSharedContactActive)
 	{
-		Enemy->ApplySharedTargetContact(TargetLocation, true, ContactState->SharedRevision);
+		Enemy->ApplySharedTargetContact(TargetLocation, true, ContactState->SharedRevision, ContactState->TargetActor.Get());
 	}
 }
 
@@ -843,7 +892,7 @@ void UEnemyRoomSubsystem::SetActiveRoomTargetForTesting(
 	bool bSharedContactActive)
 {
 	CombatRooms.Add(RoomTag);
-	CombatRoomLastKnownLocations.Add(RoomTag, TargetLocation);
+	CombatRoomLastKnownLocations.Add(RoomTag, {TargetLocation, nullptr});
 	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(RoomTag);
 	ContactState.LastReportedLocation = TargetLocation;
 	ContactState.bSharedContactActive = bSharedContactActive;

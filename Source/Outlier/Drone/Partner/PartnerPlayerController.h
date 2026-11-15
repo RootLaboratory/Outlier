@@ -40,6 +40,10 @@ class OUTLIER_API APartnerPlayerController : public AFirstPersonPlayerController
 	friend class FOutlierGasPartnerPossessionCooldownSessionTest;
 	friend class FOutlierGasPartnerHackPossessionRechargeTest;
 	friend class FEnemyHackEffectGameplayTest;
+	friend class FEnemyPoolHackStateTest;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class AHackTargetPointNetworkProbe;
+#endif
 	friend class FEnemyHackEffectHUDTest;
 	friend class FOutlierGasEnemyPossessionStunResetTest;
 
@@ -133,6 +137,10 @@ protected:
 
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AEnemyBase> LocalPendingEnemyPossessionTarget;
+	int32 PendingPossessionGeneration = 0;
+	int32 PendingPossessionLease = 0;
+	int32 LocalPossessionGeneration = 0;
+	int32 LocalPossessionLease = 0;
 
 	// 서버에서 Possess는 끝났지만 소유 클라이언트의 화면 복귀 완료를 기다리는 대상.
 	TWeakObjectPtr<AEnemyBase> HackLifetimePendingRevealTarget;
@@ -172,16 +180,16 @@ protected:
 		EEndPlayReason::Type EndPlayReason);
 
 	UFUNCTION(Client, Reliable)
-	void ClientBeginEnemyPossessionTransition(AEnemyBase* EnemyTarget);
+	void ClientBeginEnemyPossessionTransition(AEnemyBase* EnemyTarget, int32 GameplayGeneration, int32 LeaseSerial);
 
 	UFUNCTION(Client, Reliable)
 	void ClientCancelEnemyPossessionTransition(AEnemyBase* EnemyTarget);
 
 	UFUNCTION(Server, Reliable)
-	void ServerNotifyHackTransitionCovered(AEnemyBase* EnemyTarget);
+	void ServerNotifyHackTransitionCovered(AEnemyBase* EnemyTarget, int32 GameplayGeneration, int32 LeaseSerial);
 
 	UFUNCTION(Server, Reliable)
-	void ServerNotifyHackPossessionRevealFinished(AEnemyBase* EnemyTarget);
+	void ServerNotifyHackPossessionRevealFinished(AEnemyBase* EnemyTarget, int32 GameplayGeneration, int32 LeaseSerial);
 
 	UFUNCTION(Server, Reliable)
 	void ServerReleaseEnemyPossession();
@@ -205,6 +213,7 @@ public:
 
 	void CachePartnerCharacterForEnemyPossession(APartnerCharacter* PartnerCharacter);
 	bool BeginEnemyPossessionTransition(AEnemyBase* EnemyTarget, APartnerCharacter* PartnerCharacter);
+	void CancelEnemyPossessionForPool(AEnemyBase* EnemyTarget);
 	bool ShouldDeferPartnerHackRecharge(const APartnerCharacter* PartnerCharacter) const;
 
 	UFUNCTION(BlueprintPure, Category = "Partner|EnemyPossession")

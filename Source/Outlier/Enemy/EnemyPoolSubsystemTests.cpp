@@ -2,6 +2,13 @@
 
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
+#include "Drone/Partner/HackableComponent.h"
+#include "Drone/Partner/HackGameplayTags.h"
+#include "Drone/Partner/PartnerHackComponent.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerPlayerController.h"
+#include "GameplayTags/OutlierGameplayTags.h"
+#include "Misc/ScopeExit.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -28,6 +35,184 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FEnemyPoolRuntimeTest,
 	"Outlier.Enemy.PoolRuntime",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyPoolHackStateTest, "Outlier.Enemy.PoolHackState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyPoolHackStateTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("PoolHackState")), GetTransientPackage());
+	if (!TestNotNull(TEXT("Pool hack world"), World)) return false;
+	World->AddToRoot();
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	World->SetGameMode(FURL());
+	World->InitializeActorsForPlay(FURL());
+	ON_SCOPE_EXIT
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
+	if (!TestNotNull(TEXT("Pool subsystem"), Pool)) return false;
+	FActorSpawnParameters PartnerSpawn;
+	PartnerSpawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>(APartnerCharacter::StaticClass(), FTransform::Identity, PartnerSpawn);
+	APartnerPlayerController* Controller = World->SpawnActor<APartnerPlayerController>();
+	if (!TestNotNull(TEXT("Partner"), Partner) || !TestNotNull(TEXT("Partner controller"), Controller)) return false;
+	Partner->GetOutlierAbilitySystemComponent()->InitializeForPawn(Partner);
+	Partner->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.f);
+	FOutlierPartnerAbilityConfig AbilityConfig;
+	AbilityConfig.HackCooldown = 30.f;
+	if (!TestTrue(TEXT("Partner hack abilities configure"), Partner->GetOutlierAbilitySystemComponent()->ConfigurePartnerAbilities(AbilityConfig))) return false;
+	Controller->Possess(Partner);
+	UPartnerHackComponent* Requests = NewObject<UPartnerHackComponent>(Partner);
+	Requests->RefreshCharacterRefsFromPlayerState();
+	const FGameplayTag Possessable = HackGameplayTags::Target::Possessable();
+	const FGameplayTag NonPossessable = HackGameplayTags::Target::NonPossessable();
+	const FGameplayTag Locked = OutlierGameplayTags::State::Locked();
+	const FGameplayTag Hacked = OutlierGameplayTags::State::HackedOnce();
+	const FGameplayTag Multiple = HackGameplayTags::Use::Multiple();
+
+	// 초기 인스턴스 설정은 deferred 생성 중 주입한다. 실제 풀의 기준 캡처/복원은 우회하지 않는다.
+	for (int32 Variant = 0; Variant < 3; ++Variant)
+	{
+		Pool->DestroyPool();
+		FGameplayTagContainer InitialTags;
+		InitialTags.AddTag(Variant == 1 ? NonPossessable : Possessable);
+		if (Variant == 2) InitialTags.AddTag(Locked);
+		InitialTags.AddTag(Multiple);
+		InitialTags.AddTag(Hacked);
+		FGameplayTagContainer Expected = InitialTags;
+		Expected.RemoveTag(Hacked);
+		const FDelegateHandle SpawnHandle = World->AddOnActorSpawnedHandler(FOnActorSpawned::FDelegate::CreateLambda(
+			[InitialTags](AActor* Actor)
+			{
+				if (AEnemyBase* Enemy = Cast<AEnemyBase>(Actor)) Enemy->GetHackableComponent()->HackTags = InitialTags;
+			}));
+		UEnemyPoolDefinition* Definition = NewObject<UEnemyPoolDefinition>(World);
+		FEnemyPoolEntry& Entry = Definition->Entries.AddDefaulted_GetRef();
+		Entry.EnemyClass = AEnemyBase::StaticClass();
+		Entry.PrewarmCount = Entry.MaxCount = 1;
+		const bool bPrewarmed = Pool->PrewarmPool(Definition);
+		World->RemoveOnActorSpawnedHandler(SpawnHandle);
+		if (!TestTrue(TEXT("Prewarm"), bPrewarmed)) return false;
+		AEnemyBase* PreviousEnemy = nullptr;
+		for (int32 Cycle = 0; Cycle < 3; ++Cycle)
+		{
+			FEnemyPoolLeaseContext Context;
+			Context.GameplayGeneration = 50 + Cycle;
+			AEnemyBase* Enemy = Pool->LeaseEnemy(AEnemyBase::StaticClass(), FTransform::Identity, Context);
+			if (!TestNotNull(TEXT("Leased enemy"), Enemy)) return false;
+			if (PreviousEnemy) TestTrue(TEXT("Same Actor reused"), PreviousEnemy == Enemy);
+			PreviousEnemy = Enemy;
+			UHackableComponent* Hackable = Enemy->GetHackableComponent();
+			TestTrue(TEXT("New lease restores exact authored tags except HackedOnce"), Hackable->HackTags == Expected);
+			FHackQueryContext Query;
+			Query.BlockedTags.AddTag(Locked);
+			TestEqual(TEXT("Only originally locked variant is blocked"), Hackable->CanBeHackTarget(Query), Variant != 2);
+			const int32 Lease = Enemy->GetPoolLeaseSerial();
+			if (Variant == 0)
+			{
+				Enemy->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.f);
+				// 실제 Enemy 시작 → Partner 성공 처리 → 빙의 전환 대기까지 매 대여에서 다시 통과한다.
+				FHackQueryContext Start;
+				Start.InstigatorActor = Partner;
+				Start.RequestId = 6;
+				Requests->SetActiveHackableComponent(Hackable);
+				Requests->ActiveHackRequestId = Start.RequestId;
+				Enemy->HandleHackStarted(Start);
+				TestTrue(TEXT("Reused enemy accepts a real possession hack start"), Enemy->IsPossessionInProgress());
+				FHackResultContext Success;
+				Success.TargetActor = Enemy;
+				Success.InstigatorActor = Partner;
+				Success.RequestId = Start.RequestId;
+				Success.Result = EHackResult::Success;
+				Requests->CompleteActiveHack(Success, false);
+				TestTrue(TEXT("Real successful hack records its history"), Hackable->HasHackTag(Hacked));
+				TestTrue(TEXT("Hack success enters the controller transition"), Controller->ShouldDeferPartnerHackRecharge(Partner));
+				Controller->ServerNotifyHackTransitionCovered_Implementation(Enemy, Context.GameplayGeneration, Lease - 1);
+				TestTrue(TEXT("An old covered RPC cannot commit the new transition"), Controller->GetPawn() == Partner);
+				TestTrue(TEXT("An old covered RPC does not cancel the new transition"), Controller->ShouldDeferPartnerHackRecharge(Partner));
+				// 첫 회는 전환 대기 중 반환하고, 다음 회부터는 실제 빙의 완료 뒤 반환한다.
+				if (Cycle > 0)
+				{
+					Controller->CommitPendingEnemyPossession(Enemy);
+					TestTrue(TEXT("Real hack commit possesses the reused enemy"), Controller->GetPawn() == Enemy);
+					Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy, Context.GameplayGeneration, Lease - 1);
+					TestFalse(TEXT("An old reveal RPC cannot start the new effect"), Enemy->IsHackEffectActive());
+					Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy, Context.GameplayGeneration, Lease);
+					TestTrue(TEXT("Current reveal starts the new lifetime"), Enemy->IsHackEffectActive());
+				}
+			}
+			Hackable->MarkAsHackedOnce();
+			TestFalse(TEXT("One-use query rejects a second hack in the same lease"), Hackable->CanBeHackTarget(Query));
+			Query.HackMultiUseTags.AddTag(Multiple);
+			TestEqual(TEXT("Authored multiple-use policy survives"), Hackable->CanBeHackTarget(Query), Variant != 2);
+			Hackable->HackTags.RemoveTag(Possessable);
+			Hackable->HackTags.AddTag(NonPossessable);
+			Hackable->HackTags.AddTag(Locked);
+			Hackable->InitializePoolHackState();
+			TestTrue(TEXT("Repeated capture does not erase runtime history"), Hackable->HasHackTag(Hacked));
+
+			// 실전 요청 경계와 같은 수명 스냅샷을 잡고, 반환 뒤 늦은 결과를 제출한다.
+			Requests->SetActiveHackableComponent(Hackable);
+			Requests->ActiveHackRequestId = 7;
+			bool bUnavailable = false;
+			const FDelegateHandle Unavailable = Hackable->OnHackTargetUnavailable.AddLambda([&](UHackableComponent*)
+			{
+				bUnavailable = true;
+				TestFalse(TEXT("Returning enemy immediately rejects hacks"), Hackable->CanBeHackTarget(FHackQueryContext()));
+				TestFalse(TEXT("Nested return is rejected"), Pool->ReturnEnemy(Enemy, Context.GameplayGeneration, Lease));
+				TestNull(TEXT("Returning actor cannot be leased from its full bucket"),
+					Pool->LeaseEnemy(AEnemyBase::StaticClass(), FTransform::Identity, Context));
+			});
+			TestTrue(TEXT("Real pool return"), Pool->ReturnEnemy(Enemy, Context.GameplayGeneration, Lease));
+			Hackable->OnHackTargetUnavailable.Remove(Unavailable);
+			TestTrue(TEXT("Return publishes unavailable"), bUnavailable);
+			TestTrue(TEXT("Return restores baseline after callbacks"), Hackable->HackTags == Expected);
+			TestFalse(TEXT("Return clears the hack effect"), Enemy->IsHackEffectActive());
+			TestTrue(TEXT("Return restores Partner control"), Controller->GetPawn() == Partner);
+			TestFalse(TEXT("Return clears pending possession"), Enemy->IsPossessionInProgress());
+			TestFalse(TEXT("Idle cannot be hacked despite clean tags"), Hackable->CanBeHackTarget(FHackQueryContext()));
+			TestFalse(TEXT("Duplicate return is rejected"), Pool->ReturnEnemy(Enemy, Context.GameplayGeneration, Lease));
+			FHackResultContext StaleResult;
+			StaleResult.RequestId = 7;
+			StaleResult.TargetActor = Enemy;
+			StaleResult.Result = EHackResult::Success;
+			Requests->CompleteActiveHack(StaleResult, false);
+			TestNull(TEXT("Stale request releases its target"), Requests->ActiveHackableComponent.Get());
+			TestTrue(TEXT("Stale success cannot rewrite returned tags"), Hackable->HackTags == Expected);
+			Enemy->SetPoolPresentationAutoCompleteForTesting(false);
+			AEnemyBase* Presenting = Pool->LeaseEnemy(AEnemyBase::StaticClass(), FTransform::Identity, Context);
+			TestTrue(TEXT("Presentation uses the same Actor"), Presenting == Enemy);
+			TestFalse(TEXT("Spawn presentation cannot be hacked"), Hackable->CanBeHackTarget(FHackQueryContext()));
+			Requests->ServerHeldPoolEnemy = Enemy;
+			Requests->ServerHoldGeneration = Context.GameplayGeneration;
+			Requests->ServerHoldLease = Lease;
+			TestFalse(TEXT("Old hold cannot be maintained for the new lease"), Requests->IsServerHoldLifetimeCurrent());
+			Requests->SetActiveHackableComponent(Hackable);
+			Requests->ActiveHackRequestId = 8;
+			Requests->CompleteActiveHack(StaleResult, false);
+			TestEqual(TEXT("Old result cannot cancel a new request"), Requests->ActiveHackRequestId, uint32(8));
+			Requests->SetActiveHackableComponent(Hackable);
+			Requests->ActiveHackRequestId = 7;
+			Requests->ActiveHackGeneration = Context.GameplayGeneration;
+			Requests->ActiveHackLease = Lease;
+			Requests->CompleteActiveHack(StaleResult, false);
+			TestTrue(TEXT("Old success cannot write history to the new lease"), Hackable->HackTags == Expected);
+			TestFalse(TEXT("Old result cannot start new possession"), Enemy->IsPossessionInProgress());
+			TestFalse(TEXT("Old lease cannot return presentation"), Pool->ReturnEnemy(Enemy, Context.GameplayGeneration, Lease));
+			Enemy->CompletePoolSpawnPresentation(Context.GameplayGeneration, Enemy->GetPoolLeaseSerial());
+			TestTrue(TEXT("Return presentation lease"), Pool->ReturnEnemy(Enemy, Context.GameplayGeneration, Enemy->GetPoolLeaseSerial()));
+			Enemy->SetPoolPresentationAutoCompleteForTesting(true);
+		}
+	}
+	return true;
+}
 
 bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 {

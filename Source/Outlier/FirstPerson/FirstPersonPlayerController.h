@@ -31,6 +31,8 @@ class UOutlierEndingWidget;
 class UGameOverPendingWidget;
 class UWidget;
 class AActor;
+class AFirstPersonCharacter;
+class UOutlierArenaSubsystem;
 class AGameStateBase;
 class AShooterCharacter;
 class ATuto_EventTriggerVolume;
@@ -97,10 +99,21 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 	GENERATED_BODY()
 	friend class FOutlierSuitTransitionTest;
 	friend class FOutlierClientReloadRecoveryTest;
+	friend class FPresentationProtectionPairRestoreTest;
+	friend class ATuto_PassageTransitionVolume;
 	friend struct FUpgradeNodeInteractionTestAccess;
 	
 public:
 	AFirstPersonPlayerController();
+	// 보호는 연출 Actor 대신 Controller가 소유한다. 원본 Actor가 종료돼도 화면 복구까지 유지한다.
+	bool BeginPresentationProtection(const FGuid& ExecutionId, AFirstPersonCharacter* Participant,
+		AFirstPersonPlayerController* Peer = nullptr);
+	void ReleasePresentationProtection(const FGuid& ExecutionId);
+	bool IsPresentationProtectionCurrent(const FGuid& ExecutionId, const APawn* Participant) const;
+	void AwaitPresentationProtectionRestore(const FGuid& ExecutionId, float MinimumDuration);
+	void RecoverPresentationProtection(const FGuid& ExecutionId, float CleanupRevealDuration, bool bRevealScreen = true);
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyPresentationRestored(FGuid ExecutionId, APawn* Participant, bool bRecovery = false);
 	UFUNCTION(Client, Reliable)
 	void ClientStartPassageFade(ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FOutlierScreenTransitionTiming Timing);
 	UFUNCTION(Client, Reliable)
@@ -135,6 +148,10 @@ public:
 	// TODO: 테스트 종료 후 제거. Shipping에서도 소유 클라이언트의 F1 요청을 허용한다.
 	UFUNCTION(Server, Reliable)
 	void ServerDebugTogglePairInvulnerability();
+
+	// Temporary F2 test shortcut, intentionally available in Shipping.
+	UFUNCTION(Server, Reliable)
+	void ServerDebugGrantStealthUpgrades();
 
 	// 서버가 시작 당시 확보한 두 Controller에만 전달한다. Listen Host도 같은 로컬 처리 함수를 사용한다.
 	void SendSuitTransitionPhaseFromServer(AShooterCharacter* Shooter, const FGuid& TransitionId,
@@ -548,6 +565,39 @@ private:
 		ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing, const FVector& PartnerDestination);
 	void NotifySuitTransitionPhaseFinished(const FGuid& TransitionId, ESuitTransitionPhase Phase);
 	void ClearLocalSuitTransition();
+
+	struct FPresentationProtectionRequest
+	{
+		TWeakObjectPtr<AFirstPersonCharacter> Participant;
+		TWeakObjectPtr<AFirstPersonPlayerController> Peer;
+		uint32 Generation = 0;
+		double Deadline = 0.0;
+		double MinimumFinishTime = 0.0;
+		bool bAwaitingRestore = false;
+		bool bRestored = false;
+		bool bRecoveryRequested = false;
+	};
+	TMap<FGuid, FPresentationProtectionRequest> PresentationProtectionRequests;
+	TWeakObjectPtr<UOutlierArenaSubsystem> PresentationProtectionArena;
+	FTSTicker::FDelegateHandle PresentationProtectionWatchdog;
+	TMap<FGuid, FDelegateHandle> PresentationRecoveryCallbacks;
+	TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> PresentationRecoveryPostProcess;
+	struct FPresentationLocalRestore
+	{
+		TWeakObjectPtr<APawn> Participant;
+		double Deadline = 0.0;
+	};
+	TMap<FGuid, FPresentationLocalRestore> PresentationRestoredParticipants;
+	TWeakObjectPtr<ATuto_PassageTransitionVolume> LocalPassageTransitionVolume;
+	FTSTicker::FDelegateHandle PresentationRestoreWatchdog;
+	bool TickPresentationRestore(float DeltaTime);
+	bool TickPresentationProtection(float DeltaTime);
+	void TryFinishPresentationProtection(const FGuid& ExecutionId);
+	void ClearPresentationProtection();
+	void HandlePresentationRecoveryFinished(FGuid ExecutionId, TWeakObjectPtr<APawn> Participant);
+	void QueuePresentationRestore(FGuid ExecutionId, TWeakObjectPtr<APawn> Participant);
+	UFUNCTION(Client, Reliable)
+	void ClientRecoverPresentationProtection(FGuid ExecutionId, APawn* Participant, float Duration, bool bRevealScreen);
 
 	// Screen Blackout 완료 콜백. 요청 ID를 값으로 받고, 현재 ID/단계 검증은 Notify가 맡는다.
 	void HandleSuitScreenBlackoutCovered(FGuid TransitionId);

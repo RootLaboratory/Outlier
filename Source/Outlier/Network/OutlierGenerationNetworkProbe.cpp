@@ -6,6 +6,7 @@
 #include "OutlierGameMode.h"
 #include "OutlierGameInstance.h"
 #include "OutlierPlayerState.h"
+#include "FrontendPlayerController.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Save/OutlierSaveSubSystem.h"
@@ -26,6 +27,7 @@
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Engine/DataTable.h"
 #include "Camera/CameraActor.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
 #include "EngineUtils.h"
@@ -89,6 +91,15 @@ public:
 	FVector InputBaseDelta = FVector::ZeroVector;
 	int32 InputFrames = 0;
 	bool bStage02 = FParse::Param(FCommandLine::Get(), TEXT("OutlierStage02Validation"));
+	int32 IntroPreplayFrames = 0;
+	int32 IntroPreplayExposedFrames = 0;
+	int32 IntroPlayingFrames = 0;
+	int32 IntroUnprotectedPlayingFrames = 0;
+	int32 IntroViewportCoveredFrames = 0;
+	bool bFrontendHandoffObserved = false;
+	bool bHandoffIntroObserved = false;
+	int32 HandoffPreIntroFrames = 0;
+	int32 HandoffExposedFrames = 0;
 
 	void Tick(UWorld* World, ELevelTick, float)
 	{
@@ -105,6 +116,53 @@ public:
 		}
 		if (!bOutputValid) return;
 		if (!World || !World->IsGameWorld() || !World->HasBegunPlay()) return;
+		// 로비와 Worker 사이에는 Controller가 없는 프레임도 있다. 그 구간은
+		// 살아남는 LocalPlayer에서 관찰해 같은 월드의 Possess 검사로 빠지지 않게 한다.
+		if (bFrontendHandoffObserved && !bHandoffIntroObserved)
+		{
+			for (ULocalPlayer* Local : World->GetGameInstance()->GetLocalPlayers())
+			{
+				auto* Intro = Local->GetSubsystem<UOutlierCinematicSubsystem>();
+				if (!Intro) continue;
+				if (Intro->GetState() == EOutlierCinematicState::Playing)
+				{
+					bHandoffIntroObserved = true;
+					continue;
+				}
+				++HandoffPreIntroFrames;
+				HandoffExposedFrames += !Intro->HasInitialIntroBlackout();
+			}
+		}
+		// 반초 간격 상태 파일로는 Possess 직후 한 프레임 노출을 놓친다. 관찰은 매 프레임 누적한다.
+		for (auto It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			APlayerController* Controller = It->Get();
+			AFirstPersonPlayerController* PC = Cast<AFirstPersonPlayerController>(Controller);
+			ULocalPlayer* Local = Controller ? Controller->GetLocalPlayer() : nullptr;
+			UOutlierCinematicSubsystem* Intro = Local ? Local->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr;
+			if (!Intro || !Controller->IsLocalController()) continue;
+			IntroViewportCoveredFrames += Intro->HasInitialIntroBlackout();
+			if (!PC) continue;
+			const EOutlierCinematicState IntroState = Intro->GetState();
+			const AOutlierGameMode* IntroMode = World->GetAuthGameMode<AOutlierGameMode>();
+			const bool bWaitingBeforePrepare = IntroMode && IntroMode->bPendingInitialIntro
+				&& PC->GetPawn() && IntroState == EOutlierCinematicState::Idle;
+			if (bWaitingBeforePrepare || IntroState == EOutlierCinematicState::Preparing
+				|| IntroState == EOutlierCinematicState::Prepared)
+			{
+				++IntroPreplayFrames;
+				IntroPreplayExposedFrames += !Intro->HasInitialIntroBlackout()
+					&& (!PC->HasCameraBlackoutReason(ECameraBlackoutReason::LevelLoad)
+						|| !PC->PlayerCameraManager || PC->PlayerCameraManager->FadeAmount < 0.999f);
+			}
+			if (IntroState == EOutlierCinematicState::Playing)
+			{
+				++IntroPlayingFrames;
+				const AFirstPersonCharacter* Participant = Cast<AFirstPersonCharacter>(PC->GetPawn());
+				IntroUnprotectedPlayingFrames += PC->HasAuthority()
+					&& (!Participant || !Participant->IsPresentationProtected());
+			}
+		}
 		if (bStage02) TickStage02(World);
 		if (FPlatformTime::Seconds() - LastSampleAt < 0.5) return;
 		LastSampleAt = FPlatformTime::Seconds();
@@ -126,21 +184,26 @@ public:
 		}
 		UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
 		AOutlierGameMode* Mode = World->GetAuthGameMode<AOutlierGameMode>();
-		if (!Arena)
-		{
-			// 로비 Dedicated에는 Arena 서브시스템이 없다. 복귀한 연결 수는 같은 관찰기로 기록한다.
-			WriteState(World, Mode, nullptr);
-			return;
-		}
 		if (!bHandoffConfigured && World->GetNetMode() == NM_Client)
 		{
 			FString HandoffUrl;
 			if (FParse::Value(FCommandLine::Get(), TEXT("OutlierGenerationHandoff="), HandoffUrl))
 			{
-				// 로비에서 Worker로 넘어갈 때의 실제 GI 진입점만 대체한다. 재접속 판정은 변경하지 않는다.
-				World->GetGameInstance<UOutlierGameInstance>()->NotifyArenaHandoffStarted(HandoffUrl);
+				if (auto* Frontend = Cast<AFrontendPlayerController>(World->GetFirstPlayerController()))
+				{
+					// 역할 선택만 대체하고 실제 로비 RPC/ClientTravel/월드 교체는 그대로 실행한다.
+					Frontend->ClientHandoffToArena(HandoffUrl);
+					bFrontendHandoffObserved = true;
+				}
+				else World->GetGameInstance<UOutlierGameInstance>()->NotifyArenaHandoffStarted(HandoffUrl);
 			}
 			bHandoffConfigured = true;
+		}
+		if (!Arena)
+		{
+			// 로비 Dedicated에는 Arena 서브시스템이 없다. 복귀한 연결 수는 같은 관찰기로 기록한다.
+			WriteState(World, Mode, nullptr);
+			return;
 		}
 		if (Mode && !bContextConfigured && Mode->ActiveMatchPairId == INDEX_NONE)
 		{
@@ -339,6 +402,31 @@ private:
 		{
 			FScreenshotRequest::RequestScreenshot(Output / FString::Printf(TEXT("Frame-%d.png"), LastCommand), false, false);
 			return World->GetNetMode() != NM_DedicatedServer;
+		}
+		if (Action == TEXT("VerifyIntroBlackoutRecovery"))
+		{
+			for (auto It = World->GetPlayerControllerIterator(); It; ++It)
+			{
+				auto* PC = Cast<AFirstPersonPlayerController>(It->Get());
+				ULocalPlayer* Local = PC ? PC->GetLocalPlayer() : nullptr;
+				auto* Intro = Local ? Local->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr;
+				if (!Intro || Intro->State != EOutlierCinematicState::Idle) continue;
+				Intro->BeginInitialIntroBlackout();
+				if (!Intro->HasInitialIntroBlackout()) return false;
+				Intro->ClearLevelCinematics();
+				if (Intro->HasInitialIntroBlackout()) return false;
+				// 에셋/준비 판정은 바꾸지 않는다. 실제 로컬 참가자가 준비된 상태에서
+				// 미등록 인트로의 동기화 분기를 실행해 화면 복구와 RPC를 함께 확인한다.
+				const FGuid SkippedId = FGuid::NewGuid();
+				Intro->PrepareInitialIntro(PC, SkippedId);
+				Intro->bSkipUnregisteredCinematic = true;
+				Intro->State = EOutlierCinematicState::Prepared;
+				Intro->StartCinematic(SkippedId);
+				const bool bSkipped = Intro->State == EOutlierCinematicState::Ready && !Intro->HasInitialIntroBlackout();
+				Intro->ClearLevelCinematics();
+				return bSkipped;
+			}
+			return false;
 		}
 		if (Action == TEXT("Disconnect"))
 		{
@@ -549,6 +637,13 @@ private:
 		State->SetNumberField(TEXT("RecoveryAttempts"), Mode ? Mode->ArenaReloadRecoveryAttempts : 0);
 		State->SetNumberField(TEXT("ReloadElapsed"), Mode && Mode->bArenaReloadInProgress ? FPlatformTime::Seconds() - Mode->ArenaReloadStartedAt : 0);
 		State->SetBoolField(TEXT("PendingIntro"), Mode && Mode->bPendingInitialIntro);
+		State->SetNumberField(TEXT("IntroPreplayFrames"), IntroPreplayFrames);
+		State->SetNumberField(TEXT("IntroPreplayExposedFrames"), IntroPreplayExposedFrames);
+		State->SetNumberField(TEXT("IntroPlayingFrames"), IntroPlayingFrames);
+		State->SetNumberField(TEXT("IntroUnprotectedPlayingFrames"), IntroUnprotectedPlayingFrames);
+		State->SetNumberField(TEXT("IntroViewportCoveredFrames"), IntroViewportCoveredFrames);
+		State->SetNumberField(TEXT("HandoffPreIntroFrames"), HandoffPreIntroFrames);
+		State->SetNumberField(TEXT("HandoffExposedFrames"), HandoffExposedFrames);
 		State->SetBoolField(TEXT("Reloading"), Mode && Mode->bArenaReloadInProgress);
 		State->SetBoolField(TEXT("GameOverActive"), Mode && Mode->GameOverWorldPause.IsActive());
 		State->SetNumberField(TEXT("VoiceStarted"), VoiceStarted);
@@ -588,7 +683,10 @@ private:
 			if (ULocalPlayer* Local = PC->GetLocalPlayer())
 			{
 				if (UOutlierCinematicSubsystem* Intro = Local->GetSubsystem<UOutlierCinematicSubsystem>())
+				{
 					Player->SetNumberField(TEXT("CinematicState"), int32(Intro->GetState()));
+					Player->SetBoolField(TEXT("IntroBlackoutActive"), Intro->HasInitialIntroBlackout());
+				}
 			}
 			Players.Add(MakeShared<FJsonValueObject>(Player));
 		}

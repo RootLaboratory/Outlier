@@ -1197,10 +1197,14 @@ void AElevatorShaftController::BeginExit()
 	InputBlockId = FGuid::NewGuid();
 	BlockedShooter = ShooterPawn;
 	BlockedPartner = PartnerPawn;
-	if (!ShooterPawn->AcquireSuitTransitionBlock(InputBlockId)
+	if (!ShooterController->BeginPresentationProtection(Motion.ExecutionId, ShooterPawn, PartnerController.Get())
+		|| !PartnerController->BeginPresentationProtection(Motion.ExecutionId, PartnerPawn, ShooterController.Get())
+		|| !ShooterPawn->AcquireSuitTransitionBlock(InputBlockId)
 		|| !PartnerPawn->AcquireSuitTransitionBlock(InputBlockId))
 	{
 		ReleaseTransition();
+		// 부분 획득분의 cleanup ACK가 재시도 보호를 해제하지 않도록 새 실행으로 구분한다.
+		Motion.ExecutionId = FGuid::NewGuid();
 		RetryExit();
 		return;
 	}
@@ -1761,6 +1765,10 @@ void AElevatorShaftController::ReleaseTransition()
 			continue;
 		}
 		Player->ClearElevatorFadeFromServer(this, ReleasedExecution);
+		// 화면 완료와 입력 차단 해제 복제는 별개다. 실제 로컬 복구까지 Controller가 보호한다.
+		Player->RecoverPresentationProtection(ReleasedExecution,
+			Motion.State == EElevatorShaftState::Completed ? 0.0f : 0.25f,
+			Motion.State != EElevatorShaftState::Completed);
 	}
 	if (Combat.IsValid()) Combat->ReleaseRoomStartHold(ReleasedExecution);
 }

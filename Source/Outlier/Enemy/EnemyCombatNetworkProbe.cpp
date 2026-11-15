@@ -15,12 +15,19 @@
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterCombatComponent.h"
 #include "Shooter/ShooterInputConfig.h"
 #include "Shooter/Anim/FootstepNoiseTestProbe.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerHackComponent.h"
+#include "Drone/Partner/HackableComponent.h"
+#include "Drone/Partner/HackGameplayTags.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "OutlierPlayerState.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/LaserWeapon.h"
 #include "Weapon/WallShotProbe.h"
 #include "Camera/CameraActor.h"
 #include "Components/BoxComponent.h"
@@ -64,6 +71,21 @@ struct FProbe
 	TWeakObjectPtr<UWorld> ActiveWorld;
 	TWeakObjectPtr<AShooterCharacter> Target;
 	TWeakObjectPtr<APartnerCharacter> Partner;
+	TWeakObjectPtr<AAutoTurret> HackedTurret, HackVictim;
+	TWeakObjectPtr<UPartnerHackComponent> HackComponent;
+	TWeakObjectPtr<UShooterCombatComponent> ShooterCombat;
+	bool bHackRequested = false, bHackSearchRequested = false, bVictimStopped = false;
+	bool bNoneHackCompleted = false, bRefreshVisibilityPreserved = false;
+	int32 RefreshEvents = 0, LaserPresentationSamples = 0;
+	float VictimInitialHealth = 0.f, HealthAtRefresh = 0.f, HealthAtShooterRefresh = 0.f;
+	double RefreshAt = -1.0, ShooterRefreshAt = -1.0;
+	int32 OffensiveStage = 0, PlayerShotCounts[2] = {};
+	bool OffensivePassed[4] = {}, bOffensiveStarted = false, bOffensiveStopped = false, bStealthActivationAccepted = false;
+	double OffensiveStartedAt = -1.0, OffensiveShotObservedAt = -1.0;
+	int32 OffensiveInitialShots = 0, OffensiveInitialAmmo = 0;
+	float OffensiveHealthAfterPlayerShot = 0.f;
+	double LastOffensiveInputPoll = -1.0;
+	FString LastOffensiveInputCommand;
 	TWeakObjectPtr<ACameraActor> Camera;
 	TWeakObjectPtr<AStaticMeshActor> Cover;
 	TArray<TWeakObjectPtr<AStaticMeshActor>> AttemptCage;
@@ -104,14 +126,58 @@ struct FProbe
 	int32 PreviousPoolLease = INDEX_NONE;
 	bool bPoolReturned = false, bPoolReused = false;
 	int32 PoolReacquireShots = 0;
+	FGuid PresentationId = FGuid::NewGuid(), OverlappingPresentationId = FGuid::NewGuid();
+	bool bPresentationAcquired = false, bPresentationOverlapRetained = false, bPresentationReleased = false;
+	int32 ProtectedSamples = 0, ProtectedTargetSamples = 0, ProtectedShots = 0, PresentationReacquireShots = 0;
+	int32 ProtectedStaleSearches = 0, ProtectedSearchChecks = 0;
 	double FirstAttemptShotAt = -1.0;
 	FString RunRoot() const { return FPaths::GetPath(Output); }
 	bool IsSearchScenario() const { return Scenario == TEXT("Search"); }
 	bool IsAttemptScenario() const { return Scenario == TEXT("Attempt") || Scenario == TEXT("TurretAttempt"); }
+	bool IsHackedTurretScenario() const { return Scenario.StartsWith(TEXT("HackedRifle")) || Scenario.StartsWith(TEXT("HackedLaser")); }
+	bool IsOffensiveScenario() const { return IsHackedTurretScenario() && Scenario.EndsWith(TEXT("Offense")); }
 
 	// 소유 입력은 원격과 Listen 호스트가 같은 경로를 사용한다. 관전자에게는 입력을 주지 않는다.
 	void DriveLocalPlayer(UWorld* World, double Now)
 	{
+		if (IsHackedTurretScenario())
+		{
+			if (!IsOffensiveScenario() || Role == TEXT("Server") || Now - LastOffensiveInputPoll < 0.05) return;
+			LastOffensiveInputPoll = Now;
+			APlayerController* PC = World->GetFirstPlayerController();
+			APawn* Pawn = PC && PC->IsLocalController() ? PC->GetPawn() : nullptr;
+			if (!Pawn) return;
+			FString Command;
+			if (!FFileHelper::LoadFileToString(Command, *(RunRoot() / TEXT("Server/OffensiveInput.txt")))
+				|| Command == LastOffensiveInputCommand) return;
+			TArray<FString> Parts;
+			Command.ParseIntoArray(Parts, TEXT(" "), true);
+			if (Parts.Num() != 2) return;
+			const int32 InputStage = FCString::Atoi(*Parts[0]);
+			const bool bHeld = FCString::Atoi(*Parts[1]) != 0;
+			if ((InputStage % 2) != 0)
+			{
+				APartnerCharacter* LocalPartner = Cast<APartnerCharacter>(Pawn);
+				if (!LocalPartner) return;
+				if (bHeld) PC->SetControlRotation(FRotator(75.f, 180.f, 0.f));
+				if (bHeld) LocalPartner->StartWeaponAttack();
+				else LocalPartner->StopWeaponAttack();
+			}
+			else
+			{
+				AShooterCharacter* LocalShooter = Cast<AShooterCharacter>(Pawn);
+				if (!LocalShooter) return;
+				if (!ShooterCombat.IsValid()) ShooterCombat = LocalShooter->FindComponentByClass<UShooterCombatComponent>();
+				if (!ShooterCombat.IsValid()) return;
+				if (bHeld) PC->SetControlRotation(FRotator(75.f, 180.f, 0.f));
+				if (bHeld) ShooterCombat->TryStartAttack();
+				else ShooterCombat->TryStopAttack();
+			}
+			// 입력은 소유 클라이언트에서 한 번만 발급하고 실제 RPC/무기 결과는 서버에서 검증한다.
+			LastOffensiveInputCommand = Command;
+			UE_LOG(LogTemp, Display, TEXT("[CombatNetwork][OwnerInput] Stage=%d Held=%d Pawn=%s"), InputStage, bHeld, *Pawn->GetName());
+			return;
+		}
 		APlayerController* PC = World->GetFirstPlayerController();
 		AShooterCharacter* Shooter = PC && PC->IsLocalController() ? Cast<AShooterCharacter>(PC->GetPawn()) : nullptr;
 		if (!Shooter || Shooter->GetActorLocation().X >= 5000)
@@ -249,7 +315,7 @@ struct FProbe
 		{
 			Block(World, FVector(0, 0, -50), FVector(6000, 6000, 50));
 			// 높이 구간은 낙하 중 순간 위치가 아니라 실제 발판 위의 표적을 검사한다.
-			if (!Scenario.StartsWith(TEXT("Crowd")))
+			if (!Scenario.StartsWith(TEXT("Crowd")) && !IsHackedTurretScenario())
 			{
 				Block(World, FVector(900, 0, 100), FVector(100, 160, 100));
 			}
@@ -278,7 +344,14 @@ struct FProbe
 		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(Rooms);
 		auto& Entry = Definition->RoomDefinitions.AddDefaulted_GetRef();
 		Entry.RoomTag = Tag;
-		Entry.CombatPhases.AddDefaulted_GetRef().Waves.AddDefaulted();
+		auto& PhaseDefinition = Entry.CombatPhases.AddDefaulted_GetRef();
+		auto& WaveDefinition = PhaseDefinition.Waves.AddDefaulted_GetRef();
+		if (IsHackedTurretScenario())
+		{
+			PhaseDefinition.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+			WaveDefinition.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+			WaveDefinition.ExpectedWaveTurretCount = 2;
+		}
 		Rooms->SetCombatDefinitionForTesting(Definition);
 		ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
 		if (!Room)
@@ -289,8 +362,10 @@ struct FProbe
 		*FindFProperty<FStructProperty>(Room->GetClass(), TEXT("RoomTag"))->ContainerPtrToValuePtr<FGameplayTag>(Room) = Tag;
 		Rooms->RegisterRoom(Room, Tag);
 		UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
-		UClass* DroneClass = Scenario == TEXT("TurretAttempt")
-			? LoadClass<AEnemyBase>(nullptr, TEXT("/Game/Blueprints/Enemy/Turret/BP_RifleTurret.BP_RifleTurret_C"))
+		UClass* DroneClass = Scenario == TEXT("TurretAttempt") || IsHackedTurretScenario()
+			? LoadClass<AEnemyBase>(nullptr, Scenario.StartsWith(TEXT("HackedLaser"))
+				? TEXT("/Game/Blueprints/Enemy/Turret/BP_LaserTurret.BP_LaserTurret_C")
+				: TEXT("/Game/Blueprints/Enemy/Turret/BP_RifleTurret.BP_RifleTurret_C"))
 			: LoadClass<AEnemyBase>(nullptr, TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
 		UClass* PartnerClass = LoadClass<APartnerCharacter>(nullptr, TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
 		if (!ShooterClass || !DroneClass || !PartnerClass)
@@ -371,12 +446,13 @@ struct FProbe
 			LocalRole = TEXT("DedicatedServer");
 			LocalPawnClass = TEXT("None");
 		}
-		const int32 Count = Scenario.StartsWith(TEXT("Crowd")) ? FCString::Atoi(*Scenario.Mid(5)) : 1;
+		const int32 Count = IsHackedTurretScenario() ? 2 : Scenario.StartsWith(TEXT("Crowd")) ? FCString::Atoi(*Scenario.Mid(5)) : 1;
 		// BeginPlay의 실제 방/전투 등록이 기본 태그를 읽으므로 생성 완료 전에 소속을 준비한다.
 		Spawn.bDeferConstruction = true;
 		for (int32 Index = 0; Index < FMath::Clamp(Count, 1, 16); ++Index)
 		{
-			const FVector Position = Scenario == TEXT("Return") ? FVector(-3000, 0, 200)
+			const FVector Position = IsHackedTurretScenario() ? FVector(Index * 1400.f, 0, 0)
+				: Scenario == TEXT("Return") ? FVector(-3000, 0, 200)
 				: (Count == 1 ? FVector(0, 0, 200) : FVector(-1000 - (Index / 4) * 180, (Index % 4 - 1.5f) * 160, 200));
 			AEnemyBase* Drone = nullptr;
 			if (Scenario == TEXT("Pool"))
@@ -413,12 +489,217 @@ struct FProbe
 			if (Scenario != TEXT("Pool"))
 			{
 				Drone->GetRoomTagComp()->AssignDefaultRoomTag(Tag);
+				if (IsHackedTurretScenario())
+				{
+					AAutoTurret* Turret = CastChecked<AAutoTurret>(Drone);
+					Turret->ConfigureWaveRegistrationForTesting(Tag, 0, 0,
+						FName(*FString::Printf(TEXT("CombatProbe.Turret.%d"), Index)));
+					if (Index == 0) HackedTurret = Turret;
+					else HackVictim = Turret;
+				}
 				Drone->FinishSpawning(FTransform(FRotator::ZeroRotator, Position));
 			}
 			Drones.Add(Drone);
 		}
+		if (IsHackedTurretScenario())
+		{
+			// 공격자의 실제 Tree/무기는 유지한다. 표적은 고정해 반격·사망·이동을 최초 재현에서 분리한다.
+			Target->TeleportTo(FVector(-1000, -600, 100), FRotator::ZeroRotator, false, true);
+			Partner->TeleportTo(FVector(-700, 500, 220), FRotator::ZeroRotator, false, true);
+			HackComponent = Partner->FindComponentByClass<UPartnerHackComponent>();
+			if (!HackComponent.IsValid()) return false;
+			// 기본 GameMode의 PlayerState 대신 실제 능력 게이트가 읽는 페어/슈트 준비를 완료한다.
+			Target->SetPlayerState(Pair);
+			Partner->SetPlayerState(Pair);
+			Pair->SetAcquiredSuit(true);
+			HackComponent->RefreshCharacterRefsFromPlayerState();
+			HackComponent->bDebugHack = true;
+			if (IsOffensiveScenario())
+			{
+				// 무기 배치만 준비하고 실제 발사는 캐릭터의 서버 공격 입력 경로로 검증한다.
+				UClass* RifleClass = LoadClass<ARangedWeaponBase>(nullptr, TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+				if (!RifleClass) return false;
+				for (AFirstPersonCharacter* Character : { static_cast<AFirstPersonCharacter*>(Target.Get()), static_cast<AFirstPersonCharacter*>(Partner.Get()) })
+				{
+					if (!Cast<ARangedWeaponBase>(Character->GetCurrentWeapon()))
+					{
+						ARangedWeaponBase* Weapon = World->SpawnActor<ARangedWeaponBase>(RifleClass);
+						if (!Weapon) return false;
+						Character->AFirstPersonCharacter::EquipWeapon(Weapon);
+					}
+				}
+				Target->GetOutlierAbilitySystemComponent()->AddLooseGameplayTag(OutlierGameplayTags::Ability::Shooter::Stealth());
+			}
+			FRoomCombatTriggerContext Context;
+			if (!Rooms->CreateTriggerContext(Room, Tag, FGameplayTag(), Context)
+				|| !Rooms->StartTriggeredSequence(Room, Context)) return false;
+		}
 		// 입력 배치만 준비한다. 자연 Sight/인지, 실제 저장 Tree와 무기/충돌은 계속 실행한다.
 		return PlayerIndex == 2 && bRolesVerified;
+	}
+
+	void RecordHackBoundary(UWorld* World, const TCHAR* Event)
+	{
+		AAutoTurret* Turret = HackedTurret.Get();
+		if (!Turret || !HackVictim.IsValid()) return;
+		const AEnemyAIController* AI = Cast<AEnemyAIController>(Turret->GetController());
+		const FString States = EnemyCombatTesting::ReadComponent(
+			*CastChecked<UEnemyStateTreeComponent>(Turret->GetStateTreeComponent())).Describe();
+		const FString Row = FString::Printf(TEXT("%.3f,%s,%s,%d,%d,%d,%s,%.2f,%.3f,%u,%d,%d,%s\n"),
+			World->GetTimeSeconds(), Event, *Turret->GetName(), Turret->GetGenericTeamId().GetId(),
+			AI && AI->IsTargetDirectlyVisible(HackVictim.Get()), Turret->IsPlayerCurrentlyVisible(),
+			*GetNameSafe(Turret->GetTrackedTarget()), HackVictim->GetCurrentHealth(), Turret->GetHackEffectRemainingTime(),
+			Turret->GetHackingRequestId(), Turret->GetPoolGameplayGeneration(), Turret->GetPoolLeaseSerial(),
+			*States.Replace(TEXT(","), TEXT(";")));
+		FFileHelper::SaveStringToFile(Row, *(Output / TEXT("HackBoundaries.csv")),
+			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
+		UE_LOG(LogTemp, Display, TEXT("[CombatNetwork][HackRefresh] %s"), *Row);
+	}
+
+	void UpdateOffensiveActions(UWorld* World)
+	{
+		if (!IsOffensiveScenario() || OffensiveStage >= 4 || ShooterRefreshAt < 0.0
+			|| World->GetTimeSeconds() - ShooterRefreshAt < 3.0) return;
+		const bool bPartnerFire = (OffensiveStage % 2) != 0;
+		const bool bUseStealth = OffensiveStage >= 2;
+		AFirstPersonCharacter* Character = bPartnerFire
+			? static_cast<AFirstPersonCharacter*>(Partner.Get()) : static_cast<AFirstPersonCharacter*>(Target.Get());
+		ARangedWeaponBase* Weapon = Cast<ARangedWeaponBase>(Character->GetCurrentWeapon());
+		UOutlierAbilitySystemComponent* ShooterASC = Target->GetOutlierAbilitySystemComponent();
+		UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+		if (!Weapon) return;
+		if (!bOffensiveStarted)
+		{
+			if (bUseStealth && ShooterASC->IsShooterStealthCooldownActive()) return;
+			// 보호 상태는 독립 기준 검사 뒤 정상 상태로 돌려 실제 Pair 은신/공격을 실행한다.
+			Partner->SetEnemyPossessionProtection(false);
+			RecordHackBoundary(World, *FString::Printf(TEXT("BeforeOffensiveStage%d"), OffensiveStage));
+			bStealthActivationAccepted = !bUseStealth
+				|| (ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth())
+					&& ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed())
+					&& PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+			OffensiveInitialShots = PlayerShotCounts[bPartnerFire ? 1 : 0];
+			OffensiveInitialAmmo = Weapon->GetCurrentAmmo();
+			OffensiveStartedAt = World->GetTimeSeconds();
+			OffensiveShotObservedAt = -1.0;
+			bOffensiveStarted = true;
+			bOffensiveStopped = false;
+			// 빈 하늘로 발사해 표적 HP 감소가 해킹 터렛의 지속 공격만을 증명하도록 한다.
+			Character->GetController()->SetControlRotation(FRotator(75.f, 180.f, 0.f));
+			FFileHelper::SaveStringToFile(FString::Printf(TEXT("%d 1"), OffensiveStage), *(Output / TEXT("OffensiveInput.txt")));
+		}
+		const double Elapsed = World->GetTimeSeconds() - OffensiveStartedAt;
+		if (Elapsed >= 0.5 && !bOffensiveStopped)
+		{
+			FFileHelper::SaveStringToFile(FString::Printf(TEXT("%d 0"), OffensiveStage), *(Output / TEXT("OffensiveInput.txt")));
+			bOffensiveStopped = true;
+		}
+		const bool bPlayerShotObserved = PlayerShotCounts[bPartnerFire ? 1 : 0] > OffensiveInitialShots;
+		const bool bSharedStealthCleared = !ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed())
+			&& !PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed());
+		if (OffensiveShotObservedAt < 0.0 && bPlayerShotObserved && bSharedStealthCleared)
+		{
+			// 비동기 입력 명령 전에 준 피해는 성공으로 세지 않는다. 서버의 실제 발사·은신 해제 뒤부터
+			// HP를 다시 기록해, 그 사건 이후 터렛이 추가 피해를 주었는지 별도로 확인한다.
+			OffensiveShotObservedAt = World->GetTimeSeconds();
+			OffensiveHealthAfterPlayerShot = HackVictim->GetCurrentHealth();
+			RecordHackBoundary(World, *FString::Printf(TEXT("PlayerShotObservedStage%d"), OffensiveStage));
+		}
+		if (OffensiveShotObservedAt < 0.0 || World->GetTimeSeconds() - OffensiveShotObservedAt < 4.0) return;
+		OffensivePassed[OffensiveStage] = bStealthActivationAccepted
+			&& bPlayerShotObserved
+			&& Weapon->GetCurrentAmmo() < OffensiveInitialAmmo
+			&& bSharedStealthCleared
+			&& HackVictim->GetCurrentHealth() < OffensiveHealthAfterPlayerShot
+			&& HackedTurret->IsPlayerCurrentlyVisible() && HackedTurret->GetTrackedTarget() == HackVictim.Get();
+		UE_LOG(LogTemp, Display, TEXT("[CombatNetwork][Offensive] Stage=%d Passed=%d StealthActivated=%d Shots=%d->%d Ammo=%d->%d VictimHPAfterPlayerShot=%.2f->%.2f ShooterStealth=%d PartnerStealth=%d"),
+			OffensiveStage, OffensivePassed[OffensiveStage], bStealthActivationAccepted,
+			OffensiveInitialShots, PlayerShotCounts[bPartnerFire ? 1 : 0], OffensiveInitialAmmo, Weapon->GetCurrentAmmo(),
+			OffensiveHealthAfterPlayerShot, HackVictim->GetCurrentHealth(),
+			ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()),
+			PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+		RecordHackBoundary(World, *FString::Printf(TEXT("AfterOffensiveStage%dPassed%d"), OffensiveStage, OffensivePassed[OffensiveStage]));
+		++OffensiveStage;
+		bOffensiveStarted = false;
+	}
+
+	void UpdateHackedTurret(UWorld* World, double Age)
+	{
+		AAutoTurret* Turret = HackedTurret.Get();
+		AAutoTurret* Victim = HackVictim.Get();
+		if (!Turret || !Victim) return;
+		if (!bVictimStopped)
+		{
+			// 격리 장면의 전개 완료 입력만 전달한다. 이후 공격/시야/추적/Tree 전이는 생산 코드가 수행한다.
+			for (AAutoTurret* Candidate : { Turret, Victim })
+			{
+				if (Candidate->IsDeploying() && Age >= 2.0)
+					Candidate->NotifyDeploySequenceFinished(Candidate->GetRoomWaveGameplayGeneration(), Candidate->GetRoomWaveActivationSerial());
+			}
+			if (Turret->GetTurretLifecycleState() != EAutoTurretLifecycleState::Active
+				|| Victim->GetTurretLifecycleState() != EAutoTurretLifecycleState::Active) return;
+			Victim->GetStateTreeComponent()->StopLogic(TEXT("Fixed high-health probe target; exclude retaliation"));
+			Victim->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100000.f);
+			Turret->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100000.f);
+			VictimInitialHealth = Victim->GetCurrentHealth();
+			bVictimStopped = true;
+		}
+		if (!bHackSearchRequested)
+		{
+			UHackableComponent* Hackable = CastChecked<IHackableInterface>(Turret)->GetHackableComponent();
+			Hackable->HackTags.Reset();
+			Hackable->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
+			Hackable->HackTags.AddTag(HackGameplayTags::MiniGame::None());
+			Hackable->SuccessEffectTags.Reset();
+			Hackable->SuccessEffectTags.AddTag(HackGameplayTags::Effect::ChangeTeam());
+			UOutlierAbilitySystemComponent* ASC = Partner->GetOutlierAbilitySystemComponent();
+			FOutlierPartnerAbilityConfig Config = ASC->GetPartnerAbilityConfig();
+			Config.HackEffectiveRange = 3000.f;
+			if (ASC->IsPartnerAbilitiesConfigured()) ASC->UpdatePartnerAbilityConfig(Config);
+			else ASC->ConfigurePartnerAbilities(Config);
+			Partner->GetController()->SetControlRotation((Turret->GetHackTargetLocation() - Partner->GetPawnViewLocation()).Rotation());
+			HackComponent->TryHack();
+			bHackSearchRequested = true;
+			RecordHackBoundary(World, TEXT("NoneSearchRequested"));
+		}
+		if (!bHackRequested && Age >= 3.0)
+		{
+			// 실제 서버 후보 검증과 요청 ID, None 즉시 결과, Hacking Task 확정을 모두 통과한다.
+			Partner->GetController()->SetControlRotation((Turret->GetHackTargetLocation() - Partner->GetPawnViewLocation()).Rotation());
+			UE_LOG(LogTemp, Display, TEXT("[CombatNetwork][HackInput] Search=%d Input=%d Charge=%d Suit=%d PlayerState=%s"),
+				HackComponent->IsHackInteractionActive(), Partner->CanAcceptInput(),
+				Partner->GetOutlierAbilitySystemComponent()->CanUsePartnerHackCharge(),
+				Partner->GetPlayerState<AOutlierPlayerState>()->IsPairSuitAcquired(),
+				*GetNameSafe(Partner->GetPlayerState()));
+			HackComponent->ServerBeginHackHold(Turret, 1);
+			HackComponent->ServerTryStartHack(Turret, 1);
+			bHackRequested = true;
+			RecordHackBoundary(World, TEXT("NoneHackRequested"));
+		}
+		bNoneHackCompleted = Turret->IsHackedToPlayerTeam() && Turret->IsHackEffectActive() && !Turret->IsHackingInProgress();
+		if (!bNoneHackCompleted || Victim->GetCurrentHealth() >= VictimInitialHealth) return;
+		if (RefreshAt < 0.0)
+		{
+			RecordHackBoundary(World, TEXT("BeforePartnerProtection"));
+			HealthAtRefresh = Victim->GetCurrentHealth();
+			Partner->SetEnemyPossessionProtection(true);
+			RefreshAt = World->GetTimeSeconds();
+			++RefreshEvents;
+			bRefreshVisibilityPreserved = Turret->IsPlayerCurrentlyVisible() && Turret->GetTrackedTarget() == Victim;
+			RecordHackBoundary(World, TEXT("AfterPartnerProtection"));
+		}
+		else if (ShooterRefreshAt < 0.0 && World->GetTimeSeconds() - RefreshAt >= 5.0 && Victim->GetCurrentHealth() < HealthAtRefresh)
+		{
+			RecordHackBoundary(World, TEXT("BeforeShooterDetectionRefresh"));
+			HealthAtShooterRefresh = Victim->GetCurrentHealth();
+			// Shooter 은신 자격 변경의 공용 호출 경계를 별도로 재현한다. 실제 은신 능력 입력 검증과 구분한다.
+			World->GetSubsystem<UEnemyRoomSubsystem>()->RefreshDetectionTarget(Target.Get());
+			ShooterRefreshAt = World->GetTimeSeconds();
+			++RefreshEvents;
+			bRefreshVisibilityPreserved &= Turret->IsPlayerCurrentlyVisible() && Turret->GetTrackedTarget() == Victim;
+			RecordHackBoundary(World, TEXT("AfterShooterDetectionRefresh"));
+		}
+		UpdateOffensiveActions(World);
 	}
 
 	void Finish(UWorld* World, bool bComplete)
@@ -431,7 +712,7 @@ struct FProbe
 		const bool bServer = Role == TEXT("Server");
 		const bool bCrowd = Scenario.StartsWith(TEXT("Crowd"));
 		const bool bSearch = Scenario == TEXT("Search");
-		const int32 ExpectedDrones = bCrowd ? FMath::Clamp(FCString::Atoi(*Scenario.Mid(5)), 1, 16) : 1;
+		const int32 ExpectedDrones = IsHackedTurretScenario() ? 2 : bCrowd ? FMath::Clamp(FCString::Atoi(*Scenario.Mid(5)), 1, 16) : 1;
 		// 최초 한 발만으로 근접/높이 변경/차폐 후 복귀까지 성공했다고 기록하지 않는다.
 		const bool bCombatPassed = FirstSight >= 0.0 && FirstCombat >= FirstSight && FirstShot >= FirstCombat
 			&& TelegraphSamples > 0 && RecoverSamples > 0 && InvalidShots == 0
@@ -444,7 +725,16 @@ struct FProbe
 			&& HiddenShooterFootsteps > 0 && VisiblePartnerSamples > 0 && TargetMismatchSamples == 0
 			&& InvalidShots == 0 && InvalidShotPaths == 0;
 		bool bScenarioPassed = bTargetSelection ? bTargetSelectionPassed : (bSearch ? bSearchPassed : bCombatPassed);
-		if (bCrowd)
+		if (IsHackedTurretScenario())
+		{
+			bScenarioPassed = bNoneHackCompleted && RefreshEvents == 2 && bRefreshVisibilityPreserved
+				&& HackVictim.IsValid() && HealthAtRefresh < VictimInitialHealth
+				&& HealthAtShooterRefresh < HealthAtRefresh && HackVictim->GetCurrentHealth() < HealthAtShooterRefresh;
+			if (IsOffensiveScenario()) bScenarioPassed &= OffensiveStage == 4
+				&& OffensivePassed[0] && OffensivePassed[1] && OffensivePassed[2] && OffensivePassed[3];
+			if (bServer) RecordHackBoundary(World, TEXT("Finished"));
+		}
+		else if (bCrowd)
 		{
 			bScenarioPassed = Progressed == ExpectedDrones && DoorCrossers.Num() == ExpectedDrones
 				&& PenetrationSamples == 0 && InvalidDoorCrossings == 0;
@@ -470,10 +760,17 @@ struct FProbe
 		{
 			bScenarioPassed = bPoolReturned && bPoolReused && PoolReacquireShots > 0 && ShotsWhileInactive == 0;
 		}
+		else if (Scenario == TEXT("Presentation"))
+		{
+			bScenarioPassed = StageShots[0] > 0 && bPresentationAcquired && bPresentationOverlapRetained
+				&& bPresentationReleased && ProtectedSamples > 20 && ProtectedTargetSamples == 0
+				&& ProtectedShots == 0 && PresentationReacquireShots > 0
+				&& ProtectedSearchChecks > 0 && ProtectedStaleSearches == 0;
+		}
 		const bool bPassed = bComplete && bRolesVerified && Samples >= 20 && MaxDrones == ExpectedDrones
 			&& InvalidShotPaths == 0 && InvalidShots == 0 && InvalidAttemptShots == 0 && ShotsWhileHidden == 0 && ShotsWhileInactive == 0 &&
 			(bServer ? bScenarioPassed
-			: Presentations > 0 && Frames > 0);
+			: (Presentations > 0 || (IsHackedTurretScenario() && LaserPresentationSamples > 0)) && Frames > 0);
 		TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
 		Json->SetBoolField(TEXT("Passed"), bPassed);
 		Json->SetBoolField(TEXT("Complete"), bComplete);
@@ -497,6 +794,26 @@ struct FProbe
 		Json->SetStringField(TEXT("CaptureScope"), TEXT("Sparse time-spaced frames; visual motion review remains separate."));
 		Json->SetNumberField(TEXT("CaptureLimit"), CaptureLimit);
 		Json->SetBoolField(TEXT("ScenarioAssertionsPassed"), bServer && bScenarioPassed);
+		if (IsHackedTurretScenario())
+		{
+			Json->SetBoolField(TEXT("NoneHackCompleted"), bNoneHackCompleted);
+			Json->SetNumberField(TEXT("DetectionRefreshEvents"), RefreshEvents);
+			Json->SetBoolField(TEXT("RefreshVisibilityPreserved"), bRefreshVisibilityPreserved);
+			Json->SetNumberField(TEXT("VictimInitialHealth"), VictimInitialHealth);
+			Json->SetNumberField(TEXT("VictimHealthAtPartnerRefresh"), HealthAtRefresh);
+			Json->SetNumberField(TEXT("VictimHealthAtShooterRefresh"), HealthAtShooterRefresh);
+			Json->SetNumberField(TEXT("VictimFinalHealth"), HackVictim.IsValid() ? HackVictim->GetCurrentHealth() : -1.f);
+			Json->SetNumberField(TEXT("LaserPresentationSamples"), LaserPresentationSamples);
+			Json->SetNumberField(TEXT("ShooterActualShots"), PlayerShotCounts[0]);
+			Json->SetNumberField(TEXT("PartnerActualShots"), PlayerShotCounts[1]);
+			Json->SetNumberField(TEXT("OffensiveStagesCompleted"), OffensiveStage);
+			for (int32 Index = 0; Index < 4; ++Index)
+				Json->SetBoolField(FString::Printf(TEXT("OffensiveStage%dPassed"), Index), OffensivePassed[Index]);
+			Json->SetStringField(TEXT("OffensiveScope"), IsOffensiveScenario()
+				? TEXT("File-coordinated owning-client public attack APIs and real RPCs: Shooter/Partner simple fire, then server GAS stealth activation and owning-client fire for shared stealth exit. Server shot callbacks, ammo and continued turret-only damage required. No physical key injection/full Arena acceptance.")
+				: TEXT("Separate baseline: Partner protection and raw Shooter detection refresh; offensive stages not requested."));
+			Json->SetStringField(TEXT("HackedTurretScope"), TEXT("Controlled Room wave deployment completion input; real None server request/StateTree/natural Sight/server damage. Partner protection public API and raw Shooter detection refresh boundary. OffensiveScope identifies additional actual gameplay fire/stealth cases; physical client input and full Arena streaming remain separate."));
+		}
 		Json->SetBoolField(TEXT("RolesVerified"), bRolesVerified);
 		Json->SetStringField(TEXT("LocalRole"), LocalRole);
 		Json->SetStringField(TEXT("LocalPawnClass"), LocalPawnClass);
@@ -521,6 +838,19 @@ struct FProbe
 		Json->SetBoolField(TEXT("PoolReturned"), bPoolReturned);
 		Json->SetBoolField(TEXT("PoolSameActorReused"), bPoolReused);
 		Json->SetNumberField(TEXT("PoolReacquireShots"), PoolReacquireShots);
+		if (Scenario == TEXT("Presentation"))
+		{
+			Json->SetBoolField(TEXT("PresentationAcquired"), bPresentationAcquired);
+			Json->SetBoolField(TEXT("PresentationOverlapRetained"), bPresentationOverlapRetained);
+			Json->SetBoolField(TEXT("PresentationReleased"), bPresentationReleased);
+			Json->SetNumberField(TEXT("ProtectedSamples"), ProtectedSamples);
+			Json->SetNumberField(TEXT("ProtectedTargetSamples"), ProtectedTargetSamples);
+			Json->SetNumberField(TEXT("ProtectedShots"), ProtectedShots);
+			Json->SetNumberField(TEXT("PresentationReacquireShots"), PresentationReacquireShots);
+			Json->SetNumberField(TEXT("ProtectedSearchChecks"), ProtectedSearchChecks);
+			Json->SetNumberField(TEXT("ProtectedStaleSearches"), ProtectedStaleSearches);
+			Json->SetStringField(TEXT("PresentationScope"), TEXT("Server common protection ownership/overlap with live natural AI and replicated weapon presentation. Does not execute a Level2 sequence, blackout/input recovery handshake, or infer client protection from server-only state."));
+		}
 		Json->SetNumberField(TEXT("Samples"), Samples);
 		Json->SetNumberField(TEXT("Frames"), Frames);
 		Json->SetNumberField(TEXT("Shots"), Shots);
@@ -650,10 +980,17 @@ struct FProbe
 				Target->GetCharacterMovement()->StopMovementImmediately();
 				// 귀환 검사는 먼 원래 방어 위치에서 시작한다. 첫 단서도 실제 Sight 반경 안에 둬야 수색/귀환이 성립한다.
 				const double InitialTargetX = Scenario == TEXT("Return") ? -1500.0 : Scenario.StartsWith(TEXT("Crowd")) ? 1800.0 : 600.0;
-				Target->TeleportTo(FVector(InitialTargetX, 0, 100), Target->GetActorRotation(), false, true);
+				if (!IsHackedTurretScenario())
+					Target->TeleportTo(FVector(InitialTargetX, 0, 100), Target->GetActorRotation(), false, true);
 				FFileHelper::SaveStringToFile(TEXT("Started"), *(Output / TEXT("Started.txt")));
 			}
 			const double Age = Now - StartedAt;
+			if (IsHackedTurretScenario())
+			{
+				UpdateHackedTurret(World, Age);
+				if (Age >= Duration) Finish(World, true);
+				return;
+			}
 			if (Scenario.StartsWith(TEXT("Crowd")) && Stage < 0 && Age >= 3.0)
 			{
 				// 먼저 사거리 밖에서 자연 발견을 성립시킨 뒤 문 너머 목표로 이동한다.
@@ -665,7 +1002,46 @@ struct FProbe
 			if (NewStage != Stage && Target.IsValid() && !Scenario.StartsWith(TEXT("Crowd")))
 			{
 				Stage = NewStage;
-				if (Scenario == TEXT("Bypass") || IsAttemptScenario())
+				if (Scenario == TEXT("Presentation"))
+				{
+					// 이미 사격 중인 실제 AI 앞에서 두 참가자를 보호한다. 표적/인지/Tree는 직접 고치지 않는다.
+					AFirstPersonCharacter* Participants[] = {Target.Get(), Partner.Get()};
+					if (Stage == 1)
+					{
+						bPresentationAcquired = true;
+						for (AFirstPersonCharacter* Participant : Participants)
+							bPresentationAcquired &= Participant->AcquirePresentationProtection(Participant->GetController(), PresentationId);
+						// 실제 전투 뒤 보호가 옛 좌표까지 폐기했는지 검사한다. 정상 경로에서는 수색을 시작하지 않는다.
+						for (const TWeakObjectPtr<AEnemyBase>& Drone : Drones)
+						{
+							if (!Drone.IsValid()) continue;
+							++ProtectedSearchChecks;
+							ProtectedStaleSearches += Drone->BeginSearchEpisode();
+						}
+						Partner->TeleportTo(FVector(600, 150, 220), FRotator::ZeroRotator, false, true);
+					}
+					else if (Stage == 2)
+					{
+						// 첫 연출을 끝내도 두 번째 실행이 남아 있으면 감지/사격이 재개되지 않아야 한다.
+						bPresentationOverlapRetained = true;
+						for (AFirstPersonCharacter* Participant : Participants)
+						{
+							bPresentationOverlapRetained &= Participant->AcquirePresentationProtection(Participant->GetController(), OverlappingPresentationId);
+							Participant->ReleasePresentationProtection(Participant->GetController(), PresentationId);
+							bPresentationOverlapRetained &= Participant->IsPresentationProtected();
+						}
+					}
+					else if (Stage == 3)
+					{
+						bPresentationReleased = true;
+						for (AFirstPersonCharacter* Participant : Participants)
+						{
+							Participant->ReleasePresentationProtection(Participant->GetController(), OverlappingPresentationId);
+							bPresentationReleased &= !Participant->IsPresentationProtected();
+						}
+					}
+				}
+				else if (Scenario == TEXT("Bypass") || IsAttemptScenario())
 				{
 					if (Stage == 1 && !Drones.IsEmpty() && Drones[0].IsValid())
 					{
@@ -946,6 +1322,17 @@ struct FProbe
 			++Samples;
 			const double Age = LastSample - StartedAt;
 			const EEnemyAttackPhase Phase = Drone->GetAttackPhase();
+			if (IsHackedTurretScenario())
+			{
+				const AAutoTurret* Turret = Cast<AAutoTurret>(Drone);
+				const ALaserWeapon* Laser = Turret && Turret->IsHackedToPlayerTeam() ? Cast<ALaserWeapon>(Drone->GetCurrentWeapon()) : nullptr;
+				if (Laser)
+				{
+					const FStructProperty* Property = FindFProperty<FStructProperty>(ALaserWeapon::StaticClass(), TEXT("LaserPresentation"));
+					const FLaserWeaponPresentation* Presentation = Property ? Property->ContainerPtrToValuePtr<FLaserWeaponPresentation>(Laser) : nullptr;
+					LaserPresentationSamples += Presentation && Presentation->Phase != ELaserWeaponPresentationPhase::Idle;
+				}
+			}
 			TelegraphSamples += Phase == EEnemyAttackPhase::Telegraph;
 			FiringSamples += Phase == EEnemyAttackPhase::Firing;
 			RecoverSamples += Phase == EEnemyAttackPhase::Recover;
@@ -966,6 +1353,17 @@ struct FProbe
 			const FVector P = Drone->GetActorLocation();
 			if (Role == TEXT("Server"))
 			{
+				if (Scenario == TEXT("Presentation") && Target->IsPresentationProtected() && Partner->IsPresentationProtected())
+				{
+					++ProtectedSamples;
+					const AEnemyAIController* AI = Cast<AEnemyAIController>(Drone->GetController());
+					UEnemyRoomSubsystem* Rooms = World->GetSubsystem<UEnemyRoomSubsystem>();
+					FEnemyRoomTargetObservationSnapshot Observation;
+					ProtectedTargetSamples += Drone->GetTrackedTarget() == Target.Get() || Drone->GetTrackedTarget() == Partner.Get()
+						|| (AI && (AI->IsTargetDirectlyVisible(Target.Get()) || AI->IsTargetDirectlyVisible(Partner.Get())))
+						|| (Rooms && (Rooms->TryGetRoomTargetObservation(Drone, Target.Get(), Observation)
+							|| Rooms->TryGetRoomTargetObservation(Drone, Partner.Get(), Observation)));
+				}
 				const FEnemySearchEpisode& Episode = Drone->GetSearchEpisode();
 				GuardSamples += Episode.bActive && Episode.bLocalGuard && Episode.InvestigationSerial == 0;
 				if (Episode.bActive && Episode.bLocalGuard && Episode.InvestigationSerial == 0 && FirstGuardAt < 0.0)
@@ -1138,6 +1536,11 @@ struct FProbe
 		{
 			return;
 		}
+		if (IsOffensiveScenario() && Role == TEXT("Server") && !Shot.bPresentation)
+		{
+			if (Shot.Weapon->GetOwner() == Target.Get()) ++PlayerShotCounts[0];
+			if (Shot.Weapon->GetOwner() == Partner.Get()) ++PlayerShotCounts[1];
+		}
 		AEnemyBase* Owner = Cast<AEnemyBase>(Shot.Weapon->GetOwner());
 		if (!Owner)
 		{
@@ -1149,6 +1552,12 @@ struct FProbe
 			return;
 		}
 		++Shots;
+		if (Scenario == TEXT("Presentation"))
+		{
+			ProtectedShots += Target.IsValid() && Partner.IsValid()
+				&& Target->IsPresentationProtected() && Partner->IsPresentationProtected();
+			PresentationReacquireShots += bPresentationReleased;
+		}
 		PartnerShots += Owner->GetTrackedTarget() == Partner.Get() && Partner.IsValid();
 		ReacquireShots += Scenario == TEXT("Search") && Stage >= 6;
 		if (Stage >= 0 && Stage < UE_ARRAY_COUNT(StageShots))
@@ -1168,11 +1577,14 @@ struct FProbe
 		const bool bDirect = AI && AI->IsTargetDirectlyVisible(Owner->GetTrackedTarget());
 		FOutlierSightObservation Observation;
 		const AShooterCharacter* ObservedShooter = Cast<AShooterCharacter>(Owner->GetTrackedTarget());
-		bool bOwnObservation = !ObservedShooter;
+		// 레이저는 생산 조준 정책에서도 Shooter 본 관측 캐시를 사용하지 않는다.
+		// 직접 Sight·실제 총구 사선·조준 각도 검사는 아래에서 무기 종류와 관계없이 유지한다.
+		const bool bRequiresBoneObservation = ObservedShooter && !Cast<ALaserWeapon>(Shot.Weapon);
+		bool bOwnObservation = !bRequiresBoneObservation;
 		uint32 SelectedEpoch = 0;
 		int32 SelectedBone = INDEX_NONE;
 		FVector SelectedPoint = FVector::ZeroVector;
-		if (ObservedShooter && ObservedShooter->GetObservedAimPoints(Owner, Observation)
+		if (bRequiresBoneObservation && ObservedShooter->GetObservedAimPoints(Owner, Observation)
 			&& Owner->GetCombatAimSelectionForTesting(ObservedShooter, SelectedEpoch, SelectedBone, SelectedPoint))
 		{
 			// 같은 본의 관측 좌표도 0.1초 조준 캐시 사이에 갱신된다. 최신 좌표와 직접 비교하지 않고

@@ -23,6 +23,8 @@ struct FInputActionValue;
 class URoomTagComponent;
 class ULocalPlayerSettingsSubsystem;
 class AFirstPersonCharacter;
+class UEnemyRoomSubsystem;
+class UOutlierArenaSubsystem;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnSuitTransitionParticipantInvalidated, AFirstPersonCharacter*);
@@ -123,6 +125,13 @@ public:
 	bool IsSuitTransitionBlocked() const { return SuitTransitionBlockId.IsValid(); }
 	bool AcquireSuitTransitionBlock(const FGuid& TransitionId);
 	void ReleaseSuitTransitionBlock(const FGuid& TransitionId);
+	// 입력 잠금과 독립적인 서버 보호다. 겹친 연출은 자신이 획득한 실행만 해제한다.
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Presentation|Protection")
+	bool AcquirePresentationProtection(UObject* ProtectionOwner, const FGuid& ExecutionId);
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Presentation|Protection")
+	void ReleasePresentationProtection(UObject* ProtectionOwner, const FGuid& ExecutionId);
+	UFUNCTION(BlueprintPure, Category = "Presentation|Protection")
+	bool IsPresentationProtected() const { return !PresentationProtectionOwners.IsEmpty(); }
 	virtual bool TeleportTo(const FVector& DestLocation, const FRotator& DestRotation,
 		bool bIsATest = false, bool bNoCheck = false) override;
 	/** 저장된 이동 의도와 미소비 입력만 정리하며 현재 속도는 유지한다. */
@@ -241,6 +250,18 @@ private:
 	void OnRep_SuitTransitionBlockId();
 	UPROPERTY(ReplicatedUsing = OnRep_SuitTransitionBlockId)
 	FGuid SuitTransitionBlockId;
+
+	struct FPresentationProtectionOwner
+	{
+		TWeakObjectPtr<UObject> Owner;
+		uint32 Generation = 0;
+	};
+	TMap<FGuid, FPresentationProtectionOwner> PresentationProtectionOwners;
+	TWeakObjectPtr<UEnemyRoomSubsystem> PresentationEnemyRooms;
+	TWeakObjectPtr<UOutlierArenaSubsystem> PresentationArena;
+	void ClearPresentationProtection(uint32 Generation);
+	UFUNCTION()
+	void HandlePresentationOwnerEndPlay(AActor* ProtectionOwner, EEndPlayReason::Type Reason);
 	bool bSuitTransitionOwnsMovementStop = false;
 	TEnumAsByte<EMovementMode> MovementModeBeforeSuitTransition = MOVE_None;
 	uint8 CustomMovementModeBeforeSuitTransition = 0;

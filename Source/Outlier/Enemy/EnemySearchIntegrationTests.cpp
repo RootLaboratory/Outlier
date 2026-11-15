@@ -4738,6 +4738,45 @@ bool FEnemyRangeResponseIntegrationTest::RunTest(const FString& Parameters)
 	return false;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyAlertProtectionSourceIntegrationTest,
+	"Outlier.Presentation.Protection.AlertHoldStateTreeSource",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyAlertProtectionSourceIntegrationTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FEnemyCombatIntegrationWorld Fixture(*this, TEXT("AlertProtectionSource"));
+	if (!Fixture.Initialize(false, FVector(1200, 0, 0), false, false)) return false;
+	// 이 fixture는 BeginPlay 뒤 방 태그를 배정한다. 실제 보호 통지를 받을 Room 등록도 완료한다.
+	Fixture.World->GetSubsystem<UEnemyRoomSubsystem>()->RegisterEnemy(Fixture.Enemy);
+	FEnemyStat& Stat = const_cast<FEnemyStat&>(Fixture.Enemy->GetRuntimeStat());
+	Stat.AwarenessFillDuration = 10.0f;
+	Fixture.Start();
+	Fixture.SetSight(true);
+	if (!Fixture.WaitForTask<FEnemyAlertHoldTask>(30)) return false;
+	// 실제 AlertHold Tick이 시야 좌표를 갱신한 뒤에도 대상 출처가 남아 있어야 한다.
+	for (int32 Frame = 0; Frame < 6; ++Frame) if (!Fixture.Advance()) return false;
+	if (!TestEqual(TEXT("Alert timing is unchanged before confirmation"), Fixture.Enemy->GetCombatState(), EEnemyCombatState::Alert)
+		|| !TestEqual(TEXT("Actual AlertHold retains the visible source"), Fixture.Enemy->GetLastKnownPlayerSource(),
+			static_cast<AActor*>(Fixture.Target))) return false;
+	Fixture.Enemy->EnterCombatFromRoom(Fixture.Enemy->GetLastKnownPlayerLocation(), false, true,
+		Fixture.Enemy->GetLastKnownPlayerSource());
+	const FGuid Execution = FGuid::NewGuid();
+	if (!TestTrue(TEXT("Server protects the observed target"),
+		Fixture.Target->AcquirePresentationProtection(Fixture.Controller, Execution))) return false;
+	TestNull(TEXT("Protection discards the observed source"), Fixture.Enemy->GetLastKnownPlayerSource());
+	TestFalse(TEXT("Protection invalidates real direct visibility"), Fixture.Controller->IsTargetDirectlyVisible(Fixture.Target));
+	TestFalse(TEXT("Actual AlertHold evidence cannot start a stale search"), Fixture.Enemy->BeginSearchEpisode());
+	Fixture.Target->SetActorLocation(Fixture.Target->GetActorLocation() + FVector(0, 500, 0));
+	Fixture.Target->ReleasePresentationProtection(Fixture.Controller, Execution);
+	Fixture.SetSight(true);
+	TestEqual(TEXT("Release accepts a new observation source"), Fixture.Enemy->GetLastKnownPlayerSource(),
+		static_cast<AActor*>(Fixture.Target));
+	TestEqual(TEXT("Reacquisition uses the current location"),
+		Fixture.Enemy->GetLastKnownPlayerLocation(), Fixture.Target->GetActorLocation());
+	return true;
+}
+
 IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyRotationStateTreeIntegrationTest,
 	"Outlier.Enemy.Rotation.StateTree", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

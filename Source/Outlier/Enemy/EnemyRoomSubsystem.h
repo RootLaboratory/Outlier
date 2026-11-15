@@ -93,6 +93,13 @@ struct FEnemyRoomTargetObservation
 	double LastObservedAt = 0.0;
 };
 
+// 좌표와 출처를 함께 보관한다. 직접 시야가 없는 청각 전투도 보호 시작 시 같은 기준으로 정리한다.
+struct FEnemyRoomLastKnownLocation
+{
+	FVector Location = FVector::ZeroVector;
+	TWeakObjectPtr<AActor> Source;
+};
+
 struct FEnemyRoomDirectObserver
 {
 	TWeakObjectPtr<AActor> TargetActor;
@@ -144,7 +151,8 @@ public:
 	void RefreshEnemyRegistration(AEnemyBase* Enemy);
 	// 기존 등록 수명주기를 재사용한다. 발사 시점에만 호출하며 매 프레임 월드를 검색하지 않는다.
 	void GetAutoAimCandidates(TArray<AEnemyBase*>& OutEnemies) const;
-	bool NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy);
+	bool NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy,
+		AActor* Source = nullptr);
 	void NotifyRoomCombatEnded(FGameplayTag RoomTag);
 	bool IsRoomInCombat(FGameplayTag RoomTag) const;
 	bool HasActiveCombat() const;
@@ -177,6 +185,7 @@ public:
 	void RemoveRoomTargetObserver(AEnemyBase* Observer);
 	// 사망 또는 리스폰으로 교체되는 타겟을 방 공유 접촉과 Enemy Perception에서 제거한다.
 	void NotifyTargetActorRemoved(AActor* TargetActor);
+	void SetPresentationTargetProtected(AActor* TargetActor, bool bProtected);
 	// 스텔스 해제처럼 Actor는 유지되지만 감지 조건이 바뀐 경우 등록된 Enemy의 Sight를 다시 평가한다.
 	void RefreshDetectionTarget(AActor* TargetActor);
 
@@ -227,7 +236,7 @@ private:
 
 	TSet<FGameplayTag> CombatRooms;
 	// 직접 시야가 끊겨도 새 증원이 Combat에 합류할 수 있도록 마지막 전투 위치를 보존한다.
-	TMap<FGameplayTag, FVector> CombatRoomLastKnownLocations;
+	TMap<FGameplayTag, FEnemyRoomLastKnownLocation> CombatRoomLastKnownLocations;
 	TMap<FGameplayTag, TSet<TWeakObjectPtr<AEnemyBase>>> RegisteredEnemiesByRoom;
 	TMap<TWeakObjectPtr<AEnemyBase>, FGameplayTag> RegisteredEnemyKeys;
 

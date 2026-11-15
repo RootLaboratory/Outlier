@@ -196,6 +196,8 @@ bool APartnerPlayerController::BeginEnemyPossessionTransition(
 		|| !IsValid(EnemyTarget)
 		|| !IsValid(PartnerCharacter)
 		|| EnemyTarget->IsActorBeingDestroyed()
+		|| EnemyTarget->IsPoolReturnInProgress()
+		|| (EnemyTarget->IsPoolManaged() && EnemyTarget->GetEnemyPoolState() != EEnemyPoolState::CombatActive)
 		|| EnemyTarget->IsDead()
 		|| EnemyTarget->GetCurrentHealth() <= 0.0f
 		|| !EnemyTarget->IsPossessionInProgress()
@@ -213,13 +215,16 @@ bool APartnerPlayerController::BeginEnemyPossessionTransition(
 
 	PendingEnemyPossessionTarget = EnemyTarget;
 	PendingEnemyPossessionSource = PartnerCharacter;
+	PendingPossessionGeneration = EnemyTarget->GetPoolGameplayGeneration();
+	PendingPossessionLease = EnemyTarget->GetPoolLeaseSerial();
 	BindPossessionTargetEndPlay(EnemyTarget); //Transitioning 중에 Enemy EndPlay 호출 시, 연출 및 해킹 종료.
 
-	ClientBeginEnemyPossessionTransition(EnemyTarget);
+	ClientBeginEnemyPossessionTransition(EnemyTarget, PendingPossessionGeneration, PendingPossessionLease);
 	return true;
 }
 
-void APartnerPlayerController::ClientBeginEnemyPossessionTransition_Implementation(AEnemyBase* EnemyTarget)
+void APartnerPlayerController::ClientBeginEnemyPossessionTransition_Implementation(AEnemyBase* EnemyTarget,
+	int32 GameplayGeneration, int32 LeaseSerial)
 {
 	if (!IsLocalController() || !IsValid(EnemyTarget))
 	{
@@ -227,6 +232,8 @@ void APartnerPlayerController::ClientBeginEnemyPossessionTransition_Implementati
 	}
 
 	LocalPendingEnemyPossessionTarget = EnemyTarget;
+	LocalPossessionGeneration = GameplayGeneration;
+	LocalPossessionLease = LeaseSerial;
 	BindPossessionTargetEndPlay(EnemyTarget);
 	bHackTransitionCoveredNotified = false;
 	SetFirstPersonInputMode(FirstPersonInputModeTags::Hack());
@@ -271,14 +278,16 @@ void APartnerPlayerController::NotifyHackTransitionCovered()
 	}
 
 	bHackTransitionCoveredNotified = true;
-	ServerNotifyHackTransitionCovered(EnemyTarget);
+	ServerNotifyHackTransitionCovered(EnemyTarget, LocalPossessionGeneration, LocalPossessionLease);
 }
 
-void APartnerPlayerController::ServerNotifyHackTransitionCovered_Implementation(AEnemyBase* EnemyTarget)
+void APartnerPlayerController::ServerNotifyHackTransitionCovered_Implementation(AEnemyBase* EnemyTarget,
+	int32 GameplayGeneration, int32 LeaseSerial)
 {
-	if (!HasAuthority() || PendingEnemyPossessionTarget.Get() != EnemyTarget)
+	if (!HasAuthority() || PendingEnemyPossessionTarget.Get() != EnemyTarget
+		|| GameplayGeneration != PendingPossessionGeneration || LeaseSerial != PendingPossessionLease)
 	{
-		ClientCancelEnemyPossessionTransition(EnemyTarget);
+		// 같은 Actor를 다시 해킹 중일 수 있다. 옛 완료 응답으로 현재 전환 UI까지 취소하지 않는다.
 		return;
 	}
 
@@ -297,6 +306,8 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 		|| !IsValid(EnemyTarget)
 		|| !IsValid(PartnerCharacter)
 		|| EnemyTarget->IsActorBeingDestroyed()
+		|| EnemyTarget->IsPoolReturnInProgress()
+		|| (EnemyTarget->IsPoolManaged() && !EnemyTarget->MatchesPoolLease(PendingPossessionGeneration, PendingPossessionLease))
 		|| EnemyTarget->IsDead()
 		|| EnemyTarget->GetCurrentHealth() <= 0.0f
 		|| !EnemyTarget->IsPossessionInProgress()
@@ -349,12 +360,8 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 	// PossessedBy에서는 아직 실패 복귀가 가능하다. 성공 확정 뒤에만 기존 스턴을 해제한다.
 	EnemyTarget->ClearStunForCommittedPossession();
 
-	// 실제 빙의와 쿨타임 세션이 확정된 시점의 값만 복사한다.
-	if (const UOutlierAbilitySystemComponent* PartnerASC = PartnerCharacter->GetOutlierAbilitySystemComponent())
-	{
-		EnemyTarget->SetPossessionDamageMultiplier(PartnerASC->GetNumericAttribute(
-			UOutlierPartnerCombatAttributeSet::GetHackedDroneDamageMultiplierAttribute()));
-	}
+	// 성공 확정 시 기본 보너스와 업그레이드를 한 번만 합성한다. 이후 무기 피해 경로에서만 소비한다.
+	EnemyTarget->SetPossessionDamageMultiplier(PartnerCharacter->GetPossessedWeaponDamageMultiplier());
 
 	PendingEnemyPossessionTarget.Reset();
 	PendingEnemyPossessionSource.Reset();
@@ -368,9 +375,13 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 	}
 }
 
-void APartnerPlayerController::ServerNotifyHackPossessionRevealFinished_Implementation(AEnemyBase* EnemyTarget)
+void APartnerPlayerController::ServerNotifyHackPossessionRevealFinished_Implementation(AEnemyBase* EnemyTarget,
+	int32 GameplayGeneration, int32 LeaseSerial)
 {
 	if (!HasAuthority() || !IsValid(EnemyTarget)
+		|| GameplayGeneration != PendingPossessionGeneration || LeaseSerial != PendingPossessionLease
+		|| EnemyTarget->IsPoolReturnInProgress()
+		|| (EnemyTarget->IsPoolManaged() && !EnemyTarget->MatchesPoolLease(GameplayGeneration, LeaseSerial))
 		|| HackLifetimePendingRevealTarget.Get() != EnemyTarget || GetPawn() != EnemyTarget
 		|| !EnemyTarget->IsEnemyPossessed() || EnemyTarget->IsDead()
 		|| EnemyTarget->GetCurrentHealth() <= 0.0f || EnemyTarget->IsActorBeingDestroyed())
@@ -404,6 +415,14 @@ bool APartnerPlayerController::ShouldDeferPartnerHackRecharge(const APartnerChar
 		|| bPartnerAbilityCooldownSessionCommitted);
 }
 
+void APartnerPlayerController::CancelEnemyPossessionForPool(AEnemyBase* EnemyTarget)
+{
+	if (HasAuthority() && PendingEnemyPossessionTarget.Get() == EnemyTarget)
+	{
+		CancelPendingEnemyPossessionTransition();
+	}
+}
+
 void APartnerPlayerController::CancelPendingEnemyPossessionTransition()
 {
 	if (!HasAuthority())
@@ -412,7 +431,8 @@ void APartnerPlayerController::CancelPendingEnemyPossessionTransition()
 	}
 
 	AEnemyBase* EnemyTarget = PendingEnemyPossessionTarget.Get();
-	if (EnemyTarget)
+	if (EnemyTarget && (!EnemyTarget->IsPoolManaged()
+		|| EnemyTarget->MatchesPoolLease(PendingPossessionGeneration, PendingPossessionLease)))
 	{
 		EnemyTarget->CancelPossessionProcess();
 	}
@@ -536,7 +556,7 @@ void APartnerPlayerController::NotifyHackPossessionPresentationFinished()
 	}
 	if (AEnemyBase* EnemyTarget = Cast<AEnemyBase>(GetPawn()))
 	{
-		ServerNotifyHackPossessionRevealFinished(EnemyTarget);
+		ServerNotifyHackPossessionRevealFinished(EnemyTarget, LocalPossessionGeneration, LocalPossessionLease);
 	}
 }
 

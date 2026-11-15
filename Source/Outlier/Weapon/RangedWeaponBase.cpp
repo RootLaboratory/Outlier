@@ -2430,7 +2430,8 @@ void ARangedWeaponBase::ReportArenaWideNoise(ACharacter* OwnerCharacter)
 		RoomSubsystem->NotifyRoomCombat(
 			CurrentRoomTag,
 			OwnerCharacter->GetActorLocation(),
-			Cast<AEnemyBase>(OwnerCharacter)
+			Cast<AEnemyBase>(OwnerCharacter),
+			OwnerCharacter
 		);
 	}
 }

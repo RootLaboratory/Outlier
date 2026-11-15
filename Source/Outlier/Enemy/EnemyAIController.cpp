@@ -270,6 +270,8 @@ void AEnemyAIController::SetAttackAimActive(bool bActive)
 void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)
 {
 	AwarenessTargets.Remove(TargetActor);
+	DirectlyVisibleTargets.Remove(TargetActor);
+	if (LastVisibleTarget.Get() == TargetActor) LastVisibleTarget.Reset();
 	if (!IsValid(TargetActor) || !EnemyPerceptionComponent)
 	{
 		return;
@@ -291,7 +293,8 @@ void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)
 	const bool bHasVisibleTarget = IsValid(PreferredTarget);
 	UpdateVisibleTarget(Enemy, PreferredTarget);
 
-	if (bHasVisibleTarget)
+	// 감지 재평가는 직접 시야를 먼저 확정한다. 해킹 아군은 그 시야로 싸우되 적 방에는 보고하지 않는다.
+	if (bHasVisibleTarget && Enemy->CanUseRoomTargetSharing())
 	{
 		StartSharedTargetReporting();
 		ReportSharedTargetContact(Enemy, PreferredTarget);
@@ -504,7 +507,7 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 		return;
 	}
 
-	if (IsStealthedDetectionTarget(Actor))
+	if (IsStealthedDetectionTarget(Actor) || OutlierEnemyTargetRules::IsPresentationProtected(Actor))
 	{
 		const TWeakObjectPtr<AActor> TargetKey(Actor);
 		// Keep a stealthed target out of the perception cache so ending stealth
@@ -559,7 +562,7 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 		if (!IsValid(ObservationTarget)) ObservationTarget = Actor;
 		Enemy->RecordInvestigationSight(ObservationTarget, ObservationTarget->GetActorLocation(), GetWorld()->GetTimeSeconds());
 		Enemy->OnDirectSightForHitResponse(ObservationTarget->GetActorLocation());
-		Enemy->RecordAlertClue(GetWorld()->GetTimeSeconds());
+		Enemy->RecordAlertClue(GetWorld()->GetTimeSeconds(), Actor);
 	}
 	if (Enemy->HasAuthority() && Enemy->GetCombatState() != EEnemyCombatState::Combat)
 	{
@@ -579,7 +582,6 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 		const FVector TargetLocation = LocationSource->GetActorLocation();
 
 		UpdateVisibleTarget(Enemy, LocationSource);
-		if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(TargetLocation);
 
 		if (!Enemy->IsInCombat())
 		{
@@ -588,13 +590,14 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 			const UEnemyRoomSubsystem* Rooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
 			if (Rooms && Rooms->IsRoomInCombat(Enemy->GetDefaultRoomTag()))
 			{
-				Enemy->EnterCombatFromRoom(TargetLocation, false, true);
+				Enemy->EnterCombatFromRoom(TargetLocation, false, true, LocationSource);
 			}
 			else
 			{
-				Enemy->EnterAlertFromPerception(TargetLocation);
+				Enemy->EnterAlertFromPerception(TargetLocation, LocationSource);
 			}
 		}
+		if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(TargetLocation, LocationSource);
 
 		if (Enemy->CanUseRoomTargetSharing())
 		{
@@ -640,7 +643,7 @@ void AEnemyAIController::ObserveInitialSight(AEnemyBase& Enemy, AActor& Target, 
 			FVector::Distance(Origin, State->LastSeenLocation), Stat.AwarenessNearFillDuration,
 			Stat.AwarenessFillDuration, Stat.AwarenessNearDistance, Stat.AwarenessFarDistance);
 		State->LastSeenAt = GetWorld()->GetTimeSeconds();
-		Enemy.RecordAlertClue(State->LastSeenAt);
+		Enemy.RecordAlertClue(State->LastSeenAt, &Target);
 	}
 	AdvanceInitialAwareness(Enemy, *State);
 }
@@ -711,7 +714,7 @@ bool AEnemyAIController::ResolveInitialAwarenessAlert()
 			}
 			else
 			{
-				Enemy->UpdateLastKnownPlayerLocation(State.LastSeenLocation);
+				Enemy->UpdateLastKnownPlayerLocation(State.LastSeenLocation, Pair.Key.Get());
 				bCommitted = Enemy->CommitAlertToCombat();
 			}
 			if (bCommitted) ResetInitialAwareness();
@@ -765,6 +768,8 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	const EEnemyCombatState State = Enemy->GetCombatState();
 	if (Enemy->IsLocationInvestigationActive()) return;
 	FVector SelectedLocation = Goal.Location;
+	FEnemyHeardNoise SelectedNoise;
+	AActor* SelectedSource = Enemy->TryGetHeardNoise(SelectedNoise) ? SelectedNoise.Source.Get() : Actor;
 	if (State == EEnemyCombatState::Stun)
 	{
 		// 기절 중에는 감지 의도가 비어 있다. 조사를 시작하지 않고 기존 복귀 상태 승격만 유지한다.
@@ -776,7 +781,7 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	// 유효한 전투 대상의 실제 추적 위치를 소리로 덮어쓰지 않는다.
 	// 청각만 남았다면 들린 위치를 기록하되 직접 시야나 방 공유 관측으로 취급하지 않는다.
 	// 진행 중인 수색의 고정 중심/공유 버전도 이 갱신만으로는 바뀌지 않는다.
-	if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(SelectedLocation);
+	if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(SelectedLocation, SelectedSource);
 
 	// 이미 참여 중인 적의 수색이나 공격을 소리만으로 다시 시작하지 않는다.
 	if (State == EEnemyCombatState::Combat)
@@ -789,7 +794,8 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	const UEnemyRoomSubsystem* Rooms = Enemy->GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
 	if (Rooms && Rooms->IsRoomInCombat(Enemy->GetDefaultRoomTag()))
 	{
-		Enemy->EnterCombatFromRoom(SelectedLocation, false, true);
+		Enemy->EnterCombatFromRoom(SelectedLocation, false, true, SelectedSource);
+		if (!Enemy->HasTrackableTarget()) Enemy->UpdateLastKnownPlayerLocation(SelectedLocation, SelectedSource);
 		return;
 	}
 
@@ -797,7 +803,8 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	if (State == EEnemyCombatState::NonCombat || State == EEnemyCombatState::Returning ||
 		State == EEnemyCombatState::Stun)
 	{
-		Enemy->EnterAlertFromPerception(SelectedLocation);
+		Enemy->EnterAlertFromPerception(SelectedLocation, SelectedSource);
+		Enemy->UpdateLastKnownPlayerLocation(SelectedLocation, SelectedSource);
 	}
 }
 
@@ -867,15 +874,16 @@ void AEnemyAIController::ReportSharedTargetContact(
 	AEnemyBase* Enemy,
 	AActor* TargetActor)
 {
-	if (!Enemy
-		|| !Enemy->CanUseRoomTargetSharing()
-		|| !IsValid(TargetActor))
+	if (!Enemy || !Enemy->CanUseRoomTargetSharing())
+	{
+		// 공유 자격 상실은 관측 상실이 아니다. 이전 보고만 정리하고 자신의 직접 시야는 보존한다.
+		StopSharedTargetReporting(true);
+		return;
+	}
+	if (!IsValid(TargetActor))
 	{
 		StopSharedTargetReporting(true);
-		if (Enemy)
-		{
-			Enemy->SetPlayerCurrentlyVisible(false);
-		}
+		Enemy->SetPlayerCurrentlyVisible(false);
 		return;
 	}
 

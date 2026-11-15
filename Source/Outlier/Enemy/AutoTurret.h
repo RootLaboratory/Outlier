@@ -145,7 +145,8 @@ public:
 	virtual void EnterStun() override;
 	virtual void RestoreStateAfterStun() override;
 	virtual void UnPossessed() override;
-	uint32 BeginTurretAttackExecution();
+	uint32 BeginTurretAttackExecution(AActor* Target = nullptr);
+	virtual void ForgetPresentationTarget(AActor* TargetActor) override;
 	bool IsTurretAttackExecutionCurrent(uint32 ExecutionId) const;
 	void FinishTurretAttackExecution(uint32 ExecutionId);
 
@@ -412,6 +413,7 @@ private:
 	uint32 HackingEpisodeId = 0;
 	uint32 HackingRequestId = 0;
 	uint32 TurretAttackExecution = 0;
+	TWeakObjectPtr<AActor> TurretAttackExecutionTarget;
 	TWeakObjectPtr<AActor> HackingInstigator;
 	TWeakObjectPtr<AController> HackingController;
 	int32 HackingGeneration = INDEX_NONE;

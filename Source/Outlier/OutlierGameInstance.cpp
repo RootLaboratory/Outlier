@@ -5,7 +5,9 @@
 #include "OutlierArenaSettings.h"
 #include "OutlierGameMode.h"
 #include "AbilitySystemGlobals.h"
+#include "Cinematic/OutlierCinematicSubsystem.h"
 #include "Engine/Engine.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Engine/NetDriver.h"
 #include "Engine/NetConnection.h"
@@ -694,6 +696,10 @@ bool UOutlierGameInstance::TravelToLobby(UWorld* World)
 
 void UOutlierGameInstance::ResetArenaHandoffState()
 {
+	// 명시적 이탈/복구 실패로 이동을 취소하면 월드 간 인계 중인 화면 가림도 끝낸다.
+	for (ULocalPlayer* Local : GetLocalPlayers())
+		if (auto* Cinematic = Local ? Local->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+			Cinematic->EndInitialIntroBlackout();
 	if (ArenaReconnectTickerHandle.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(ArenaReconnectTickerHandle);

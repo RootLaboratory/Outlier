@@ -9,6 +9,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyTargetRules.h"
 #include "Enemy/VECDroneMovementComponent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "GameFramework/Character.h"
@@ -306,6 +307,12 @@ void ASelfDestructDrone::DestroyMountedExplosives()
 
 void ASelfDestructDrone::TriggerSelfDestruct()
 {
+	// 이미 고정한 돌진 방향도 원래 대상의 보호를 우회할 수 없다. 사망 폭발은 기존 정책을 따른다.
+	if (ChargeState.bActive && OutlierEnemyTargetRules::IsPresentationProtected(CommittedChargeTarget.Get()))
+	{
+		CancelCommittedSelfDestruct();
+		return;
+	}
 	if (!HasAuthority() || bDeathHandling)
 	{
 		LogChargeDiagnostics(TEXT("DetonateRejected"));
@@ -384,7 +391,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestruct(
 		TelegraphDuration,
 		ChargeSpeed,
 		false,
-		0.0f);
+		0.0f, TargetActor);
 }
 
 bool ASelfDestructDrone::BeginCommittedSelfDestructDirection(
@@ -406,8 +413,9 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	float TelegraphDuration,
 	float ChargeSpeed,
 	bool bLimitChargeDistance,
-	float ChargeDistanceLimit)
+	float ChargeDistanceLimit, AActor* TargetActor)
 {
+	if (OutlierEnemyTargetRules::IsPresentationProtected(TargetActor)) return false;
 	if (!HasAuthority()
 		|| bDeathHandling
 		|| IsDead()
@@ -432,6 +440,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	CommittedChargeDistanceLimit = FMath::Max(ChargeDistanceLimit, 0.0f);
 	CommittedImpactElapsedTime = 0.0f;
 
+	CommittedChargeTarget = TargetActor;
 	// 이동/해킹의 commit을 먼저 확정하고 아래에서 클라이언트 연출까지 게시한다.
 	ChargeState.bActive = true;
 	if (HackableComponent)
@@ -478,6 +487,11 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 		return false;
 	}
 
+	if (OutlierEnemyTargetRules::IsPresentationProtected(CommittedChargeTarget.Get()))
+	{
+		CancelCommittedSelfDestruct();
+		return false;
+	}
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
 	if (!Movement)
 	{
@@ -551,6 +565,12 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 	return true;
 }
 
+void ASelfDestructDrone::ForgetPresentationTarget(AActor* TargetActor)
+{
+	if (CommittedChargeTarget.Get() == TargetActor) CancelCommittedSelfDestruct();
+	Super::ForgetPresentationTarget(TargetActor);
+}
+
 void ASelfDestructDrone::CancelCommittedSelfDestruct()
 {
 	if (!HasAuthority() || !ChargeState.bActive || bDeathHandling)
@@ -561,6 +581,7 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 	LogChargeDiagnostics(TEXT("CancelRequested"));
 
 	PublishChargeState(false);
+	CommittedChargeTarget.Reset();
 	ChargeSpeedState.Reset();
 	if (HackableComponent)
 	{

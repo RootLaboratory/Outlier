@@ -9,6 +9,7 @@
 #include "PartnerHackComponent.generated.h"
 
 class UHackableComponent;
+class AEnemyBase;
 class UHackCandidateLayerWidget;
 class UHackCandidateMarkerWidget;
 class UHackableInfoWidget;
@@ -122,7 +123,8 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientStartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent,
-		float ClickSuccessRangeMultiplier = 1.0f, float SpinningGapMultiplier = 1.0f, uint32 RequestId = 0);
+		float ClickSuccessRangeMultiplier = 1.0f, float SpinningGapMultiplier = 1.0f, uint32 RequestId = 0,
+		int32 GameplayGeneration = 0, int32 LeaseSerial = 0);
 
 	UFUNCTION(Client, Reliable)
 	void ClientStopHackMiniGame();
@@ -194,6 +196,7 @@ private:
 	// 네트워크 검증은 실제 검색·RPC 결과를 관측한다. 테스트를 위한 판정 우회 API는 노출하지 않는다.
 	friend class AHackTargetPointNetworkProbe;
 	friend class FAutoTurretHackingTest;
+	friend class FEnemyPoolHackStateTest;
 #endif
 	UPROPERTY(VisibleInstanceOnly, Category = "Hack")
 	FPartnerHackAbilityData CachedAbilityData;
@@ -235,6 +238,14 @@ private:
 	uint32 ServerHoldId = 0;
 	uint32 NextHackRequestId = 0;
 	uint32 ActiveHackRequestId = 0;
+	TWeakObjectPtr<AEnemyBase> ActivePoolHackEnemy;
+	int32 ActiveHackGeneration = 0;
+	int32 ActiveHackLease = 0;
+	TWeakObjectPtr<AEnemyBase> ServerHeldPoolEnemy;
+	int32 ServerHoldGeneration = 0;
+	int32 ServerHoldLease = 0;
+	bool IsActiveHackLifetimeCurrent() const;
+	bool IsServerHoldLifetimeCurrent() const;
 	bool bHackCompletionPending = false;
 	float HackHoldStartTime = 0.0f;
 	float HackHoldDuration = 0.0f;

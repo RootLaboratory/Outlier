@@ -3,7 +3,6 @@
 
 #include "FrontendPlayerController.h"
 #include "Audio/OutlierAudioSubsystem.h"
-#include "Camera/PlayerCameraManager.h"
 #include "Cinematic/OutlierCinematicSubsystem.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -516,6 +515,15 @@ void AFrontendPlayerController::ClientPrepareForMatch_Implementation()
 
 void AFrontendPlayerController::PrepareForMatch()
 {
+	if (IsLocalController())
+	{
+		if (auto* Cinematic = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+		{
+			Cinematic->ClearLevelCinematics();
+			Cinematic->BeginInitialIntroBlackout();
+		}
+	}
 	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
 		: nullptr)
@@ -530,20 +538,6 @@ void AFrontendPlayerController::PrepareForMatch()
 	// Remote server-side controllers share the listen host's GameInstance.
 	if (IsLocalController())
 	{
-		// 아레나가 이 월드로 스트리밍되므로 프런트엔드 종료 시 반복 재생 중인 타이틀 카메라도 정리한다.
-		if (UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
-			? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>()
-			: nullptr)
-		{
-			Cinematic->ClearLevelCinematics();
-		}
-		// 타이틀 카메라가 빠지면 FirstPersonPC가 LocalPlayer를 넘겨받기 전까지 이 PC 시점으로
-		// 아레나 스트리밍이 노출된다. 시네마틱 상태 복원 뒤에 암전해 이후 LevelLoad 암전과 잇는다.
-		// 이 PC는 교체로 파괴되므로 해제하지 않는다.
-		if (PlayerCameraManager)
-		{
-			PlayerCameraManager->SetManualCameraFade(1.0f, FLinearColor::Black, false);
-		}
 		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
 		{
 			Audio->EnterGameplayMusic();
@@ -567,6 +561,11 @@ void AFrontendPlayerController::ClientHandoffToArena_Implementation(const FStrin
 	}
 
 	PrepareForMatch();
+	if (auto* Cinematic = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+	{
+		Cinematic->BeginInitialIntroBlackout(true);
+	}
 	ClientTravel(ArenaUrl, TRAVEL_Absolute);
 }
 
