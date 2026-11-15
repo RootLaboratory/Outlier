@@ -464,6 +464,21 @@ bool UOutlierUpgradeComponent::ActivateNodeInternal(FName NodeIdOrRowName, AOutl
 	}
 
 	AOutlierPlayerState* PersistentPlayerState = InPlayerState ? InPlayerState : GetOwningOutlierPlayerState();
+	UOutlierAbilitySystemComponent* PurchaseASC = GetOwningAbilitySystem();
+	const bool bCanRecoverPurchase = PurchaseASC && PurchaseASC->IsOwnerActorAuthoritative()
+		&& PurchaseASC->AbilityActorInfo.IsValid() && PurchaseASC->AbilityActorInfo->AvatarActor.IsValid()
+		&& !PurchaseASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead())
+		&& !PurchaseASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting())
+		&& PurchaseASC->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute()) > 0.0f;
+	const float PreviousMaxHealth = bCanRecoverPurchase
+		? PurchaseASC->GetNumericAttribute(UOutlierVitalAttributeSet::GetMaxHealthAttribute()) : 0.0f;
+	const float PreviousMaxShield = bCanRecoverPurchase && Role == EOutlierUpgradeRole::Shooter
+		? PurchaseASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetMaxShieldAttribute()) : 0.0f;
+	if (bCanRecoverPurchase)
+	{
+		// 합성 GE 교체 중의 임시 최대치는 HUD 회복으로 노출하지 않고 최종 결과만 전달한다.
+		PurchaseASC->BeginVitalityPresentation(EOutlierVitalityUpdatePolicy::Immediate);
+	}
 	if (PersistentPlayerState && PersistentPlayerState->HasAuthority())
 	{
 		{
@@ -480,6 +495,25 @@ bool UOutlierUpgradeComponent::ActivateNodeInternal(FName NodeIdOrRowName, AOutl
 	RebuildRuntimeSets();
 	RebuildUnlockedNodes();
 	ReconcileUpgradeProjection();
+
+	if (bCanRecoverPurchase)
+	{
+		// 구매 경계에서만 최종 증가분을 채운다. 복원·재투영은 이 경로를 지나지 않아 중복 회복하지 않는다.
+		const float HealthIncrease = PurchaseASC->GetNumericAttribute(UOutlierVitalAttributeSet::GetMaxHealthAttribute()) - PreviousMaxHealth;
+		if (HealthIncrease > 0.0f)
+		{
+			PurchaseASC->ApplyHealthRecoveryToSelf(HealthIncrease);
+		}
+		if (Role == EOutlierUpgradeRole::Shooter)
+		{
+			const float ShieldIncrease = PurchaseASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetMaxShieldAttribute()) - PreviousMaxShield;
+			if (ShieldIncrease > 0.0f)
+			{
+				PurchaseASC->ApplyShieldRecoveryToSelf(ShieldIncrease);
+			}
+		}
+		PurchaseASC->EndVitalityPresentation();
+	}
 
 	OnUpgradeNodeActivated.Broadcast(RowName);
 	OnUpgradeStateChanged.Broadcast();

@@ -7,6 +7,10 @@
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerVitalityComponent.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -153,12 +157,60 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 	bIndicateAudio = false;
 	OnRep_IndicateAudio();
 	ForceNetUpdate();
+	// 모든 사용 자격이 확정된 뒤 회복한다. UI를 다시 여는 요청은 기록에 걸려 회복만 생략된다.
+	TryRecoverPair(ShooterCharacter, PartnerCharacter, CachedHackingPairId);
 	ShooterController->ClientPushUILayer(PushRequest);
 	PartnerController->ClientPushUILayer(PushRequest);
 	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
 		this,
 		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
 		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.SavePoint.Execute")));
+	return true;
+}
+
+bool AInteractionStatMachine::TryRecoverPair(AShooterCharacter* Shooter, APartnerCharacter* Partner, int32 PairId)
+{
+	if (!HasAuthority() || !IsValid(Shooter) || !IsValid(Partner)
+		|| PairId == INDEX_NONE || RecoveredPairIds.Contains(PairId) || Shooter->IsDead())
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+	UPartnerVitalityComponent* Vitality = Partner->GetPartnerVitalityComponent();
+	if (!ShooterASC || !PartnerASC || !Vitality
+		|| Shooter->GetMaxHealth() <= 0.0f || Shooter->GetCurHealth() <= 0.0f
+		|| PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead())
+		|| PartnerASC->GetNumericAttribute(UOutlierVitalAttributeSet::GetMaxHealthAttribute()) <= 0.0f)
+	{
+		return false;
+	}
+
+	// 효과 제거의 동기 콜백에서도 같은 장치 보상을 다시 실행하지 못하도록 먼저 기록한다.
+	RecoveredPairIds.Add(PairId);
+	if (Vitality->IsRebooting())
+	{
+		// 정확한 Reboot 핸들만 제거하면 기존 종료 콜백이 HP·입력·감지를 복구한다.
+		// 쿨타임과 별도 빙의 보호 효과는 이 경로에서 제거하지 않는다.
+		if (!Vitality->RemoveRebootEffect())
+		{
+			RecoveredPairIds.Remove(PairId);
+			return false;
+		}
+	}
+	else
+	{
+		PartnerASC->RestoreHealthToMax();
+	}
+
+	ShooterASC->RestoreHealthToMax();
+	const float MissingShield = ShooterASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetMaxShieldAttribute())
+		- ShooterASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetShieldAttribute());
+	if (MissingShield > 0.0f)
+	{
+		ShooterASC->ApplyShieldDeltaToSelf(MissingShield, EOutlierVitalityUpdatePolicy::Immediate);
+	}
 	return true;
 }
 
