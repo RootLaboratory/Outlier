@@ -12,6 +12,7 @@
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
+#include "Misc/ScopeExit.h"
 #include "Outlier.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "Shooter/ShooterCharacter.h"
@@ -60,6 +61,7 @@ void UOutlierAbilitySystemComponent::GetLifetimeReplicatedProps(TArray<FLifetime
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, QuantumLeapCharges, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, PartnerHackCharges, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, ShadowChainPresentation, COND_OwnerOnly);
 #if WITH_EDITOR
 	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, bEditorShooterSuitGrantChecks, COND_OwnerOnly);
 #else
@@ -150,6 +152,17 @@ void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 		}
 		HandleStunStateChanged(OutlierGameplayTags::State::Stunned(),
 			GetTagCount(OutlierGameplayTags::State::Stunned()));
+		if (Cast<AShooterCharacter>(Actor))
+		{
+			if (!ShadowChainUpgradeHandle.IsValid())
+			{
+				ShadowChainUpgradeHandle = RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain())
+					.AddUObject(this, &ThisClass::HandleShadowChainPresentationTag);
+				ShadowChainDeadHandle = RegisterGameplayTagEvent(OutlierGameplayTags::State::Dead())
+					.AddUObject(this, &ThisClass::HandleShadowChainPresentationTag);
+			}
+			RefreshShadowChainPresentation();
+		}
 	}
 
 	// 은신 비주얼은 State.Stealthed 태그를 보고 서브시스템이 전담한다. 여기서 구독만 걸어준다.
@@ -198,6 +211,10 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 			StunStateChangedHandle.Reset();
 		}
 		HandleStunStateChanged(OutlierGameplayTags::State::Stunned(), 0);
+		RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain()).Remove(ShadowChainUpgradeHandle);
+		RegisterGameplayTagEvent(OutlierGameplayTags::State::Dead()).Remove(ShadowChainDeadHandle);
+		ShadowChainUpgradeHandle.Reset();
+		ShadowChainDeadHandle.Reset();
 		ResetShooterStealthUpgradeState();
 		ResetShooterQuantumLeapTransientState();
 		if (UWorld* World = GetWorld())
@@ -209,6 +226,20 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 			}
 		}
 
+		if (IsOwnerActorAuthoritative())
+		{
+			const uint32 Revision = ShadowChainPresentation.Revision + 1;
+			ShadowChainPresentation = FOutlierShadowChainPresentationState();
+			ShadowChainPresentation.Revision = Revision;
+			ShadowChainPresentationEffect.Invalidate();
+			OnRep_ShadowChainPresentation();
+			if (AActor* OwningActor = GetOwner()) OwningActor->ForceNetUpdate();
+		}
+		else
+		{
+			ShadowChainPresentation = FOutlierShadowChainPresentationState();
+			OnRep_ShadowChainPresentation();
+		}
 		ClearActorInfo();
 	}
 }
@@ -782,6 +813,7 @@ bool UOutlierAbilitySystemComponent::ConfigureShooterSuitAbilities(
 	}
 	bShooterSuitConfigured = true;
 	RefreshShooterQuantumLeapCharges();
+	RefreshShadowChainPresentation();
 	return true;
 }
 
@@ -913,6 +945,7 @@ bool UOutlierAbilitySystemComponent::UpdateShooterSuitConfig(const FOutlierShoot
 		OnShooterConnectionDistanceChanged.Broadcast(Config.MaxPartnerDistance);
 	}
 	RefreshShooterQuantumLeapCharges();
+	RefreshShadowChainPresentation();
 	return true;
 }
 
@@ -1331,6 +1364,12 @@ void UOutlierAbilitySystemComponent::NotifyShooterStealthKill(
 	}
 
 	const bool bAssassination = Session.IsValid();
+	++ShadowChainPresentationDepth;
+	ON_SCOPE_EXIT
+	{
+		--ShadowChainPresentationDepth;
+		RefreshShadowChainPresentation();
+	};
 	if (bAssassination && HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::AssassinsStrike()))
 	{
 		const float Remaining = GetShooterStealthCooldownRemaining();
@@ -1393,6 +1432,76 @@ void UOutlierAbilitySystemComponent::ResetShooterStealthUpgradeState()
 	StealthEnemyKillCount = 0;
 	RemoveActiveEffectFromSelf(StealthExitSpeedHandle);
 	StealthExitSpeedHandle.Invalidate();
+	RefreshShadowChainPresentation();
+}
+
+void UOutlierAbilitySystemComponent::SetShadowChainPresentationEffect(FActiveGameplayEffectHandle EffectHandle)
+{
+	if (!IsOwnerActorAuthoritative()) return;
+	ShadowChainPresentationEffect = EffectHandle;
+	if (const FActiveGameplayEffect* Effect = GetActiveGameplayEffect(EffectHandle))
+	{
+		FGameplayTagContainer Tags;
+		Effect->Spec.GetAllGrantedTags(Tags);
+		if (Tags.HasTagExact(OutlierGameplayTags::State::ShooterPassiveStealth())) ++ShadowChainActivationSerial;
+	}
+	RefreshShadowChainPresentation();
+}
+
+void UOutlierAbilitySystemComponent::HandleShadowChainPresentationTag(FGameplayTag Tag, int32 NewCount)
+{
+	RefreshShadowChainPresentation();
+}
+
+void UOutlierAbilitySystemComponent::RefreshShadowChainPresentation()
+{
+	if (!IsOwnerActorAuthoritative() || ShadowChainPresentationDepth > 0) return;
+	FOutlierShadowChainPresentationState Next;
+	Next.bInitialized = bShooterSuitConfigured && Cast<AShooterCharacter>(GetAvatarActor())
+		&& !HasMatchingGameplayTag(OutlierGameplayTags::State::Dead());
+	Next.bUnlocked = Next.bInitialized && HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	Next.CurrentStacks = StealthEnemyKillCount;
+	Next.RequiredKills = FMath::Max(1, ShooterSuitConfig.Stealth.ShadowChainRequiredKills);
+	Next.ActivationSerial = ShadowChainActivationSerial;
+	if (Next.bInitialized)
+	{
+		if (const FActiveGameplayEffect* Effect = GetActiveGameplayEffect(ShadowChainPresentationEffect))
+		{
+			FGameplayTagContainer Tags;
+			Effect->Spec.GetAllGrantedTags(Tags);
+			Next.bPassiveActive = Tags.HasTagExact(OutlierGameplayTags::State::ShooterPassiveStealth());
+			if (Next.bPassiveActive)
+			{
+				Next.StartServerTime = Effect->StartServerWorldTime;
+				Next.DurationSeconds = Effect->GetDuration();
+			}
+		}
+	}
+	const auto& Old = ShadowChainPresentation;
+	if (Next.bInitialized == Old.bInitialized && Next.bUnlocked == Old.bUnlocked
+		&& Next.bPassiveActive == Old.bPassiveActive && Next.CurrentStacks == Old.CurrentStacks
+		&& Next.RequiredKills == Old.RequiredKills && Next.StartServerTime == Old.StartServerTime
+		&& Next.DurationSeconds == Old.DurationSeconds && Next.ActivationSerial == Old.ActivationSerial) return;
+	Next.Revision = Old.Revision + 1;
+	ShadowChainPresentation = Next;
+	OnRep_ShadowChainPresentation();
+	if (AActor* OwningActor = GetOwner()) OwningActor->ForceNetUpdate();
+}
+
+void UOutlierAbilitySystemComponent::OnRep_ShadowChainPresentation()
+{
+	OnShadowChainPresentationChanged.Broadcast();
+}
+
+float UOutlierAbilitySystemComponent::GetShadowChainStealthRemaining() const
+{
+	const UWorld* World = GetWorld();
+	if (!World) return 0.0f;
+	if (const AGameStateBase* GameState = World->GetGameState())
+	{
+		return ShadowChainPresentation.GetRemaining(GameState->GetServerWorldTimeSeconds());
+	}
+	return IsOwnerActorAuthoritative() ? ShadowChainPresentation.GetRemaining(World->GetTimeSeconds()) : 0.0f;
 }
 
 int32 UOutlierAbilitySystemComponent::GetGrantedPartnerAbilityCount() const

@@ -919,6 +919,7 @@ bool UOutlierShooterStealthAbility::ApplyStealthEffects(float Duration)
 	ShooterASC->RemoveActiveEffectFromSelf(PreviousShooter);
 	PartnerASC->RemoveActiveEffectFromSelf(PreviousPartner);
 	ShooterASC->RemoveActiveEffectFromSelf(PreviousSpeed);
+	ShooterASC->SetShadowChainPresentationEffect(ShooterStealthHandle);
 	return true;
 }
 
@@ -1042,6 +1043,7 @@ void UOutlierShooterStealthAbility::EndAbility(
 		}
 		ShooterASC->RemoveActiveEffectFromSelf(StealthSpeedHandle);
 		ShooterASC->FinishShooterStealthSession();
+		ShooterASC->SetShadowChainPresentationEffect(FActiveGameplayEffectHandle());
 	}
 	StealthSpeedHandle.Invalidate();
 	ShooterAbilitySystem.Reset();

@@ -149,6 +149,10 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerDebugTogglePairInvulnerability();
 
+	// Temporary F2 test shortcut, intentionally available in Shipping.
+	UFUNCTION(Server, Reliable)
+	void ServerDebugGrantStealthUpgrades();
+
 	// 서버가 시작 당시 확보한 두 Controller에만 전달한다. Listen Host도 같은 로컬 처리 함수를 사용한다.
 	void SendSuitTransitionPhaseFromServer(AShooterCharacter* Shooter, const FGuid& TransitionId,
 		ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing);

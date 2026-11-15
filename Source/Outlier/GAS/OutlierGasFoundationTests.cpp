@@ -2401,11 +2401,23 @@ bool FOutlierGasShooterStealthUpgradeTest::RunTest(const FString& Parameters)
 	OrdinaryKill.DamageTag = OutlierGameplayTags::Damage::Ranged();
 	KillThroughDamageBoundary(OrdinaryKill);
 	TestFalse(TEXT("No upgrade means no kill stealth"), Shooter->IsStealthed());
+	TestFalse(TEXT("Shadow Chain presentation is locked before acquisition"), ShooterASC->GetShadowChainPresentationState().bUnlocked);
 	ShooterASC->AddLooseGameplayTag(FiveKillTag);
+	TestTrue(TEXT("Acquisition publishes unlocked presentation"), ShooterASC->GetShadowChainPresentationState().bUnlocked);
+	int32 PresentationNotifications = 0;
+	const FDelegateHandle PresentationHandle = ShooterASC->OnShadowChainPresentationChanged.AddLambda([&]()
+	{
+		++PresentationNotifications;
+		TestTrue(TEXT("A published kill state never exposes an unconsumed threshold"),
+			ShooterASC->GetShadowChainPresentationState().CurrentStacks < ShooterASC->GetShadowChainPresentationState().RequiredKills);
+	});
 	// Exercise first-ever Stealth activation without a manual ability/session beforehand.
 	for (int32 Index = 0; Index < 10; ++Index)
 	{
+		const int32 BeforeNotifications = PresentationNotifications;
 		KillThroughDamageBoundary(OrdinaryKill, Index >= 4);
+		TestEqual(TEXT("Each valid kill publishes one coherent presentation"), PresentationNotifications - BeforeNotifications, 1);
+		TestEqual(TEXT("Presentation mirrors consumed remainder"), ShooterASC->GetShadowChainPresentationState().CurrentStacks, (Index + 1) % 5);
 		if (Index == 4 || Index == 9)
 		{
 			TestTrue(TEXT("Non-stealth turret kills trigger on five and ten"),
@@ -2413,14 +2425,18 @@ bool FOutlierGasShooterStealthUpgradeTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Automatic duration is 1.5 seconds"), FMath::IsNearlyEqual(RemainingStealth(), 1.5f, 0.05f));
 			TestTrue(TEXT("Partner receives paired stealth"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
 			TestTrue(TEXT("Shadow Chain alone grants passive stealth"), ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterPassiveStealth()));
+			TestTrue(TEXT("Passive UI has the successfully applied effect"), ShooterASC->GetShadowChainPresentationState().bPassiveActive);
+			TestTrue(TEXT("Passive UI duration agrees with the actual effect"), FMath::IsNearlyEqual(ShooterASC->GetShadowChainStealthRemaining(), RemainingStealth(), 0.05f));
 			TestFalse(TEXT("Automatic stealth adds no cooldown"), ShooterASC->IsShooterStealthCooldownActive());
 			Partner->NotifyOffensiveActionExecuted();
 			TestTrue(TEXT("Threshold passive stealth survives Partner offense"), Shooter->IsStealthed());
 			ShooterASC->EndActiveShooterStealth(false);
+			TestFalse(TEXT("Passive cleanup clears time presentation"), ShooterASC->GetShadowChainPresentationState().bPassiveActive);
 		}
 		TestFalse(TEXT("Only each fifth kill grants stealth; Partner offense breaks it"), Shooter->IsStealthed());
 	}
 	ShooterASC->RemoveLooseGameplayTag(FiveKillTag);
+	TestFalse(TEXT("Upgrade removal hides presentation"), ShooterASC->GetShadowChainPresentationState().bUnlocked);
 	ShooterASC->AddLooseGameplayTag(CooldownReductionTag);
 	TestTrue(TEXT("Manual stealth starts for cooldown-only node"), ShooterASC->TryActivateShooterSuitAbility(StealthTag));
 	FOutlierDamageRequest CooldownKill = OrdinaryKill;
@@ -2522,8 +2538,10 @@ bool FOutlierGasShooterStealthUpgradeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Passive stealth survives damage and remains paired"), Shooter->IsStealthed() && PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
 	ClearCooldown();
 	TickSeconds(1.0f);
+	const uint32 PassiveSerialBeforeRefresh = ShooterASC->GetShadowChainPresentationState().ActivationSerial;
 	for (int32 Index = 0; Index < 5; ++Index) KillThroughDamageBoundary(OrdinaryKill);
 	TestTrue(TEXT("Passive refresh replaces remaining duration with 1.5 seconds"), FMath::IsNearlyEqual(RemainingStealth(), 1.5f, 0.05f));
+	TestTrue(TEXT("Refresh is observable without a passive-tag edge"), ShooterASC->GetShadowChainPresentationState().ActivationSerial > PassiveSerialBeforeRefresh);
 	TestTrue(TEXT("Passive refresh preserves the continuous session"), ShooterASC->BeginShooterStealthAttack() == PassiveSession);
 	DirectKill.StealthSession = PassiveSession;
 	KillThroughDamageBoundary(DirectKill);
@@ -2532,6 +2550,7 @@ bool FOutlierGasShooterStealthUpgradeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Refreshed stealth outlives original expiry"), Shooter->IsStealthed());
 	TickSeconds(0.6f);
 	TestFalse(TEXT("Refreshed stealth expires after replacement duration"), Shooter->IsStealthed());
+	TestFalse(TEXT("Natural expiry returns UI to stacks"), ShooterASC->GetShadowChainPresentationState().bPassiveActive);
 	TestTrue(TEXT("Manual stealth starts after passive expiry"), ShooterASC->TryActivateShooterSuitAbility(StealthTag));
 	ShooterASC->BeginShooterStealthAttack();
 	TestTrue(TEXT("No old cooldown reduction is reserved"), FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 20.0f, 0.05f));
@@ -2540,6 +2559,7 @@ bool FOutlierGasShooterStealthUpgradeTest::RunTest(const FString& Parameters)
 	FOutlierShooterSuitConfig TunedConfig = ShooterASC->GetShooterSuitConfig();
 	TunedConfig.Stealth.ShadowChainRequiredKills = 3;
 	TestTrue(TEXT("Configurable three-kill threshold is accepted"), ShooterASC->UpdateShooterSuitConfig(TunedConfig));
+	TestEqual(TEXT("UI receives server-configured threshold"), ShooterASC->GetShadowChainPresentationState().RequiredKills, 3);
 	for (int32 Index = 0; Index < 3; ++Index)
 	{
 		KillThroughDamageBoundary(OrdinaryKill, true);
@@ -2549,6 +2569,15 @@ bool FOutlierGasShooterStealthUpgradeTest::RunTest(const FString& Parameters)
 	FString InvalidConfigError;
 	TunedConfig.Stealth.ShadowChainRequiredKills = 0;
 	TestFalse(TEXT("Zero required kills is invalid"), TunedConfig.IsValid(InvalidConfigError));
+	ShooterASC->OnShadowChainPresentationChanged.Remove(PresentationHandle);
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::State::Dead());
+	TestFalse(TEXT("Death invalidates Shadow Chain presentation"), ShooterASC->GetShadowChainPresentationState().bInitialized);
+	ShooterASC->RemoveLooseGameplayTag(OutlierGameplayTags::State::Dead());
+	TestTrue(TEXT("Restored live Pawn provides a current snapshot"), ShooterASC->GetShadowChainPresentationState().bInitialized);
+	ShooterASC->ClearForPawn(Shooter);
+	TestFalse(TEXT("Cleared ASC cannot display a stale Shadow Chain snapshot"), ShooterASC->GetShadowChainPresentationState().bInitialized);
+	ShooterASC->InitializeForPawn(Shooter);
+	TestTrue(TEXT("Reinitialized ASC publishes an immediately readable snapshot"), ShooterASC->GetShadowChainPresentationState().bInitialized);
 
 	if (Weapon)
 	{

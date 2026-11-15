@@ -1488,6 +1488,11 @@ bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
 			if (Params.Event == IE_Pressed) ServerDebugTogglePairInvulnerability();
 			return true;
 		}
+		if (Params.Key == EKeys::F2)
+		{
+			if (Params.Event == IE_Pressed) ServerDebugGrantStealthUpgrades();
+			return true;
+		}
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
 		{
 			// 스킵 홀드 키(누름/반복/해제)가 점프·위젯 확인 등으로 새지 않도록 Enhanced Input보다 먼저 처리한다.
@@ -1524,6 +1529,39 @@ void AFirstPersonPlayerController::ServerDebugTogglePairInvulnerability_Implemen
 	ClientMessage(bEnabled ? TEXT("Shooter / Partner Invulnerability ON") : TEXT("Shooter / Partner Invulnerability OFF"));
 	UE_LOG(LogOutlier, Log, TEXT("[DebugInvulnerability] Pair=%d Enabled=%d RequestedBy=%s"),
 		ShooterState->GetPairId(), bEnabled, *GetName());
+}
+
+void AFirstPersonPlayerController::ServerDebugGrantStealthUpgrades_Implementation()
+{
+	AOutlierPlayerState* State = GetPlayerState<AOutlierPlayerState>();
+	if (!HasAuthority() || !State || !State->IsShooterPlayer()) return;
+	AShooterCharacter* Shooter = State->GetShooterCharacter();
+	UOutlierUpgradeComponent* Upgrades = IsValid(Shooter) ? Shooter->FindComponentByClass<UOutlierUpgradeComponent>() : nullptr;
+	if (!Upgrades) return;
+
+	TArray<FName> Rows;
+	Upgrades->GetNodeRowNames(Rows);
+	TArray<FName> Nodes = State->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter);
+	const int32 Before = Nodes.Num();
+	const FGameplayTag StealthTag = FGameplayTag::RequestGameplayTag(TEXT("Ability.Shooter.Stealth"));
+	for (FName RowName : Rows)
+	{
+		FOutlierUpgradeNodeRow Row;
+		if (Upgrades->GetNodeRow(RowName, Row) && Row.Role == EOutlierUpgradeRole::Shooter
+			&& (Row.AbilityTag == StealthTag || Row.TreeId == TEXT("Stealth")) && !Row.bInitiallyActivated)
+		{
+			Nodes.AddUnique(RowName);
+		}
+	}
+	const int32 Added = Nodes.Num() - Before;
+	if (Added > 0)
+	{
+		// Use the PlayerState source of truth and normal projection/replication;
+		// preserve currency and every unrelated upgrade. Repeated presses are idempotent.
+		State->RestoreCheckpointProgress(State->GetNodeCount(), EOutlierUpgradeRole::Shooter, Nodes);
+	}
+	ClientMessage(FString::Printf(TEXT("Stealth upgrades granted (+%d)"), Added));
+	UE_LOG(LogOutlier, Log, TEXT("[DebugStealthUpgrades] Player=%s Added=%d Total=%d"), *GetNameSafe(State), Added, Nodes.Num());
 }
 
 void AFirstPersonPlayerController::SetupInputComponent()
