@@ -1,0 +1,8 @@
+// Partner HUD Grayout RetainerBox Effect. GrayAmount 0 = 원본, 1 = 톤다운 완료.
+// 채도만 빼면 밝은 HUD 가 밝은 회색으로 남으므로, 대비를 줄이고 밝기를 낮춰 전체 톤을 가라앉힌다.
+// Partner 이미지(PartnerKnockDownImage.ush)도 같은 Tone 식을 쓴다.
+float4 C = Texture2DSample(Tex, TexSampler, UV);
+float Lum = dot(C.rgb, float3(0.299, 0.587, 0.114));
+float Tone = saturate((Lum - 0.5) * GrayContrast + 0.5) * GrayBrightness;
+float G = saturate(GrayAmount);
+return float4(lerp(C.rgb, Tone.xxx, G), C.a * lerp(1.0, GrayOpacity, G));

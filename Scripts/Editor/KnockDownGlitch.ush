@@ -1,0 +1,31 @@
+// KnockDown 텍스트용 RetainerBox Effect.
+// Progress 0(다운 직후) -> 1(재부팅 완료). 왜곡 세기 = (1 - Progress)^IntensityPower.
+// RGB 어긋남과 줄 단위 밀림은 세기에 비례해 줄고, 색은 FillStartV에서 FillEndV 쪽으로(기본: 아래 → 위) FillColor로 채워진다.
+float P = saturate(Progress);
+float I = pow(saturate(1.0 - P), max(IntensityPower, 0.0001));
+
+// 줄 단위 밀림: 줄마다, GlitchFrameRate 프레임마다 새 난수.
+float Frame = floor(Time * max(GlitchFrameRate, 1.0));
+float Band = floor(UV.y * max(RowCount, 1.0));
+float Rand = frac(sin(dot(float2(Band, Frame), float2(12.9898, 78.233))) * 43758.5453);
+float Pick = frac(sin(dot(float2(Band + 17.0, Frame), float2(39.3468, 11.1351))) * 24634.6345);
+float Shift = Pick < I * RowChance ? (Rand * 2.0 - 1.0) * MaxRowShift * I : 0.0;
+float2 BaseUV = UV + float2(Shift, 0.0);
+
+// RGB 어긋남: R은 왼쪽, B는 오른쪽에서 읽는다.
+float2 Offset = float2(MaxRGBOffset * I, 0.0);
+float4 SR = Texture2DSample(Tex, TexSampler, BaseUV - Offset);
+float4 SG = Texture2DSample(Tex, TexSampler, BaseUV);
+float4 SB = Texture2DSample(Tex, TexSampler, BaseUV + Offset);
+float3 ChannelAlpha = float3(SR.a, SG.a, SB.a);
+float Alpha = max(ChannelAlpha.r, max(ChannelAlpha.g, ChannelAlpha.b));
+
+// 색 변화: 세로(V) 방향으로 FillStartV~FillEndV 구간을 Progress 만큼 채우고 경계에 밝은 선을 둔다.
+// V는 위가 0, 아래가 1. Start > End면 아래에서 위로, Start < End면 위에서 아래로 차오른다.
+float FillV = lerp(FillStartV, FillEndV, P);
+float Filled = (FillEndV < FillStartV ? BaseUV.y > FillV : BaseUV.y < FillV) ? 1.0 : 0.0;
+float3 Tint = lerp(BaseColor.rgb, FillColor.rgb, Filled);
+float Edge = (P > 0.0 && P < 1.0 && abs(BaseUV.y - FillV) < EdgeWidthV) ? 1.0 : 0.0;
+Tint = lerp(Tint, EdgeColor.rgb, Edge);
+
+return float4(Tint * ChannelAlpha, Alpha);
