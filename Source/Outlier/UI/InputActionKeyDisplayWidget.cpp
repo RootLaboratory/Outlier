@@ -9,12 +9,117 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/Texture2D.h"
 #include "Fonts/FontMeasure.h"
+#include "Fonts/FontCache.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Rendering/SlateRenderer.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "UI/InputKeyDisplayNameDataRow.h"
 #include "UI/InputKeyTextureDataRow.h"
+#include "UI/InputKeyFrameLayout.h"
+#include "Rendering/DrawElements.h"
+#include "Widgets/SCompoundWidget.h"
 #include "Outlier.h"
+
+/** Paint before the original widget tree, so the frame remains behind the key label. */
+class SInputKeyFrame : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SInputKeyFrame) {}
+		SLATE_ARGUMENT(TWeakObjectPtr<UInputActionKeyDisplayWidget>, KeyWidget)
+		SLATE_DEFAULT_SLOT(FArguments, Content)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& Args)
+	{
+		KeyWidget = Args._KeyWidget;
+		ChildSlot[Args._Content.Widget];
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& Geometry,
+		const FSlateRect& CullingRect, FSlateWindowElementList& Elements, int32 LayerId,
+		const FWidgetStyle& Style, bool bParentEnabled) const override
+	{
+		UInputActionKeyDisplayWidget* Widget = KeyWidget.Get();
+		if (Widget) Widget->RefreshKeyTextAlignmentForPaint(Geometry);
+		const bool bPainted = Widget && Widget->PaintScaledFrame(Geometry, Elements, LayerId, Style, bParentEnabled);
+		return SCompoundWidget::OnPaint(Args, Geometry, CullingRect, Elements,
+			LayerId + (bPainted ? 1 : 0), Style, bParentEnabled);
+	}
+
+private:
+	TWeakObjectPtr<UInputActionKeyDisplayWidget> KeyWidget;
+};
+
+TSharedRef<SWidget> UInputActionKeyDisplayWidget::RebuildWidget()
+{
+	return SNew(SInputKeyFrame).KeyWidget(this)[Super::RebuildWidget()];
+}
+
+bool UInputActionKeyDisplayWidget::PaintScaledFrame(const FGeometry& Geometry,
+	FSlateWindowElementList& Elements, int32 LayerId, const FWidgetStyle& Style, bool bParentEnabled) const
+{
+	if (!bDrawScaledFrame || !Border || !ScaledFrameBrush.GetResourceObject()) return false;
+	const FVector2D OriginalSize = Geometry.GetLocalSize();
+	if (OriginalSize.X <= 0.0 || OriginalSize.Y <= 0.0) return false;
+	const FVector2D Origin = Geometry.LocalToAbsolute(FVector2D::ZeroVector);
+	const FVector2D AxisX = FVector2D(Geometry.LocalToAbsolute(FVector2D(1, 0))) - Origin;
+	const FVector2D AxisY = FVector2D(Geometry.LocalToAbsolute(FVector2D(0, 1))) - Origin;
+	const FVector2D PixelScale(AxisX.Size(), AxisY.Size());
+	if (PixelScale.X <= UE_DOUBLE_SMALL_NUMBER || PixelScale.Y <= UE_DOUBLE_SMALL_NUMBER) return false;
+	FGeometry PaintGeometry = Geometry;
+	// Snap only the painted background. Child layout, text measurement and hit testing
+	// keep their original geometry. Accumulated render scale includes DPI and ScaleBox.
+	const bool bAxisAligned = FMath::IsNearlyZero(AxisX.Y, 0.0001) && FMath::IsNearlyZero(AxisY.X, 0.0001);
+	if (bAxisAligned)
+	{
+		const FVector2D End = Geometry.LocalToAbsolute(OriginalSize);
+		const FVector2D SnappedStart(FMath::RoundToDouble(Origin.X), FMath::RoundToDouble(Origin.Y));
+		const FVector2D SnappedEnd(FMath::RoundToDouble(End.X), FMath::RoundToDouble(End.Y));
+		const FVector2D LocalStart = Geometry.AbsoluteToLocal(SnappedStart);
+		const FVector2D LocalEnd = Geometry.AbsoluteToLocal(SnappedEnd);
+		PaintGeometry = Geometry.MakeChild(LocalEnd - LocalStart, FSlateLayoutTransform(LocalStart));
+	}
+	const FVector2D Size = PaintGeometry.GetLocalSize();
+	if (Size.X <= 0.0 || Size.Y <= 0.0) return false;
+	const FVector2D Corner = FInputKeyFrameLayout::GetPixelAlignedCornerSize(Size, PixelScale);
+	const double X[] = {0.0, Corner.X, Size.X - Corner.X, Size.X};
+	const double Y[] = {0.0, Corner.Y, Size.Y - Corner.Y, Size.Y};
+	const float UV[] = {0.0f, FInputKeyFrameLayout::SourceMargin, 1.0f - FInputKeyFrameLayout::SourceMargin, 1.0f};
+	const FLinearColor Tint = ScaledFrameBrush.GetTint(Style) * Style.GetColorAndOpacityTint() * Border->GetBrushColor();
+	const ESlateDrawEffect Effects = bParentEnabled && GetIsEnabled()
+		? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
+	for (int32 Row = 0; Row < 3; ++Row)
+	{
+		for (int32 Column = 0; Column < 3; ++Column)
+		{
+			const FVector2D TileSize(X[Column + 1] - X[Column], Y[Row + 1] - Y[Row]);
+			if (TileSize.X <= 0.0 || TileSize.Y <= 0.0) continue;
+			FSlateBrush Tile = ScaledFrameBrush;
+			Tile.SetUVRegion(FBox2f(FVector2f(UV[Column], UV[Row]), FVector2f(UV[Column + 1], UV[Row + 1])));
+			FSlateDrawElement::MakeBox(Elements, LayerId,
+				PaintGeometry.ToPaintGeometry(TileSize, FSlateLayoutTransform(FVector2D(X[Column], Y[Row]))), &Tile, Effects, Tint);
+		}
+	}
+	return true;
+}
+
+#if WITH_EDITOR
+void UInputActionKeyDisplayWidget::PostEditChangeProperty(FPropertyChangedEvent& Event)
+{
+	const FName Name = Event.GetPropertyName();
+	if (Name == GET_MEMBER_NAME_CHECKED(UInputActionKeyDisplayWidget, FrameTexture) && FrameTexture)
+	{
+		NonFrameTexture = nullptr;
+		BorderImage = nullptr;
+	}
+	else if (Name == GET_MEMBER_NAME_CHECKED(UInputActionKeyDisplayWidget, NonFrameTexture) && NonFrameTexture)
+	{
+		FrameTexture = nullptr;
+		BorderImage = nullptr;
+	}
+	Super::PostEditChangeProperty(Event);
+}
+#endif
 
 void UInputActionKeyDisplayWidget::SetDisplayedInputAction_Implementation(UInputAction* InputAction)
 {
@@ -73,6 +178,7 @@ void UInputActionKeyDisplayWidget::NativeDestruct()
 	bIsConstructed = false;
 	UnbindControlMappingsRebuiltDelegate();
 	UnbindSettingsSubsystem();
+	SetIsMissingKey(false);
 
 	Super::NativeDestruct();
 }
@@ -267,7 +373,28 @@ void UInputActionKeyDisplayWidget::ShowKeyImage(const FInputKeyTextureDataRow& R
 
 void UInputActionKeyDisplayWidget::SetBorderImage(UTexture2D* NewImage)
 {
-	BorderImage = NewImage;
+	SetNonFrameTexture(NewImage);
+}
+
+UTexture2D* UInputActionKeyDisplayWidget::GetBorderImage() const
+{
+	return IsValid(FrameTexture) ? FrameTexture.Get() : (IsValid(NonFrameTexture) ? NonFrameTexture.Get() : BorderImage.Get());
+}
+
+void UInputActionKeyDisplayWidget::SetFrameTexture(UTexture2D* Texture)
+{
+	FrameTexture = Texture;
+	NonFrameTexture = nullptr;
+	BorderImage = nullptr;
+	RefreshBorderBrush();
+	RefreshKeyLayout();
+}
+
+void UInputActionKeyDisplayWidget::SetNonFrameTexture(UTexture2D* Texture)
+{
+	NonFrameTexture = Texture;
+	FrameTexture = nullptr;
+	BorderImage = nullptr;
 	RefreshBorderBrush();
 	RefreshKeyLayout();
 }
@@ -291,6 +418,12 @@ void UInputActionKeyDisplayWidget::SetDisplayHeight(float NewHeight)
 	DisplayHeight = FMath::Max(1.0f, NewHeight);
 	RefreshBorderBrush();
 	RefreshKeyLayout();
+}
+
+void UInputActionKeyDisplayWidget::SetUseCaplineAlignment(bool bEnabled)
+{
+	bUseCaplineAlignment = bEnabled;
+	RefreshKeyTextAlignment();
 }
 
 FVector2D UInputActionKeyDisplayWidget::GetKeyDisplaySize() const
@@ -374,6 +507,59 @@ bool UInputActionKeyDisplayWidget::GetFittedKeyFont(FSlateFontInfo& OutFont) con
 	return true;
 }
 
+void UInputActionKeyDisplayWidget::RefreshKeyTextAlignmentForPaint(const FGeometry& Geometry)
+{
+	if (!KeyText || !bUseCaplineAlignment || bDisplayingImageKey) return;
+	// ScaleBox lays out the label at its fitted scale. Measure H at that same font
+	// scale: hinting at small DPI sizes is not a linear rescale of the 1080p glyph.
+	const FVector2D Desired = KeyText->GetDesiredSize();
+	const FMargin TextPadding = GetTextBorderPadding();
+	const FVector2D Inner = Geometry.GetLocalSize() - FVector2D(TextPadding.Left + TextPadding.Right, TextPadding.Top + TextPadding.Bottom);
+	float FitScale = 1.f;
+	if (Desired.X > 0 && Desired.Y > 0)
+	{
+		FitScale = FMath::Clamp(FMath::Min(Inner.X / Desired.X, Inner.Y / Desired.Y), 0.001, 1.0);
+	}
+	RefreshKeyTextAlignment(Geometry.GetAccumulatedLayoutTransform().GetScale() * FitScale);
+}
+
+void UInputActionKeyDisplayWidget::RefreshKeyTextAlignment(float FontScale)
+{
+	if (!KeyText) return;
+	if (!bHasDefaultKeyTextTranslation)
+	{
+		DefaultKeyTextTranslation = KeyText->GetRenderTransform().Translation;
+		bHasDefaultKeyTextTranslation = true;
+	}
+	FVector2D Translation = DefaultKeyTextTranslation;
+	if (bUseCaplineAlignment && !bDisplayingImageKey && FSlateApplication::IsInitialized()
+		&& FSlateApplication::Get().GetRenderer())
+	{
+		// Use the same flat capital for every label, including Shift/Space. Per-label
+		// ink bounds would move the baseline when switching to Q or lowercase letters.
+		const FSlateFontInfo Font = KeyText->GetFont();
+		FontScale = FMath::Max(FontScale, 0.001f);
+		FCharacterList& Characters = FSlateApplication::Get().GetRenderer()->GetFontCache()->GetCharacterList(Font, FontScale);
+		const FCharacterEntry& Cap = Characters.GetCharacter(TEXT('H'), EFontFallback::FF_NoFallback);
+		if (Cap.Valid && Cap.VSize > 0 && FMath::IsNearlyEqual(Cap.BitmapRenderScale, 1.f))
+		{
+			const double LineHeight = Characters.GetMaxHeight();
+			const double Baseline = LineHeight + Characters.GetBaseline();
+			// Atlas padding is symmetric, so it cancels in the reference glyph center.
+			const double CapCenter = Baseline - Cap.VerticalOffset + Cap.VSize * 0.5;
+			const double ShadowY = KeyText->GetShadowOffset().Y * FontScale;
+			Translation.Y += ((LineHeight + FMath::Abs(ShadowY)) * 0.5
+				- (CapCenter + FMath::Max(0.0, -ShadowY))) / FontScale;
+		}
+	}
+	// Render translation leaves desired size and the frame untouched. The existing
+	// ScaleBox/DPI transforms scale the correction with the label, including long keys.
+	if (!KeyText->GetRenderTransform().Translation.Equals(Translation, 0.0001))
+	{
+		KeyText->SetRenderTranslation(Translation);
+	}
+}
+
 void UInputActionKeyDisplayWidget::RefreshKeyLayout()
 {
 	if (Border)
@@ -398,6 +584,7 @@ void UInputActionKeyDisplayWidget::RefreshKeyLayout()
 			KeyText->SetFont(FittedFont);
 		}
 	}
+	RefreshKeyTextAlignment();
 	if (!WidgetTree) return;
 	USizeBox* KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox"));
 	if (!KeySizeBox) KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox_0"));
@@ -422,11 +609,14 @@ void UInputActionKeyDisplayWidget::RefreshBorderBrush()
 		bHasDefaultBorderBrush = true;
 	}
 	FSlateBrush Brush = DefaultBorderBrush;
+	bDrawScaledFrame = false;
+	ScaledFrameBrush = FSlateBrush();
 	// The WBP text override uses its own background (for example an ability icon),
 	// rather than replacing it with the key texture from the table.
-	UTexture2D* FrameTexture = bShowKeyTextWithImage && IsValid(BorderImage)
-		? BorderImage.Get()
-		: (IsValid(DisplayedKeyTexture) ? DisplayedKeyTexture.Get() : BorderImage.Get());
+	UTexture2D* BackgroundTexture = GetBorderImage();
+	UTexture2D* ResolvedTexture = bShowKeyTextWithImage && IsValid(BackgroundTexture)
+		? BackgroundTexture
+		: (IsValid(DisplayedKeyTexture) ? DisplayedKeyTexture.Get() : BackgroundTexture);
 	if (bDisplayingImageKey)
 	{
 		Brush.SetResourceObject(DisplayedKeyTexture);
@@ -435,15 +625,24 @@ void UInputActionKeyDisplayWidget::RefreshBorderBrush()
 		Brush.Tiling = ESlateBrushTileType::NoTile;
 		Brush.SetImageSize(GetKeyDisplaySize());
 	}
-	else if (FrameTexture)
+	else if (ResolvedTexture)
 	{
-		Brush.SetResourceObject(FrameTexture);
+		Brush.SetResourceObject(ResolvedTexture);
 		Brush.DrawAs = ESlateBrushDrawType::Box;
 		Brush.Margin = FrameSliceMargin;
 		Brush.Tiling = ESlateBrushTileType::NoTile;
 		Brush.SetImageSize(GetKeyDisplaySize());
+		if (IsValid(FrameTexture) && ResolvedTexture == FrameTexture)
+		{
+			ScaledFrameBrush = Brush;
+			ScaledFrameBrush.DrawAs = ESlateBrushDrawType::Image;
+			ScaledFrameBrush.Margin = FMargin(0.0f);
+			bDrawScaledFrame = true;
+			Brush.DrawAs = ESlateBrushDrawType::NoDrawType;
+		}
 	}
 	Border->SetBrush(Brush);
+	InvalidateLayoutAndVolatility();
 }
 
 void UInputActionKeyDisplayWidget::EnsureWatchedKeyIsResolved()
@@ -453,7 +652,7 @@ void UInputActionKeyDisplayWidget::EnsureWatchedKeyIsResolved()
 		return;
 	}
 
-	RefreshDisplayedKey();
+	SetIsMissingKey(!RefreshDisplayedKey());
 	// 고정 키·고정 문구·액션 없음 상태에서는 매핑을 감시하지 않는다.
 	if (bUseExplicitKey || !WatchedInputAction || !TextOverride.IsEmpty())
 	{
@@ -463,6 +662,16 @@ void UInputActionKeyDisplayWidget::EnsureWatchedKeyIsResolved()
 
 	// 조회 성공 후에도 구독을 유지하여 이후 활성 매핑 변경을 반영한다.
 	BindControlMappingsRebuiltDelegate();
+}
+
+void UInputActionKeyDisplayWidget::SetIsMissingKey(bool bNewIsMissingKey)
+{
+	if (bIsMissingKey == bNewIsMissingKey)
+	{
+		return;
+	}
+	bIsMissingKey = bNewIsMissingKey;
+	OnMissingKeyChanged.Broadcast(bIsMissingKey);
 }
 
 void UInputActionKeyDisplayWidget::HandleInputActionKeyChanged(

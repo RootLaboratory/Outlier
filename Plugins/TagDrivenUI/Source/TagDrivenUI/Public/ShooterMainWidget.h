@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -46,6 +44,7 @@ public:
 	void SetCurrentAbilityPresentation(const FGameplayTag& AbilityTag);
 
 	void SetCrosshairSuitAcquired(bool bAcquired);
+	void SetAbilitySelectionOpen(bool bOpen);
 
 	// Shooter가 과부하 중 AutoAim 업그레이드 활성 여부를 전달한다. ADS 표시와 별도로 제어한다.
 	void SetAutoAimPresentation(bool bActive);
@@ -70,6 +69,8 @@ public:
 
 private:
 	void CacheStatusBarWidgets();
+	void UpdateCrosshairLayerVisibility();
+	bool bAbilitySelectionOpen = false;
 
 	void UpdateAutoAimRadiusImage();
 

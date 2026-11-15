@@ -5,7 +5,6 @@
 #include "InputAction.h"
 #include "UI/InputActionKeyDisplayWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
-#include "UI/HintKeyDisplayWidget.h"
 
 void UUILayerKeyHintWidget::NativeConstruct()
 {

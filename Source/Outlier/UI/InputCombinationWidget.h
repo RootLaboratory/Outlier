@@ -37,7 +37,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void ClearExpression();
 
-	/** 활성 매핑을 다시 조회한다. false면 매핑 누락 또는 잘못된 위젯 설정이다. */
+	/** 활성 매핑을 조회하며, 모드 전환으로 누락된 액션은 현재 안내의 마지막 키를 유지한다. */
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	bool RefreshExpression();
 
@@ -112,6 +112,10 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<ULocalPlayerSettingsSubsystem> BoundSettingsSubsystem;
+
+	// Upper/Right GIF 안내는 해킹 등으로 IMC가 빠져도 직전에 표시한 입력을 유지한다.
+	// 선택 방식과 무관하게 전체 키를 보관하며, 새 표현식/안내 종료 시 초기화한다.
+	TMap<TWeakObjectPtr<UInputAction>, TArray<FKey>> LastResolvedActionKeys;
 
 	bool bIsConstructed = false;
 };

@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #include "ShooterMainWidget.h"
 
 #include "AmmoUI.h"
@@ -23,6 +21,7 @@ void UShooterMainWidget::NativePreConstruct()
 void UShooterMainWidget::ModulesControl(bool Flag)
 {
 	Super::ModulesControl(Flag);
+	UpdateCrosshairLayerVisibility();
 	// DefaultLayer 직속 Image도 공통 레이어 처리에서 다시 열린다. 기능별 표시 조건을 마지막에 적용한다.
 	UpdateAutoAimRadiusImage();
 }
@@ -106,7 +105,7 @@ void UShooterMainWidget::ApplyExceptionVisibility()
 {
 	ShowExceptionLayer(InfoLayer);
 	// 전용 분기로 처리해 다른 슈트 HUD 레이어가 열리지 않게 한다.
-	ShowExceptionLayer(CrosshairLayer);
+	if (!bAbilitySelectionOpen) ShowExceptionLayer(CrosshairLayer);
 }
 
 void UShooterMainWidget::ModuleDestruct()
@@ -201,4 +200,17 @@ void UShooterMainWidget::SetCurrentAbilityPresentation(const FGameplayTag& Abili
 	{
 		ShooterStatusBarHUD->SetCurrentAbilityPresentation(AbilityTag);
 	}
+}
+
+void UShooterMainWidget::SetAbilitySelectionOpen(bool bOpen)
+{
+	bAbilitySelectionOpen = bOpen;
+	UpdateCrosshairLayerVisibility();
+}
+
+void UShooterMainWidget::UpdateCrosshairLayerVisibility()
+{
+	if (CrosshairLayer)
+		CrosshairLayer->SetVisibility(bAbilitySelectionOpen
+			? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
 }

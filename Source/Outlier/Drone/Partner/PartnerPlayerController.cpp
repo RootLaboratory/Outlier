@@ -1,6 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
-
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "InputKeyEventArgs.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -9,6 +6,7 @@
 #include "FirstPerson/FirstPersonPlayerCameraManager.h"
 #include "Blueprint/UserWidget.h"
 #include "LocalPlayerUISubSystem.h"
+#include "GangTongMainUI.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "OutlierPlayerState.h"
@@ -618,6 +616,12 @@ void APartnerPlayerController::SetHackTransitionInputBlocked(bool bBlocked)
 
 void APartnerPlayerController::RefreshHudVisibility()
 {
+	// 인트로는 게임 HUD만 숨기고 안내 레이어는 유지한다. 사망·빙의 시 루트 숨김은 별도로 적용한다.
+	const UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr;
+	const bool bIntroActive = Cinematic && Cinematic->GetState() != EOutlierCinematicState::Idle
+		&& Cinematic->GetState() != EOutlierCinematicState::Failed;
+	if (UGangTongMainUI* HUD = Cast<UGangTongMainUI>(ShooterUIInstance)) HUD->SetIntroHudHidden(bIntroActive);
 	Super::RefreshHudVisibility();
 	if (bEnemyHudPopPending && IsHudHiddenForDeath())
 	{
@@ -644,15 +648,6 @@ void APartnerPlayerController::RefreshHudVisibility()
 bool APartnerPlayerController::ShouldShowMainWidget() const
 {
 	if (!Super::ShouldShowMainWidget())
-	{
-		return false;
-	}
-
-	// 준비 RPC부터 서버의 최종 Release까지 숨긴다. 복원/상대 준비 대기 중에도 HUD를 먼저 열지 않는다.
-	const UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
-		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr;
-	if (Cinematic && Cinematic->GetState() != EOutlierCinematicState::Idle
-		&& Cinematic->GetState() != EOutlierCinematicState::Failed)
 	{
 		return false;
 	}

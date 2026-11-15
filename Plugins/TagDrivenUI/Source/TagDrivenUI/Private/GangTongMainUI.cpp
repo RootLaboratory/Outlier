@@ -1,6 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
-
 #include "GangTongMainUI.h"
 #include "Components/Image.h"
 #include "EventDrivenUI.h"
@@ -61,7 +58,7 @@ void UGangTongMainUI::ModuleInit()
 void UGangTongMainUI::ApplyExceptionVisibility()
 {
 	ShowExceptionLayer(InfoLayer);
-	ShowExceptionLayer(Image_Hud);
+	if (!bIntroHudHidden) ShowExceptionLayer(Image_Hud);
 }
 
 void UGangTongMainUI::SetSuitGatedModulesEnabled(bool bEnabled)
@@ -69,9 +66,17 @@ void UGangTongMainUI::SetSuitGatedModulesEnabled(bool bEnabled)
 	ModulesControl(bEnabled);
 }
 
+void UGangTongMainUI::SetIntroHudHidden(bool bHidden)
+{
+	if (bIntroHudHidden == bHidden) return;
+	bIntroHudHidden = bHidden;
+	ModulesControl(bRequestedModulesActive);
+}
+
 void UGangTongMainUI::ModulesControl(bool Flag)
 {
-	Super::ModulesControl(Flag);
+	bRequestedModulesActive = Flag;
+	Super::ModulesControl(Flag && !bIntroHudHidden);
 	RefreshKnockDownVisibility();
 }
 

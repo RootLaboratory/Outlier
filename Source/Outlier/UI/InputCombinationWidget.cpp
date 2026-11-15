@@ -82,6 +82,7 @@ bool UInputCombinationWidget::EnsureInputPanel()
 void UInputCombinationWidget::SetExpression(const TArray<FInputDisplayTerm>& NewExpression)
 {
 	Expression = NewExpression;
+	LastResolvedActionKeys.Reset();
 	if (bIsConstructed)
 	{
 		BindInputEvents();
@@ -113,6 +114,7 @@ void UInputCombinationWidget::SetKeyTextColor(FLinearColor NewColor)
 void UInputCombinationWidget::ClearExpression()
 {
 	Expression.Reset();
+	LastResolvedActionKeys.Reset();
 	UnbindInputEvents();
 	if (InputItems)
 	{
@@ -159,12 +161,22 @@ bool UInputCombinationWidget::RefreshExpression()
 				if (Key.IsValid())
 				{
 					Keys.AddUnique(Key);
-					if (Term.KeySelection == EInputDisplayKeySelection::FirstMapped)
-					{
-						break;
-					}
 				}
 			}
+		}
+		if (!Keys.IsEmpty())
+		{
+			LastResolvedActionKeys.Add(Term.InputAction.Get(), Keys);
+		}
+		else if (const TArray<FKey>* PreviousKeys = LastResolvedActionKeys.Find(Term.InputAction.Get()))
+		{
+			// 해킹 모드에서는 원래 IA의 IMC가 비활성화될 수 있다.
+			// 안내를 숨기거나 missing-key로 바꾸지 않고 마지막으로 확인한 키를 유지한다.
+			Keys = *PreviousKeys;
+		}
+		if (Term.KeySelection == EInputDisplayKeySelection::FirstMapped && Keys.Num() > 1)
+		{
+			Keys.SetNum(1);
 		}
 		if (Keys.IsEmpty())
 		{
@@ -183,7 +195,7 @@ bool UInputCombinationWidget::RefreshExpression()
 				bAllResolved = false;
 				continue;
 			}
-			if (DefaultKeyFrameTexture) KeyWidget->SetBorderImage(DefaultKeyFrameTexture);
+			if (DefaultKeyFrameTexture) KeyWidget->SetFrameTexture(DefaultKeyFrameTexture);
 			KeyWidget->SetKeyTextColor(KeyTextColor);
 			KeyWidget->SetDisplayHeight(KeyDisplayHeight);
 			KeyWidget->SetDisplayedKey(Keys[Index]);

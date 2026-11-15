@@ -22,6 +22,10 @@ struct OUTLIER_API FTargetPointHudSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HUD", meta = (ClampMin = "0.0"))
 	float ScreenPadding = 16.0f;
 
+	// 방향 마커에만 선택적으로 사용한다. 기본값은 투영 실패 시 숨김이다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HUD")
+	bool bKeepBehindCamera = false;
+	static FVector2D GetScreenEdgePoint(const FVector& CameraLocalDirection, FVector2D ViewportSize);
 	float GetDistanceScale(float Distance) const;
 	void CalculateLayout(FVector2D ScreenPoint, FVector2D ViewportSize, FVector2D ContentSize,
 		float Distance, FVector2D& OutPosition, float& OutScale, FVector2D Pivot = FVector2D(0.5)) const;

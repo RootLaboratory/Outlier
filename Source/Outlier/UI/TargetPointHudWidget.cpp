@@ -35,18 +35,34 @@ void FTargetPointHudSettings::CalculateLayout(FVector2D ScreenPoint, FVector2D V
 	OutPosition.Y = FMath::Clamp(ScreenPoint.Y - Size.Y * FMath::Clamp(Pivot.Y, 0.0, 1.0), Padding.Y, ViewportSize.Y - Padding.Y - Size.Y);
 }
 
+FVector2D FTargetPointHudSettings::GetScreenEdgePoint(const FVector& CameraLocalDirection, FVector2D ViewportSize)
+{
+	FVector2D Direction(CameraLocalDirection.Y, -CameraLocalDirection.Z);
+	// 정후방은 화면 방향을 정할 수 없으므로 아래쪽 가장자리를 사용한다.
+	if (Direction.IsNearlyZero()) Direction = FVector2D(0.0, 1.0);
+	const FVector2D HalfSize = ViewportSize * 0.5;
+	const double Horizontal = FMath::Abs(Direction.X) > UE_SMALL_NUMBER
+		? HalfSize.X / FMath::Abs(Direction.X) : TNumericLimits<double>::Max();
+	const double Vertical = FMath::Abs(Direction.Y) > UE_SMALL_NUMBER
+		? HalfSize.Y / FMath::Abs(Direction.Y) : TNumericLimits<double>::Max();
+	return HalfSize + Direction * FMath::Min(Horizontal, Vertical);
+}
+
 bool FTargetPointHudSettings::Project(APlayerController* Controller, const FVector& WorldPoint,
 	FVector2D ContentSize, FVector2D& OutPosition, float& OutScale, FVector2D Pivot) const
 {
 	if (!Controller || !Controller->IsLocalController()) return false;
 	FVector2D ScreenPoint;
-	// 플레이어별 뷰포트 좌표와 DPI를 같은 경로에서 변환한다. 카메라 뒤의 점은 표시하지 않는다.
-	if (!UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(Controller, WorldPoint, ScreenPoint, true)) return false;
 	const FVector2D ViewportSize = UWidgetLayoutLibrary::GetPlayerScreenWidgetGeometry(Controller).GetLocalSize();
 	if (ViewportSize.X <= 0 || ViewportSize.Y <= 0) return false;
 	FVector CameraLocation;
 	FRotator CameraRotation;
 	Controller->GetPlayerViewPoint(CameraLocation, CameraRotation);
+	if (!UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(Controller, WorldPoint, ScreenPoint, true))
+	{
+		if (!bKeepBehindCamera) return false;
+		ScreenPoint = GetScreenEdgePoint(CameraRotation.UnrotateVector(WorldPoint - CameraLocation), ViewportSize);
+	}
 	CalculateLayout(ScreenPoint, ViewportSize, ContentSize, FVector::Distance(CameraLocation, WorldPoint), OutPosition, OutScale, Pivot);
 	return true;
 }
@@ -135,7 +151,7 @@ void UTargetPointHudWidget::UpdateContent(UUserWidget* Content, bool bShown, con
 	Content->SetVisibility(ESlateVisibility::HitTestInvisible);
 	FVector2D Position;
 	float Scale;
-	// Projection failure behind the camera hides the content.
+	// 후방 표시가 허용된 마커는 투영 실패 시 화면 가장자리 좌표를 사용한다.
 	if (!Settings.Project(GetOwningPlayer(), WorldPoint, Size, Position, Scale, Pivot))
 	{
 		Content->SetVisibility(ESlateVisibility::Collapsed);

@@ -1,8 +1,10 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #include "ShooterAbilityUI.h"
 #include "AbilityIconUI.h"
 #include "MainUIBase.h"
+#include "ShooterMainWidget.h"
+#include "LocalPlayerUISubSystem.h"
+#include "Engine/LocalPlayer.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "Components/Border.h"
 #include "Framework/Application/SlateApplication.h"
@@ -33,23 +35,68 @@ void UShooterAbilityUI::NativeConstruct()
 		}
 	}
 
-	if (BigCircle && CenterCircle && M_ShooterAbilityUI)
+	InitializeWheelMaterial();
+	OnVisibilityChanged.AddUniqueDynamic(this, &UShooterAbilityUI::HandleVisibilityChanged);
+	UpdateCrosshairVisibility();
+}
+
+void UShooterAbilityUI::InitializeWheelMaterial()
+{
+	ShooterAbilityMID = nullptr;
+	if (!BigCircle) return;
+	// 명시적으로 지정한 머티리얼이 없으면 브러시에 설정된 머티리얼을 사용한다.
+	if (M_ShooterAbilityUI) BigCircle->SetBrushFromMaterial(M_ShooterAbilityUI);
+	ShooterAbilityMID = BigCircle->GetDynamicMaterial();
+	if (ShooterAbilityMID) ShooterAbilityMID->SetScalarParameterValue(TEXT("Direction"), -1.0f);
+}
+
+void UShooterAbilityUI::UpdateMaterialLayout(FVector2D OuterSize, FVector2D InnerSize)
+{
+	// 레이아웃 크기가 확정된 뒤 계산하고, DPI나 크기가 바뀌면 다시 반영한다.
+	if (!ShooterAbilityMID || !FMath::IsFinite(OuterSize.X) || !FMath::IsFinite(InnerSize.X)
+		|| OuterSize.X <= KINDA_SMALL_NUMBER || InnerSize.X <= KINDA_SMALL_NUMBER) return;
+	ShooterAbilityMID->SetScalarParameterValue(TEXT("CutRadius"), (InnerSize.X * 0.5f) / OuterSize.X);
+	ShooterAbilityMID->SetScalarParameterValue(TEXT("CutFeather"), 2.0f / OuterSize.X);
+}
+
+void UShooterAbilityUI::HandleVisibilityChanged(ESlateVisibility InVisibility)
+{
+	if (!IsVisible()) bHasSelectionOrigin = false;
+	UpdateCrosshairVisibility();
+}
+
+void UShooterAbilityUI::UpdateCrosshairVisibility()
+{
+	UShooterMainWidget* HUD = nullptr;
+	if (IsVisible())
 	{
-		BigCircle->SetBrushFromMaterial(M_ShooterAbilityUI);
-		ShooterAbilityMID = BigCircle->GetDynamicMaterial();
-
-		const FVector2D ASize = BigCircle->GetCachedGeometry().GetLocalSize();
-		const FVector2D BSize = CenterCircle->GetCachedGeometry().GetLocalSize();
-		const float RadiusUV = (BSize.X * 0.5f) / ASize.X;
-
-		ShooterAbilityMID->SetScalarParameterValue(TEXT("CutRadius"), RadiusUV);
-		ShooterAbilityMID->SetScalarParameterValue(TEXT("CutFeather"), 2.f / ASize.X);
+		if (ULocalPlayer* Player = GetOwningLocalPlayer())
+			if (ULocalPlayerUISubSystem* UI = Player->GetSubsystem<ULocalPlayerUISubSystem>())
+				HUD = Cast<UShooterMainWidget>(UI->GetMainUI());
 	}
+	if (SuppressedCrosshairHUD.Get() != HUD)
+	{
+		if (UShooterMainWidget* Previous = SuppressedCrosshairHUD.Get()) Previous->SetAbilitySelectionOpen(false);
+		SuppressedCrosshairHUD = HUD;
+	}
+	if (HUD) HUD->SetAbilitySelectionOpen(true);
+}
+
+void UShooterAbilityUI::NativeDestruct()
+{
+	OnVisibilityChanged.RemoveDynamic(this, &UShooterAbilityUI::HandleVisibilityChanged);
+	if (UShooterMainWidget* HUD = SuppressedCrosshairHUD.Get()) HUD->SetAbilitySelectionOpen(false);
+	SuppressedCrosshairHUD.Reset();
+	bHasSelectionOrigin = false;
+	Super::NativeDestruct();
 }
 
 void UShooterAbilityUI::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	UpdateCrosshairVisibility();
+	if (BigCircle && CenterCircle)
+		UpdateMaterialLayout(BigCircle->GetCachedGeometry().GetLocalSize(), CenterCircle->GetCachedGeometry().GetLocalSize());
 
 	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
 	{

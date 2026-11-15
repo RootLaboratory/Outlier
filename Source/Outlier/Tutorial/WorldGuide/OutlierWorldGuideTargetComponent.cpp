@@ -121,6 +121,7 @@ void UOutlierWorldGuideTargetComponent::UpdateDisplayPlacement()
 	if (!DisplayWidget || !HudLayer) return;
 	const FVector2D Size(FMath::Max(1, FMath::RoundToInt(DrawSize.X)), FMath::Max(1, FMath::RoundToInt(DrawSize.Y)));
 	FTargetPointHudSettings Settings;
+	Settings.bKeepBehindCamera = true;
 	Settings.MinScale = WidgetPresentation.MinScale;
 	Settings.MaxScale = WidgetPresentation.MaxScale;
 	Settings.ReferenceDistance = WidgetPresentation.ReferenceDistance;

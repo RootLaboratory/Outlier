@@ -14,6 +14,7 @@ class OUTLIER_API UInteractionOutlineWidget : public UTargetPointWidget
 	GENERATED_BODY()
 
 public:
+	UInteractionOutlineWidget(const FObjectInitializer& ObjectInitializer);
 	UFUNCTION(BlueprintCallable, Category = "Interaction")
 	void SetLocked(bool bInLocked);
 	void HideIndicator();
