@@ -941,6 +941,7 @@ bool URoomCombatSubsystem::StartTriggeredSequenceWithSpawnDelay(
 		// 방의 AI 전투도 열어 새 Pool 대여가 즉시 Combat으로 동기화되게 한다.
 		const ARoomVolume* Room = Runtime->RoomVolume.Get();
 		FVector TargetLocation = Room->GetActorLocation();
+		AFirstPersonCharacter* TargetSource = nullptr;
 		bool bFoundPlayer = false;
 		if (const AGameStateBase* GameState = GetWorld()->GetGameState())
 		{
@@ -951,13 +952,14 @@ bool URoomCombatSubsystem::StartTriggeredSequenceWithSpawnDelay(
 				{
 					continue;
 				}
-				for (const AFirstPersonCharacter* Player : {
-					static_cast<const AFirstPersonCharacter*>(OutlierState->GetShooterCharacter()),
-					static_cast<const AFirstPersonCharacter*>(OutlierState->GetPartnerCharacter())})
+				for (AFirstPersonCharacter* Player : {
+					static_cast<AFirstPersonCharacter*>(OutlierState->GetShooterCharacter()),
+					static_cast<AFirstPersonCharacter*>(OutlierState->GetPartnerCharacter())})
 				{
 					if (IsPlayerInsideRoom(Player, Room))
 					{
 						TargetLocation = Player->GetActorLocation();
+						TargetSource = Player;
 						bFoundPlayer = true;
 						break;
 					}
@@ -971,7 +973,7 @@ bool URoomCombatSubsystem::StartTriggeredSequenceWithSpawnDelay(
 		if (UEnemyRoomSubsystem* EnemyRooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 		{
 			const bool bRoomSynced = EnemyRooms->NotifyRoomCombat(
-				CurrentContext.RoomTag, TargetLocation, nullptr);
+				CurrentContext.RoomTag, TargetLocation, nullptr, TargetSource);
 			UE_LOG(LogTemp, Display,
 				TEXT("[Reinforcement] Enemy=None Stage=RoomCombatSync Room=%s Generation=%d Ready=%d PlayerInRoom=%d Target=%s"),
 				*CurrentContext.RoomTag.ToString(), CurrentContext.GameplayGeneration,
@@ -2956,7 +2958,8 @@ bool URoomCombatSubsystem::TryStartCombatFromPursuit(AEnemyBase* Enemy, FGamepla
 	// 들어온 적은 원래 방 등록에 남으므로 도착 방 생존 수에 추가되지 않는다.
 	UEnemyRoomSubsystem* Rooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
 	return IsPursuitCurrent() && Rooms
-		&& Rooms->NotifyRoomCombat(EnteredRoomTag, Enemy->GetLastKnownPlayerLocation(), nullptr);
+		&& Rooms->NotifyRoomCombat(EnteredRoomTag, Enemy->GetLastKnownPlayerLocation(), nullptr,
+			Enemy->GetLastKnownPlayerSource());
 }
 
 bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
@@ -3342,7 +3345,7 @@ void URoomCombatSubsystem::CompleteInitialDetectionJoinQuery(FGuid Id, bool bFal
 		&& Runtime->GameplayGeneration == Join.Preparation.GameplayGeneration
 		&& IsActiveCombatRuntime(Join.Preparation.RoomTag, *Runtime))
 		if (UEnemyRoomSubsystem* Rooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-			Rooms->NotifyRoomCombat(Join.Preparation.RoomTag, Join.Anchor->GetActorLocation(), nullptr);
+			Rooms->NotifyRoomCombat(Join.Preparation.RoomTag, Join.Anchor->GetActorLocation(), nullptr, Join.Anchor.Get());
 }
 
 
@@ -3646,7 +3649,7 @@ bool URoomCombatSubsystem::CompleteInitialDetectionPreparation(
 				&& Current->GameplayGeneration == Context.GameplayGeneration
 				&& Current->State == ERoomCombatState::Combat && Context.AnchorPlayer.IsValid())
 				if (UEnemyRoomSubsystem* Rooms = WeakThis->GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-					Rooms->NotifyRoomCombat(Context.RoomTag, Context.AnchorPlayer->GetActorLocation(), nullptr);
+					Rooms->NotifyRoomCombat(Context.RoomTag, Context.AnchorPlayer->GetActorLocation(), nullptr, Context.AnchorPlayer.Get());
 		})) return false;
 	UE_LOG(LogTemp, Display,
 		TEXT("[RoomCombat] Initial detection ready. Room=%s Player=%s Generation=%d"),

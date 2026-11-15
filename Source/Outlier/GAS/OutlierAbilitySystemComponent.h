@@ -12,6 +12,28 @@ class AActor;
 class APawn;
 struct FOutlierStealthSession;
 
+// Owner-only presentation. Gameplay authority remains in the existing counter and effects.
+USTRUCT(BlueprintType)
+struct OUTLIER_API FOutlierShadowChainPresentationState
+{
+	GENERATED_BODY()
+	UPROPERTY(BlueprintReadOnly) bool bInitialized = false;
+	UPROPERTY(BlueprintReadOnly) bool bUnlocked = false;
+	UPROPERTY(BlueprintReadOnly) bool bPassiveActive = false;
+	UPROPERTY(BlueprintReadOnly) int32 CurrentStacks = 0;
+	UPROPERTY(BlueprintReadOnly) int32 RequiredKills = 5;
+	UPROPERTY(BlueprintReadOnly) float StartServerTime = 0.0f;
+	UPROPERTY(BlueprintReadOnly) float DurationSeconds = 0.0f;
+	UPROPERTY() uint32 Revision = 0;
+	UPROPERTY() uint32 ActivationSerial = 0;
+	float GetRemaining(float ServerNow) const
+	{
+		return bPassiveActive ? FMath::Clamp(StartServerTime + DurationSeconds - ServerNow, 0.0f, DurationSeconds) : 0.0f;
+	}
+};
+
+DECLARE_MULTICAST_DELEGATE(FOutlierShadowChainPresentationChanged);
+
 // 서버의 한 충전 주기를 통째로 전달한다. UI가 남은 시간을 새 쿨타임으로 오해하지 않게 한다.
 USTRUCT()
 struct FOutlierQuantumLeapChargeState
@@ -195,9 +217,27 @@ public:
 	void NotifyShooterStealthKill(const TSharedPtr<FOutlierStealthSession>& Session);
 	void ResetShooterStealthUpgradeState();
 	void ApplyShooterStealthExitSpeedBoost();
+	UFUNCTION(BlueprintPure, Category = "Shooter|Shadow Chain")
+	const FOutlierShadowChainPresentationState& GetShadowChainPresentationState() const { return ShadowChainPresentation; }
+	UFUNCTION(BlueprintPure, Category = "Shooter|Shadow Chain")
+	float GetShadowChainStealthRemaining() const;
+	FOutlierShadowChainPresentationChanged OnShadowChainPresentationChanged;
+	// Called only after the paired effect transaction succeeds, or finishes cleanup.
+	void SetShadowChainPresentationEffect(FActiveGameplayEffectHandle EffectHandle);
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 
 private:
+	void RefreshShadowChainPresentation();
+	void HandleShadowChainPresentationTag(FGameplayTag Tag, int32 NewCount);
+	UFUNCTION()
+	void OnRep_ShadowChainPresentation();
+	UPROPERTY(ReplicatedUsing = OnRep_ShadowChainPresentation)
+	FOutlierShadowChainPresentationState ShadowChainPresentation;
+	FActiveGameplayEffectHandle ShadowChainPresentationEffect;
+	FDelegateHandle ShadowChainUpgradeHandle;
+	FDelegateHandle ShadowChainDeadHandle;
+	int32 ShadowChainPresentationDepth = 0;
+	uint32 ShadowChainActivationSerial = 0;
 	void BindVitalityPresentationAttributes();
 	void HandleVitalityPresentationAttribute(const FOnAttributeChangeData& Data);
 	void FlushVitalityPresentation();

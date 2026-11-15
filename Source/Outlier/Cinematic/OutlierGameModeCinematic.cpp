@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "Event/OutlierEventSubsystem.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/WorldSettings.h"
 #include "Network/OutlierArenaSubsystem.h"
@@ -48,6 +49,13 @@ void AOutlierGameMode::HandleCinematicContext(
 		// 게임 시작 차단은 유지하되, 상대도 시퀀스/메시 숨김/HUD 대기에 남지 않도록 함께 정리한다.
 		if (InitialIntroShooter.IsValid()) InitialIntroShooter->ClientReleaseArenaIntro(Context.IntroId);
 		if (InitialIntroPartner.IsValid()) InitialIntroPartner->ClientReleaseArenaIntro(Context.IntroId);
+		// 복구 불가능한 인트로 실패는 게임 시작 보류에 남기지 않고 기존 로비/타이틀 복귀로 종료한다.
+		for (AFirstPersonPlayerController* Participant : {InitialIntroShooter.Get(), InitialIntroPartner.Get()})
+		{
+			if (!Participant) continue;
+			Participant->RecoverPresentationProtection(Context.IntroId, 0.1f);
+			Participant->ClientArenaRecoveryFailed(IsArenaWorkerProcess(), TEXT("인트로 재생 또는 복구에 실패했습니다."));
+		}
 		UE_LOG(LogTemp, Error, TEXT("[Cinematic] Client failed Intro=%s PC=%s; gameplay start remains blocked"),
 			*Context.IntroId.ToString(), *GetNameSafe(PC));
 		break;
@@ -66,6 +74,36 @@ void AOutlierGameMode::HandleCinematicContext(
 	}
 }
 
+bool AOutlierGameMode::TryAcquireInitialIntroProtection()
+{
+	if (!HasAuthority() || !bPendingInitialIntro || bInitialIntroStarted || bInitialIntroFailed
+		|| !PendingPossessions.IsEmpty() || !PendingLocalPossessions.IsEmpty()
+		|| !IsInitialIntroParticipant(InitialIntroShooter.Get(), InitialIntroId)
+		|| !IsInitialIntroParticipant(InitialIntroPartner.Get(), InitialIntroId)) return false;
+
+	AFirstPersonPlayerController* ShooterPC = InitialIntroShooter.Get();
+	AFirstPersonPlayerController* PartnerPC = InitialIntroPartner.Get();
+	// Listen 게스트는 레벨 준비 ACK 후에 Possess된다. 그 전의 빈 Pawn은 실패가 아니라 대기다.
+	// 화면 준비는 기존처럼 Possess 전에 시작하고, 서버 보호만 양쪽 Pawn이 확정된 뒤 획득한다.
+	if (ShooterPC->IsPresentationProtectionCurrent(InitialIntroId, ShooterPC->GetPawn())
+		&& PartnerPC->IsPresentationProtectionCurrent(InitialIntroId, PartnerPC->GetPawn())) return true;
+	const bool bProtectionReady = ShooterPC->BeginPresentationProtection(
+		InitialIntroId, Cast<AFirstPersonCharacter>(ShooterPC->GetPawn()), PartnerPC)
+		&& PartnerPC->BeginPresentationProtection(
+			InitialIntroId, Cast<AFirstPersonCharacter>(PartnerPC->GetPawn()), ShooterPC);
+	if (!bProtectionReady)
+	{
+		bInitialIntroFailed = true;
+		for (AFirstPersonPlayerController* PC : {ShooterPC, PartnerPC})
+		{
+			PC->ReleasePresentationProtection(InitialIntroId);
+			PC->ClientArenaRecoveryFailed(IsArenaWorkerProcess(), TEXT("인트로 보호 준비에 실패했습니다."));
+		}
+		return false;
+	}
+	return true;
+}
+
 void AOutlierGameMode::TryStartInitialIntro()
 {
 	if (!HasAuthority() || !bPendingInitialIntro || bInitialIntroStarted || bInitialIntroFailed
@@ -74,6 +112,7 @@ void AOutlierGameMode::TryStartInitialIntro()
 		|| !ArenaWorkerDisconnectedPlayerIds.IsEmpty() || bListenGuestDisconnected
 		|| !IsInitialIntroParticipant(InitialIntroShooter.Get(), InitialIntroId)
 		|| !IsInitialIntroParticipant(InitialIntroPartner.Get(), InitialIntroId)
+		|| !TryAcquireInitialIntroProtection()
 		|| !InitialIntroPreparedPlayers.Contains(InitialIntroShooter)
 		|| !InitialIntroPreparedPlayers.Contains(InitialIntroPartner)) return;
 	const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
@@ -122,6 +161,9 @@ void AOutlierGameMode::TryFinishInitialIntro()
 void AOutlierGameMode::ReleaseInitialIntroInput()
 {
 	if (!InitialIntroId.IsValid() || bPendingInitialIntro) return;
+	// Listen Host의 로컬 완료 응답은 동기로 돌아올 수 있다. 양쪽 대기를 먼저 준비한다.
+	if (InitialIntroShooter.IsValid()) InitialIntroShooter->AwaitPresentationProtectionRestore(InitialIntroId, 0.0f);
+	if (InitialIntroPartner.IsValid()) InitialIntroPartner->AwaitPresentationProtectionRestore(InitialIntroId, 0.0f);
 	if (InitialIntroShooter.IsValid()) InitialIntroShooter->ClientReleaseArenaIntro(InitialIntroId);
 	if (InitialIntroPartner.IsValid()) InitialIntroPartner->ClientReleaseArenaIntro(InitialIntroId);
 	// Listen/ArenaWorker 두 경로 모두 인트로 완료 후 실제 게임 재개 시점에 여기를 한 번 지난다.

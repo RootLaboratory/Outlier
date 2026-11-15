@@ -82,6 +82,10 @@ public:
 	FOnHackTargetUnavailable OnHackTargetUnavailable;
 	void NotifyHackTargetUnavailable();
 
+	// 풀 생성이 끝난 뒤 한 번만 캡처한다. 대여 중 변경된 태그를 기준으로 다시 저장하지 않는다.
+	void InitializePoolHackState();
+	void ResetPoolHackState();
+
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool CanBeHackTarget(const FHackQueryContext& Context) const;
 
@@ -117,5 +121,9 @@ private:
 	const FGameplayTagContainer& ResolveHackEffectTags(EHackResult Result) const;
 	mutable bool bLoggedHackedOnceBlock = false;
 	bool bProgressIdRegistered = false;
+	bool bPoolHackStateInitialized = false;
+	bool bPoolInitiallyPossessable = false;
+	bool bPoolInitiallyNonPossessable = false;
+	bool bPoolInitiallyLocked = false;
 
 };

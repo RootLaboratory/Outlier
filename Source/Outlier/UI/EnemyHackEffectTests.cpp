@@ -224,15 +224,15 @@ bool FEnemyHackEffectGameplayTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Commit alone does not start the lifetime"), Enemy->IsHackEffectActive());
 		Fixture.AdvanceTime(2.0f);
 		TestFalse(TEXT("Presentation time does not consume the lifetime"), Enemy->IsHackEffectActive());
-		Controller->ServerNotifyHackPossessionRevealFinished_Implementation(nullptr);
+		Controller->ServerNotifyHackPossessionRevealFinished_Implementation(nullptr, 0, 0);
 		TestFalse(TEXT("An invalid completion cannot start the lifetime"), Enemy->IsHackEffectActive());
 		if (bFinishPresentation)
 		{
-			Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy);
+			Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy, 0, 0);
 			TestTrue(TEXT("Presentation completion starts the lifetime"), Enemy->IsHackEffectActive());
 			TestEqual(TEXT("Presentation completion grants the full minute"), Enemy->GetHackEffectRemainingTime(), 60.0f);
 			const double Deadline = Enemy->HackEffectState.EndServerTime;
-			Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy);
+			Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy, 0, 0);
 			TestEqual(TEXT("Duplicate completion cannot restart the minute"), Enemy->HackEffectState.EndServerTime, Deadline);
 		}
 		return Enemy;
@@ -308,7 +308,7 @@ bool FEnemyHackEffectGameplayTest::RunTest(const FString& Parameters)
 	Controller->ReleaseEnemyPossession();
 	TestTrue(TEXT("Manual release during presentation still kills"), Enemy->IsDead());
 	TestTrue(TEXT("Manual release during presentation restores Partner"), Controller->GetPawn() == Partner);
-	Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy);
+	Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy, 0, 0);
 	TestFalse(TEXT("Late presentation completion cannot revive a released target"), Enemy->IsHackEffectActive());
 
 	Enemy = CommitEnemy(false);
@@ -317,7 +317,7 @@ bool FEnemyHackEffectGameplayTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	Controller->ReleaseEnemyPossessionForCleanup();
-	Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy);
+	Controller->ServerNotifyHackPossessionRevealFinished_Implementation(Enemy, 0, 0);
 	TestFalse(TEXT("Completion after cleanup cannot start the old target"), Enemy->IsHackEffectActive());
 	TestFalse(TEXT("Cleanup during presentation does not kill"), Enemy->IsDead());
 

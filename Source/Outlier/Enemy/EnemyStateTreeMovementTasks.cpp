@@ -2684,8 +2684,8 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 		if (IsValid(VisibleTarget))
 		{
 			FacingLocation = VisibleTarget->GetActorLocation();
-			// 보이는 동안은 실제 타겟을 따라가며, 시야가 끊긴 순간 사용할 LKP도 함께 최신화한다.
-			Enemy->UpdateLastKnownPlayerLocation(FacingLocation);
+			// 시야가 끊긴 뒤의 LKP도 이 대상에서 유래한다. 보호 시 좌표까지 정리되도록 출처를 함께 갱신한다.
+			Enemy->UpdateLastKnownPlayerLocation(FacingLocation, VisibleTarget);
 		}
 	}
 

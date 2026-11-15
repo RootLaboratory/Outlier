@@ -13,6 +13,8 @@ class AFirstPersonPlayerController;
 class ULevelSequencePlayer;
 class USceneComponent;
 class UCinematicHintkey;
+class UGameViewportClient;
+class SWidget;
 
 namespace OutlierCinematicTags
 {
@@ -52,6 +54,10 @@ public:
 	virtual void Deinitialize() override;
 
 	void PrepareInitialIntro(AFirstPersonPlayerController* Controller, const FGuid& IntroId);
+	/** Controller 교체 동안에도 남는 로컬 화면 가림. 시퀀스 첫 평가 이후에만 해제한다. */
+	void BeginInitialIntroBlackout(bool bAcrossWorldTravel = false);
+	void EndInitialIntroBlackout();
+	bool HasInitialIntroBlackout() const;
 	void StartCinematic(const FGuid& IntroId);
 	/** 스킵 키(스페이스 고정) 입력을 받아 홀드 시간을 시작/초기화한다. 소비했으면 true. */
 	bool HandleCompleteCinematicKey(const FKey& Key, EInputEvent Event);
@@ -59,7 +65,7 @@ public:
 	void ResetCompleteHold();
 	void CompleteCinematic(const FGuid& IntroId);
 	void ReleaseCinematic(const FGuid& IntroId);
-	void ClearLevelCinematics();
+	void ClearLevelCinematics(bool bPreserveInitialIntroBlackout = false);
 	/** 프런트엔드의 로컬 전용 반복 배경이다. 인트로와 동일한 레지스트리 검증을 사용한다. */
 	bool PlayTitleCinematic();
 
@@ -73,6 +79,12 @@ public:
 	EOutlierCinematicState GetState() const { return State; }
 
 private:
+	friend class FOutlierInitialIntroBlackoutRecoveryTest;
+	friend class FOutlierGenerationNetworkProbe;
+	TSharedPtr<SWidget> InitialIntroBlackoutWidget;
+	TWeakObjectPtr<UGameViewportClient> InitialIntroBlackoutViewport;
+	TWeakObjectPtr<UWorld> InitialIntroBlackoutWorld;
+	bool bInitialIntroBlackoutAcrossTravel = false;
 	void PushCinematicHint();
 	void PopCinematicHint();
 	/** 스킵 홀드를 진행시키고 시간이 차면 완료를 요청한다. */

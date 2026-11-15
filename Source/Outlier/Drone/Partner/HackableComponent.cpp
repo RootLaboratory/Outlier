@@ -5,6 +5,7 @@
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Components/SceneComponent.h"
+#include "Enemy/EnemyBase.h"
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
 #include "UObject/UnrealType.h"
@@ -193,6 +194,13 @@ bool UHackableComponent::CanBeHackTarget(const FHackQueryContext& Context) const
 		return false;
 	}
 
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(Owner);
+	if (Enemy && Enemy->IsPoolManaged()
+		&& (Enemy->IsPoolReturnInProgress() || Enemy->GetEnemyPoolState() != EEnemyPoolState::CombatActive))
+	{
+		return false;
+	}
+
 	if (Context.RequiredTags.Num() > 0 && !HackTags.HasAll(Context.RequiredTags))
 	{
 		return false;
@@ -229,6 +237,40 @@ void UHackableComponent::OnRep_HackTags()
 void UHackableComponent::NotifyHackTargetUnavailable()
 {
 	OnHackTargetUnavailable.Broadcast(this);
+}
+
+void UHackableComponent::InitializePoolHackState()
+{
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(GetOwner());
+	if (!Enemy || !Enemy->HasAuthority() || !Enemy->IsPoolManaged() || bPoolHackStateInitialized)
+	{
+		return;
+	}
+	bPoolInitiallyPossessable = HackTags.HasTagExact(HackGameplayTags::Target::Possessable());
+	bPoolInitiallyNonPossessable = HackTags.HasTagExact(HackGameplayTags::Target::NonPossessable());
+	bPoolInitiallyLocked = HackTags.HasTagExact(OutlierGameplayTags::State::Locked());
+	bPoolHackStateInitialized = true;
+	ResetPoolHackState();
+}
+
+void UHackableComponent::ResetPoolHackState()
+{
+	if (!bPoolHackStateInitialized || !GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+
+	// 이 네 태그만 대여 수명에 속한다. 미니게임/효과/다회 사용 등 작성된 설정은 그대로 둔다.
+	HackTags.RemoveTag(OutlierGameplayTags::State::HackedOnce());
+	auto RestoreTag = [this](FGameplayTag Tag, bool bInitiallyPresent)
+	{
+		if (bInitiallyPresent) HackTags.AddTag(Tag);
+		else HackTags.RemoveTag(Tag);
+	};
+	RestoreTag(HackGameplayTags::Target::Possessable(), bPoolInitiallyPossessable);
+	RestoreTag(HackGameplayTags::Target::NonPossessable(), bPoolInitiallyNonPossessable);
+	RestoreTag(OutlierGameplayTags::State::Locked(), bPoolInitiallyLocked);
+	GetOwner()->ForceNetUpdate();
 }
 
 bool UHackableComponent::MatchesHackQuery(const FGameplayTagQuery& Query) const

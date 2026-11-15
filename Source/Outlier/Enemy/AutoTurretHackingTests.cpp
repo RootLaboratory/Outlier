@@ -2,6 +2,7 @@
 
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/EnemyStateTreeComponent.h"
 #include "Enemy/EnemyStateTreeSchema.h"
 #include "Enemy/EnemyStateTreeTurretTasks.h"
@@ -27,6 +28,7 @@
 #include "Perception/AIPerceptionSystem.h"
 #include "Perception/AISense_Sight.h"
 #include "Perception/AISenseConfig_Sight.h"
+#include "Room/RoomTagComponent.h"
 #include "StateTree.h"
 #include "UI/HackMiniGameWidget.h"
 #include "UObject/UnrealType.h"
@@ -126,6 +128,7 @@ void FAutoTurretHackingTest::GetTests(TArray<FString>& Names, TArray<FString>& C
 		TEXT("SavedAssetRifleAfterHack"), TEXT("SavedAssetRifleAfterSearch"), TEXT("SavedAssetLaserAfterSearch"),
 		TEXT("SavedAssetRifleHitThenSight"), TEXT("SavedAssetRifleHitWithoutSight"),
 		TEXT("SavedAssetRifleDuringBurst"), TEXT("SavedAssetRifleCloseAfterHack"), TEXT("SavedAssetRifleCombatReadiness"),
+		TEXT("SavedAssetRiflePartnerRefresh"), TEXT("SavedAssetLaserPartnerRefresh"),
 		TEXT("EnterBeforeResult"), TEXT("FailAndStaleTaskExit"), TEXT("ActualStunSuspendsCompletion"),
 		TEXT("EntryWatchdogCancels"), TEXT("StopLogicCancels"), TEXT("OldAttackExitPreservesNewCharge"),
 		TEXT("PartnerMiniGameStopLogicCancels"), TEXT("WaveResetRejectsOldRequester"),
@@ -141,6 +144,7 @@ bool FAutoTurretHackingTest::RunTest(const FString& Parameters)
 	FTurretHackingWorld Fixture;
 	const bool bSavedAsset = Parameters.StartsWith(TEXT("SavedAsset"));
 	const bool bRifle = Parameters.StartsWith(TEXT("SavedAssetRifle"));
+	const bool bDetectionRefresh = Parameters.EndsWith(TEXT("PartnerRefresh"));
 	const bool bCloseRifle = Parameters == TEXT("SavedAssetRifleCloseAfterHack");
 	const bool bCombatReadiness = Parameters == TEXT("SavedAssetRifleCombatReadiness");
 	const bool bHitThenSight = Parameters == TEXT("SavedAssetRifleHitThenSight");
@@ -236,7 +240,7 @@ bool FAutoTurretHackingTest::RunTest(const FString& Parameters)
 		AEnemyAIController* PerceptionController = nullptr;
 		AAutoTurret* HostileTurret = nullptr;
 		ARangedWeaponBase* ResumeWeapon = nullptr;
-		if (Parameters == TEXT("SavedAssetRealPerceptionAfterHack") || bRifle || bAfterSearch)
+		if (Parameters == TEXT("SavedAssetRealPerceptionAfterHack") || bRifle || bAfterSearch || bDetectionRefresh)
 		{
 			// 팀 변경만 직접 호출하지 않고 실제 Hacking Task의 성공 확정 경계를 통과한다.
 			PerceptionController = Fixture.World->SpawnActor<AEnemyAIController>();
@@ -337,7 +341,25 @@ bool FAutoTurretHackingTest::RunTest(const FString& Parameters)
 				->GetSenseConfig(UAISense::GetSenseID<UAISense_Sight>())) : nullptr;
 		};
 		const float PreHackVisionAngle = GetSightConfig() ? GetSightConfig()->PeripheralVisionAngleDegrees : 0.f;
-		Hackable->HandleHackStarted(Query);
+		if (bDetectionRefresh)
+		{
+			// None 재현도 성공 효과를 직접 주입하지 않고 Partner의 실제 요청/완료 경로를 통과한다.
+			UPartnerHackComponent* Hack = Partner->FindComponentByClass<UPartnerHackComponent>();
+			Hack->RefreshCharacterRefsFromPlayerState();
+			FPartnerHackAbilityData Data;
+			Data.EffectiveRange = 3000.f;
+			Hack->CacheAbilityData(Data);
+			Hack->OnHackFinished.AddLambda([&](EHackResult Finished, bool)
+			{
+				++CompletionCount;
+				TerminalResult = Finished;
+			});
+			Hack->bHackCandidateSearchActive = true;
+			Hack->ServerHeldHackActor = Turret;
+			Hack->ServerHoldId = 1;
+			Hack->ServerTryStartHack_Implementation(Turret, 1);
+		}
+		else Hackable->HandleHackStarted(Query);
 		TestTrue(TEXT("Saved tree hack immediately changes C++ state"), Turret->GetCombatState() == EEnemyCombatState::Hacking);
 		if (Parameters == TEXT("SavedAssetRifleDuringBurst"))
 			TestFalse(TEXT("Accepted hacking immediately cancels the old real burst"), ResumeWeapon->IsAttacking());
@@ -357,7 +379,7 @@ bool FAutoTurretHackingTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Saved tree gives actual Stun priority"), StateTree->GetActiveStateNames().Contains(TEXT("Stun")));
 		}
 		if (Parameters == TEXT("SavedAssetFailFromBattle")) Result.Result = EHackResult::Fail;
-		Hackable->DeferHackCompletion(Result, Completion);
+		if (!bDetectionRefresh) Hackable->DeferHackCompletion(Result, Completion);
 		if (Parameters == TEXT("SavedAssetStunDuringHacking"))
 		{
 			TestEqual(TEXT("New Stun retains result without early commit"), CompletionCount, 0);
@@ -494,6 +516,52 @@ bool FAutoTurretHackingTest::RunTest(const FString& Parameters)
 				}
 			}
 			TestTrue(TEXT("Resumed saved tree weapon deals authoritative damage"), HostileTurret->GetCurrentHealth() < HealthBefore);
+			if (bDetectionRefresh)
+			{
+				Turret->GetRoomTagComp()->AssignDefaultRoomTag(FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.1")));
+				Fixture.World->GetSubsystem<UEnemyRoomSubsystem>()->RegisterEnemy(Turret);
+				const auto Record = [&](const TCHAR* Boundary)
+				{
+					TArray<AActor*> Visible;
+					PerceptionComponent->GetCurrentlyPerceivedActors(UAISense_Sight::StaticClass(), Visible);
+					AddInfo(FString::Printf(TEXT("[HackRefresh] %s Time=%.3f Enemy=%s Team=%d Sight=%d Direct=%d PawnVisible=%d Tracked=%s States=%s HP=%.2f Attack=%d"),
+						Boundary, Fixture.World->GetTimeSeconds(), *Turret->GetName(), Turret->GetGenericTeamId().GetId(),
+						Visible.Contains(HostileTurret), PerceptionController->IsTargetDirectlyVisible(HostileTurret),
+						Turret->IsPlayerCurrentlyVisible(), *GetNameSafe(Turret->GetTrackedTarget()),
+						*FString::JoinBy(StateTree->GetActiveStateNames(), TEXT("/"), [](FName Name) { return Name.ToString(); }),
+						HostileTurret->GetCurrentHealth(), ResumeWeapon->IsAttacking()));
+				};
+				Record(TEXT("BeforePartnerProtection"));
+				const float HealthAtEvent = HostileTurret->GetCurrentHealth();
+				Partner->SetEnemyPossessionProtection(true);
+				Record(TEXT("AfterPartnerProtection"));
+				TestTrue(TEXT("Unrelated allied player refresh preserves directly observed hostile visibility"), Turret->IsPlayerCurrentlyVisible());
+				TestTrue(TEXT("Actual Sight still observes the same hostile after player refresh"), PerceptionController->IsTargetDirectlyVisible(HostileTurret));
+				const FAutoTurretBehaviorRow& Behavior = Turret->GetTurretBehavior();
+				const float PostBurstCooldown = FindFProperty<FFloatProperty>(ARangedWeaponBase::StaticClass(), TEXT("PostBurstCooldownSeconds"))
+					->GetPropertyValue_InContainer(ResumeWeapon);
+				const float UpdateAllowance = 2.f * FMath::Max(0.02f, Turret->GetRuntimeStat().TargetReevaluationInterval);
+				const float ResumeBudget = Behavior.TelegraphDuration + Behavior.RecoveryDuration + Behavior.BeamPresentationDuration
+					+ ResumeWeapon->GetReuseCooldownRemaining() + ResumeWeapon->GetTargetBurstRemainingSeconds() + PostBurstCooldown + UpdateAllowance;
+				const float ObserveDuration = FMath::Max(ResumeBudget, Turret->GetRuntimeStat().TargetTrackingGraceSeconds + UpdateAllowance);
+				bool bDamagedWithinBudget = false;
+				// 실제 준비·회복과 갱신 주기로 복귀 상한을 정하고 추적 만료 이후까지도 관측한다.
+				// 타깃 재지정이나 트리 재시작 없이 동일 Sight 결과와 운영 Task만 진행한다.
+				for (int32 Frame = 0; Frame < FMath::CeilToInt(ObserveDuration / 0.02f); ++Frame)
+				{
+					Fixture.Tick(0.02f);
+					PerceptionController->UpdateControlRotation(0.02f, false);
+					Perception->Tick(0.02f);
+					StateTree->TickComponent(0.02f, LEVELTICK_All, nullptr);
+					if ((Frame + 1) * 0.02f <= ResumeBudget)
+						bDamagedWithinBudget |= HostileTurret->GetCurrentHealth() < HealthAtEvent;
+					if (Frame == 49) Record(TEXT("OneSecondAfterEvent"));
+				}
+				Record(TEXT("AfterTrackingDeadline"));
+				TestTrue(TEXT("Visible living hostile remains tracked after player refresh"), Turret->GetTrackedTarget() == HostileTurret);
+				TestTrue(TEXT("Production weapon keeps dealing server damage after player refresh"), HostileTurret->GetCurrentHealth() < HealthAtEvent);
+				TestTrue(TEXT("Attack resumes within configured preparation, recovery and update budget"), bDamagedWithinBudget);
+			}
 		}
 		if (Parameters == TEXT("SavedAssetDelayedResult"))
 		{

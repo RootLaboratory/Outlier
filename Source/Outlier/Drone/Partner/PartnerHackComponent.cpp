@@ -23,6 +23,7 @@
 #include "UI/HackMiniGameWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/UILayerGameplayTags.h"
+#include "Enemy/EnemyBase.h"
 
 UPartnerHackComponent::UPartnerHackComponent()
 {
@@ -86,10 +87,16 @@ void UPartnerHackComponent::DismissActorBasedWidgets_Implementation()
 void UPartnerHackComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	// 기존 UI 갱신 경로에서 대여 변경도 확인한다. 빠른 반환으로 Idle 복제가 생략되어도 옛 UI를 닫는다.
+	if (ActiveHackableComponent && !IsActiveHackLifetimeCurrent())
+	{
+		if (GetOwner() && GetOwner()->HasAuthority()) HandleHackTargetUnavailable(ActiveHackableComponent);
+		else AbortLocalHackForInvalidTarget();
+	}
 
 	if (GetOwner() && GetOwner()->HasAuthority() && ServerHoldId != 0
 		&& (!bHackCandidateSearchActive || !PartnerCharacter || !PartnerCharacter->CanAcceptInput()
-			|| !CanMaintainHackHold(ServerHeldHackActor.Get(), BuildQueryContext())))
+			|| !IsServerHoldLifetimeCurrent() || !CanMaintainHackHold(ServerHeldHackActor.Get(), BuildQueryContext())))
 	{
 		const uint32 CancelledHoldId = ServerHoldId;
 		ServerHeldHackActor.Reset();
@@ -283,7 +290,8 @@ void UPartnerHackComponent::ClientStopCandidateSearch_Implementation()
 }
 
 void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* TargetActor, UHackableComponent* HackableComponent,
-	float ClickSuccessRangeMultiplier, float SpinningGapMultiplier, uint32 RequestId)
+	float ClickSuccessRangeMultiplier, float SpinningGapMultiplier, uint32 RequestId,
+	int32 GameplayGeneration, int32 LeaseSerial)
 {
 	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled())
 	{
@@ -296,6 +304,9 @@ void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* Targe
 	bHackCandidateSearchActive = false;
 
 	SetActiveHackableComponent(HackableComponent);
+	// 클라이언트 복제보다 RPC가 먼저 도착해도 서버가 시작한 대여 번호를 기준으로 삼는다.
+	ActiveHackGeneration = GameplayGeneration;
+	ActiveHackLease = LeaseSerial;
 	ActiveHackRequestId = RequestId;
 	StartHackMiniGame(TargetActor, HackableComponent, ClickSuccessRangeMultiplier, SpinningGapMultiplier);
 
@@ -355,6 +366,20 @@ void UPartnerHackComponent::CompleteActiveHack(
 		}
 		return;
 	}
+	if (!IsActiveHackLifetimeCurrent())
+	{
+		// 이미 반환된 대상에는 Cancelled조차 전달하지 않는다. 새 대여의 빙의 대기를 취소할 수 있다.
+		ClearActiveHackableComponent();
+		ActiveHackRequestId = 0;
+		bHackCompletionPending = false;
+		if (bNotifyClient)
+		{
+			ClientAbortHackForInvalidTarget();
+			DefaultWidgetControl(false);
+		}
+		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+		return;
+	}
 
 	if (!IsValid(ActiveHackableComponent)
 		|| !IsValid(ActiveHackableComponent->GetOwner())
@@ -407,6 +432,16 @@ void UPartnerHackComponent::CompleteActiveHack(
 
 	UHackableComponent* CompletedHackableComponent = ActiveHackableComponent;
 	AActor* CompletedTargetActor = CompletedHackableComponent->GetOwner();
+	const TWeakObjectPtr<AEnemyBase> CompletedPoolEnemy = ActivePoolHackEnemy;
+	const int32 CompletedGeneration = ActiveHackGeneration;
+	const int32 CompletedLease = ActiveHackLease;
+	auto IsCompletedLifetimeCurrent = [&]()
+	{
+		const AEnemyBase* Enemy = CompletedPoolEnemy.Get();
+		return IsValid(CompletedTargetActor) && (!CompletedLease || (Enemy
+			&& Enemy->MatchesPoolLease(CompletedGeneration, CompletedLease)
+			&& (ResultContext.Result == EHackResult::Cancelled || !Enemy->IsPoolReturnInProgress())));
+	};
 	FHackResultContext MutableResultContext = ResultContext;
 	MutableResultContext.InstigatorActor = PartnerCharacter;
 	if (IHackableInterface* Handler = Cast<IHackableInterface>(CompletedTargetActor))
@@ -428,6 +463,8 @@ void UPartnerHackComponent::CompleteActiveHack(
 		}
 		bHackCompletionPending = false;
 	}
+	if (!IsCompletedLifetimeCurrent() || ActiveHackableComponent != CompletedHackableComponent
+		|| ActiveHackRequestId != ResultContext.RequestId) return;
 	const bool bPossessionTarget = CompletedHackableComponent->SuccessEffectTags.HasTagExact(
 		HackGameplayTags::Effect::Possess());
 	ActiveHackRequestId = 0;
@@ -457,6 +494,8 @@ void UPartnerHackComponent::CompleteActiveHack(
 	{
 		Handler->HandleHackCompleted(MutableResultContext);
 	}
+	// 사용자 콜백이 풀 반환을 수행했다면 성공 이력/효과를 새 개체에 기록하지 않는다.
+	if (!IsCompletedLifetimeCurrent()) return;
 
 	if (MutableResultContext.Result == EHackResult::Success)
 	{
@@ -464,6 +503,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 	}
 
 	CompletedHackableComponent->CompleteHack(MutableResultContext);
+	if (!IsCompletedLifetimeCurrent()) return;
 	OnHackFinished.Broadcast(MutableResultContext.Result, bPossessionTarget);
 }
 
@@ -473,6 +513,13 @@ void UPartnerHackComponent::FinishDeferredHack(const FHackResultContext& ResultC
 		|| ResultContext.InstigatorActor != PartnerCharacter
 		|| !ActiveHackableComponent || ResultContext.TargetActor != ActiveHackableComponent->GetOwner())
 	{
+		return;
+	}
+	if (!IsActiveHackLifetimeCurrent())
+	{
+		FHackResultContext CancelledContext = ResultContext;
+		CancelledContext.Result = EHackResult::Cancelled;
+		CompleteActiveHack(CancelledContext, bNotifyClient);
 		return;
 	}
 	const bool bPossessionTarget = ActiveHackableComponent->SuccessEffectTags.HasTagExact(
@@ -686,6 +733,17 @@ void UPartnerHackComponent::ServerBeginHackHold_Implementation(AActor* TargetAct
 	}
 	ServerHeldHackActor = TargetActor;
 	ServerHoldId = HoldId;
+	ServerHeldPoolEnemy = Cast<AEnemyBase>(TargetActor);
+	if (AEnemyBase* Enemy = ServerHeldPoolEnemy.Get(); Enemy && Enemy->IsPoolManaged())
+	{
+		ServerHoldGeneration = Enemy->GetPoolGameplayGeneration();
+		ServerHoldLease = Enemy->GetPoolLeaseSerial();
+	}
+	else
+	{
+		ServerHeldPoolEnemy.Reset();
+		ServerHoldGeneration = ServerHoldLease = 0;
+	}
 }
 
 void UPartnerHackComponent::ServerEndHackHold_Implementation(uint32 HoldId)
@@ -705,6 +763,13 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	if (ActiveHackableComponent || bHackCompletionPending) return;
 	// Only a target accepted when R was pressed may bypass viewport/angle/LOS checks.
 	if (!HoldId || HoldId != ServerHoldId || TargetActor != ServerHeldHackActor.Get()) return;
+	if (!IsServerHoldLifetimeCurrent())
+	{
+		ServerHeldHackActor.Reset();
+		ServerHoldId = 0;
+		ClientCancelHackHold(HoldId);
+		return;
+	}
 	ServerHeldHackActor.Reset();
 	ServerHoldId = 0;
 	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput()) return;
@@ -778,7 +843,8 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 
 	// 시작 시 서버에서 고정한 배율을 전달한다. 클라이언트 Config/태그 복제 순서에 의존하지 않는다.
 	ClientStartHackMiniGame(TargetActor, HackableComponent,
-		ResolveMiniGameSuccessRangeMultiplier(false), ResolveMiniGameSuccessRangeMultiplier(true), Context.RequestId);
+		ResolveMiniGameSuccessRangeMultiplier(false), ResolveMiniGameSuccessRangeMultiplier(true), Context.RequestId,
+		ActiveHackGeneration, ActiveHackLease);
 
 	if (bDebugHack)
 	{
@@ -1302,6 +1368,13 @@ void UPartnerHackComponent::SetActiveHackableComponent(UHackableComponent* Hacka
 
 	ClearActiveHackableComponent();
 	ActiveHackableComponent = HackableComponent;
+	ActivePoolHackEnemy = HackableComponent ? Cast<AEnemyBase>(HackableComponent->GetOwner()) : nullptr;
+	if (AEnemyBase* Enemy = ActivePoolHackEnemy.Get(); Enemy && Enemy->IsPoolManaged())
+	{
+		ActiveHackGeneration = Enemy->GetPoolGameplayGeneration();
+		ActiveHackLease = Enemy->GetPoolLeaseSerial();
+	}
+	// 클라이언트에서는 PoolState 복제 전에 시작 RPC가 올 수 있어 Enemy 참조 자체는 유지한다.
 
 	if (IsValid(ActiveHackableComponent))
 	{
@@ -1323,6 +1396,29 @@ void UPartnerHackComponent::ClearActiveHackableComponent()
 	}
 
 	ActiveHackableComponent = nullptr;
+	ActivePoolHackEnemy.Reset();
+	ActiveHackGeneration = ActiveHackLease = 0;
+}
+
+bool UPartnerHackComponent::IsActiveHackLifetimeCurrent() const
+{
+	if (!ActiveHackLease) return true;
+	const AEnemyBase* Enemy = ActivePoolHackEnemy.Get();
+	if (Enemy && GetOwner() && !GetOwner()->HasAuthority() && Enemy->GetPoolLeaseSerial() < ActiveHackLease)
+	{
+		// 서버의 시작 RPC가 Pawn 복제보다 빠르면 아직 옛 번호가 보인다. 새 번호를 관측할 때까지 기다린다.
+		return true;
+	}
+	// 반환 알림은 같은 대여의 취소를 전달해야 하므로, 여기서는 번호만 비교한다.
+	return Enemy && Enemy->MatchesPoolLease(ActiveHackGeneration, ActiveHackLease);
+}
+
+bool UPartnerHackComponent::IsServerHoldLifetimeCurrent() const
+{
+	if (!ServerHoldLease) return true;
+	const AEnemyBase* Enemy = ServerHeldPoolEnemy.Get();
+	return Enemy && !Enemy->IsPoolReturnInProgress()
+		&& Enemy->MatchesPoolLease(ServerHoldGeneration, ServerHoldLease);
 }
 
 void UPartnerHackComponent::AbortLocalHackForInvalidTarget()
@@ -1345,6 +1441,15 @@ void UPartnerHackComponent::HandleHackTargetUnavailable(UHackableComponent* Unav
 	if (UnavailableComponent != ActiveHackableComponent)
 	{
 		return;
+	}
+	if (GetOwner() && !GetOwner()->HasAuthority() && ActiveHackLease)
+	{
+		const AEnemyBase* Enemy = ActivePoolHackEnemy.Get();
+		if (Enemy && Enemy->GetPoolLeaseSerial() < ActiveHackLease)
+		{
+			// 옛 대여의 Locked 복제가 새 미니게임 RPC보다 늦을 수 있다. 현재 요청의 종료는 서버가 보낸다.
+			return;
+		}
 	}
 	if (GetOwner() && GetOwner()->HasAuthority())
 	{

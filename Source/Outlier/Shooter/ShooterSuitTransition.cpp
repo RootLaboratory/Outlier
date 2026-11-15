@@ -74,6 +74,15 @@ bool AShooterCharacter::BeginSuitTransition(ASuitInteraction* Interaction,
 	SuitTransitionPartnerPlayerState->OnPlayerCharactersChanged.AddUObject(this, &AShooterCharacter::HandleSuitTransitionPairChanged);
 	const FGuid Id = ActiveSuitTransitionId;
 	APartnerCharacter* Partner = SuitTransitionPartner.Get();
+	AFirstPersonPlayerController* ShooterPC = Cast<AFirstPersonPlayerController>(SuitTransitionShooterController.Get());
+	AFirstPersonPlayerController* PartnerPC = Cast<AFirstPersonPlayerController>(SuitTransitionPartnerController.Get());
+	// 조작 차단보다 먼저 양쪽의 AI 보호를 확정한다. 실패하면 기존 취소 경로가 획득분만 복구한다.
+	if (!ShooterPC || !PartnerPC || !ShooterPC->BeginPresentationProtection(Id, this, PartnerPC)
+		|| !PartnerPC->BeginPresentationProtection(Id, Partner, ShooterPC))
+	{
+		CancelSuitTransition();
+		return false;
+	}
 	// 기존 행동 취소에서 Pair/생존 이벤트가 재진입할 수 있다. 취소된 ID로 다음 차단을 획득하지 않는다.
 	if (!AcquireSuitTransitionBlock(Id) || ActiveSuitTransitionId != Id || !IsValid(Partner)
 		|| !Partner->AcquireSuitTransitionBlock(Id) || ActiveSuitTransitionId != Id)
@@ -520,6 +529,8 @@ void AShooterCharacter::FinishSuitTransition()
 	// 정상 완료와 취소가 공유하는 종료 경로다. 획득을 되돌릴지 여부가 아니라 예약 실패 통지 여부만 commit으로 구분한다.
 	const FGuid Id = ActiveSuitTransitionId;
 	const bool bCommitted = bSuitTransitionCommitted;
+	const bool bPresentationRestored = SuitTransitionPhase == ESuitTransitionPhase::FadingIn
+		&& bSuitTransitionShooterReady && bSuitTransitionPartnerReady;
 	ASuitInteraction* Interaction = SuitTransitionInteraction.Get();
 	APartnerCharacter* Partner = SuitTransitionPartner.Get();
 	// 내부 참가자 참조를 비운 뒤에도 종료 요청을 보낼 수 있게 시작 당시 Controller를 확보한다.
@@ -574,6 +585,9 @@ void AShooterCharacter::FinishSuitTransition()
 		if (AFirstPersonPlayerController* FirstPersonController = Cast<AFirstPersonPlayerController>(ParticipantController.Get()))
 		{
 			FirstPersonController->SendSuitTransitionPhaseFromServer(this, Id, ESuitTransitionPhase::Idle, SuitTransitionTiming);
+			// 화면 완료 ACK 뒤에도 입력 차단 해제 복제가 남는다. Controller가 최종 복구까지 보호한다.
+			FirstPersonController->RecoverPresentationProtection(Id,
+				bPresentationRestored ? 0.0f : SuitTransitionTiming.CleanupRevealDuration, !bPresentationRestored);
 		}
 	}
 	// 내부 ID는 이미 무효지만, 종료 알림에는 이전 ID를 전달해 연결된 Controller가 해당 연출만 정리하게 한다.

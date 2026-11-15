@@ -9,6 +9,7 @@
 class APartnerCharacter;
 class UPartnerHackComponent;
 class FJsonObject;
+class UUserWidget;
 
 // 관전자도 자기 Controller의 소유 연결을 통해 준비 완료를 서버에 알린다.
 UCLASS(Transient, NotBlueprintable)
@@ -89,4 +90,17 @@ private:
 	TSharedRef<FJsonObject> Observe();
 	void Write(const TSharedRef<FJsonObject>& Row);
 	void FinishResult(bool bPassed, const FString& Detail);
+#if WITH_DEV_AUTOMATION_TESTS
+	// 별도 실행 플래그에서만 실제 풀/소유 클라이언트 UI 수명을 검사한다.
+	void TickPoolHackUI();
+	bool LeasePoolHackUITarget();
+	void SetPoolHackUIPhase(int32 NextPhase);
+	TSharedRef<FJsonObject> ObservePoolHackUI();
+	uint32 OldUIRequest = 0;
+	int32 OldUIGeneration = 0;
+	int32 OldUILease = 0;
+	TWeakObjectPtr<UUserWidget> OldMiniGameWidget;
+	bool bSawNewTransition = false;
+	bool bUIRequestLost = false;
+#endif
 };

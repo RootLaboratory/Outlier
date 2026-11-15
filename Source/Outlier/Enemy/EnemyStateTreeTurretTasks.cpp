@@ -1,6 +1,7 @@
 #include "Enemy/EnemyStateTreeTurretTasks.h"
 
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyTargetRules.h"
 #include "Outlier.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Weapon/LaserWeapon.h"
@@ -240,7 +241,7 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::EnterState(
 		}
 		return EStateTreeRunStatus::Failed;
 	}
-	Data.AttackExecutionId = Data.Turret->BeginTurretAttackExecution();
+	Data.AttackExecutionId = Data.Turret->BeginTurretAttackExecution(Target);
 	if (Data.AttackExecutionId == 0)
 	{
 		return EStateTreeRunStatus::Failed;
@@ -434,7 +435,7 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::EnterState(
 		}
 		return EStateTreeRunStatus::Failed;
 	}
-	Data.AttackExecutionId = Data.Turret->BeginTurretAttackExecution();
+	Data.AttackExecutionId = Data.Turret->BeginTurretAttackExecution(Target);
 	if (Data.AttackExecutionId == 0)
 	{
 		return EStateTreeRunStatus::Failed;
@@ -476,6 +477,7 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 	ARangedWeaponBase* Weapon = Turret ? Turret->GetCurrentWeapon() : nullptr;
 	if (!IsValid(Turret) || !Turret->HasAuthority() || !IsValid(Weapon)
 		|| Weapon != Data.ActiveWeapon || Turret->IsDead()
+		|| OutlierEnemyTargetRules::IsPresentationProtected(Data.TargetActor)
 		|| Turret->GetCombatState() == EEnemyCombatState::Stun || Turret->IsAIControlSuppressed()
 		|| Turret->IsHackingInProgress())
 	{

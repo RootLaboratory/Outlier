@@ -73,6 +73,12 @@ protected:
 	TSubclassOf<UUpgradeMachineWidget> UpgradeMachineWidgetClass;
 
 private:
+	friend class FStatMachinePairRecoveryTest;
+
+	// 장치 인스턴스 수명 동안만 유지한다. UI 재생성과 Pawn 교체는 회복 기회를 되돌리지 않는다.
+	TSet<int32> RecoveredPairIds;
+	bool TryRecoverPair(AShooterCharacter* Shooter, APartnerCharacter* Partner, int32 PairId);
+
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AOutlierPlayerState> CachedHackingPartnerPlayerState;
 

@@ -677,6 +677,11 @@ void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementa
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
 	bClientArenaExitPrepared = true;
+	if (auto* Cinematic = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+	{
+		Cinematic->ClearLevelCinematics();
+	}
 	ClearClientArenaContentWait();
 	ClearClientGameplayReloadWatchdog();
 	bClientReloadBootstrapPending = false;
@@ -1353,12 +1358,8 @@ void AFirstPersonPlayerController::RestoreCameraAfterCinematic()
 
 void AFirstPersonPlayerController::ReleaseLevelLoadBlackoutIfNoIntroPending()
 {
-	if (!HasCameraBlackoutReason(ECameraBlackoutReason::LevelLoad))
-	{
-		return;
-	}
 	// 인트로 준비 RPC는 Possess보다 먼저 도착한다. 준비 중이면 시네마틱 시작 시점에 해제한다.
-	const UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
+	UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>()
 		: nullptr;
 	const EOutlierCinematicState State = Cinematic ? Cinematic->GetState() : EOutlierCinematicState::Idle;
@@ -1367,6 +1368,8 @@ void AFirstPersonPlayerController::ReleaseLevelLoadBlackoutIfNoIntroPending()
 		return;
 	}
 	RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
+	// Continue 등 인트로 없이 Pawn으로 시작하는 경로도 프런트엔드의 가림을 인계받는다.
+	if (Cinematic) Cinematic->EndInitialIntroBlackout();
 }
 
 void AFirstPersonPlayerController::ReportLoadedLevelsVisibilityToServer()
@@ -1485,6 +1488,11 @@ bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
 			if (Params.Event == IE_Pressed) ServerDebugTogglePairInvulnerability();
 			return true;
 		}
+		if (Params.Key == EKeys::F2)
+		{
+			if (Params.Event == IE_Pressed) ServerDebugGrantStealthUpgrades();
+			return true;
+		}
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
 		{
 			// 스킵 홀드 키(누름/반복/해제)가 점프·위젯 확인 등으로 새지 않도록 Enhanced Input보다 먼저 처리한다.
@@ -1521,6 +1529,39 @@ void AFirstPersonPlayerController::ServerDebugTogglePairInvulnerability_Implemen
 	ClientMessage(bEnabled ? TEXT("Shooter / Partner Invulnerability ON") : TEXT("Shooter / Partner Invulnerability OFF"));
 	UE_LOG(LogOutlier, Log, TEXT("[DebugInvulnerability] Pair=%d Enabled=%d RequestedBy=%s"),
 		ShooterState->GetPairId(), bEnabled, *GetName());
+}
+
+void AFirstPersonPlayerController::ServerDebugGrantStealthUpgrades_Implementation()
+{
+	AOutlierPlayerState* State = GetPlayerState<AOutlierPlayerState>();
+	if (!HasAuthority() || !State || !State->IsShooterPlayer()) return;
+	AShooterCharacter* Shooter = State->GetShooterCharacter();
+	UOutlierUpgradeComponent* Upgrades = IsValid(Shooter) ? Shooter->FindComponentByClass<UOutlierUpgradeComponent>() : nullptr;
+	if (!Upgrades) return;
+
+	TArray<FName> Rows;
+	Upgrades->GetNodeRowNames(Rows);
+	TArray<FName> Nodes = State->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter);
+	const int32 Before = Nodes.Num();
+	const FGameplayTag StealthTag = FGameplayTag::RequestGameplayTag(TEXT("Ability.Shooter.Stealth"));
+	for (FName RowName : Rows)
+	{
+		FOutlierUpgradeNodeRow Row;
+		if (Upgrades->GetNodeRow(RowName, Row) && Row.Role == EOutlierUpgradeRole::Shooter
+			&& (Row.AbilityTag == StealthTag || Row.TreeId == TEXT("Stealth")) && !Row.bInitiallyActivated)
+		{
+			Nodes.AddUnique(RowName);
+		}
+	}
+	const int32 Added = Nodes.Num() - Before;
+	if (Added > 0)
+	{
+		// Use the PlayerState source of truth and normal projection/replication;
+		// preserve currency and every unrelated upgrade. Repeated presses are idempotent.
+		State->RestoreCheckpointProgress(State->GetNodeCount(), EOutlierUpgradeRole::Shooter, Nodes);
+	}
+	ClientMessage(FString::Printf(TEXT("Stealth upgrades granted (+%d)"), Added));
+	UE_LOG(LogOutlier, Log, TEXT("[DebugStealthUpgrades] Player=%s Added=%d Total=%d"), *GetNameSafe(State), Added, Nodes.Num());
 }
 
 void AFirstPersonPlayerController::SetupInputComponent()
@@ -1650,6 +1691,7 @@ void AFirstPersonPlayerController::Destroyed()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ClearPresentationProtection();
 	if (ULocalPlayer* Local = GetLocalPlayer(); Local && Local->PlayerController == this)
 	{
 		if (auto* Cinematic = Local->GetSubsystem<UOutlierCinematicSubsystem>())
@@ -1718,6 +1760,7 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 
 void AFirstPersonPlayerController::SetPawn(APawn* InPawn)
 {
+	if (HasAuthority() && GetPawn() != InPawn) ClearPresentationProtection();
 	if (LocalElevatorExecutionId.IsValid() && LocalElevatorFadePawn.Get() != InPawn)
 	{
 		ClearLocalElevatorFade();
@@ -2499,6 +2542,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	}
 
 	// 오래된 리로드 요청은 위에서 거부한다. 유효한 리로드가 시작될 때만 이전 슈트 연출 콜백을 끊는다.
+	if (ATuto_PassageTransitionVolume* Passage = LocalPassageTransitionVolume.Get()) Passage->ResetLocalPassageForReload();
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	ClearClientArenaContentWait();

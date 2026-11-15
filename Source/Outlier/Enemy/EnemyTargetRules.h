@@ -17,5 +17,6 @@ namespace OutlierEnemyTargetRules
 	};
 
 	OUTLIER_API ETargetPriority GetPriority(const AActor* TargetActor);
+	OUTLIER_API bool IsPresentationProtected(const AActor* TargetActor);
 	OUTLIER_API bool IsUnavailable(const AActor* TargetActor);
 }

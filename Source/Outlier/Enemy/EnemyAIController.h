@@ -66,6 +66,7 @@ public:
 	friend class FEnemySightAlertIntegrationTest;
 	friend class FEnemyHearingAwarenessIntegrationTest;
 	friend class FEnemyDistanceAwarenessIntegrationTest;
+	friend class FEnemyPresentationProtectionTest;
 #endif
 
 protected:

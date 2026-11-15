@@ -4,6 +4,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "Drone/Partner/HackableComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/StateTreeComponent.h"
@@ -16,6 +17,7 @@
 #include "Explosion/ExplosionComponent.h"
 #include "Explosion/ExplosionTypes.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Misc/AutomationTest.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
@@ -222,19 +224,108 @@ bool FEnemyChargePoolExplosionRearmTest::RunTest(const FString& Parameters)
 	ASelfDestructDrone* Drone = Fixture.Drone;
 	UExplosionComponent* Explosion = Drone->GetExplosionComponent();
 	if (!TestNotNull(TEXT("Explosion component"), Explosion)) return false;
+	UHackableComponent* Hackable = Drone->GetHackableComponent();
+	const FGameplayTagContainer InitialTags = Hackable->HackTags;
+	TestTrue(TEXT("Real charge preparation commits"), Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 2.0f, 500.0f, 1000.0f));
+	TestTrue(TEXT("Charge locks hacking"), Hackable->HasHackTag(OutlierGameplayTags::State::Locked()));
 	Drone->TriggerSelfDestruct();
 	TestTrue(TEXT("First actual self-destruction requests an explosion"), Explosion->HasDetonated());
 	TestEqual(TEXT("Self-destruction waits for the pool death callback"), Drone->GetEnemyPoolState(), EEnemyPoolState::DeathPresentation);
 	const int32 FirstSerial = Drone->GetPoolLeaseSerial();
 	Drone->CompletePoolDeathPresentation(200, FirstSerial);
+	TestTrue(TEXT("Death return removes the charge lock and restores authored tags"), Hackable->HackTags == InitialTags);
 	if (!TestTrue(TEXT("Second lease reuses the same exploded actor"), Fixture.Lease(201))) return false;
 	TestEqual(TEXT("Rearming happens before combat activation"), Drone->GetEnemyPoolState(), EEnemyPoolState::SpawnPresentation);
 	TestFalse(TEXT("Presentation starts with its explosion rearmed"), Explosion->HasDetonated());
+	TestTrue(TEXT("Reused explosion drone retains no prior charge lock"), Hackable->HackTags == InitialTags);
 	Fixture.ActivateAndIsolateMovement();
 	Fixture.Log(*this, TEXT("ExplosionReused"), 0, 0);
 	TestFalse(TEXT("A new pool lease must rearm its explosion latch"), Explosion->HasDetonated());
 	TestTrue(TEXT("Reused drone must accept a fresh explosion request"), Explosion->DetonateAt(Drone->GetActorLocation()));
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyChargePoolStunCancelReuseTest,
+	"Outlier.Enemy.SelfDestruct.PoolStunCancelReuse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyChargePoolStunCancelReuseTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FDronePoolCollisionWorld Fixture;
+	ASelfDestructDrone* Drone = Fixture.Drone;
+	if (!TestNotNull(TEXT("Pooled production drone"), Drone)) return false;
+	TestEqual(TEXT("Server owns stun and pool transitions"), Fixture.World->GetNetMode(), NM_DedicatedServer);
+	UHackableComponent* Hackable = Drone->GetHackableComponent();
+	UOutlierAbilitySystemComponent* ASC = Drone->GetOutlierAbilitySystemComponent();
+	UExplosionComponent* Explosion = Drone->GetExplosionComponent();
+	if (!TestNotNull(TEXT("Hackable"), Hackable) || !TestNotNull(TEXT("Drone ASC"), ASC)
+		|| !TestNotNull(TEXT("Explosion"), Explosion)) return false;
+	const FGameplayTagContainer InitialTags = Hackable->HackTags;
+	const FGameplayTag Locked = OutlierGameplayTags::State::Locked();
+	const FGameplayTag Stunned = OutlierGameplayTags::State::Stunned();
+	FHackQueryContext Query;
+	Query.BlockedTags.AddTag(Locked);
+	TestFalse(TEXT("Production drone starts without an authored lock"), Hackable->HasHackTag(Locked));
+
+	for (int32 Cycle = 0; Cycle < 3; ++Cycle)
+	{
+		const int32 Generation = 300 + Cycle * 2;
+		if (!TestTrue(TEXT("Preparation lease reuses the production Actor"), Fixture.Lease(Generation))) return false;
+		Fixture.ActivateAndIsolateMovement();
+		const float HealthBefore = Drone->GetCurrentHealth();
+		const int32 OldLease = Drone->GetPoolLeaseSerial();
+		if (!TestTrue(TEXT("Alive drone starts real charge preparation"),
+			Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 2.f, 500.f, 1000.f))) return false;
+		TestTrue(TEXT("Preparation locks hacking"), Hackable->HasHackTag(Locked));
+		TestFalse(TEXT("Locked preparation rejects hacking"), Hackable->CanBeHackTarget(Query));
+
+		// 실제 GAS 태그 알림으로 EnterStun → 자폭 취소를 실행한다. 취소 함수를 직접 호출하지 않는다.
+		const FActiveGameplayEffectHandle OldStun = ASC->ApplyStunStateToSelf(0.5f, Drone);
+		if (!TestTrue(TEXT("Real timed stun is applied"), OldStun.IsValid())) return false;
+		TestTrue(TEXT("GAS grants Stunned"), ASC->HasMatchingGameplayTag(Stunned));
+		TestEqual(TEXT("Stun enters the gameplay state"), Drone->GetCombatState(), EEnemyCombatState::Stun);
+		TestFalse(TEXT("Stun cancels charge preparation"), Drone->IsSelfDestructCommitted());
+		TestFalse(TEXT("Stun cancellation clears the charge lock"), Hackable->HasHackTag(Locked));
+		TestFalse(TEXT("Cancellation does not explode"), Explosion->HasDetonated());
+		TestFalse(TEXT("Cancellation keeps the drone alive"), Drone->IsDead());
+		TestEqual(TEXT("Cancellation preserves health"), Drone->GetCurrentHealth(), HealthBefore);
+
+		// 기절 효과가 아직 유효할 때 반환한다. 새 대여가 옛 효과/만료 작업을 정리해야 한다.
+		if (!TestTrue(TEXT("Return during active stun"), Fixture.Return())) return false;
+		TestEqual(TEXT("Return reaches Idle"), Drone->GetEnemyPoolState(), EEnemyPoolState::Idle);
+		TestTrue(TEXT("Return restores exact initial hack tags"), Hackable->HackTags == InitialTags);
+		TestFalse(TEXT("Idle remains unavailable for hacking"), Hackable->CanBeHackTarget(Query));
+		TestFalse(TEXT("Return does not detonate"), Explosion->HasDetonated());
+		TestEqual(TEXT("Return does not cause death damage"), Drone->GetCurrentHealth(), HealthBefore);
+		if (!TestTrue(TEXT("Reuse returns the same stunned Actor"), Fixture.Lease(Generation + 1))) return false;
+		const int32 NewLease = Drone->GetPoolLeaseSerial();
+		TestTrue(TEXT("Reuse advances the lease"), NewLease > OldLease);
+		TestTrue(TEXT("Reuse preserves initial hack configuration"), Hackable->HackTags == InitialTags);
+		TestFalse(TEXT("Reuse removes old Stunned tag"), ASC->HasMatchingGameplayTag(Stunned));
+		TestNull(TEXT("Reuse removes the old timed stun effect"), ASC->GetActiveGameplayEffect(OldStun));
+		TestFalse(TEXT("Presentation remains unavailable for hacking"), Hackable->CanBeHackTarget(Query));
+		Fixture.ActivateAndIsolateMovement();
+		TestTrue(TEXT("Reused active drone can be hacked"), Hackable->CanBeHackTarget(Query));
+		TestFalse(TEXT("Reused drone is rearmed"), Explosion->HasDetonated());
+		TestFalse(TEXT("Reused combat state is not stunned"), Drone->GetCombatState() == EEnemyCombatState::Stun);
+		if (!TestTrue(TEXT("Reused drone accepts fresh charge preparation"),
+			Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 2.f, 500.f, 1000.f))) return false;
+
+		// 옛 기절 만료 시점을 넘겨도 새 대여의 준비를 취소하거나 과거 자폭을 실행하면 안 된다.
+		for (int32 Frame = 0; Frame < 40; ++Frame) Fixture.Tick(1.f / 60.f);
+		TestTrue(TEXT("Old stun expiry cannot cancel the new charge"), Drone->IsSelfDestructCommitted());
+		TestTrue(TEXT("New charge retains its own hack lock"), Hackable->HasHackTag(Locked));
+		TestFalse(TEXT("Old preparation cannot cause an explosion"), Explosion->HasDetonated());
+		TestFalse(TEXT("Reused drone stays alive"), Drone->IsDead());
+		TestEqual(TEXT("New lease survives old stun expiry"), Drone->GetPoolLeaseSerial(), NewLease);
+		if (!TestTrue(TEXT("Return fresh preparation without death"), Fixture.Return())) return false;
+		TestFalse(TEXT("Alive return cancels fresh preparation"), Drone->IsSelfDestructCommitted());
+		TestTrue(TEXT("Alive return restores exact initial tags"), Hackable->HackTags == InitialTags);
+		AddInfo(FString::Printf(TEXT("[PoolStunCancelReuse] Cycle=%d Actor=%s OldGeneration=%d OldLease=%d NewGeneration=%d NewLease=%d Tags=%s"),
+			Cycle, *Drone->GetName(), Generation, OldLease, Generation + 1, NewLease, *Hackable->HackTags.ToStringSimple()));
+	}
+	return !HasAnyErrors();
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyChargePoolExplosionRepeatedDamageTest,
