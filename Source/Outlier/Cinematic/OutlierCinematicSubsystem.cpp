@@ -426,6 +426,8 @@ void UOutlierCinematicSubsystem::ReleaseCinematic(const FGuid& IntroId)
 		: Input->GetInputMode() == DefaultMode);
 	if (!bInputRestored)
 		UE_LOG(LogTemp, Error, TEXT("[Cinematic] Input restoration failed after server released Intro=%s"), *IntroId.ToString());
+	// Ready는 시퀀스/카메라 복원이고, 이 응답은 최종 입력 scope 해제까지 끝난 경계다.
+	if (bInputRestored && PC) PC->ServerNotifyPresentationRestored(IntroId, PC->GetPawn());
 }
 
 bool UOutlierCinematicSubsystem::PlayTitleCinematic()

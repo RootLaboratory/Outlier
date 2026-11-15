@@ -64,6 +64,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEnemyHackEffectEnded,
 // 자식 State가 바뀌어도 한 수색 회차의 중심/선정 지점은 유지한다. 서버에서만 사용한다.
 struct FEnemySearchEpisode
 {
+	TWeakObjectPtr<AActor> Source;
 	FVector Center = FVector::ZeroVector;
 	FVector LookLocation = FVector::ZeroVector;
 	double StartedAt = -1.0;
@@ -127,9 +128,10 @@ struct FEnemyVisualInvestigation
 	double AdoptedAt = -1.0;
 };
 
-// 피격 당시의 위치만 보관한다. 공격자 참조가 없어 사망·팀 변경·풀 재사용 뒤에도 좌표가 바뀌지 않는다.
+// 좌표는 피격 당시 값으로 고정한다. 출처는 연출 보호 시 해당 사건만 폐기하는 데 사용한다.
 struct FEnemyHitClue
 {
+	TWeakObjectPtr<AActor> Source;
 	TWeakObjectPtr<AEnemyBase> Receiver;
 	FVector Location = FVector::ZeroVector;
 	double OccurredAt = -1.0;
@@ -204,6 +206,7 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 	friend class FAutoTurretHackingTest;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FEnemyHitClueLifecycleTest;
+	friend class FEnemyPresentationProtectionTest;
 #endif
 
 public:
@@ -783,6 +786,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	FVector GetLastKnownPlayerLocation() const { return LastKnownPlayerLocation; }
+	AActor* GetLastKnownPlayerSource() const { return LastKnownPlayerSource.Get(); }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	FVector GetPatternStartPlayerLocation() const { return PatternStartPlayerLocation; }
@@ -879,7 +883,7 @@ public:
 	void InitializeFromEnemyStatRow();
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
-	void UpdateLastKnownPlayerLocation(const FVector& NewLocation);
+	void UpdateLastKnownPlayerLocation(const FVector& NewLocation, AActor* Source = nullptr);
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void SetPatternStartPlayerLocation(const FVector& NewLocation);
@@ -900,6 +904,7 @@ public:
 	// 실제 탄을 시작한 버스트만 보호한다. 보류가 길어지면 비커밋 재평가를 다시 허용한다.
 	void EndTargetSelectionBurst(AActor* BurstTarget);
 	void ClearTargetTracking();
+	virtual void ForgetPresentationTarget(AActor* TargetActor);
 
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Perception", meta = (ClampMin = "0.0", Units = "s"))
 	float HeardNoiseLifetime = 3.0f;
@@ -942,7 +947,7 @@ public:
 	void ClearHeardNoise();
 
 	// 실제 관측·채택 지점에서만 발생 시각을 전달한다. 상태/Task 재진입은 새 단서가 아니다.
-	bool RecordAlertClue(double OccurredAt);
+	bool RecordAlertClue(double OccurredAt, AActor* Source = nullptr);
 	bool HasAlertClue() const { return LastAlertClueAt >= 0.0; }
 	double GetLastAlertClueAt() const { return LastAlertClueAt; }
 	bool IsAlertHoldActive() const;
@@ -1016,7 +1021,7 @@ public:
 	void ApplySharedTargetContact(
 		const FVector& TargetLocation,
 		bool bDeferStateTreeEvent = false,
-		uint64 Revision = 0);
+		uint64 Revision = 0, AActor* Source = nullptr);
 	void ClearSharedTargetContact();
 
 	bool HasFreshSharedTargetLocation() const { return SharedTargetRevision > ConsumedSharedTargetRevision; }
@@ -1063,8 +1068,9 @@ public:
 	void EnterCombatFromRoom(
 		const FVector& PlayerLocation,
 		bool bPropagateToRoom,
-		bool bDeferStateTreeEvent = false);
-	void EnterAlertFromPerception(const FVector& PlayerLocation);
+		bool bDeferStateTreeEvent = false,
+		AActor* Source = nullptr);
+	void EnterAlertFromPerception(const FVector& PlayerLocation, AActor* Source = nullptr);
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	virtual void EnterStun();
@@ -1204,6 +1210,9 @@ protected:
 	uint64 ConsumedSharedTargetRevision = 0;
 	uint64 NextSearchEpisodeSerial = 0;
 	bool bHasLastKnownPlayerLocation = false;
+	// 좌표를 만든 출처를 함께 보관해 연출 진입 시 다른 대상의 단서는 보존한다.
+	TWeakObjectPtr<AActor> LastKnownPlayerSource;
+	TWeakObjectPtr<AActor> SharedTargetSource;
 	FEnemySearchEpisode SearchEpisode;
 
 	// Task 재진입과 실제 이동 시간을 분리하여 실패 복구 예산만 Pawn에 보존한다.
@@ -1236,6 +1245,7 @@ protected:
 	FEnemyHitClue PendingHitClue;
 	// 인지 누적, 추적 유예, 피격 단서 TTL과 분리한다. 스턴 중에도 원래 기한이 흐른다.
 	double LastAlertClueAt = -1.0;
+	TWeakObjectPtr<AActor> AlertClueSource;
 	FEnemyHitClue ActiveHitClue;
 	bool bProcessingDamageHitResponse = false;
 	enum class EHitResponsePhase : uint8 { None, Confirm, Move, Search };

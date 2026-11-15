@@ -116,6 +116,7 @@ protected:
 	void OnSelfDestructTelegraphCancelled();
 
 private:
+	virtual void ForgetPresentationTarget(AActor* TargetActor) override;
 	void SpawnAndAttachMountedExplosives();
 	void DestroyMountedExplosives();
 	bool BeginCommittedSelfDestructInternal(
@@ -123,7 +124,7 @@ private:
 		float TelegraphDuration,
 		float ChargeSpeed,
 		bool bLimitChargeDistance,
-		float ChargeDistanceLimit);
+		float ChargeDistanceLimit, AActor* TargetActor = nullptr);
 
 	bool bDeathHandling = false;
 	bool bTriggeredSelfDestruct = false;
@@ -149,6 +150,7 @@ private:
 	TWeakObjectPtr<AExplosiveProp> PresentationExplosive;
 	uint32 PresentedChargeRevision = 0;
 	bool bChargePresentationStarted = false;
+	TWeakObjectPtr<AActor> CommittedChargeTarget;
 	FVector CommittedChargeDirection = FVector::ForwardVector;
 	FVector CommittedChargeTargetDirection = FVector::ForwardVector;
 	FVector CommittedChargeStartLocation = FVector::ZeroVector;

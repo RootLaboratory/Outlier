@@ -181,6 +181,7 @@ private:
 	friend class FOutlierArenaGenerationTransitionTest;
 	friend class FOutlierSettingsPauseTest;
 	friend class FOutlierDirectPairTest;
+	friend class FPresentationProtectionIntroPossessionTest;
 	friend class FElevatorCheckpointIntegrationTest;
 	friend class FRoomCheckpointSaveIntegrationTest;
 	friend class FOutlierPresetGuideLifecycleTest;
@@ -401,6 +402,7 @@ protected:
 
 private:
 	bool IsArenaWorkerProcess() const;
+	bool TryAcquireInitialIntroProtection();
 	void TryStartInitialIntro();
 	void TryFinishInitialIntro();
 	void ReleaseInitialIntroInput();

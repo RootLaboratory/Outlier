@@ -36,6 +36,7 @@ public:
 		const FOutlierScreenTransitionTiming& Timing);
 	void RevealLocalPassage(AFirstPersonPlayerController* Controller, const FGuid& InExecutionId, FVector Destination);
 	void CancelLocalPassage(AFirstPersonPlayerController* Controller, const FGuid& InExecutionId);
+	void ResetLocalPassageForReload();
 	static bool IsLocalTransitionActive(const AFirstPersonPlayerController* Controller);
 
 protected:
@@ -44,6 +45,7 @@ protected:
 
 private:
 	void HandlePassageCovered(FGuid InExecutionId);
+	void HandlePassageRevealed();
 	void PollPassageArrival();
 	void ClearLocalPassageFade();
 	void HandleLocalPawnInvalidated(AFirstPersonCharacter* Character);
@@ -66,6 +68,7 @@ private:
 	FVector PassageArrivalLocation = FVector::ZeroVector;
 	FOutlierScreenTransitionTiming LocalPassageTiming;
 	bool bPassageCoveredSent = false;
+	bool bPassageRevealed = false;
 	bool bPassageInputLocked = false;
 
 	bool TeleportPair(AOutlierPlayerState* SourcePlayerState);

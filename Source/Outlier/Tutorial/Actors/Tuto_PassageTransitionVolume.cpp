@@ -4,7 +4,6 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
-#include "EngineUtils.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -16,12 +15,9 @@
 
 bool ATuto_PassageTransitionVolume::IsLocalTransitionActive(const AFirstPersonPlayerController* Controller)
 {
-	if (!Controller || !Controller->GetWorld()) return false;
-	for (TActorIterator<ATuto_PassageTransitionVolume> It(Controller->GetWorld()); It; ++It)
-	{
-		if (It->LocalPassageId.IsValid() && It->LocalPassageController.Get() == Controller) return true;
-	}
-	return false;
+	if (!Controller) return false;
+	const ATuto_PassageTransitionVolume* Active = Controller->LocalPassageTransitionVolume.Get();
+	return Active && Active->LocalPassageId.IsValid();
 }
 
 void ATuto_PassageTransitionVolume::StartLocalPassageFade(
@@ -34,11 +30,13 @@ void ATuto_PassageTransitionVolume::StartLocalPassageFade(
 	ULocalPlayerPostProcessSubsystem* PP = Player ? Player->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr;
 	if (!PP) return;
 	LocalPassageController = Controller;
+	Controller->LocalPassageTransitionVolume = this;
 	LocalPassagePawn = Controller->GetPawn();
 	PassagePostProcessSubsystem = PP;
 	LocalPassageId = InExecutionId;
 	LocalPassageTiming = Timing;
 	bPassageCoveredSent = false;
+	bPassageRevealed = false;
 	Controller->SetIgnoreMoveInput(true);
 	Controller->SetIgnoreLookInput(true);
 	bPassageInputLocked = true;
@@ -89,10 +87,22 @@ void ATuto_PassageTransitionVolume::PollPassageArrival()
 	GetWorldTimerManager().ClearTimer(PassageArrivalTimer);
 	if (ULocalPlayerPostProcessSubsystem* PP = PassagePostProcessSubsystem.Get())
 	{
-		PassageRevealedHandle = PP->OnScreenBlackoutRevealed.AddUObject(this, &ThisClass::ClearLocalPassageFade);
+		PassageRevealedHandle = PP->OnScreenBlackoutRevealed.AddUObject(this, &ThisClass::HandlePassageRevealed);
 		PP->StartScreenBlackoutReveal(LocalPassageTiming.FadeInDuration);
 	}
 	else ClearLocalPassageFade();
+}
+
+void ATuto_PassageTransitionVolume::HandlePassageRevealed()
+{
+	if (!LocalPassageId.IsValid()) return;
+	const FGuid RestoredId = LocalPassageId;
+	AFirstPersonPlayerController* Controller = LocalPassageController.Get();
+	APawn* Participant = LocalPassagePawn.Get();
+	bPassageRevealed = true;
+	ClearLocalPassageFade();
+	// Listen Host의 ACK는 즉시 서버로 재진입한다. 입력 잠금을 먼저 반납한 뒤 완료를 알린다.
+	if (Controller) Controller->ServerNotifyPresentationRestored(RestoredId, Participant);
 }
 
 void ATuto_PassageTransitionVolume::CancelLocalPassage(
@@ -112,7 +122,7 @@ void ATuto_PassageTransitionVolume::ClearLocalPassageFade()
 	{
 		PP->OnScreenBlackoutCovered.Remove(PassageCoveredHandle);
 		PP->OnScreenBlackoutRevealed.Remove(PassageRevealedHandle);
-		if (bWasActive) PP->StartScreenBlackoutReveal(LocalPassageTiming.CleanupRevealDuration);
+		if (bWasActive && !bPassageRevealed) PP->StartScreenBlackoutReveal(LocalPassageTiming.CleanupRevealDuration);
 	}
 	PassageCoveredHandle.Reset();
 	PassageRevealedHandle.Reset();
@@ -126,6 +136,8 @@ void ATuto_PassageTransitionVolume::ClearLocalPassageFade()
 	}
 	if (AFirstPersonPlayerController* Controller = LocalPassageController.Get())
 	{
+		if (Controller->LocalPassageTransitionVolume.Get() == this)
+			Controller->LocalPassageTransitionVolume.Reset();
 		Controller->OnPossessedPawnChanged.RemoveDynamic(this, &ThisClass::HandleLocalPawnChanged);
 		Controller->OnEndPlay.RemoveDynamic(this, &ThisClass::HandleLocalParticipantEndPlay);
 		if (bPassageInputLocked)
@@ -140,6 +152,13 @@ void ATuto_PassageTransitionVolume::ClearLocalPassageFade()
 	PassagePostProcessSubsystem.Reset();
 }
 
+void ATuto_PassageTransitionVolume::ResetLocalPassageForReload()
+{
+	// 새 로딩 화면을 설치하기 전에 구연출 콜백/입력만 반납한다. 뒤늦은 취소는 새 화면을 걷지 못한다.
+	bPassageRevealed = true;
+	ClearLocalPassageFade();
+}
+
 void ATuto_PassageTransitionVolume::HandleLocalPawnChanged(APawn* OldPawn, APawn* NewPawn)
 {
 	if (NewPawn != LocalPassagePawn.Get()) ClearLocalPassageFade();
@@ -147,16 +166,19 @@ void ATuto_PassageTransitionVolume::HandleLocalPawnChanged(APawn* OldPawn, APawn
 
 void ATuto_PassageTransitionVolume::HandleLocalParticipantEndPlay(AActor* Actor, EEndPlayReason::Type Reason)
 {
+	if (HasAuthority()) CancelTransition();
 	ClearLocalPassageFade();
 }
 
 void ATuto_PassageTransitionVolume::HandleLocalCharacterDeath()
 {
+	if (HasAuthority()) CancelTransition();
 	ClearLocalPassageFade();
 }
 
 void ATuto_PassageTransitionVolume::HandleLocalPawnInvalidated(AFirstPersonCharacter* Character)
 {
+	if (HasAuthority()) CancelTransition();
 	ClearLocalPassageFade();
 }
 
@@ -181,6 +203,20 @@ bool ATuto_PassageTransitionVolume::HandlePawnEntered(AOutlierPlayerState* Sourc
 	PartnerController = PartnerPC;
 	bShooterCovered = bPartnerCovered = false;
 	ExecutionId = FGuid::NewGuid();
+	// 먼저 서버에서 페어 보호를 획득한다. 한쪽 실패 시 취소가 이미 획득한 보호만 복구한다.
+	if (!ShooterPC->BeginPresentationProtection(ExecutionId, Shooter, PartnerPC)
+		|| !PartnerPC->BeginPresentationProtection(ExecutionId, Partner, ShooterPC))
+	{
+		CancelTransition();
+		return false;
+	}
+	// Pawn 교체/사망은 화면 ACK를 기다릴 수 없다. 서버도 같은 실행을 즉시 취소한다.
+	for (AFirstPersonCharacter* Participant : {static_cast<AFirstPersonCharacter*>(Shooter), static_cast<AFirstPersonCharacter*>(Partner)})
+	{
+		Participant->OnSuitTransitionParticipantInvalidated.AddUObject(this, &ThisClass::HandleLocalPawnInvalidated);
+		Participant->OnEndPlay.AddUniqueDynamic(this, &ThisClass::HandleLocalParticipantEndPlay);
+	}
+	Shooter->OnCharacterDeath.AddUniqueDynamic(this, &ThisClass::HandleLocalCharacterDeath);
 	FadeStartedAt = GetWorld()->GetTimeSeconds();
 	GetWorldTimerManager().SetTimer(TransitionTimeout, this, &ThisClass::CancelTransition, FMath::Max(7.0f, PassageTiming.FadeOutDuration + 2.0f), false);
 	ShooterPC->ClientStartPassageFade(this, ExecutionId, PassageTiming);
@@ -192,6 +228,11 @@ bool ATuto_PassageTransitionVolume::HandlePawnEntered(AOutlierPlayerState* Sourc
 void ATuto_PassageTransitionVolume::NotifyScreenCovered(AFirstPersonPlayerController* Controller, const FGuid& InExecutionId)
 {
 	if (!HasAuthority() || !IsValid(Controller) || bTransitionCommitted || !ExecutionId.IsValid() || ExecutionId != InExecutionId) return;
+	if (!Controller->IsPresentationProtectionCurrent(InExecutionId, Controller->GetPawn()))
+	{
+		CancelTransition();
+		return;
+	}
 	if (Controller == ShooterController.Get() && Controller->GetPawn() == PendingShooter.Get()) bShooterCovered = true;
 	else if (Controller == PartnerController.Get() && Controller->GetPawn() == PendingPartner.Get()) bPartnerCovered = true;
 	else return;
@@ -208,6 +249,8 @@ void ATuto_PassageTransitionVolume::FinishCoveredTransition()
 	if (!ExecutionId.IsValid() || !ShooterController.IsValid() || !PartnerController.IsValid()
 		|| !PendingSource.IsValid() || !PendingShooter.IsValid() || !PendingPartner.IsValid()
 		|| ShooterController->GetPawn() != PendingShooter.Get() || PartnerController->GetPawn() != PendingPartner.Get()
+		|| !ShooterController->IsPresentationProtectionCurrent(ExecutionId, PendingShooter.Get())
+		|| !PartnerController->IsPresentationProtectionCurrent(ExecutionId, PendingPartner.Get())
 		|| PendingSource->GetShooterCharacter() != PendingShooter.Get()
 		|| PendingSource->GetPartnerCharacter() != PendingPartner.Get() || !TeleportPair(PendingSource.Get()))
 	{
@@ -218,6 +261,8 @@ void ATuto_PassageTransitionVolume::FinishCoveredTransition()
 	bTransitionCommitted = true;
 	GetWorldTimerManager().ClearTimer(TransitionTimeout);
 	GetWorldTimerManager().ClearTimer(MinimumFadeTimer);
+	ShooterController->AwaitPresentationProtectionRestore(ExecutionId, PassageTiming.FadeInDuration);
+	PartnerController->AwaitPresentationProtectionRestore(ExecutionId, PassageTiming.FadeInDuration);
 	ShooterController->ClientRevealPassage(this, ExecutionId, PendingShooter->GetActorLocation());
 	PartnerController->ClientRevealPassage(this, ExecutionId, PendingPartner->GetActorLocation());
 }
@@ -228,10 +273,23 @@ void ATuto_PassageTransitionVolume::CancelTransition()
 	GetWorldTimerManager().ClearTimer(MinimumFadeTimer);
 	const FGuid OldId = ExecutionId;
 	ExecutionId.Invalidate();
+	for (APawn* Participant : {PendingShooter.Get(), PendingPartner.Get()})
+	{
+		if (!Participant) continue;
+		Participant->OnEndPlay.RemoveDynamic(this, &ThisClass::HandleLocalParticipantEndPlay);
+		if (AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(Participant))
+			Character->OnSuitTransitionParticipantInvalidated.RemoveAll(this);
+		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(Participant))
+			Shooter->OnCharacterDeath.RemoveDynamic(this, &ThisClass::HandleLocalCharacterDeath);
+	}
 	if (OldId.IsValid())
 	{
-		if (ShooterController.IsValid()) ShooterController->ClientClearPassageFade(this, OldId);
-		if (PartnerController.IsValid()) PartnerController->ClientClearPassageFade(this, OldId);
+		for (AFirstPersonPlayerController* Controller : { ShooterController.Get(), PartnerController.Get() })
+		{
+			if (!Controller) continue;
+			Controller->ClientClearPassageFade(this, OldId);
+			Controller->RecoverPresentationProtection(OldId, PassageTiming.CleanupRevealDuration);
+		}
 	}
 	PendingSource.Reset();
 	PendingShooter.Reset();

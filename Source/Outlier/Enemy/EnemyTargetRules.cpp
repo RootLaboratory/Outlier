@@ -1,6 +1,7 @@
 #include "Enemy/EnemyTargetRules.h"
 
 #include "Enemy/EnemyBase.h"
+#include "FirstPerson/FirstPersonCharacter.h"
 #include "Enemy/AutoTurret.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -29,9 +30,15 @@ namespace OutlierEnemyTargetRules
 		return ETargetPriority::Invalid;
 	}
 
+	bool IsPresentationProtected(const AActor* TargetActor)
+	{
+		const AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(TargetActor);
+		return IsValid(Character) && Character->IsPresentationProtected();
+	}
+
 	bool IsUnavailable(const AActor* TargetActor)
 	{
-		if (!IsValid(TargetActor))
+		if (!IsValid(TargetActor) || IsPresentationProtected(TargetActor))
 		{
 			return true;
 		}

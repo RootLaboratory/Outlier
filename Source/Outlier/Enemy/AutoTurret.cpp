@@ -2136,12 +2136,24 @@ void AAutoTurret::OnRep_HackingActive()
 	}
 }
 
-uint32 AAutoTurret::BeginTurretAttackExecution()
+uint32 AAutoTurret::BeginTurretAttackExecution(AActor* Target)
 {
 	if (!HasAuthority() || !IsCombatActive() || IsDead() || IsAIControlSuppressed()
 		|| HasActiveStunTag() || CombatState == EEnemyCombatState::Stun) return 0;
 	if (++TurretAttackExecution == 0) ++TurretAttackExecution;
+	TurretAttackExecutionTarget = Target;
 	return TurretAttackExecution;
+}
+
+void AAutoTurret::ForgetPresentationTarget(AActor* TargetActor)
+{
+	if (HasAuthority() && TurretAttackExecutionTarget.Get() == TargetActor)
+	{
+		// 보호가 다음 Task Tick 전에 끝나도 예전 고정 조준/Charge를 재개하지 않는다.
+		FinishTurretAttackExecution(TurretAttackExecution);
+		StopCurrentAttack();
+	}
+	Super::ForgetPresentationTarget(TargetActor);
 }
 
 bool AAutoTurret::IsTurretAttackExecutionCurrent(uint32 ExecutionId) const
@@ -2153,6 +2165,7 @@ void AAutoTurret::FinishTurretAttackExecution(uint32 ExecutionId)
 {
 	if (IsTurretAttackExecutionCurrent(ExecutionId))
 	{
+		TurretAttackExecutionTarget.Reset();
 		if (++TurretAttackExecution == 0) ++TurretAttackExecution;
 	}
 }

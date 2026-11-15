@@ -32,6 +32,8 @@
 #include "Room/RoomTagComponent.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "LocalPlayerUISubSystem.h"
+#include "Enemy/EnemyRoomSubsystem.h"
+#include "Network/OutlierArenaSubsystem.h"
 
 
 // Sets default values
@@ -148,6 +150,15 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 void AFirstPersonCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	if (HasAuthority())
+	{
+		PresentationEnemyRooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+		PresentationArena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+		if (PresentationArena.IsValid())
+		{
+			PresentationArena->OnArenaGameplayReloadStarted.AddUObject(this, &ThisClass::ClearPresentationProtection);
+		}
+	}
 	NormalizeInteractionSphereRanges();
 
 	GetWorldTimerManager().SetTimer(
@@ -172,6 +183,8 @@ void AFirstPersonCharacter::BeginPlay()
 
 void AFirstPersonCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ClearPresentationProtection(0);
+	if (PresentationArena.IsValid()) PresentationArena->OnArenaGameplayReloadStarted.RemoveAll(this);
 	GetWorldTimerManager().ClearTimer(InteractionTraceTimerHandle);
 	ClearInteractionDetection();
 	OnSuitTransitionParticipantInvalidated.Broadcast(this);
@@ -807,6 +820,83 @@ void AFirstPersonCharacter::CompleteDeferredInteraction(AActor* TargetActor, boo
 	}
 }
 
+bool AFirstPersonCharacter::AcquirePresentationProtection(UObject* ProtectionOwner, const FGuid& ExecutionId)
+{
+	if (!HasAuthority() || !IsValid(ProtectionOwner) || !ExecutionId.IsValid() || IsActorBeingDestroyed()) return false;
+	AActor* ActorOwner = Cast<AActor>(ProtectionOwner);
+	if (!ActorOwner || ActorOwner->GetWorld() != GetWorld() || ActorOwner->IsActorBeingDestroyed()) return false;
+	const uint32 Generation = PresentationArena.IsValid() ? PresentationArena->GetGameplayGeneration() : 0;
+	if (const FPresentationProtectionOwner* Existing = PresentationProtectionOwners.Find(ExecutionId))
+	{
+		return Existing->Owner.Get() == ProtectionOwner && Existing->Generation == Generation;
+	}
+	const bool bWasProtected = IsPresentationProtected();
+	PresentationProtectionOwners.Add(ExecutionId, {ProtectionOwner, Generation});
+	ActorOwner->OnEndPlay.AddUniqueDynamic(this, &ThisClass::HandlePresentationOwnerEndPlay);
+	// 상태를 먼저 게시한다. AI 정리 중 재진입하더라도 같은 대상을 재획득하지 못한다.
+	if (!bWasProtected && PresentationEnemyRooms.IsValid())
+	{
+		PresentationEnemyRooms->SetPresentationTargetProtected(this, true);
+	}
+	UE_LOG(LogTemp, Log, TEXT("[PresentationProtection] Acquire Pawn=%s Owner=%s Execution=%s Generation=%u Count=%d"),
+		*GetName(), *GetNameSafe(ProtectionOwner), *ExecutionId.ToString(), Generation, PresentationProtectionOwners.Num());
+	// 타깃 정리 delegate가 연출을 취소할 수도 있으므로 호출자에게 현재 소유권을 다시 확인해 준다.
+	const FPresentationProtectionOwner* Acquired = PresentationProtectionOwners.Find(ExecutionId);
+	return Acquired && Acquired->Owner.Get() == ProtectionOwner && Acquired->Generation == Generation;
+}
+
+void AFirstPersonCharacter::ReleasePresentationProtection(UObject* ProtectionOwner, const FGuid& ExecutionId)
+{
+	if (!HasAuthority()) return;
+	const FPresentationProtectionOwner* Existing = PresentationProtectionOwners.Find(ExecutionId);
+	if (!Existing || Existing->Owner.Get() != ProtectionOwner) return;
+	const uint32 Generation = Existing->Generation;
+	PresentationProtectionOwners.Remove(ExecutionId);
+	UE_LOG(LogTemp, Log, TEXT("[PresentationProtection] Release Pawn=%s Owner=%s Execution=%s Generation=%u Count=%d"),
+		*GetName(), *GetNameSafe(ProtectionOwner), *ExecutionId.ToString(), Generation, PresentationProtectionOwners.Num());
+	// 한 소유자가 여러 연출을 진행할 수 있으므로 마지막 실행을 놓을 때만 구독을 푼다.
+	bool bOwnerStillActive = false;
+	for (const auto& Entry : PresentationProtectionOwners)
+	{
+		if (Entry.Value.Owner.Get() == ProtectionOwner) { bOwnerStillActive = true; break; }
+	}
+	if (!bOwnerStillActive)
+	{
+		if (AActor* ActorOwner = Cast<AActor>(ProtectionOwner))
+			ActorOwner->OnEndPlay.RemoveDynamic(this, &ThisClass::HandlePresentationOwnerEndPlay);
+	}
+	if (!IsPresentationProtected() && PresentationEnemyRooms.IsValid())
+	{
+		PresentationEnemyRooms->SetPresentationTargetProtected(this, false);
+	}
+}
+
+void AFirstPersonCharacter::HandlePresentationOwnerEndPlay(AActor* ProtectionOwner, EEndPlayReason::Type Reason)
+{
+	TArray<FGuid> ReleasedIds;
+	for (const auto& Entry : PresentationProtectionOwners)
+	{
+		if (Entry.Value.Owner.Get() == ProtectionOwner) ReleasedIds.Add(Entry.Key);
+	}
+	for (const FGuid& Id : ReleasedIds) ReleasePresentationProtection(ProtectionOwner, Id);
+}
+
+void AFirstPersonCharacter::ClearPresentationProtection(uint32 Generation)
+{
+	const bool bWasProtected = IsPresentationProtected();
+	if (bWasProtected)
+		UE_LOG(LogTemp, Log, TEXT("[PresentationProtection] Clear Pawn=%s Generation=%u Count=%d"),
+			*GetName(), Generation, PresentationProtectionOwners.Num());
+	for (const auto& Entry : PresentationProtectionOwners)
+	{
+		if (AActor* ProtectionOwner = Cast<AActor>(Entry.Value.Owner.Get()))
+			ProtectionOwner->OnEndPlay.RemoveDynamic(this, &ThisClass::HandlePresentationOwnerEndPlay);
+	}
+	PresentationProtectionOwners.Reset();
+	if (bWasProtected && PresentationEnemyRooms.IsValid() && !IsActorBeingDestroyed())
+		PresentationEnemyRooms->SetPresentationTargetProtected(this, false);
+}
+
 bool AFirstPersonCharacter::AcquireSuitTransitionBlock(const FGuid& TransitionId)
 {
 	if (!HasAuthority() || !TransitionId.IsValid() || IsSuitTransitionBlocked())
@@ -895,6 +985,7 @@ void AFirstPersonCharacter::PrepareForSuitTransition()
 
 void AFirstPersonCharacter::UnPossessed()
 {
+	ClearPresentationProtection(0);
 	ClearInteractionDetection();
 	OnSuitTransitionParticipantInvalidated.Broadcast(this);
 	Super::UnPossessed();

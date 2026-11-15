@@ -1650,6 +1650,7 @@ void AFirstPersonPlayerController::Destroyed()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ClearPresentationProtection();
 	if (ULocalPlayer* Local = GetLocalPlayer(); Local && Local->PlayerController == this)
 	{
 		if (auto* Cinematic = Local->GetSubsystem<UOutlierCinematicSubsystem>())
@@ -1718,6 +1719,7 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 
 void AFirstPersonPlayerController::SetPawn(APawn* InPawn)
 {
+	if (HasAuthority() && GetPawn() != InPawn) ClearPresentationProtection();
 	if (LocalElevatorExecutionId.IsValid() && LocalElevatorFadePawn.Get() != InPawn)
 	{
 		ClearLocalElevatorFade();
@@ -2499,6 +2501,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	}
 
 	// 오래된 리로드 요청은 위에서 거부한다. 유효한 리로드가 시작될 때만 이전 슈트 연출 콜백을 끊는다.
+	if (ATuto_PassageTransitionVolume* Passage = LocalPassageTransitionVolume.Get()) Passage->ResetLocalPassageForReload();
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	ClearClientArenaContentWait();

@@ -104,6 +104,10 @@ struct FProbe
 	int32 PreviousPoolLease = INDEX_NONE;
 	bool bPoolReturned = false, bPoolReused = false;
 	int32 PoolReacquireShots = 0;
+	FGuid PresentationId = FGuid::NewGuid(), OverlappingPresentationId = FGuid::NewGuid();
+	bool bPresentationAcquired = false, bPresentationOverlapRetained = false, bPresentationReleased = false;
+	int32 ProtectedSamples = 0, ProtectedTargetSamples = 0, ProtectedShots = 0, PresentationReacquireShots = 0;
+	int32 ProtectedStaleSearches = 0, ProtectedSearchChecks = 0;
 	double FirstAttemptShotAt = -1.0;
 	FString RunRoot() const { return FPaths::GetPath(Output); }
 	bool IsSearchScenario() const { return Scenario == TEXT("Search"); }
@@ -470,6 +474,13 @@ struct FProbe
 		{
 			bScenarioPassed = bPoolReturned && bPoolReused && PoolReacquireShots > 0 && ShotsWhileInactive == 0;
 		}
+		else if (Scenario == TEXT("Presentation"))
+		{
+			bScenarioPassed = StageShots[0] > 0 && bPresentationAcquired && bPresentationOverlapRetained
+				&& bPresentationReleased && ProtectedSamples > 20 && ProtectedTargetSamples == 0
+				&& ProtectedShots == 0 && PresentationReacquireShots > 0
+				&& ProtectedSearchChecks > 0 && ProtectedStaleSearches == 0;
+		}
 		const bool bPassed = bComplete && bRolesVerified && Samples >= 20 && MaxDrones == ExpectedDrones
 			&& InvalidShotPaths == 0 && InvalidShots == 0 && InvalidAttemptShots == 0 && ShotsWhileHidden == 0 && ShotsWhileInactive == 0 &&
 			(bServer ? bScenarioPassed
@@ -521,6 +532,19 @@ struct FProbe
 		Json->SetBoolField(TEXT("PoolReturned"), bPoolReturned);
 		Json->SetBoolField(TEXT("PoolSameActorReused"), bPoolReused);
 		Json->SetNumberField(TEXT("PoolReacquireShots"), PoolReacquireShots);
+		if (Scenario == TEXT("Presentation"))
+		{
+			Json->SetBoolField(TEXT("PresentationAcquired"), bPresentationAcquired);
+			Json->SetBoolField(TEXT("PresentationOverlapRetained"), bPresentationOverlapRetained);
+			Json->SetBoolField(TEXT("PresentationReleased"), bPresentationReleased);
+			Json->SetNumberField(TEXT("ProtectedSamples"), ProtectedSamples);
+			Json->SetNumberField(TEXT("ProtectedTargetSamples"), ProtectedTargetSamples);
+			Json->SetNumberField(TEXT("ProtectedShots"), ProtectedShots);
+			Json->SetNumberField(TEXT("PresentationReacquireShots"), PresentationReacquireShots);
+			Json->SetNumberField(TEXT("ProtectedSearchChecks"), ProtectedSearchChecks);
+			Json->SetNumberField(TEXT("ProtectedStaleSearches"), ProtectedStaleSearches);
+			Json->SetStringField(TEXT("PresentationScope"), TEXT("Server common protection ownership/overlap with live natural AI and replicated weapon presentation. Does not execute a Level2 sequence, blackout/input recovery handshake, or infer client protection from server-only state."));
+		}
 		Json->SetNumberField(TEXT("Samples"), Samples);
 		Json->SetNumberField(TEXT("Frames"), Frames);
 		Json->SetNumberField(TEXT("Shots"), Shots);
@@ -665,7 +689,46 @@ struct FProbe
 			if (NewStage != Stage && Target.IsValid() && !Scenario.StartsWith(TEXT("Crowd")))
 			{
 				Stage = NewStage;
-				if (Scenario == TEXT("Bypass") || IsAttemptScenario())
+				if (Scenario == TEXT("Presentation"))
+				{
+					// 이미 사격 중인 실제 AI 앞에서 두 참가자를 보호한다. 표적/인지/Tree는 직접 고치지 않는다.
+					AFirstPersonCharacter* Participants[] = {Target.Get(), Partner.Get()};
+					if (Stage == 1)
+					{
+						bPresentationAcquired = true;
+						for (AFirstPersonCharacter* Participant : Participants)
+							bPresentationAcquired &= Participant->AcquirePresentationProtection(Participant->GetController(), PresentationId);
+						// 실제 전투 뒤 보호가 옛 좌표까지 폐기했는지 검사한다. 정상 경로에서는 수색을 시작하지 않는다.
+						for (const TWeakObjectPtr<AEnemyBase>& Drone : Drones)
+						{
+							if (!Drone.IsValid()) continue;
+							++ProtectedSearchChecks;
+							ProtectedStaleSearches += Drone->BeginSearchEpisode();
+						}
+						Partner->TeleportTo(FVector(600, 150, 220), FRotator::ZeroRotator, false, true);
+					}
+					else if (Stage == 2)
+					{
+						// 첫 연출을 끝내도 두 번째 실행이 남아 있으면 감지/사격이 재개되지 않아야 한다.
+						bPresentationOverlapRetained = true;
+						for (AFirstPersonCharacter* Participant : Participants)
+						{
+							bPresentationOverlapRetained &= Participant->AcquirePresentationProtection(Participant->GetController(), OverlappingPresentationId);
+							Participant->ReleasePresentationProtection(Participant->GetController(), PresentationId);
+							bPresentationOverlapRetained &= Participant->IsPresentationProtected();
+						}
+					}
+					else if (Stage == 3)
+					{
+						bPresentationReleased = true;
+						for (AFirstPersonCharacter* Participant : Participants)
+						{
+							Participant->ReleasePresentationProtection(Participant->GetController(), OverlappingPresentationId);
+							bPresentationReleased &= !Participant->IsPresentationProtected();
+						}
+					}
+				}
+				else if (Scenario == TEXT("Bypass") || IsAttemptScenario())
 				{
 					if (Stage == 1 && !Drones.IsEmpty() && Drones[0].IsValid())
 					{
@@ -966,6 +1029,17 @@ struct FProbe
 			const FVector P = Drone->GetActorLocation();
 			if (Role == TEXT("Server"))
 			{
+				if (Scenario == TEXT("Presentation") && Target->IsPresentationProtected() && Partner->IsPresentationProtected())
+				{
+					++ProtectedSamples;
+					const AEnemyAIController* AI = Cast<AEnemyAIController>(Drone->GetController());
+					UEnemyRoomSubsystem* Rooms = World->GetSubsystem<UEnemyRoomSubsystem>();
+					FEnemyRoomTargetObservationSnapshot Observation;
+					ProtectedTargetSamples += Drone->GetTrackedTarget() == Target.Get() || Drone->GetTrackedTarget() == Partner.Get()
+						|| (AI && (AI->IsTargetDirectlyVisible(Target.Get()) || AI->IsTargetDirectlyVisible(Partner.Get())))
+						|| (Rooms && (Rooms->TryGetRoomTargetObservation(Drone, Target.Get(), Observation)
+							|| Rooms->TryGetRoomTargetObservation(Drone, Partner.Get(), Observation)));
+				}
 				const FEnemySearchEpisode& Episode = Drone->GetSearchEpisode();
 				GuardSamples += Episode.bActive && Episode.bLocalGuard && Episode.InvestigationSerial == 0;
 				if (Episode.bActive && Episode.bLocalGuard && Episode.InvestigationSerial == 0 && FirstGuardAt < 0.0)
@@ -1149,6 +1223,12 @@ struct FProbe
 			return;
 		}
 		++Shots;
+		if (Scenario == TEXT("Presentation"))
+		{
+			ProtectedShots += Target.IsValid() && Partner.IsValid()
+				&& Target->IsPresentationProtected() && Partner->IsPresentationProtected();
+			PresentationReacquireShots += bPresentationReleased;
+		}
 		PartnerShots += Owner->GetTrackedTarget() == Partner.Get() && Partner.IsValid();
 		ReacquireShots += Scenario == TEXT("Search") && Stage >= 6;
 		if (Stage >= 0 && Stage < UE_ARRAY_COUNT(StageShots))

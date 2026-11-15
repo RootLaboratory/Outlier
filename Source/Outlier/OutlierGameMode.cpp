@@ -2255,6 +2255,8 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	InitialIntroPartner = Cast<AFirstPersonPlayerController>(NewPartnerPC);
 	if (bPendingInitialIntro)
 	{
+		// 기존 화면 준비 순서를 유지한다. Possess가 로딩 암전을 풀기 전에 인트로 대기를 알린다.
+		// 이 RPC는 준비 대기만 시작하며, 실제 재생은 양쪽 Pawn의 보호 획득 뒤에 허용한다.
 		if (InitialIntroShooter.IsValid()) InitialIntroShooter->ClientPrepareArenaIntro(InitialIntroId);
 		if (InitialIntroPartner.IsValid()) InitialIntroPartner->ClientPrepareArenaIntro(InitialIntroId);
 	}
