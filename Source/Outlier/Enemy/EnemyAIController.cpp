@@ -293,7 +293,8 @@ void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)
 	const bool bHasVisibleTarget = IsValid(PreferredTarget);
 	UpdateVisibleTarget(Enemy, PreferredTarget);
 
-	if (bHasVisibleTarget)
+	// 감지 재평가는 직접 시야를 먼저 확정한다. 해킹 아군은 그 시야로 싸우되 적 방에는 보고하지 않는다.
+	if (bHasVisibleTarget && Enemy->CanUseRoomTargetSharing())
 	{
 		StartSharedTargetReporting();
 		ReportSharedTargetContact(Enemy, PreferredTarget);
@@ -873,15 +874,16 @@ void AEnemyAIController::ReportSharedTargetContact(
 	AEnemyBase* Enemy,
 	AActor* TargetActor)
 {
-	if (!Enemy
-		|| !Enemy->CanUseRoomTargetSharing()
-		|| !IsValid(TargetActor))
+	if (!Enemy || !Enemy->CanUseRoomTargetSharing())
+	{
+		// 공유 자격 상실은 관측 상실이 아니다. 이전 보고만 정리하고 자신의 직접 시야는 보존한다.
+		StopSharedTargetReporting(true);
+		return;
+	}
+	if (!IsValid(TargetActor))
 	{
 		StopSharedTargetReporting(true);
-		if (Enemy)
-		{
-			Enemy->SetPlayerCurrentlyVisible(false);
-		}
+		Enemy->SetPlayerCurrentlyVisible(false);
 		return;
 	}
 

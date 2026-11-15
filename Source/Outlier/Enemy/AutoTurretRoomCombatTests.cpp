@@ -2,12 +2,15 @@
 
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Misc/AutomationTest.h"
+#include "Network/OutlierArenaSubsystem.h"
+#include "OutlierArenaSettings.h"
 #include "NativeGameplayTags.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -173,6 +176,152 @@ bool FAutoTurretRoomRifleAttackTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Accepted allied attack actually consumes rifle ammunition"), Weapon->GetCurrentAmmo() < AmmoBefore);
 	Weapon->CancelEnemyAttackCycle();
 	TestTrue(TEXT("Allied firing preserves the enemy room block"), Fixture.Rooms->IsEnemyAttackBlocked(Enemy));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FAutoTurretRoomNotificationIsolationTest,
+	"Outlier.Enemy.Turret.RoomCombat.NotificationIsolation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FAutoTurretRoomNotificationIsolationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Path : { TEXT("Broadcast"), TEXT("Registration") })
+	{
+		for (const TCHAR* State : { TEXT("Combat"), TEXT("Alert"), TEXT("Returning") })
+		{
+			const FString Case = FString::Printf(TEXT("%s.%s"), Path, State);
+			Names.Add(Case);
+			Commands.Add(Case);
+		}
+	}
+}
+
+bool FAutoTurretRoomNotificationIsolationTest::RunTest(const FString& Parameters)
+{
+	FTurretRoomWorld Fixture;
+	// 실제 전파의 Arena 검사를 통과시킨다. 설정은 저장하지 않고 모든 반환 경로에서 복구한다.
+	TGuardValue<TSoftObjectPtr<UWorld>> ArenaMap(GetMutableDefault<UOutlierArenaSettings>()->ArenaLevel,
+		TSoftObjectPtr<UWorld>(Fixture.World));
+	UEnemyRoomSubsystem* EnemyRooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	UOutlierArenaSubsystem* Arena = Fixture.World->GetSubsystem<UOutlierArenaSubsystem>();
+	if (!TestNotNull(TEXT("Enemy room subsystem"), EnemyRooms)
+		|| !TestNotNull(TEXT("Arena subsystem"), Arena)
+		|| !TestTrue(TEXT("Actual notification has a loaded Arena"), Arena->GetArenaLoadedLevel() == Fixture.World->PersistentLevel)) return false;
+	const bool bFiringCase = Parameters.EndsWith(TEXT("Combat"));
+	UClass* AlliedClass = bFiringCase ? LoadClass<AAutoTurret>(nullptr,
+		TEXT("/Game/Blueprints/Enemy/Turret/BP_RifleTurret.BP_RifleTurret_C")) : AAutoTurret::StaticClass();
+	if (!TestNotNull(TEXT("Allied turret class"), AlliedClass)) return false;
+	AAutoTurret* Allied = Fixture.AddTurret(AlliedClass, FVector::ZeroVector);
+	AAutoTurret* Enemy = Fixture.AddTurret(AAutoTurret::StaticClass(), FVector(0.f, 1000.f, 0.f));
+	if (!TestNotNull(TEXT("Allied turret"), Allied) || !TestNotNull(TEXT("Enemy control"), Enemy)) return false;
+	Fixture.Hack(Allied);
+	if (!TestTrue(TEXT("Real hack commits the allied team"), Allied->IsHackedToPlayerTeam())) return false;
+	EnemyRooms->RegisterEnemy(Allied);
+	EnemyRooms->RegisterEnemy(Enemy);
+	// 실제 Room 승인을 먼저 완료한다. NotifyRoomCombat의 조기 실패를 수신 차단으로 오인하지 않는다.
+	if (!TestTrue(TEXT("Enemy encounter starts through its existing approval path"), Fixture.Rooms->NotifyRoomCombatStarted(TurretRoom))) return false;
+	const FVector PlayerLocation(4000.f, 2000.f, 0.f);
+	const FVector ObservedEnemyLocation(1200.f, 0.f, 100.f);
+	EEnemyCombatState InitialState = EEnemyCombatState::Combat;
+	if (Parameters.EndsWith(TEXT("Alert"))) InitialState = EEnemyCombatState::Alert;
+	if (Parameters.EndsWith(TEXT("Returning"))) InitialState = EEnemyCombatState::Returning;
+	Allied->EnterCombatFromRoom(ObservedEnemyLocation, false);
+	// StateTree를 실행하지 않는 fixture에서 수신 직전 상태만 준비한다. 검증 대상은 실제 알림/등록 경로다.
+	FEnumProperty* CombatState = FindFProperty<FEnumProperty>(AEnemyBase::StaticClass(), TEXT("CombatState"));
+	CombatState->GetUnderlyingProperty()->SetIntPropertyValue(CombatState->ContainerPtrToValuePtr<void>(Allied),
+		static_cast<int64>(InitialState));
+	FindFProperty<FBoolProperty>(AEnemyBase::StaticClass(), TEXT("bInCombat"))->SetPropertyValue_InContainer(Allied,
+		InitialState == EEnemyCombatState::Combat);
+	ARangedWeaponBase* Weapon = nullptr;
+	if (bFiringCase)
+	{
+		UClass* WeaponClass = LoadClass<ARangedWeaponBase>(nullptr,
+			TEXT("/Game/Blueprints/Enemy/Turret/Weapon/BP_TurretRifle.BP_TurretRifle_C"));
+		if (!TestNotNull(TEXT("Actual turret rifle class"), WeaponClass)) return false;
+		AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+		Controller->Possess(Allied);
+		Weapon = Fixture.World->SpawnActor<ARangedWeaponBase>(WeaponClass);
+		if (!TestNotNull(TEXT("Actual turret rifle"), Weapon)) return false;
+		FindFProperty<FObjectPropertyBase>(AEnemyBase::StaticClass(), TEXT("CurrentWeapon"))
+			->SetObjectPropertyValue_InContainer(Allied, Weapon);
+		Weapon->OnEquipped(Allied);
+		FindFProperty<FBoolProperty>(ARangedWeaponBase::StaticClass(), TEXT("bInfiniteAmmo"))
+			->SetPropertyValue_InContainer(Weapon, false);
+		const int32 AmmoBefore = Weapon->GetCurrentAmmo();
+		if (!TestTrue(TEXT("Rifle has ammunition"), AmmoBefore > 0)
+			|| !TestTrue(TEXT("Allied rifle begins its actual attack"),
+				Allied->StartAttackLocation(Allied->GetPawnViewLocation() + Allied->GetViewRotation().Vector() * 1200.f))
+			|| !TestTrue(TEXT("Allied rifle fires before notification"), Weapon->GetCurrentAmmo() < AmmoBefore)) return false;
+	}
+	const float RemainingBefore = Allied->GetHackEffectRemainingTime();
+	if (Parameters.StartsWith(TEXT("Registration")))
+	{
+		// 방의 기존 전투 위치를 준비한 뒤 공개 등록 API를 통해 실제 동기화를 실행한다.
+		EnemyRooms->SetActiveRoomTargetForTesting(TurretRoom, PlayerLocation, false);
+		EnemyRooms->RegisterEnemy(Allied);
+		EnemyRooms->RegisterEnemy(Enemy);
+	}
+	else
+	{
+		if (!TestTrue(TEXT("Actual room notification succeeds"), EnemyRooms->NotifyRoomCombat(TurretRoom, PlayerLocation, nullptr))) return false;
+	}
+	TestEqual(TEXT("Enemy control receives Combat"), Enemy->GetCombatState(), EEnemyCombatState::Combat);
+	TestEqual(TEXT("Enemy control receives the player location"), Enemy->GetLastKnownPlayerLocation(), PlayerLocation);
+	TestEqual(TEXT("Allied turret keeps its own behavior state"), Allied->GetCombatState(), InitialState);
+	TestEqual(TEXT("Allied turret keeps its own observed enemy location"), Allied->GetLastKnownPlayerLocation(), ObservedEnemyLocation);
+	TestFalse(TEXT("Allied turret receives no enemy shared contact"), Allied->HasSharedTargetContact());
+	TestEqual(TEXT("Room notification does not restart the hack lifetime"), Allied->GetHackEffectRemainingTime(), RemainingBefore);
+	TestFalse(TEXT("Allied registration still bypasses the enemy attack gate"), Fixture.Rooms->IsEnemyAttackBlocked(Allied));
+	TArray<AEnemyBase*> RegisteredCombatants;
+	EnemyRooms->GetActiveCombatEnemies(RegisteredCombatants);
+	if (bFiringCase)
+	{
+		TestTrue(TEXT("Allied turret remains registered for detection and cleanup"), RegisteredCombatants.Contains(Allied));
+		TestTrue(TEXT("Room notification preserves the actual weapon attack"), Weapon->IsAttacking());
+		TestEqual(TEXT("Room notification preserves the firing phase"), Allied->GetAttackPhase(), EEnemyAttackPhase::Firing);
+		Weapon->CancelEnemyAttackCycle();
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutoTurretRoomSharedContactIsolationTest,
+	"Outlier.Enemy.Turret.RoomCombat.SharedContactIsolation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAutoTurretRoomSharedContactIsolationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FTurretRoomWorld Fixture;
+	TGuardValue<TSoftObjectPtr<UWorld>> ArenaMap(GetMutableDefault<UOutlierArenaSettings>()->ArenaLevel,
+		TSoftObjectPtr<UWorld>(Fixture.World));
+	UEnemyRoomSubsystem* EnemyRooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	AAutoTurret* Allied = Fixture.AddTurret(AAutoTurret::StaticClass(), FVector::ZeroVector);
+	AAutoTurret* Observer = Fixture.AddTurret(AAutoTurret::StaticClass(), FVector(0.f, 1000.f, 0.f));
+	if (!TestNotNull(TEXT("Enemy room subsystem"), EnemyRooms)
+		|| !TestNotNull(TEXT("Turret to hack"), Allied) || !TestNotNull(TEXT("Enemy observer"), Observer)) return false;
+	EnemyRooms->RegisterEnemy(Allied);
+	EnemyRooms->RegisterEnemy(Observer);
+	const FVector PlayerLocation(4000.f, 2000.f, 0.f);
+	const FVector ObservedEnemyLocation(1200.f, 0.f, 100.f);
+	Allied->EnterCombatFromRoom(PlayerLocation, false);
+	Observer->EnterCombatFromRoom(PlayerLocation, false);
+	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	// Observer 보고와 상실을 실제 전파한다. 해킹 전 공유 정리가 수신 차단에 막히지 않는지도 검사한다.
+	EnemyRooms->ReportRoomTargetContact(Observer, Target, PlayerLocation);
+	if (!TestTrue(TEXT("Enemy turret receives shared contact before hacking"), Allied->HasSharedTargetContact())) return false;
+	Fixture.Hack(Allied);
+	if (!TestTrue(TEXT("Actual hack changes team"), Allied->IsHackedToPlayerTeam())) return false;
+	TestFalse(TEXT("Hacking still clears the previous team's shared contact"), Allied->HasSharedTargetContact());
+	Allied->EnterCombatFromRoom(ObservedEnemyLocation, false);
+	EnemyRooms->ReportRoomTargetContact(Observer, Target, PlayerLocation + FVector(200.f, 0.f, 0.f));
+	TestTrue(TEXT("Enemy control receives new shared contact"), Observer->HasSharedTargetContact());
+	TestFalse(TEXT("Allied turret ignores new enemy shared contact"), Allied->HasSharedTargetContact());
+	TestEqual(TEXT("Shared contact preserves allied observation"), Allied->GetLastKnownPlayerLocation(), ObservedEnemyLocation);
+	EnemyRooms->RemoveRoomTargetObserver(Observer);
+	TestFalse(TEXT("Enemy control receives shared contact loss"), Observer->HasSharedTargetContact());
+	TestFalse(TEXT("Allied turret has no enemy shared contact after loss"), Allied->HasSharedTargetContact());
+	TestEqual(TEXT("Shared contact loss preserves allied observation"), Allied->GetLastKnownPlayerLocation(), ObservedEnemyLocation);
+	TestEqual(TEXT("Shared contact loss preserves allied behavior"), Allied->GetCombatState(), EEnemyCombatState::Combat);
 	return true;
 }
 

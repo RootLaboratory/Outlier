@@ -242,7 +242,8 @@ bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 		{
 			AEnemyBase* Enemy = EnemyPtr.Get();
-			if (!IsValid(Enemy) || Enemy == ExcludeEnemy)
+			// 등록은 팀 변경 후의 재감지/정리에도 필요하다. 적 방 전투 수신 자격만 따로 검사한다.
+			if (!IsValid(Enemy) || Enemy == ExcludeEnemy || !Enemy->CanUseRoomTargetSharing())
 			{
 				continue;
 			}
@@ -251,8 +252,7 @@ bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 			{
 				// 대기/등장/사망 연출 중인 풀 개체는 완료 콜백에서 따로 동기화한다.
 				if (Enemy->GetEnemyPoolState() != EEnemyPoolState::CombatActive
-					|| Enemy->IsDead() || Enemy->IsAIControlSuppressed()
-					|| !Enemy->CanUseRoomTargetSharing())
+					|| Enemy->IsDead() || Enemy->IsAIControlSuppressed())
 				{
 					continue;
 				}
@@ -698,7 +698,8 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetLost(FGameplayTag RoomTag)
 	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 	{
 		AEnemyBase* Enemy = EnemyPtr.Get();
-		if (!IsValid(Enemy))
+		// 획득과 상실의 수신 대상을 맞춘다. 해킹/리셋의 직접 공유 정리 호출은 그대로 둔다.
+		if (!IsValid(Enemy) || !Enemy->CanUseRoomTargetSharing())
 		{
 			continue;
 		}
@@ -839,7 +840,8 @@ bool UEnemyRoomSubsystem::TrySelectRoomTarget(
 
 void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 {
-	if (!IsValid(Enemy) || !Enemy->HasAuthority())
+	// 재등록도 방 전파와 같은 자격을 따른다. 아군의 자체 관측 위치를 적 방 좌표로 덮어쓰지 않는다.
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !Enemy->CanUseRoomTargetSharing())
 	{
 		return;
 	}
