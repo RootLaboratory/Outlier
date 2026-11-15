@@ -5,6 +5,7 @@
 #include "EnhancedInputDeveloperSettings.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Event/OutlierEventSubsystem.h"
@@ -26,6 +27,8 @@
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/CinematicHintkey.h"
 #include "UI/UILayerGameplayTags.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Styling/CoreStyle.h"
 
 UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_ArenaIntro, "Cinematic.Arena.Intro");
 
@@ -58,7 +61,53 @@ void UOutlierCinematicSubsystem::Deinitialize()
 
 void UOutlierCinematicSubsystem::HandleWorldCleanup(UWorld* World, bool, bool)
 {
-	if (BoundWorld.Get() == World) ClearLevelCinematics();
+	// 외부 서버 이동에서는 로비 월드만 끝나고 LocalPlayer/뷰포트는 남는다.
+	// 로비 시퀀스는 정리하되 화면 가림은 새 서버의 인트로 또는 Possess까지 넘긴다.
+	const bool bPreserveBlackout = bInitialIntroBlackoutAcrossTravel && HasInitialIntroBlackout();
+	if (BoundWorld.Get() == World) ClearLevelCinematics(bPreserveBlackout);
+	if (!bPreserveBlackout && InitialIntroBlackoutWorld.Get() == World) EndInitialIntroBlackout();
+}
+
+void UOutlierCinematicSubsystem::BeginInitialIntroBlackout(bool bAcrossWorldTravel)
+{
+	if (HasInitialIntroBlackout())
+	{
+		bInitialIntroBlackoutAcrossTravel |= bAcrossWorldTravel;
+		return;
+	}
+	EndInitialIntroBlackout();
+	ULocalPlayer* Local = GetLocalPlayer();
+	UGameViewportClient* Viewport = Local ? Local->ViewportClient : nullptr;
+	if (!Viewport) return;
+	// 카메라 Fade와 UI 레이어는 Controller 교체 시 정리될 수 있다. LocalPlayer의
+	// 뷰포트에 직접 붙여 새 카메라와 인트로가 준비될 때까지 화면을 계속 가린다.
+	InitialIntroBlackoutWidget = SNew(SBorder)
+		.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+		.BorderBackgroundColor(FLinearColor::Black)
+		.Visibility(EVisibility::HitTestInvisible);
+	InitialIntroBlackoutViewport = Viewport;
+	InitialIntroBlackoutWorld = GetWorld();
+	bInitialIntroBlackoutAcrossTravel = bAcrossWorldTravel;
+	Viewport->AddViewportWidgetForPlayer(Local, InitialIntroBlackoutWidget.ToSharedRef(), 10000);
+}
+
+bool UOutlierCinematicSubsystem::HasInitialIntroBlackout() const
+{
+	return InitialIntroBlackoutWidget.IsValid()
+		&& InitialIntroBlackoutWidget->GetParentWidget().IsValid();
+}
+
+void UOutlierCinematicSubsystem::EndInitialIntroBlackout()
+{
+	if (InitialIntroBlackoutWidget.IsValid())
+	{
+		if (UGameViewportClient* Viewport = InitialIntroBlackoutViewport.Get())
+			Viewport->RemoveViewportWidgetForPlayer(GetLocalPlayer(), InitialIntroBlackoutWidget.ToSharedRef());
+	}
+	InitialIntroBlackoutWidget.Reset();
+	InitialIntroBlackoutViewport.Reset();
+	InitialIntroBlackoutWorld.Reset();
+	bInitialIntroBlackoutAcrossTravel = false;
 }
 
 EOutlierCinematicRegistration UOutlierCinematicSubsystem::BindLevelCinematics(FGameplayTag Tag)
@@ -155,6 +204,7 @@ void UOutlierCinematicSubsystem::PrepareInitialIntro(
 	if (!Controller || !Controller->IsLocalController() || !IntroId.IsValid()) return;
 	if (ActiveIntroId == IntroId) return;
 	ClearLevelCinematics();
+	BeginInitialIntroBlackout();
 	OwningController = Controller;
 	BoundWorld = Controller->GetWorld();
 	ActiveIntroId = IntroId;
@@ -211,6 +261,9 @@ bool UOutlierCinematicSubsystem::TickCinematic(float DeltaTime)
 	else if (State == EOutlierCinematicState::Playing)
 	{
 		SyncWorldPause();
+		// 시작 RPC에서는 카메라/시퀀스를 먼저 평가한다. 다음 기존 갱신에서 가림을
+		// 제거해 Controller 시점이 끼지 않고 시퀀스의 원래 첫 화면으로 인계한다.
+		EndInitialIntroBlackout();
 		TickCompleteHold(DeltaTime);
 		// 늦게 생성된 상대 Pawn/무기/VFX나 재생 중 다시 켜진 시각 요소도 계속 숨긴다.
 		HidePairPawnVisuals();
@@ -260,6 +313,7 @@ void UOutlierCinematicSubsystem::StartCinematic(const FGuid& IntroId)
 		}
 		State = EOutlierCinematicState::Ready;
 		OwningController->RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
+		EndInitialIntroBlackout();
 		OwningController->ServerNotifyCinematic({ActiveIntroId, EOutlierCinematicClientEvent::Ready});
 		return;
 	}
@@ -374,6 +428,7 @@ void UOutlierCinematicSubsystem::HandleSequenceFinished()
 {
 	if (State != EOutlierCinematicState::Playing) return;
 	State = EOutlierCinematicState::Restoring;
+	EndInitialIntroBlackout();
 	PopCinematicHint();
 	RestorePairPawnVisuals();
 	StableReadyFrames = 0;
@@ -407,6 +462,7 @@ void UOutlierCinematicSubsystem::FailCinematic(const TCHAR* Reason)
 		PC->RefreshHudVisibility();
 		PC->ServerNotifyCinematic({ActiveIntroId, EOutlierCinematicClientEvent::Failed});
 	}
+	EndInitialIntroBlackout();
 }
 
 void UOutlierCinematicSubsystem::ReleaseCinematic(const FGuid& IntroId)
@@ -456,7 +512,7 @@ bool UOutlierCinematicSubsystem::PlayTitleCinematic()
 	return true;
 }
 
-void UOutlierCinematicSubsystem::ClearLevelCinematics()
+void UOutlierCinematicSubsystem::ClearLevelCinematics(bool bPreserveInitialIntroBlackout)
 {
 	// 정상 종료 후 Release에서 호출될 때에는 완료 콜백이 시작한 이벤트를 보존한다.
 	const bool bInterrupted = State == EOutlierCinematicState::Playing
@@ -492,6 +548,7 @@ void UOutlierCinematicSubsystem::ClearLevelCinematics()
 		if (ActiveIntroId.IsValid()) PC->RestoreCameraAfterCinematic();
 		PC->RefreshHudVisibility();
 	}
+	if (!bPreserveInitialIntroBlackout) EndInitialIntroBlackout();
 	OwningController.Reset();
 	ActiveIntroId.Invalidate();
 	bSkipUnregisteredCinematic = false;

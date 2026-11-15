@@ -677,6 +677,11 @@ void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementa
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
 	bClientArenaExitPrepared = true;
+	if (auto* Cinematic = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
+	{
+		Cinematic->ClearLevelCinematics();
+	}
 	ClearClientArenaContentWait();
 	ClearClientGameplayReloadWatchdog();
 	bClientReloadBootstrapPending = false;
@@ -1353,12 +1358,8 @@ void AFirstPersonPlayerController::RestoreCameraAfterCinematic()
 
 void AFirstPersonPlayerController::ReleaseLevelLoadBlackoutIfNoIntroPending()
 {
-	if (!HasCameraBlackoutReason(ECameraBlackoutReason::LevelLoad))
-	{
-		return;
-	}
 	// 인트로 준비 RPC는 Possess보다 먼저 도착한다. 준비 중이면 시네마틱 시작 시점에 해제한다.
-	const UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
+	UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>()
 		: nullptr;
 	const EOutlierCinematicState State = Cinematic ? Cinematic->GetState() : EOutlierCinematicState::Idle;
@@ -1367,6 +1368,8 @@ void AFirstPersonPlayerController::ReleaseLevelLoadBlackoutIfNoIntroPending()
 		return;
 	}
 	RemoveCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
+	// Continue 등 인트로 없이 Pawn으로 시작하는 경로도 프런트엔드의 가림을 인계받는다.
+	if (Cinematic) Cinematic->EndInitialIntroBlackout();
 }
 
 void AFirstPersonPlayerController::ReportLoadedLevelsVisibilityToServer()
