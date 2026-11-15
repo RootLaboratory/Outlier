@@ -1,6 +1,8 @@
 #include "UI/HackableInfoWidget.h"
 
 #include "Audio/OutlierAudioFeedback.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
+#include "Components/CanvasPanelSlot.h"
 #include "Components/Border.h"
 #include "Components/Image.h"
 #include "Components/ProgressBar.h"
@@ -12,6 +14,7 @@
 #include "Engine/Texture2D.h"
 #include "PopupRetainerBox.h"
 #include "GameFramework/Actor.h"
+#include "Interface/HackableInterface.h"
 
 void UHackableInfoWidget::InitializeInfo(AActor* InTargetActor, UHackableComponent* InHackableComponent)
 {
@@ -41,11 +44,47 @@ void UHackableInfoWidget::PlayPopup()
 
 void UHackableInfoWidget::ResetPopup()
 {
+	bHasHudTracking = false;
 	if (PopupRetainerBox)
 	{
 		PopupRetainerBox->ResetPopup();
 	}
 	SetPopupAudioOpen(false);
+}
+
+void UHackableInfoWidget::InitializeHudTracking(FVector2D TargetScreenPoint, FVector2D Position, FVector2D Size, float Scale)
+{
+	UCanvasPanelSlot* InfoSlot = Cast<UCanvasPanelSlot>(Slot);
+	if (!InfoSlot) return;
+	// 최초 배치의 화면 오프셋과 크기를 홀드 전환 후에도 그대로 사용한다.
+	HudScreenOffset = Position - TargetScreenPoint;
+	bHasHudTracking = true;
+	InfoSlot->SetAutoSize(false);
+	InfoSlot->SetAlignment(FVector2D::ZeroVector);
+	InfoSlot->SetPosition(Position);
+	InfoSlot->SetSize(Size);
+	InfoSlot->SetZOrder(10);
+	SetRenderTransformPivot(FVector2D::ZeroVector);
+	SetRenderScale(FVector2D(Scale));
+}
+
+void UHackableInfoWidget::UpdateHudTracking()
+{
+	if (!bHasHudTracking) return;
+	FVector2D ScreenPoint;
+	if (!IsValid(TargetActor)
+		|| !UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(GetOwningPlayer(),
+			IHackableInterface::ResolveHackTargetLocation(TargetActor), ScreenPoint, true))
+	{
+		SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+	SetVisibility(ESlateVisibility::HitTestInvisible);
+	if (UCanvasPanelSlot* InfoSlot = Cast<UCanvasPanelSlot>(Slot))
+	{
+		// 최초 배치 이후에는 화면 경계를 제한하지 않고 대상의 화면 이동을 따라간다.
+		InfoSlot->SetPosition(ScreenPoint + HudScreenOffset);
+	}
 }
 
 void UHackableInfoWidget::SetPopupAudioOpen(bool bOpen)

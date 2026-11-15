@@ -23,6 +23,9 @@ public:
 	void SetHackProgress(float InProgress);
 	void PlayPopup();
 	void ResetPopup();
+	void InitializeHudTracking(FVector2D TargetScreenPoint, FVector2D Position, FVector2D Size, float Scale);
+	void UpdateHudTracking();
+	bool HasHudTracking() const { return bHasHudTracking; }
 
 	float GetWidgetWidth() const { return WidgetWidth; }
 	float GetMinWidgetHeight() const { return MinWidgetHeight; }
@@ -85,6 +88,8 @@ private:
 	FSlateBrush DefaultInfoImageBrush;
 	bool bCachedDefaultInfoImageBrush = false;
 	bool bPopupAudioOpen = false;
+	bool bHasHudTracking = false;
+	FVector2D HudScreenOffset = FVector2D::ZeroVector;
 
 	void SetPopupAudioOpen(bool bOpen);
 	bool ResolveHackInfoTag(FGameplayTag& OutHackInfoTag) const;

@@ -6,6 +6,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackableComponent.h"
+#include "Drone/Partner/PartnerHackComponent.h"
 #include "Enemy/EnemyBase.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -41,6 +42,8 @@ AMagneticGeneratorTower::AMagneticGeneratorTower()
 	SphereVisual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	SphereVisual->SetGenerateOverlapEvents(false);
 	SphereVisual->SetVisibility(false);
+	// 범위 표시용 구체이므로 해킹 커서 판정·하이라이트 대상에서 제외한다.
+	SphereVisual->ComponentTags.AddUnique(UPartnerHackComponent::CursorIgnoreTag);
 
 	SphereCollision = CreateDefaultSubobject<USphereComponent>(TEXT("SphereCollision"));
 	SphereCollision->SetupAttachment(RootMesh);
