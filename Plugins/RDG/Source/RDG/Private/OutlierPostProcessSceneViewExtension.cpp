@@ -50,6 +50,8 @@ struct FTeammateOutlineFamilyData final : ISceneViewFamilyExtentionData
 		TSharedPtr<FTeammateOutlineViewResources, ESPMode::ThreadSafe> Resources;
 		// Family 조회는 const이며, 이 깊이 참조만 해당 프레임의 렌더 스레드에서 채운다.
 		mutable FRDGTextureRef SceneDepth = nullptr;
+		mutable FRDGTextureRef CustomDepth = nullptr;
+		mutable FRDGTextureSRVRef CustomStencil = nullptr;
 	};
 	TMap<int32, FEntry> Views;
 };
@@ -106,22 +108,26 @@ void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFami
 			if (World && TeammateOutlineWorld.Get() == World && World->GetNetMode() != NM_DedicatedServer && InViewFamily.Scene == World->Scene)
 			{
 				bool bMasksQueued = false;
+				TArray<TWeakObjectPtr<AActor>> SuccessfulTurrets;
 				for (const FSceneView* View : InViewFamily.Views)
 				{
 					if (View->PlayerIndex != Player->GetControllerId() || View->bIsSceneCapture
 						|| !TeammateOutlineData.bEnabled || bTeammateOutlineSuppressed) continue;
-					auto Resources = FRDGTeammateOutlineRendering::QueueMasks(InViewFamily, *View, TeammateOutlineData);
+					auto Resources = FRDGTeammateOutlineRendering::QueueMasks(InViewFamily, *View, TeammateOutlineData, &SuccessfulTurrets);
 					if (Resources.IsValid())
 					{
 						auto& Entry = InViewFamily.GetOrCreateExtentionData<FTeammateOutlineFamilyData>()->Views.FindOrAdd(View->PlayerIndex);
 						Entry.Owner = this;
 						Entry.Resources = Resources;
-						bMasksQueued = true;
+						bMasksQueued = FRDGTeammateOutlineRendering::HasPairMasks(Resources);
 					}
 				}
 				// 설정만으로 기존 선을 내리지 않는다. 실제 View에 마스크를 등록한 뒤 전환하고,
 				// 대상 없음/지원하지 않는 View/출력 억제 시에는 기존 스텐실 경로를 복원한다.
 				TeammateOutlineData.OnMasksQueued.ExecuteIfBound(bMasksQueued);
+				// 터렛은 대상별 준비 결과로 전환한다. 하나의 실패가 pair/다른 터렛을 되돌리지 않는다.
+				TeammateOutlineData.OnTurretMasksQueued.ExecuteIfBound(SuccessfulTurrets,
+					TeammateOutlineData.bEnabled && !bTeammateOutlineSuppressed);
 			}
 		}
 	}
@@ -327,6 +333,8 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 		if (auto* Entry = FamilyData->Views.Find(InView.PlayerIndex))
 		{
 			Entry->SceneDepth = Inputs.SceneTextures ? (*Inputs.SceneTextures)->SceneDepthTexture : nullptr;
+			Entry->CustomDepth = Inputs.SceneTextures ? (*Inputs.SceneTextures)->CustomDepthTexture : nullptr;
+			Entry->CustomStencil = Inputs.SceneTextures ? (*Inputs.SceneTextures)->CustomStencilTexture : nullptr;
 		}
 	}
 	CachedADSSightHardMask = nullptr;
@@ -477,7 +485,8 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::TeammateOutlineCallbac
 	if (!Entry || !Entry->SceneDepth) return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 	const FScreenPassTexture Color = FScreenPassTexture::CopyFromSlice(GraphBuilder, Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
 	if (!Color.IsValid()) return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
-	FScreenPassTexture Output = FRDGTeammateOutlineRendering::Composite(GraphBuilder, View, Color, Entry->SceneDepth, Entry->Resources);
+	FScreenPassTexture Output = FRDGTeammateOutlineRendering::Composite(GraphBuilder, View, Color, Entry->SceneDepth, Entry->Resources,
+		Entry->CustomDepth, Entry->CustomStencil);
 	// 마지막 후처리 콜백에는 엔진이 지정한 출력 타깃을 존중해야 backbuffer까지 결과가 전달된다.
 	if (Inputs.OverrideOutput.IsValid())
 	{

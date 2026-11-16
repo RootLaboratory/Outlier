@@ -173,6 +173,7 @@ private:
 	void HandleOutlineLocalPlayerRemoved(ULocalPlayer* LocalPlayer);
 	void RefreshIndependentTeammateOutline();
 	void HandleTeammateOutlineMasksQueued(bool bMasksQueued);
+	void HandleTurretOutlineMasksQueued(const TArray<TWeakObjectPtr<AActor>>& ReadyTargets, bool bOutputAllowed);
 	void ClearIndependentTeammateOutline();
 
 	TWeakObjectPtr<AShooterCharacter> PartnerShieldSource;

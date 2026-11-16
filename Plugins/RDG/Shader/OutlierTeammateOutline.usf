@@ -1,9 +1,20 @@
 #include "/Engine/Private/Common.ush"
 
+// 가림 집계 엔트리는 터렛 전용이다. 공통 합성은 C++ permutation으로 이 경로를 끈다.
+#ifndef HAS_TURRETS
+#define HAS_TURRETS 1
+#endif
+
 Texture2D SceneColorTexture;
 Texture2D<float> SceneDepthTexture;
 Texture2D<float> TargetDepthTexture;
 Texture2D<float> FirstPersonDepthTexture;
+Texture2DArray<float> TurretDepthTexture;
+StructuredBuffer<uint> TurretVisibility;
+RWStructuredBuffer<uint> OutTurretVisibility;
+groupshared uint GroupVisible;
+Texture2D<float> CustomDepthTexture;
+Texture2D<uint2> CustomStencilTexture;
 RWTexture2D<float4> OutputTexture;
 // UE의 루트 파라미터 파서가 각 항목을 개별 바인딩하도록 한 선언에 하나씩 둔다.
 int2 OutputMin;
@@ -14,8 +25,12 @@ int2 MaskMin;
 int2 MaskSize;
 int2 FirstPersonMin;
 int2 FirstPersonSize;
+int2 TurretMaskMin;
+int2 TurretMaskSize;
+int TurretCount;
 float4 OutlineColor;
 float4 Style;
+float4 LegacyStyle;
 float2 OutputPixelScale;
 int DebugMode;
 
@@ -38,6 +53,85 @@ float FirstPersonBlock(float2 UV)
     float FP = FirstPersonDepthTexture.Load(int3(SamplePixel(UV, FirstPersonMin, FirstPersonSize), 0));
     return HasSurface(FP) ? 1 : 0;
 }
+
+#if HAS_TURRETS
+float TurretDepth(float2 UV, int Owner, bool Excluded)
+{
+    if (any(UV < 0) || any(UV >= 1)) return 1.0e8;
+    return TurretDepthTexture.Load(int4(SamplePixel(UV, TurretMaskMin, TurretMaskSize), Owner * 2 + (Excluded ? 1 : 0), 0));
+}
+bool IsExcludedSurface(float2 UV, int Owner, float FullDepth)
+{
+    float Excluded = TurretDepth(UV, Owner, true);
+    return HasSurface(Excluded) && abs(Excluded - FullDepth) <= max(1.0, FullDepth * 0.0001);
+}
+
+// 해치의 노출은 집계하지 않는다. Body/Head는 같은 Owner 슬라이스에 있으므로 함께 판정한다.
+[numthreads(8, 8, 1)]
+void TurretVisibilityCS(uint3 DispatchId : SV_DispatchThreadID, uint GroupIndex : SV_GroupIndex)
+{
+    if (GroupIndex == 0) GroupVisible = 0;
+    GroupMemoryBarrierWithGroupSync();
+    if (all(DispatchId.xy < uint2(TurretMaskSize)) && DispatchId.z < uint(TurretCount))
+    {
+        float2 UV = (float2(DispatchId.xy) + 0.5) / TurretMaskSize;
+        float Depth = TurretDepth(UV, DispatchId.z, false);
+        if (HasSurface(Depth) && !IsExcludedSurface(UV, DispatchId.z, Depth)
+            && abs(Depth - SceneDepth(UV)) <= max(1.0, Depth * 0.0001))
+            InterlockedOr(GroupVisible, 1u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (GroupIndex == 0 && GroupVisible != 0) InterlockedOr(OutTurretVisibility[DispatchId.z], 1u);
+}
+
+float2 LegacySample(float2 UV)
+{
+    int2 Pixel = SamplePixel(UV, SceneDepthMin, SceneDepthSize);
+    uint Stencil = CustomStencilTexture.Load(int3(Pixel, 0)).g;
+    float Custom = ConvertFromDeviceZ(CustomDepthTexture.Load(int3(Pixel, 0)));
+    if ((Stencil & 128u) == 0u) return float2(0, Custom);
+    float Depth = SceneDepth(UV);
+    bool Visible = abs(Custom - Depth) <= max(LegacyStyle.y, Depth * 0.00001);
+    uint Scan = Stencil & 3u;
+    uint Rank = Visible && ((Stencil & 4u) != 0u) ? 4u :
+                Visible && ((Stencil & 8u) != 0u) ? 3u :
+                ((Stencil & 32u) != 0u) ? 2u : (Scan == 1u || Scan == 2u ? 1u : 0u);
+    return float2(Rank, Custom);
+}
+bool HasHigherPriorityOutline(float2 UV)
+{
+    if (LegacyStyle.w == 0 || LegacyStyle.x <= 0) return false;
+    float2 Pixel = 1.0 / SceneDepthSize;
+    float2 CenterUV = clamp(UV, Pixel * 0.5, 1 - Pixel * 0.5);
+    float2 Center = LegacySample(CenterUV);
+    float Scene = SceneDepth(CenterUV);
+    const float2 Offsets[8] = {float2(-1,0), float2(1,0), float2(0,-1), float2(0,1),
+                              float2(-1,-1), float2(-1,1), float2(1,-1), float2(1,1)};
+    [unroll] for (int I = 0; I < 8; ++I)
+    {
+        float2 Neighbor = LegacySample(clamp(CenterUV + Offsets[I] * Pixel * LegacyStyle.x, Pixel * 0.5, 1 - Pixel * 0.5));
+        bool Different = Center.x != Neighbor.x ||
+            (Center.x > 0 && abs(Center.y - Neighbor.y) > max(LegacyStyle.z, Center.y * 0.001));
+        float2 Candidate = Center.x > 0 ? Center : Neighbor;
+        if (Different && Candidate.x >= 3 && Candidate.y <= Scene + max(LegacyStyle.y, Scene * 0.00001)) return true;
+    }
+    return false;
+}
+
+// 한 터렛의 해치 구멍을 다른 대상의 차단 마스크로 사용하지 않는다.
+bool CoveredByIncludedTarget(float2 UV, float Depth, int Owner)
+{
+    float PairDepth = Target(UV);
+    if (HasSurface(PairDepth) && PairDepth <= Depth) return true;
+    [loop] for (int Other = 0; Other < TurretCount; ++Other)
+    {
+        if (Other == Owner) continue;
+        float OtherDepth = TurretDepth(UV, Other, false);
+        if (HasSurface(OtherDepth) && OtherDepth <= Depth && !IsExcludedSurface(UV, Other, OtherDepth)) return true;
+    }
+    return false;
+}
+#endif
 
 [numthreads(8, 8, 1)]
 void MainCS(uint3 DispatchId : SV_DispatchThreadID)
@@ -94,8 +188,72 @@ void MainCS(uint3 DispatchId : SV_DispatchThreadID)
         Alpha *= 1 - Block;
     }
 
+#if HAS_TURRETS
+    // pair의 소스 선택과 FP 처리는 그대로 둔다. 터렛은 같은 합성 안에서 대상별 후보만 추가한다.
+    float BestSourceDepth = SourceDepth;
+    bool ProtectLegacy = TurretCount > 0 && HasHigherPriorityOutline(UV);
+    [loop] for (int Owner = 0; Owner < TurretCount; ++Owner)
+    {
+        float FullCenter = TurretDepth(UV, Owner, false);
+        if (HasSurface(FullCenter) || ProtectLegacy) continue;
+        float TurretSourceDepth = 1.0e8;
+        float TurretDistance = 1.0e8;
+        float ExcludedDistance = 1.0e8;
+        float2 TurretSourceUV = UV;
+        [loop] for (int Y = -4; Y <= 4; ++Y)
+        [loop] for (int X = -4; X <= 4; ++X)
+        {
+            float CandidateDistance = max(length(float2(X, Y)) - 0.5, 0);
+            if (CandidateDistance > max(Style.x, Style.y) + 0.5) continue;
+            float2 CandidateUV = UV + float2(X, Y) * OutputPixelScale / OutputSize;
+            float Depth = TurretDepth(CandidateUV, Owner, false);
+            if (!HasSurface(Depth)) continue;
+            if (IsExcludedSurface(CandidateUV, Owner, Depth)) ExcludedDistance = min(ExcludedDistance, CandidateDistance);
+            if (CandidateDistance >= TurretDistance) continue;
+            TurretDistance = CandidateDistance;
+            TurretSourceDepth = Depth;
+            TurretSourceUV = CandidateUV;
+        }
+        // 전체 형상으로 먼저 가장 가까운 경계를 고른 뒤 슬롯을 검사한다. 제외 소스를
+        // 건너뛰어 뒤쪽 본체를 다시 고르면 해치 가장자리에 선이 재생성되므로 재선택하지 않는다.
+        if (!HasSurface(TurretSourceDepth) || ExcludedDistance <= TurretDistance + 0.5
+            || CoveredByIncludedTarget(UV, TurretSourceDepth, Owner)) continue;
+        float Tolerance = max(1.0, TurretSourceDepth * 0.0001);
+        float TurretVisible = 1 - smoothstep(Tolerance, Tolerance * 2,
+            max(TurretSourceDepth - SceneDepth(TurretSourceUV), TurretSourceDepth - SceneDepth(UV)));
+        // 완전 가림이면 전체 투시 윤곽을 보여준다. 부분 가림일 때만 가려진 소스를 흐리게 한다.
+        float StrengthVisibility = TurretVisibility[Owner] == 0 ? 1 : TurretVisible;
+        float Width = lerp(Style.y, Style.x, StrengthVisibility);
+        float TurretAlpha = saturate(Width + 0.5 - TurretDistance) * lerp(Style.w, Style.z, StrengthVisibility);
+        float TurretBlock = FirstPersonBlock(UV);
+        const float2 Directions[4] = {float2(-1,0), float2(1,0), float2(0,-1), float2(0,1)};
+        [unroll] for (int I = 0; I < 4; ++I)
+            TurretBlock = max(TurretBlock, 0.5 * FirstPersonBlock(UV + Directions[I] * OutputPixelScale / OutputSize));
+        TurretAlpha *= 1 - TurretBlock;
+        if (TurretAlpha > Alpha || (TurretAlpha == Alpha && TurretSourceDepth < BestSourceDepth))
+        {
+            Alpha = TurretAlpha;
+            Visible = TurretVisible;
+            Block = TurretBlock;
+            BestSourceDepth = TurretSourceDepth;
+        }
+    }
+
+#endif
+    // 디버그 커버리지는 제외 표면을 별도 색으로 표시하여 슬롯 매핑과 좌표 정렬을 확인한다.
+    float3 DebugCoverage = HasSurface(CenterDepth) ? float3(0, 1, 1) : Scene.rgb * 0.2;
+#if HAS_TURRETS
+    [loop] for (int Owner = 0; Owner < TurretCount; ++Owner)
+    {
+        float Depth = TurretDepth(UV, Owner, false);
+        if (!HasSurface(Depth)) continue;
+        DebugCoverage = IsExcludedSurface(UV, Owner, Depth) ? float3(1, 0.2, 0) : float3(0, 1, 1);
+        if (!HasSurface(CenterDepth) || Depth < CenterDepth) CenterDepth = Depth;
+    }
+#endif
+
     float3 Result = lerp(Scene.rgb, OutlineColor.rgb, saturate(Alpha));
-    if (DebugMode == 1) Result = HasSurface(CenterDepth) ? float3(0, 1, 1) : Scene.rgb * 0.2;
+    if (DebugMode == 1) Result = DebugCoverage;
     if (DebugMode == 2) Result = float3(Visible, Block, Alpha);
     if (DebugMode == 3) Result = HasSurface(CenterDepth) ? saturate(log2(1 + CenterDepth) / 16).xxx : float3(0, 0, 0);
     OutputTexture[Pixel] = float4(Result, Scene.a);

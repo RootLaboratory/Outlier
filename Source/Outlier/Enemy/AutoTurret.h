@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Enemy/EnemyBase.h"
+#include "Engine/EngineTypes.h"
 #include "Interface/WeaponMuzzleProvider.h"
 #include "Perception/AISightTargetInterface.h"
 #include "AutoTurret.generated.h"
@@ -46,6 +47,22 @@ struct FAutoTurretLifecycleSnapshot
 
 	UPROPERTY()
 	int32 ActivationSerial = 0;
+};
+
+USTRUCT(BlueprintType)
+struct OUTLIER_API FAutoTurretOutlineExclusion
+{
+	GENERATED_BODY()
+
+	// BP 기본값의 드롭다운은 OutlierEditor에서 제공한다. 저장된 변수명은 런타임의
+	// 실제 터렛 컴포넌트로 해석하므로 인스턴스 포인터나 별도 렌더 설정을 저장하지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Outline",
+		meta = (ToolTip = "Select a skeletal mesh component on this turret. Mesh is the body; TurretHeadMesh is the head."))
+	FComponentReference MeshComponent;
+
+	// 같은 슬롯을 공유하는 섹션은 모두 제외된다. 해치만 제외하려면 전용 슬롯을 지정한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Outline")
+	TArray<FName> MaterialSlotNames;
 };
 
 USTRUCT(BlueprintType)
@@ -127,6 +144,7 @@ class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider,
 	friend class FEnemyHitClueLifecycleTest;
 	friend class FEnemyAdaptationGenerationDamageTest;
 	friend class FOutlierGasShooterStealthUpgradeTest;
+	friend class FAutoTurretOutlineEligibilityTest;
 	// 격리 네트워크 검증에서 실제 전개 시작·완료 경로를 호출한다.
 	friend class AHackTargetPointNetworkProbe;
 #endif
@@ -197,6 +215,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	bool IsHackedToPlayerTeam() const { return bHackedToPlayerTeam; }
 
+	bool IsEligibleForTeammateOutline() const;
+	const TArray<FAutoTurretOutlineExclusion>& GetTeammateOutlineExclusions() const
+	{
+		return TeammateOutlineExclusions;
+	}
+
 	void PlayAttackAudio();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
@@ -255,6 +279,7 @@ public:
 	FVector GetCurrentTurretAimLocation() const { return CurrentAimLocation; }
 
 protected:
+	virtual void RefreshCombatStatePresentation() override;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierShieldAttributeSet> ShieldAttributeSet;
 
@@ -317,6 +342,10 @@ protected:
 	// 이 본과 하위 본의 Physics Body는 총알을 막되 터렛 HP에는 피해를 전달하지 않는다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Turret|Collision")
 	TArray<FName> NoDamageBoneRoots = { TEXT("HatchBase") };
+
+	// 시각 메시와 공용 CustomDepth는 유지하고, 팀원 RDG 마스크에서만 슬롯을 제외한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Turret|Outline")
+	TArray<FAutoTurretOutlineExclusion> TeammateOutlineExclusions;
 
 	// Hidden 상태에서 감춰지는 실제 터렛 본이다. Deploy 시작 시 다시 Query Collision을 켠다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Turret|Collision")
