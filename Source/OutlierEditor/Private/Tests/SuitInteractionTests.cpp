@@ -1449,7 +1449,12 @@ bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters
 	Shooter->ServerConfirmProceduralWeaponLowered_Implementation(SwitchId - 1);
 	TestEqual(TEXT("Stale Lower reply cannot replace the weapon"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotPistol));
 	Shooter->ServerConfirmProceduralWeaponLowered_Implementation(SwitchId);
-	TestEqual(TEXT("Current Lower reply equips Rifle"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotRifle));
+	TestEqual(TEXT("Early matching Lower reply cannot shorten server Lower"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotPistol));
+	// 소유자의 확인은 서버 Lower 시간보다 먼저 도착할 수 있다. 실제 Lower가 끝난 뒤
+	// 교체와 중복 응답 처리를 검사하여 시간 검증을 우회하지 않는다.
+	// TimerManager는 첫 Tick에 예약을 활성화하므로 한 프레임의 활성화 지연도 포함한다.
+	TestWorld.AdvanceTime(Shooter->GetFirstPersonSwitchLowerDuration() + 0.05f);
+	TestEqual(TEXT("Server Lower completion equips Rifle"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotRifle));
 	Shooter->ServerConfirmProceduralWeaponLowered_Implementation(SwitchId);
 	TestEqual(TEXT("Duplicate Lower reply leaves Rifle unchanged"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotRifle));
 	TestWorld.AdvanceTime(0.3f);
@@ -1956,11 +1961,19 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	if (!OldRifle || !Pistol || !Melee) { AddError(TEXT("Existing loadout did not spawn")); return false; }
 	Pistol->SetTestWeaponType(EWeaponType::Pistol);
 	Melee->SetTestWeaponType(EWeaponType::Melee);
+	// 앞선 취소 사례가 남긴 로컬 장착 연출과 완료 대기를 정리한 뒤 기존 로드아웃을 준비한다.
+	Shooter->CancelLocalProceduralWeaponSwitch();
+	// Cancel은 Raising으로 복귀하므로 시각적 Raise 완료까지 진행해 입력 차단을 해제한다.
+	Shooter->UpdateLocalProceduralWeaponSwitch(FMath::Max(Shooter->FirstPersonSwitchRaiseDuration, 0.05f) + 0.01f);
+	Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 	for (AWeaponBase* Weapon : { OldRifle, Pistol, Melee })
 	{
 		Inventory->HandleEquipWeapon(Weapon);
 		Shooter->CancelLocalProceduralWeaponSwitch();
-		Shooter->EndActionLock(EShooterActionLock::Equip);
+		// Cancel은 Raising으로 복귀하므로 시각적 Raise 완료까지 진행해 입력 차단을 해제한다.
+		Shooter->UpdateLocalProceduralWeaponSwitch(FMath::Max(Shooter->FirstPersonSwitchRaiseDuration, 0.05f) + 0.01f);
+		// Equip 완료는 action lock뿐 아니라 소유자의 서버 완료 대기도 함께 해제한다.
+		Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 	}
 	TestTrue(TEXT("Existing loadout occupies all slots"),
 		Inventory->GetWeaponInSlot(EWeaponSlot::Primary) == OldRifle
@@ -2169,6 +2182,13 @@ bool FOutlierSlideSuitRecoveryTest::RunTest(const FString& Parameters)
 		const float Acceleration = Movement->MaxAcceleration;
 		const float CrouchSpeed = Movement->MaxWalkSpeedCrouched;
 		Movement->Velocity = FVector(400.0, 0.0, 0.0);
+		// BeginPlay의 기본 무기 장착을 완료해야 새 이동 입력이 장착 대기에서 차단되지 않는다.
+		Shooter->CancelLocalProceduralWeaponSwitch();
+		// Cancel은 Raising으로 복귀하므로 시각적 Raise 완료까지 진행해 입력 차단을 해제한다.
+		Shooter->UpdateLocalProceduralWeaponSwitch(FMath::Max(Shooter->FirstPersonSwitchRaiseDuration, 0.05f) + 0.01f);
+		Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
+		// Possess가 이전 입력을 폐기했으므로 실제 Controller의 새 Press 통지도 재현한다.
+		Movement->NotifyFreshSprintPress();
 		Input->HandleSprintPressed();
 		Input->HandleCrouchPressed();
 		Movement->ApplyMovementInput();
@@ -2290,8 +2310,6 @@ bool FOutlierTransitionRecoveryTest::RunTest(const FString& Parameters)
 	Shooter->SuitPresentation = Configuration;
 	if (!Shooter->HasActorBegunPlay()) Shooter->DispatchBeginPlay();
 	Shooter->SetSuitPresentation(true);
-	Shooter->CurrentWeapon = Rifle;
-	Rifle->SetProceduralTestOwner(Shooter);
 	Shooter->SetPlayerState(PlayerState);
 	PlayerState->SetAcquiredSuit(true);
 
@@ -2304,6 +2322,16 @@ bool FOutlierTransitionRecoveryTest::RunTest(const FString& Parameters)
 	Controller->SetAsLocalPlayerController();
 	Controller->SetPawn(Shooter);
 	Shooter->Controller = Controller;
+	// Pawn/PS 연결 뒤 실제 장착 경로로 슬롯, CurrentWeapon과 복제 무기 타입을 함께 설정한다.
+	// 포인터만 대입하면 캐릭터는 Unarmed 상태를 유지해 재장전 자격을 얻지 못한다.
+	if (!TestTrue(TEXT("Recovery fixture equips its suit rifle"), Shooter->GetInventoryComponent()->EquipSuitRifle(Rifle)))
+	{
+		return false;
+	}
+	Shooter->CancelLocalProceduralWeaponSwitch();
+	// Cancel은 Raising으로 복귀하므로 시각적 Raise 완료까지 진행해 입력 차단을 해제한다.
+	Shooter->UpdateLocalProceduralWeaponSwitch(FMath::Max(Shooter->FirstPersonSwitchRaiseDuration, 0.05f) + 0.01f);
+	Shooter->FinishEquipAction(Shooter->GetEquipActionGeneration());
 	ULocalPlayerUISubSystem* UI = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>();
 	if (!TestNotNull(TEXT("Local UI subsystem exists"), UI)
 		|| !TestTrue(TEXT("Shooter is locally controlled"), Shooter->IsLocallyControlled())) return false;
@@ -2330,6 +2358,8 @@ bool FOutlierTransitionRecoveryTest::RunTest(const FString& Parameters)
 	};
 
 	// 마지막 발 직후 재장전 중에 이동이 시작되는 실제 취소 -> 잠금 -> 해제 경로를 검증한다.
+	TestEqual(TEXT("Fixture rifle selects Primary weapon mode"), Shooter->GetWeaponMode(), EWeaponMode::Primary);
+	TestFalse(TEXT("Fixture has no unfinished equip input block"), Shooter->IsWeaponEquipInputBlocked());
 	SetAmmo(Rifle, 0);
 	Combat->HandleAutoReloadRequested();
 	if (!TestTrue(TEXT("Empty rifle starts an actual reload"), Combat->IsReloading() && Rifle->IsReloading())) return false;
@@ -2347,6 +2377,10 @@ bool FOutlierTransitionRecoveryTest::RunTest(const FString& Parameters)
 	CooldownIcon->SetCoolTime(99.0f);
 	TestTrue(TEXT("Fixture contains a stale cooldown"), CooldownIcon->IsCooldowning());
 	Shooter->ReleaseSuitTransitionBlock(TransitionId);
+	// 전환 취소는 로컬 무기 Raise를 시작한다. 실제 연출이 끝나야 입력 차단이 풀리고,
+	// 그 완료 경계가 예약한 다음 프레임에 서버가 빈 탄창 재장전을 복구한다.
+	const float RecoveryTime = FMath::Max(Shooter->FirstPersonSwitchRaiseDuration, 0.05f) + 2.0f / 60.0f;
+	TestWorld.AdvanceTime(RecoveryTime);
 	TestFalse(TEXT("Arrival unlocks the Shooter"), Shooter->IsSuitTransitionBlocked());
 	TestTrue(TEXT("Arrival restarts character reload"), Combat->IsReloading());
 	TestTrue(TEXT("Arrival restarts weapon reload"), Rifle->IsReloading());
@@ -2369,6 +2403,8 @@ bool FOutlierTransitionRecoveryTest::RunTest(const FString& Parameters)
 	const FGuid ManualId = FGuid::NewGuid();
 	Shooter->AcquireSuitTransitionBlock(ManualId);
 	Shooter->ReleaseSuitTransitionBlock(ManualId);
+	// 같은 복구 기회까지 진행해도 부분 탄창의 수동 재장전은 다시 시작되지 않아야 한다.
+	TestWorld.AdvanceTime(RecoveryTime);
 	TestFalse(TEXT("Partial magazine reload is not automatically resumed"), Combat->IsReloading());
 	TestEqual(TEXT("Cancelled partial reload preserves ammo"), Rifle->GetCurrentAmmo(), 5);
 
@@ -2448,12 +2484,35 @@ bool FOutlierWeaponOverchargeFireContinuityTest::RunTest(const FString& Paramete
 		Controller->SetControlRotation(FRotator::ZeroRotator);
 		// 사격 수명주기 검사 동안 지면 없는 임시 월드에서 낙하하지 않도록 이동만 멈춘다.
 		Shooter->GetCharacterMovement()->DisableMovement();
+		// Rifle은 Suit에서만 장착된다. 소유 기록만 설정해도 PreSuit 표현은 바뀌지 않는다.
+		if (!TestTrue(TEXT("Overcharge fixture applies Suit presentation"), Shooter->SetSuitPresentation(true)))
+		{
+			return false;
+		}
 		Shooter->AFirstPersonCharacter::EquipWeapon(Rifle);
+		if (!TestEqual(TEXT("Overcharge fixture equips the actual rifle"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(Rifle)))
+		{
+			return false;
+		}
 		UShooterCombatComponent* Combat = Shooter->FindComponentByClass<UShooterCombatComponent>();
 		UOutlierAbilitySystemComponent* ASC = Shooter->GetOutlierAbilitySystemComponent();
 		if (!TestNotNull(TEXT("Combat component exists"), Combat)
 			|| !TestNotNull(TEXT("Pawn-owned ASC exists"), ASC)) return false;
 		Combat->RefreshWeaponMode();
+		// Presentation 변경 뒤 남은 소유자 Raise를 실제 진행시켜야 새 발사가 허용된다.
+		const FFloatProperty* RaiseDurationProperty = FindFProperty<FFloatProperty>(ShooterClass, TEXT("FirstPersonSwitchRaiseDuration"));
+		if (!TestNotNull(TEXT("Owner Raise duration property exists"), RaiseDurationProperty))
+		{
+			return false;
+		}
+		const float RaiseDuration = RaiseDurationProperty->GetPropertyValue_InContainer(Shooter);
+		Shooter->UpdateLocalProceduralWeaponSwitch(FMath::Max(RaiseDuration, 0.05f) + 0.01f);
+		Combat->TryStopAttack();
+		if (!TestFalse(TEXT("Overcharge fixture completes owner Raise before firing"), Shooter->IsWeaponEquipInputBlocked())
+			|| !TestTrue(TEXT("Overcharge fixture permits a fresh shot"), Combat->CanFireInCurrentState()))
+		{
+			return false;
+		}
 		const FFloatProperty* IntervalProperty = FindFProperty<FFloatProperty>(RifleClass, TEXT("AttackInterval"));
 		const FBoolProperty* AutomaticProperty = FindFProperty<FBoolProperty>(RifleClass, TEXT("bIsAutomatic"));
 		FBoolProperty* InfiniteAmmoProperty = FindFProperty<FBoolProperty>(RifleClass, TEXT("bInfiniteAmmo"));
@@ -2477,7 +2536,8 @@ bool FOutlierWeaponOverchargeFireContinuityTest::RunTest(const FString& Paramete
 		ASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::WeaponOvercharge::AutoAim());
 		if (Start != EStart::OverchargeFirst)
 		{
-			Combat->ApplyFireInput(true);
+			// 로컬 Press는 TryStartAttack이 Combat과 이동 입력 순번에 함께 기록한다.
+			// Combat만 미리 Held로 바꾸면 이동 입력 기록이 생략되어 첫 Tick에 Hold를 잃는다.
 			Combat->TryStartAttack();
 			if (!TestEqual(TEXT("Initial press resolves an actual server shot"), Target->ShotTimes.Num(), 1)) return false;
 			if (bReloadStart && !TestTrue(TEXT("Last round enters actual automatic reload"),
@@ -2502,7 +2562,6 @@ bool FOutlierWeaponOverchargeFireContinuityTest::RunTest(const FString& Paramete
 		TestEqual(TEXT("Repeated begin cannot inject an extra shot"), Target->ShotTimes.Num(), BeforeTransition);
 		if (Start == EStart::OverchargeFirst)
 		{
-			Combat->ApplyFireInput(true);
 			Combat->TryStartAttack();
 		}
 		else if (Start == EStart::ReleasedBeforeRetry)
@@ -2562,7 +2621,6 @@ bool FOutlierWeaponOverchargeFireContinuityTest::RunTest(const FString& Paramete
 			// 보고된 교체 복구도 실제 같은 Rifle을 다시 장착하여 검증한다.
 			Shooter->AFirstPersonCharacter::EquipWeapon(Rifle);
 			Combat->RefreshWeaponMode();
-			Combat->ApplyFireInput(true);
 			Combat->TryStartAttack();
 			TestEqual(TEXT("The same BP_Rifle fires normally after re-equipping"), Target->ShotTimes.Num(), BeforeReleaseWait + 1);
 			Combat->TryStopAttack();

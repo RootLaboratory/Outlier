@@ -195,7 +195,13 @@ bool FOutlierDeathDebrisLifecycleTest::RunTest(const FString& Parameters)
 	{
 		AFirstPersonPlayerController* Controller = World->SpawnActor<AFirstPersonPlayerController>();
 		UNetDriver* Driver = NewObject<UNetDriver>(World, DriverClass);
-		Driver->ServerConnection = NewObject<UNetConnection>(Driver, ConnectionClass);
+		UNetConnection* Connection = NewObject<UNetConnection>(Driver, ConnectionClass);
+		Driver->ServerConnection = Connection;
+		// 역할 판정만 하는 연결도 종료 시 로그인 상태를 정리할 Driver가 필요하다.
+		// 실제 접속 대기가 아니므로 전송을 닫고 PendingConnectionLost 알림을 억제한다.
+		Connection->Driver = Driver;
+		Connection->SetConnectionState(USOCK_Closed);
+		Connection->SetClientLoginState(EClientLoginState::ReceivedJoin);
 		World->SetNetDriver(Driver);
 		TestEqual(TEXT("Reconnect fixture is a client"), World->GetNetMode(), NM_Client);
 		Arena->GameplayGeneration = 0;
@@ -206,8 +212,15 @@ bool FOutlierDeathDebrisLifecycleTest::RunTest(const FString& Parameters)
 				Arena->IsDeathDebrisGenerationCurrent(CurrentGeneration));
 			Controller->ClientPrepareForArenaExit_Implementation();
 		}
+		// 연결이 Driver를 사용할 수 있을 때 먼저 정리한다. 이후 GC의 FinishDestroy가
+		// CleanUp을 재호출해도 이미 CleanedUp 상태이므로 Driver를 다시 조회하지 않는다.
+		Connection->CleanUp();
+		TestNull(TEXT("Reconnect cleanup detaches the server connection"), Driver->ServerConnection.Get());
+		TestNull(TEXT("Reconnect cleanup releases its driver"), Connection->Driver.Get());
+		TestEqual(TEXT("Reconnect cleanup finishes login state"), Connection->ClientLoginState, EClientLoginState::CleanedUp);
+		Connection->CleanUp();
+		TestEqual(TEXT("GC cleanup can repeat safely"), Connection->ClientLoginState, EClientLoginState::CleanedUp);
 		World->SetNetDriver(nullptr);
-		Driver->ServerConnection = nullptr;
 	}
 	return true;
 }

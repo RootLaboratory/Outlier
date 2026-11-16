@@ -282,6 +282,17 @@ bool RunProbeCase(FAutomationTestBase& Test, EWeaponType SourceType, EProbeVaria
 	Controller->SetAsLocalPlayerController();
 	Controller->SetControlRotation(FRotator::ZeroRotator);
 	Shooter->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	// Rifle은 Suit 상태에서만 사용하는 현재 계약에 맞춰 두 방향의 교체를 측정한다.
+	// 초기 소유자 Raise도 서버 ActionLock보다 늦게 끝날 수 있으므로 실제 Tick으로 기다린다.
+	if (!Shooter->SetSuitPresentation(true))
+	{
+		Test.AddError(TEXT("Equip probe requires Suit presentation for the rifle"));
+		return false;
+	}
+	for (int32 Frame = 0; Frame < 360 && Shooter->IsWeaponEquipInputBlocked(); ++Frame)
+	{
+		TickProbeWorld(Fixture.World);
+	}
 	USkeletalMeshComponent* Arms = Shooter->GetFirstPersonMesh();
 	if (Arms && !Arms->GetAnimInstance())
 	{
@@ -347,14 +358,17 @@ bool RunProbeCase(FAutomationTestBase& Test, EWeaponType SourceType, EProbeVaria
 	Inventory->HandleEquipWeapon(Source);
 	if (Shooter->GetCurrentWeapon() != Source)
 	{
-		Test.AddError(TEXT("Shooter could not equip the source weapon"));
+		Test.AddError(FString::Printf(TEXT("Shooter could not equip the source weapon: Weapon=%s Dead=%d SuitBlocked=%d EquipBlocked=%d Lock=%d Presentation=%d"),
+			*GetNameSafe(Source), Shooter->IsDead(), Shooter->IsSuitTransitionBlocked(),
+			Shooter->IsWeaponEquipInputBlocked(), static_cast<int32>(Shooter->GetActionLock()),
+			static_cast<int32>(Shooter->GetAppliedPresentation())));
 		return false;
 	}
-	for (int32 Frame = 0; Frame < 360 && Shooter->IsActionLocked(); ++Frame)
+	for (int32 Frame = 0; Frame < 360 && Shooter->IsWeaponEquipInputBlocked(); ++Frame)
 	{
 		TickProbeWorld(Fixture.World);
 	}
-	if (Shooter->IsActionLocked())
+	if (Shooter->IsWeaponEquipInputBlocked())
 	{
 		Test.AddError(TEXT("Source Equip did not finish"));
 		return false;
@@ -576,8 +590,21 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 			}
 			if (Variant == EProbeVariant::Baseline && !NoBlend.IsEmpty())
 			{
-				TestTrue(FString::Printf(TEXT("%s blended first-frame hand step"), Direction),
-					Samples[0].HandStep <= NoBlend[0].HandStep + 0.01f);
+				// 교체 블렌드는 절차 포즈 채널을 유지한다. 왼손의 최종 월드 이동은
+				// 새 무기의 그립 IK도 포함하므로 NoBlend보다 작아야 하는 값이 아니다.
+				TestTrue(FString::Printf(TEXT("%s retains the first-frame procedural pose"), Direction),
+					FMath::IsNearlyZero(Samples[0].HipStep)
+					&& FMath::IsNearlyZero(Samples[0].WeaponRootStep)
+					&& FMath::IsNearlyZero(Samples[0].RightHandIKStep));
+				if (!TestEqual(TEXT("Blended and unblended probes cover the same frames"), Samples.Num(), NoBlend.Num()))
+				{
+					return false;
+				}
+				for (int32 Index = 0; Index < Samples.Num(); ++Index)
+				{
+					TestEqual(TEXT("Pose blending preserves hand-to-grip convergence"), Samples[Index].HandGripGap, NoBlend[Index].HandGripGap);
+					TestEqual(TEXT("Pose blending preserves IK-to-grip convergence"), Samples[Index].IKGripGap, NoBlend[Index].IKGripGap);
+				}
 				TestTrue(FString::Printf(TEXT("%s blended first-frame Hip step"), Direction),
 					Samples[0].HipStep <= NoBlend[0].HipStep + 0.01f);
 				TestTrue(FString::Printf(TEXT("%s blended first-frame WeaponRoot step"), Direction),

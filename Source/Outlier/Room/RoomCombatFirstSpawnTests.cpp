@@ -14,6 +14,7 @@
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "TimerManager.h"
 #include "UObject/UnrealType.h"
 
@@ -285,6 +286,8 @@ bool FElevatorMultiPhaseCombatTest::RunTest(const FString& Parameters)
 		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
 		FRoomCombatRoomDefinition& Encounter = Definition->RoomDefinitions.AddDefaulted_GetRef();
 		Encounter.RoomTag = Controller->CombatRoomTag;
+		// 터렛 BeginPlay의 등록 검사는 실제 전투 명세를 읽는다. 로스터를 만들기 전에 연결한다.
+		Combat->SetCombatDefinitionForTesting(Definition);
 		TArray<AAutoTurret*> Turrets;
 		for (int32 Phase = 0; Phase < PhaseCount; ++Phase)
 		{
@@ -405,13 +408,19 @@ bool FElevatorMultiPhaseCancellationTest::RunTest(const FString& Parameters)
 	(void)Parameters;
 	FFirstSpawnTestWorld Fixture;
 	UWorld* World = Fixture.World;
-	if (!TestNotNull(TEXT("Cancellation world"), World)) return false;
+	if (!TestNotNull(TEXT("Cancellation world"), World))
+	{
+		return false;
+	}
 	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
 	UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
 	AElevatorShaftController* Controller = World->SpawnActor<AElevatorShaftController>();
 	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
 	if (!TestNotNull(TEXT("Combat"), Combat) || !TestNotNull(TEXT("Adaptation"), Adaptation)
-		|| !TestNotNull(TEXT("Controller"), Controller) || !TestNotNull(TEXT("Room"), Room)) return false;
+		|| !TestNotNull(TEXT("Controller"), Controller) || !TestNotNull(TEXT("Room"), Room))
+	{
+		return false;
+	}
 	Adaptation->OnWorldBeginPlay(*World);
 	Controller->Combat = Combat;
 	Controller->Motion.ExecutionId = FGuid::NewGuid();
@@ -422,20 +431,40 @@ bool FElevatorMultiPhaseCancellationTest::RunTest(const FString& Parameters)
 	Automatic.DelayBeforeStartSeconds = 0.2f;
 	Definition->RoomDefinitions[0].CombatPhases.Add(Automatic);
 	Combat->SetCombatDefinitionForTesting(Definition);
-	AAutoTurret* First = SpawnWaveZeroTurret(World, Controller->CombatRoomTag, TEXT("Turret.Cancel.0"));
-	AAutoTurret* Second = SpawnWaveZeroTurret(World, Controller->CombatRoomTag, TEXT("Turret.Cancel.1"));
-	AAutoTurret* Later = World->SpawnActorDeferred<AAutoTurret>(AAutoTurret::StaticClass(), FTransform::Identity);
-	if (!TestNotNull(TEXT("First"), First) || !TestNotNull(TEXT("Second"), Second)
-		|| !TestNotNull(TEXT("Later"), Later)) return false;
-	Later->ConfigureWaveRegistrationForTesting(Controller->CombatRoomTag, 1, 0, TEXT("Turret.Cancel.Later"));
-	Later->FinishSpawning(FTransform::Identity);
-	if (!Later->HasActorBegunPlay()) Later->DispatchBeginPlay();
-	// 두 번째 차수도 명세와 같은 수의 터렛을 갖추되, 취소 전에는 죽이지 않는다.
-	Definition->RoomDefinitions[0].CombatPhases[1].Waves[0].ExpectedWaveTurretCount = 1;
-	Combat->OnCombatLifecycleEvent.AddUObject(Controller, &AElevatorShaftController::OnCombatEvent);
+	UOutlierSaveSubSystem* Save = Fixture.GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	if (!TestNotNull(TEXT("Checkpoint save subsystem"), Save))
+	{
+		return false;
+	}
+	const FOutlierWorldProgressSnapshot InitialWorldProgress = Save->GetCurrentWorldProgress();
+	const TMap<FGameplayTag, FOutlierRoomPhaseProgress> InitialPhaseProgress = Save->GetCurrentRoomPhaseProgress();
+	const TSet<FName> InitialDestroyedTurrets = Save->GetCurrentDestroyedTurretIds();
 	FRoomCombatLifecycleEvent PreviousCancel;
 	for (int32 Attempt = 0; Attempt < 3; ++Attempt)
 	{
+		// 같은 Controller에서 체크포인트 진행만 복원한다. 과거 실행의 늦은 응답도 같은 객체에 전달한다.
+		// 터렛은 새로 생성해 이미 죽은 액터 상태를 다음 재시도에 물려주지 않는다.
+		Save->RestoreCurrentWorldProgress(InitialWorldProgress);
+		Save->RestoreCurrentRoomPhaseProgress(InitialPhaseProgress);
+		Save->RestoreCurrentDestroyedTurretIds(InitialDestroyedTurrets);
+		Controller->Motion.ExecutionId = FGuid::NewGuid();
+		AAutoTurret* First = SpawnWaveZeroTurret(World, Controller->CombatRoomTag, TEXT("Turret.Cancel.0"));
+		AAutoTurret* Second = SpawnWaveZeroTurret(World, Controller->CombatRoomTag, TEXT("Turret.Cancel.1"));
+		AAutoTurret* Later = World->SpawnActorDeferred<AAutoTurret>(AAutoTurret::StaticClass(), FTransform::Identity);
+		if (!TestNotNull(TEXT("First"), First) || !TestNotNull(TEXT("Second"), Second)
+			|| !TestNotNull(TEXT("Later"), Later))
+		{
+			return false;
+		}
+		Later->ConfigureWaveRegistrationForTesting(Controller->CombatRoomTag, 1, 0, TEXT("Turret.Cancel.Later"));
+		Later->FinishSpawning(FTransform::Identity);
+		if (!Later->HasActorBegunPlay())
+		{
+			Later->DispatchBeginPlay();
+		}
+		// 두 번째 차수도 명세와 같은 수의 터렛을 갖추되, 취소 전에는 죽이지 않는다.
+		Definition->RoomDefinitions[0].CombatPhases[1].Waves[0].ExpectedWaveTurretCount = 1;
+		Combat->OnCombatLifecycleEvent.AddUObject(Controller, &AElevatorShaftController::OnCombatEvent);
 		TestTrue(TEXT("Retry registers a fresh Room"), Combat->RegisterRoom(Room, Controller->CombatRoomTag));
 		TestTrue(TEXT("Retry captures fresh context"), Combat->CreateTriggerContext(Controller, Controller->CombatRoomTag,
 			FGameplayTag(), Controller->CombatContext));
@@ -448,10 +477,22 @@ bool FElevatorMultiPhaseCancellationTest::RunTest(const FString& Parameters)
 		for (int32 InvalidCase = 0; InvalidCase < 4; ++InvalidCase)
 		{
 			FRoomCombatLifecycleEvent Invalid = Cancel;
-			if (InvalidCase == 0) Invalid.RoomTag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.2"));
-			if (InvalidCase == 1) ++Invalid.GameplayGeneration;
-			if (InvalidCase == 2) Invalid.RoomRegistrationId = FGuid::NewGuid();
-			if (InvalidCase == 3) Invalid.ExecutionId = FGuid::NewGuid();
+			if (InvalidCase == 0)
+			{
+				Invalid.RoomTag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.2"));
+			}
+			if (InvalidCase == 1)
+			{
+				++Invalid.GameplayGeneration;
+			}
+			if (InvalidCase == 2)
+			{
+				Invalid.RoomRegistrationId = FGuid::NewGuid();
+			}
+			if (InvalidCase == 3)
+			{
+				Invalid.ExecutionId = FGuid::NewGuid();
+			}
 			Controller->OnCombatEvent(Invalid);
 			TestEqual(TEXT("Invalid cancellation does not change current execution"), Controller->Motion.ExecutionId, Execution);
 		}
@@ -477,8 +518,14 @@ bool FElevatorMultiPhaseCancellationTest::RunTest(const FString& Parameters)
 			Later->NotifyDeploySequenceFinished(Later->GetRoomWaveGameplayGeneration(), Later->GetRoomWaveActivationSerial());
 			TestFalse(TEXT("Later phase is now active"), Combat->IsPhaseDelayPending(Controller->CombatRoomTag));
 		}
-		if (Attempt == 2) Combat->ResetRuntimeCombatState();
-		else Combat->UnregisterRoom(Room);
+		if (Attempt == 2)
+		{
+			Combat->ResetRuntimeCombatState();
+		}
+		else
+		{
+			Combat->UnregisterRoom(Room);
+		}
 		TestEqual(TEXT("Later-phase cancellation resets Controller"), Controller->GetShaftState(), EElevatorShaftState::WaitingForPair);
 		TestTrue(TEXT("Cancellation invalidates old execution"), Controller->Motion.ExecutionId != Execution);
 		TestFalse(TEXT("Cancellation releases checkpoint deferral"), Combat->IsCombatPhaseCheckpointDeferred(
@@ -487,8 +534,11 @@ bool FElevatorMultiPhaseCancellationTest::RunTest(const FString& Parameters)
 		Fixture.AdvanceTimers();
 		TestFalse(TEXT("Old delay cannot restart removed Room"), Combat->IsRoomRegistered(Controller->CombatRoomTag));
 		PreviousCancel = Cancel;
+		Combat->OnCombatLifecycleEvent.RemoveAll(Controller);
+		First->Destroy();
+		Second->Destroy();
+		Later->Destroy();
 	}
-	Combat->OnCombatLifecycleEvent.RemoveAll(Controller);
 	return true;
 }
 

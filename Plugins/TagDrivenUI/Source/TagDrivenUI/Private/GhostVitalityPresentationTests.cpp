@@ -6,6 +6,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "Components/TextBlock.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/Engine.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "Misc/AutomationTest.h"
@@ -24,6 +25,8 @@ bool FGhostVitalityHudTest::RunTest(const FString& Parameters)
 	Hud->HPBar = Health;
 	Hud->ShieldBar = Shield;
 	Hud->HPText = NewObject<UTextBlock>(Hud);
+	// 실제 Slate를 유지해야 HUD의 표시 상태에 따라 피해 애니메이션 정책이 적용된다.
+	const TSharedRef<SWidget> HudSlate = Hud->TakeWidget();
 	Hud->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	Hud->SetHealthState(100.0f, 100.0f);
 	Hud->SetShieldState(100.0f, 100.0f);
@@ -51,6 +54,7 @@ bool FGhostVitalityHudTest::RunTest(const FString& Parameters)
 
 	UPartnerHealthUI* Partner = NewObject<UPartnerHealthUI>();
 	Partner->HPBar = NewObject<UGhostProgressBar>(Partner);
+	const TSharedRef<SWidget> PartnerSlate = Partner->TakeWidget();
 	Partner->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	Partner->SetHealthState(100.0f, 100.0f);
 	Partner->SetHealthState(40.0f, 100.0f);
@@ -66,7 +70,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGhostVitalityStreamTest, "Outlier.UI.GhostProg
 
 bool FGhostVitalityStreamTest::RunTest(const FString& Parameters)
 {
-	ULocalPlayer* Player = NewObject<ULocalPlayer>();
+	ULocalPlayer* Player = NewObject<ULocalPlayer>(GEngine);
 	ULocalPlayerUISubSystem* UI = NewObject<ULocalPlayerUISubSystem>(Player);
 	FOutlierVitalityPresentationUpdate Update;
 	Update.Source = GetMutableDefault<AActor>();

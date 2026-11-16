@@ -5,6 +5,7 @@
 #include "Input/OutlierInputBindingSettings.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/Engine.h"
 #include "EnhancedActionKeyMapping.h"
 #include "InputAction.h"
 #include "InputMappingContext.h"
@@ -243,7 +244,7 @@ bool FLinkedInputBindingLifecycleTest::RunTest(const FString& Parameters)
 	Settings->ChooseLinkedBindingKey(Table, Game, Key, bNeedsSync, Error);
 	TestEqual(TEXT("Disagreeing linked-only overrides use representative default"), Key, EKeys::W);
 	TestTrue(TEXT("Disagreement requires repair"), bNeedsSync);
-	ULocalPlayer* Player = NewObject<ULocalPlayer>();
+	ULocalPlayer* Player = NewObject<ULocalPlayer>(GEngine);
 	ULocalPlayerSettingsSubsystem* Subsystem = NewObject<ULocalPlayerSettingsSubsystem>(Player);
 	FLinkedInputBindingSettingsTestAccess::Bind(Subsystem, Settings, Table);
 	FLinkedInputBindingSettingsTestAccess::Synchronize(Subsystem);

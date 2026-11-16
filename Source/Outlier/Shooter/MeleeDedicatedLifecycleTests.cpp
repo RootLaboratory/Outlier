@@ -3,6 +3,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterAnimInstance.h"
 #include "Weapon/MeleeWeaponBase.h"
+#include "Weapon/WeaponCoreRow.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/ActiveMontageInstanceScope.h"
@@ -36,6 +37,7 @@ struct FMeleeDedicatedWorld
 	UGameInstance* Instance = nullptr;
 	AShooterCharacter* Shooter = nullptr;
 	AMeleeWeaponBase* Hammer = nullptr;
+	float ExpectedHammerDamage = 0.0f;
 	APlayerController* Controller = nullptr;
 	float RequestedPitch = 0;
 	bool bUsePawnViewForCamera = false;
@@ -79,6 +81,25 @@ struct FMeleeDedicatedWorld
 		if (!Test.TestNotNull(TEXT("Production Shooter"), Shooter)
 			|| !Test.TestNotNull(TEXT("Production Hammer"), Hammer)
 			|| !Test.TestNotNull(TEXT("Server player controller"), Controller)) return false;
+		// 생성자 기본값 대신 실제 BP가 선택한 밸런스 행을 기준으로 1회 피해를 검증한다.
+		const FStructProperty* CoreProperty = FindFProperty<FStructProperty>(HammerClass, TEXT("WeaponCoreRow"));
+		if (!Test.TestNotNull(TEXT("Production hammer core row property"), CoreProperty))
+		{
+			return false;
+		}
+		const FDataTableRowHandle* CoreHandle = CoreProperty->ContainerPtrToValuePtr<FDataTableRowHandle>(Hammer);
+		const FWeaponCoreRow* CoreRow = CoreHandle->GetRow<FWeaponCoreRow>(TEXT("MeleeDedicatedExpectedDamage"));
+		if (!Test.TestNotNull(TEXT("Production hammer authored core row"), CoreRow))
+		{
+			return false;
+		}
+		ExpectedHammerDamage = CoreRow->Damage;
+		if (!Test.TestTrue(TEXT("Authored hammer has positive damage"), ExpectedHammerDamage > 0.0f)
+			|| !Test.TestEqual(TEXT("Production hammer resolves a melee core row"), CoreRow->WeaponType, EWeaponType::Melee)
+			|| !Test.TestEqual(TEXT("Production hammer loads authored damage"), Hammer->GetDamageAtDistance(0.0f), ExpectedHammerDamage))
+		{
+			return false;
+		}
 		Controller->Possess(Shooter);
 		if (!bDedicated)
 		{
@@ -260,7 +281,7 @@ bool FOutlierMeleeDedicatedLifecycleTest::RunTest(const FString& Parameters)
 			const float HealthBefore = Target->GetCurrentHealth();
 			FVector SecondContact = FVector::ZeroVector;
 			Fixture.RunSwing(*this, SecondContact);
-			TestEqual(TEXT("Real montage applies exactly one production hammer hit"), HealthBefore - Target->GetCurrentHealth(), 50.0f);
+			TestEqual(TEXT("Real montage applies exactly one production hammer hit"), HealthBefore - Target->GetCurrentHealth(), Fixture.ExpectedHammerDamage);
 			AddInfo(FString::Printf(TEXT("[MeleeDedicated] Suit=%d Pitch=%.1f Target=%s HPBefore=%.1f HPAfter=%.1f"),
 				bSuit, Pitch, *Contact.ToString(), HealthBefore, Target->GetCurrentHealth()));
 		}
@@ -469,7 +490,7 @@ bool FOutlierMeleeDedicatedAimCoverageTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("Coverage swing completes"), Fixture.Hammer->GetAttackPhase(), EMeleeAttackPhase::Idle);
 			const float Damage = HealthBefore - Target->GetCurrentHealth();
 			TestTrue(TEXT("Coverage cell takes either zero or one normal hit"),
-				FMath::IsNearlyZero(Damage) || FMath::IsNearlyEqual(Damage, 50.0f));
+				FMath::IsNearlyZero(Damage) || FMath::IsNearlyEqual(Damage, Fixture.ExpectedHammerDamage));
 			if (Damage > 0)
 			{
 				if (Lateral < 0) ++LeftHits;
@@ -573,6 +594,11 @@ struct FMeleeSweepObservation : FOutputDevice
 	}
 	~FMeleeSweepObservation() { GLog->RemoveOutputDevice(this); }
 
+	// 버퍼링된 로그는 로그 스레드에서 전달되어 게임 프레임을 잃는다. 발생 스레드에서
+	// 동기 수신하되 아래 필터로 게임 스레드의 관찰만 저장한다.
+	virtual bool CanBeUsedOnAnyThread() const override { return true; }
+	virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
+
 	virtual void Serialize(const TCHAR* Message, ELogVerbosity::Type Verbosity, const FName& Category) override
 	{
 		if (!IsInGameThread() || Category != TEXT("LogMeleeDiagnostics")) return;
@@ -675,7 +701,7 @@ bool FOutlierMeleeRemoteMoveNotifyContinuityTest::RunTest(const FString& Paramet
 		TestTrue(*(Case + TEXT(" trace follows moving hammer sockets")), Observation.GetTravel() > 20.0f);
 		TestEqual(*(Case + TEXT(" one TraceBegin per attack")), Observation.TraceBegins, 1);
 		TestEqual(*(Case + TEXT(" one TraceEnd per attack")), Observation.TraceEnds, 1);
-		TestEqual(*(Case + TEXT(" fixed forward target takes one hammer hit")), HealthBefore - Target->GetCurrentHealth(), 50.0f);
+		TestEqual(*(Case + TEXT(" fixed forward target takes one hammer hit")), HealthBefore - Target->GetCurrentHealth(), Fixture.ExpectedHammerDamage);
 	}
 	return !HasAnyErrors();
 }

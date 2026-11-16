@@ -116,12 +116,19 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 				UClass* PistolClass = LoadClass<ARangedWeaponBase>(nullptr,
 					TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
 				ARangedWeaponBase* Pistol = PistolClass ? World->SpawnActor<ARangedWeaponBase>(PistolClass) : nullptr;
-				if (!TestNotNull(TEXT("Reload weapon fixture"), Pistol)) return false;
+				if (!TestNotNull(TEXT("Reload weapon fixture"), Pistol))
+				{
+					return false;
+				}
 				Shooter->AFirstPersonCharacter::EquipWeapon(Pistol);
 				Shooter->RefreshWeaponMode();
 				// 이동 잠금 검증은 몽타주 재생 조건과 분리하고, 완료 처리는 실제 경로를 사용한다.
 				const auto BeginReloadFixture = [&]()
 				{
+					// 완료 콜백은 현재 무기와 장착 세대가 일치하는 Reload만 종료한다.
+					// 몽타주를 생략하는 상태 fixture도 같은 수명주기 식별자를 준비한다.
+					Combat->ActiveReloadWeapon = Pistol;
+					Combat->ActiveReloadEquipGeneration = Shooter->GetEquipActionGeneration();
 					Combat->bIsReloading = true;
 					Shooter->BeginActionLock(EShooterActionLock::Reload);
 					Shooter->CombatState = ECombatState::Reload;

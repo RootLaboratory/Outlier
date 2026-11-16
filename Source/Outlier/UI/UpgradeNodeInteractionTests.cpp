@@ -3,6 +3,7 @@
 #include "UI/UpgradeNodeWidget.h"
 #include "UI/UpgradeDescWidget.h"
 
+#include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/Image.h"
@@ -218,6 +219,7 @@ struct FUpgradeNodeInteractionTestAccess
 	static void BindPreviewVisibility(UUpgradeDescWidget* Desc) { Desc->BindPreviewVisibility(); }
 	static void DestructDescription(UUpgradeDescWidget* Desc) { Desc->NativeDestruct(); }
 	static void AddPopupRetainer(UUpgradeDescWidget* Desc) { Desc->PopupRetainer = NewObject<UPopupRetainerBox>(Desc); }
+	static void RemovePopupRetainer(UUpgradeDescWidget* Desc) { Desc->PopupRetainer = nullptr; }
 	static void FinishPopupClose(UUpgradeDescWidget* Desc) { Desc->HandlePopupClosed(); }
 };
 
@@ -797,6 +799,8 @@ bool FUpgradeFillStateTest::RunTest(const FString& Parameters)
 	UUpgradeNodeWidget* Node = Access::MakeNode();
 	Access::ConfigureAppearance(Node, nullptr);
 	UImage* Fill = Access::ConfigureFill(Node, Material);
+	const TSharedRef<SWidget> FillSlate = Fill->TakeWidget();
+	Access::RefreshAppearance(Node);
 	UMaterialInstanceDynamic* FillMID = Access::FillMaterial(Node);
 	if (!TestNotNull(TEXT("Background has a state material"), FillMID)) return false;
 	TestEqual(TEXT("Idle starts at the base state"), Access::MaterialProgress(FillMID), 0.0f);
@@ -928,6 +932,8 @@ bool FUpgradeHoverAppearanceTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Leaving restores the frame state color"), Color, StateColor);
 		TestEqual(TEXT("Only activated nodes keep Glow after leaving"), Access::GlowImage(Node)->GetRenderOpacity(), bActivated ? 1.0f : 0.0f);
 	}
+	const TSharedRef<SWidget> FrameSlate = Access::FrameImage(Node)->TakeWidget();
+	Access::RefreshAppearance(Node);
 	TestTrue(TEXT("Frame cannot intercept input"), Access::FrameImage(Node)->GetVisibility() == ESlateVisibility::HitTestInvisible);
 	TestTrue(TEXT("Icon cannot intercept input"), Access::IconImage(Node)->GetVisibility() == ESlateVisibility::HitTestInvisible);
 	// 일반 이미지 모드도 디자이너에서 지정한 Tint를 잃지 않고 되돌아와야 한다.
@@ -1070,7 +1076,7 @@ bool FUpgradeUnlockMissingMaterialTest::RunTest(const FString& Parameters)
 {
 	using Access = FUpgradeNodeInteractionTestAccess;
 	UUpgradeNodeWidget* Node = Access::MakeNode();
-	AddExpectedError(TEXT("[Upgrade.Unlock] Invalid UnlockLock"), EAutomationExpectedErrorFlags::Contains, 1);
+	AddExpectedErrorPlain(TEXT("[Upgrade.Unlock] Invalid UnlockLock"), EAutomationExpectedErrorFlags::Contains, 1);
 	Access::ConfigureUnlock(Node, nullptr);
 	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
 	TestFalse(TEXT("Missing material never leaves an unlock wait"), Node->IsUnlockPresentationPlaying());
@@ -1125,9 +1131,12 @@ bool FUpgradeDescHoverLifetimeTest::RunTest(const FString& Parameters)
 		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
 	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
 	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	// 실제 가시성/부모 숨김 경로를 검증하도록 Slate 수명을 테스트 끝까지 보존한다.
+	const TSharedRef<SWidget> DescSlate = Desc->TakeWidget();
 	Access::AddPopupRetainer(Desc);
 	UCanvasPanel* Canvas = NewObject<UCanvasPanel>();
 	Canvas->AddChild(Desc);
+	const TSharedRef<SWidget> CanvasSlate = Canvas->TakeWidget();
 	UUpgradeNodeWidget* Node = NewObject<UUpgradeNodeWidget>();
 	Canvas->AddChild(Node);
 	Node->SetUpgradeDescWidget(Desc);
@@ -1171,11 +1180,14 @@ bool FUpgradeDescPreviewStateTest::RunTest(const FString& Parameters)
 		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
 	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
 	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	// 실제 가시성/부모 숨김 경로를 검증하도록 Slate 수명을 테스트 끝까지 보존한다.
+	const TSharedRef<SWidget> DescSlate = Desc->TakeWidget();
 	UFileMediaSource* SourceA = NewObject<UFileMediaSource>(Desc);
 	UFileMediaSource* SourceB = NewObject<UFileMediaSource>(Desc);
 	const FOutlierUpgradeNodeRow Row;
 	UCanvasPanel* Canvas = NewObject<UCanvasPanel>();
 	Canvas->AddChild(Desc);
+	const TSharedRef<SWidget> CanvasSlate = Canvas->TakeWidget();
 	UUpgradeNodeWidget* NodeA = NewObject<UUpgradeNodeWidget>();
 	UUpgradeNodeWidget* NodeB = NewObject<UUpgradeNodeWidget>();
 	for (UUpgradeNodeWidget* Node : { NodeA, NodeB })
@@ -1200,6 +1212,7 @@ bool FUpgradeDescPreviewStateTest::RunTest(const FString& Parameters)
 	TestNull(TEXT("Legacy injection without RowName cannot reuse previous media"), Access::PreviewSource(Desc));
 
 	Access::SetPreviewImage(Desc);
+	const TSharedRef<SWidget> PreviewSlate = Access::PreviewImage(Desc)->TakeWidget();
 	Desc->UpdateNodeData(TEXT("A"), Row, EOutlierUpgradeNodeState::Locked, 0, false);
 	Access::SeedPreviewSession(Desc);
 	UMediaPlayer* Session = Access::PreviewPlayer(Desc);
@@ -1217,6 +1230,9 @@ bool FUpgradeDescPreviewStateTest::RunTest(const FString& Parameters)
 	}
 	Desc->HideNodeData(TEXT("B"));
 	TestTrue(TEXT("Another node cannot close this session"), Access::PreviewPlayer(Desc) == Session);
+	// TakeWidget은 BP의 Retainer도 바인딩한다. 이 사례는 닫힘 애니메이션이 없는
+	// 위젯의 즉시 정리 경로를 검사하므로 해당 선택 바인딩을 명시적으로 비운다.
+	Access::RemovePopupRetainer(Desc);
 	Desc->HideNodeData(TEXT("A"));
 	TestNull(TEXT("Closing without a retainer releases the player"), Access::PreviewPlayer(Desc));
 	TestNull(TEXT("Closing clears the image resource"), Access::PreviewImage(Desc)->GetBrush().GetResourceObject());
@@ -1234,7 +1250,10 @@ bool FUpgradeDescPreviewLifetimeTest::RunTest(const FString& Parameters)
 		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
 	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
 	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	// 실제 가시성/부모 숨김 경로를 검증하도록 Slate 수명을 테스트 끝까지 보존한다.
+	const TSharedRef<SWidget> DescSlate = Desc->TakeWidget();
 	Access::SetPreviewImage(Desc);
+	const TSharedRef<SWidget> PreviewSlate = Access::PreviewImage(Desc)->TakeWidget();
 	Desc->ShowNodeData(TEXT("A"), FOutlierUpgradeNodeRow(), EOutlierUpgradeNodeState::Locked, 0, false, nullptr);
 	TestTrue(TEXT("Missing media still opens the description"), Access::DescriptionOpen(Desc));
 	TestFalse(TEXT("Missing media hides only the preview"), Access::PreviewImage(Desc)->IsVisible());
@@ -1266,8 +1285,13 @@ bool FUpgradeDescPreviewLifetimeTest::RunTest(const FString& Parameters)
 
 	// 부모 숨김은 자식의 NativeDestruct를 호출하지 않을 수 있어 실제 가시성 이벤트로 검증한다.
 	UUpgradeDescWidget* Parent = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
-	UCanvasPanel* Canvas = NewObject<UCanvasPanel>(Parent);
+	const TSharedRef<SWidget> ParentSlate = Parent->TakeWidget();
+	Parent->SetVisibility(ESlateVisibility::Visible);
+	// 일반 UWidget의 FieldNotify는 소유 WidgetTree의 확장에 등록된다.
+	// 실제 UMG와 같은 Outer로 생성해야 중간 Panel의 가시성 변경도 전달된다.
+	UCanvasPanel* Canvas = Parent->WidgetTree->ConstructWidget<UCanvasPanel>();
 	Canvas->AddChild(Desc);
+	const TSharedRef<SWidget> CanvasSlate = Canvas->TakeWidget();
 	Access::SeedPreviewSession(Desc);
 	Access::BindPreviewVisibility(Desc);
 	Parent->SetVisibility(ESlateVisibility::Collapsed);

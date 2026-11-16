@@ -65,7 +65,7 @@ bool FAutoTurretOutlineEligibilityTest::RunTest(const FString& Parameters)
 		APlayerController* Viewer = World->SpawnActor<APlayerController>();
 		if (TestNotNull(TEXT("Stencil subsystem"), Stencils) && TestNotNull(TEXT("Local viewer"), Viewer))
 		{
-			Viewer->Player = NewObject<ULocalPlayer>();
+			Viewer->Player = NewObject<ULocalPlayer>(GEngine);
 			TestTrue(TEXT("Viewer is local without a network driver"), Viewer->IsLocalController());
 			USkeletalMeshComponent* Body = Turret->GetMesh();
 			USkeletalMeshComponent* Head = Turret->TurretHeadMesh;

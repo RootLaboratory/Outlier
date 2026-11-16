@@ -20,6 +20,7 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "UObject/UnrealType.h"
 #include "Misc/PackageName.h"
+#include "Misc/ScopeExit.h"
 #endif
 
 namespace
@@ -312,11 +313,21 @@ bool FOutlierArenaGameplayPlacementTest::RunTest(const FString& Parameters)
 	(void)Parameters;
 
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	const bool bWasLoaded = Settings && Settings->ArenaLevel.IsValid();
 	UWorld* ArenaMap = Settings ? Settings->ArenaLevel.LoadSynchronous() : nullptr;
 	if (!TestNotNull(TEXT("Configured Arena map loads"), ArenaMap))
 	{
 		return false;
 	}
+	ON_SCOPE_EXIT
+	{
+		// 설정 검사 때문에 새로 로드한 Editor 월드도 서브시스템을 초기화할 수 있다.
+		// GC에 넘기기 전에 정리하되, 이미 열려 있던 월드의 수명은 건드리지 않는다.
+		if (!bWasLoaded && ArenaMap->IsInitialized())
+		{
+			ArenaMap->CleanupWorld();
+		}
+	};
 
 	TestFalse(TEXT("Arena Persistent is not a reloadable Gameplay level"),
 		UOutlierArenaSubsystem::IsGameplaySublevelPackage(

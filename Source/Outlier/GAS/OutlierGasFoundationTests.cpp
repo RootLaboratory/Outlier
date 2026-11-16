@@ -2070,15 +2070,32 @@ bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestTrue(TEXT("Disk Shooter suit table satisfies the exact schema"), OutlierShooterSuitData::TryResolveConfiguration(DiskTable, Config, Error));
-	TestEqual(TEXT("Disk Quantum Leap cooldown is 8 seconds"), Config.QuantumLeap.CooldownSeconds, 8.0f);
-	TestEqual(TEXT("Disk Quantum Leap cast time is 1 second"), Config.QuantumLeap.CastTimeSeconds, 1.0f);
-	TestEqual(TEXT("Disk Quantum Leap Partner offset is 50 centimeters"), Config.QuantumLeap.PartnerOffset, 50.0f);
-	TestEqual(TEXT("Disk Bullet Reflection radius is 20 meters"), Config.BulletReflection.ReflectionRadius, 2000.0f);
-	TestEqual(TEXT("Disk Bullet Reflection damage multiplier is one"), Config.BulletReflection.ReflectDamageMult, 1.0f);
-	TestEqual(TEXT("Disk Stealth duration is 5 seconds"), Config.Stealth.DurationSeconds, 5.0f);
-	TestEqual(TEXT("Disk Stealth cooldown is 8 seconds"), Config.Stealth.CooldownSeconds, 8.0f);
-	TestEqual(TEXT("Disk Weapon Overcharge duration is 8 seconds"), Config.WeaponOvercharge.DurationSeconds, 8.0f);
-	TestEqual(TEXT("Disk Weapon Overcharge shield drain is 12.5 per second"), Config.WeaponOvercharge.ShieldDrainPerSecond, 12.5f);
+	// 디스크의 밸런스 값은 기획 데이터가 정본이다. 과거 숫자를 고정하지 않고
+	// 행에서 읽은 각 설정이 resolver를 거쳐 같은 능력의 필드로 전달되는지 검사한다.
+	const auto* DiskQuantum = DiskTable->FindRow<FOutlierShooterSuitAbilityDataRow>(TEXT("QuantumLeap"), TEXT("DataContract"));
+	const auto* DiskReflection = DiskTable->FindRow<FOutlierShooterSuitAbilityDataRow>(TEXT("BulletReflection"), TEXT("DataContract"));
+	const auto* DiskStealth = DiskTable->FindRow<FOutlierShooterSuitAbilityDataRow>(TEXT("Stealth"), TEXT("DataContract"));
+	const auto* DiskOvercharge = DiskTable->FindRow<FOutlierShooterSuitAbilityDataRow>(TEXT("WeaponOvercharge"), TEXT("DataContract"));
+	if (!TestNotNull(TEXT("Disk Quantum Leap row"), DiskQuantum)
+		|| !TestNotNull(TEXT("Disk Reflection row"), DiskReflection)
+		|| !TestNotNull(TEXT("Disk Stealth row"), DiskStealth)
+		|| !TestNotNull(TEXT("Disk Overcharge row"), DiskOvercharge))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Disk Quantum Leap cooldown resolves"), Config.QuantumLeap.CooldownSeconds, DiskQuantum->CooldownSeconds);
+	TestEqual(TEXT("Disk Quantum Leap cast time resolves"), Config.QuantumLeap.CastTimeSeconds, DiskQuantum->CastTimeSeconds);
+	TestEqual(TEXT("Disk Quantum Leap Partner offset resolves"), Config.QuantumLeap.PartnerOffset, DiskQuantum->PartnerOffset);
+	TestEqual(TEXT("Disk Reflection radius resolves"), Config.BulletReflection.ReflectionRadius, DiskReflection->ReflectionRadius);
+	TestEqual(TEXT("Disk Reflection multiplier resolves"), Config.BulletReflection.ReflectDamageMult, DiskReflection->ReflectDamageMult);
+	TestEqual(TEXT("Disk Stealth duration resolves"), Config.Stealth.DurationSeconds, DiskStealth->DurationSeconds);
+	TestEqual(TEXT("Disk Stealth cooldown resolves"), Config.Stealth.CooldownSeconds, DiskStealth->CooldownSeconds);
+	TestEqual(TEXT("Disk Overcharge duration resolves"), Config.WeaponOvercharge.DurationSeconds, DiskOvercharge->DurationSeconds);
+	TestEqual(TEXT("Disk Overcharge shield drain resolves"), Config.WeaponOvercharge.ShieldDrainPerSecond, DiskOvercharge->ShieldDrainPerSecond);
+	TestTrue(TEXT("Disk active abilities have positive durations"), DiskReflection->DurationSeconds > 0.0f
+		&& DiskStealth->DurationSeconds > 0.0f && DiskOvercharge->DurationSeconds > 0.0f);
+	TestTrue(TEXT("Disk Quantum Leap cast and reflection radius are usable"), DiskQuantum->CastTimeSeconds > 0.0f
+		&& DiskReflection->ReflectionRadius > 0.0f && DiskReflection->ReflectDamageMult > 0.0f);
 	return true;
 }
 
@@ -2665,6 +2682,8 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Bullet Reflection fixture acquires the suit and ability grant"),
 		PrepareShooterSuitTest(Shooter, OutlierGameplayTags::Ability::Shooter::BulletReflection()));
 	FOutlierShooterSuitConfig ReflectionConfig = ShooterASC->GetShooterSuitConfig();
+	// 이 테스트의 만료 경계는 authored balance와 독립적인 4초 fixture다.
+	ReflectionConfig.BulletReflection.DurationSeconds = 4.0f;
 	ReflectionConfig.BulletReflection.CooldownSeconds = 20.0f;
 	TestTrue(TEXT("Bullet Reflection fixture configures its cooldown"), ShooterASC->UpdateShooterSuitConfig(ReflectionConfig));
 	TestTrue(

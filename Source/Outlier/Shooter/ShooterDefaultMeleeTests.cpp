@@ -11,6 +11,7 @@
 #include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
+#include "TimerManager.h"
 #include "UObject/UnrealType.h"
 #include "Weapon/WeaponBase.h"
 
@@ -22,6 +23,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
 	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
 		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
 	UClass* HammerClass = LoadClass<AWeaponBase>(nullptr,
@@ -53,6 +55,18 @@ bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 	World->AddToRoot();
 	Context.SetCurrentWorld(World);
 	World->InitializeActorsForPlay(FURL());
+	auto CompleteEquip = [this, World](AShooterCharacter* Pawn)
+	{
+		// 서버 완료 타이머와 소유자 Raise는 서로 다른 경계다. 잠금 bool만 내리지 않고
+		// 실제 두 완료 경로를 전진시켜 다음 장착 요청을 받을 수 있는 상태까지 기다린다.
+		for (int32 Frame = 0; Frame < 100 && Pawn->IsWeaponEquipInputBlocked(); ++Frame)
+		{
+			Pawn->UpdateLocalProceduralWeaponSwitch(0.05f);
+			++GFrameCounter;
+			World->GetTimerManager().Tick(0.05f);
+		}
+		return TestFalse(TEXT("Equip finishes both server and owner completion boundaries"), Pawn->IsWeaponEquipInputBlocked());
+	};
 	auto CleanupWorld = [World]()
 	{
 		GEngine->ShutdownWorldNetDriver(World);
@@ -146,6 +160,7 @@ bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 	Controller->Possess(Shooter);
 	Controller->SetAsLocalPlayerController();
 	TestTrue(TEXT("Presentation fixture is locally controlled"), Shooter->IsLocallyControlled());
+	CompleteEquip(Shooter);
 	Hammer->ShowEquippedPresentation();
 
 	auto CheckHammerPresentation = [this, Shooter, Hammer, FirstMesh, ThirdMesh, ShadowMesh](bool bEquipped)
@@ -201,32 +216,37 @@ bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 			Weapon->DispatchBeginPlay();
 		}
 	}
+	AddInfo(FString::Printf(TEXT("DefaultMelee pickup readiness: Dead=%d SuitBlocked=%d EquipBlocked=%d ActionLock=%d"),
+		Shooter->IsDead(), Shooter->IsSuitTransitionBlocked(), Shooter->IsWeaponEquipInputBlocked(),
+		static_cast<int32>(Shooter->GetActionLock())));
 	TestTrue(TEXT("Rifle pickup succeeds alongside the default hammer"), RiflePickup->Interact(Shooter));
 	AWeaponBase* GrantedRifle = Inventory->GetWeaponInSlot(EWeaponSlot::Primary);
 	TestTrue(TEXT("Rifle pickup selects Primary"), GrantedRifle && Shooter->GetCurrentWeapon() == GrantedRifle);
 	TestTrue(TEXT("Rifle pickup starts ordinary equip presentation"), Shooter->GetActionLock() == EShooterActionLock::Equip);
 	CheckHammerPresentation(false);
-	// 상태 전이를 검사하는 동기 테스트이므로 몽타주 잠금 시간은 건너뛴다. 실제 재생 시간은 PIE 검증 대상이다.
-	Shooter->EndActionLock(EShooterActionLock::Equip);
+	CompleteEquip(Shooter);
 	TestTrue(TEXT("Pistol pickup succeeds alongside the default hammer"), PistolPickup->Interact(Shooter));
 	AWeaponBase* GrantedPistol = Inventory->GetWeaponInSlot(EWeaponSlot::Secondary);
 	TestTrue(TEXT("Pistol occupies Secondary"), GrantedPistol && GrantedPistol == Shooter->GetCurrentWeapon());
-	Shooter->EndActionLock(EShooterActionLock::Equip);
+	CompleteEquip(Shooter);
 
-	auto SwitchToSlot = [this, Shooter, Inventory, Hammer, &CheckHammerPresentation](EWeaponSlot Slot)
+	auto SwitchToSlot = [this, World, Shooter, Inventory, Hammer, &CheckHammerPresentation, &CompleteEquip](EWeaponSlot Slot)
 	{
 		AWeaponBase* PreviousWeapon = Shooter->GetCurrentWeapon();
 		AWeaponBase* TargetWeapon = Inventory->GetWeaponInSlot(Slot);
 		Inventory->SelectWeaponSlot(Slot);
 		TestTrue(TEXT("Ordinary switch starts an equip lock"), Shooter->GetActionLock() == EShooterActionLock::Equip);
 		TestTrue(TEXT("Lower phase keeps the previous weapon current"), Shooter->GetCurrentWeapon() == PreviousWeapon);
-		// 로컬 Lower 완료 -> 서버 슬롯 교체 -> 로컬 Raise의 기존 경로를 호출한다. SwitchId를 추측하지 않는다.
-		Shooter->UpdateLocalProceduralWeaponSwitch(FMath::Max(Shooter->GetFirstPersonSwitchLowerDuration(), 0.05f) + 0.01f);
+		// 서버도 Lower 최소 시간을 검증하므로 타이머를 먼저 전진시킨 뒤 실제 소유자 확인을 보낸다.
+		const float LowerDuration = FMath::Max(Shooter->GetFirstPersonSwitchLowerDuration(), 0.05f) + 0.01f;
+		++GFrameCounter;
+		World->GetTimerManager().Tick(0.0f);
+		++GFrameCounter;
+		World->GetTimerManager().Tick(LowerDuration);
+		Shooter->UpdateLocalProceduralWeaponSwitch(LowerDuration);
 		TestTrue(TEXT("Lower confirmation selects the requested weapon"), Shooter->GetCurrentWeapon() == TargetWeapon);
 		TestTrue(TEXT("Raise phase retains the equip lock"), Shooter->GetActionLock() == EShooterActionLock::Equip);
-		Shooter->UpdateLocalProceduralWeaponSwitch(0.01f);
-		Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
-		Shooter->EndActionLock(EShooterActionLock::Equip);
+		CompleteEquip(Shooter);
 		TestTrue(TEXT("Switch retains the original hammer actor"), Inventory->GetWeaponInSlot(EWeaponSlot::Melee) == Hammer);
 		CheckHammerPresentation(Slot == EWeaponSlot::Melee);
 	};
@@ -244,11 +264,11 @@ bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Suit grant preserves the original Secondary pistol"),
 		GrantedPistol && Inventory->GetWeaponInSlot(EWeaponSlot::Secondary) == GrantedPistol);
 	CheckHammerPresentation(false);
-	Shooter->EndActionLock(EShooterActionLock::Equip);
+	CompleteEquip(Shooter);
 	TestTrue(TEXT("Suit rifle replacement succeeds"), Inventory->EquipSuitRifle(ReplacementRifle));
 	TestTrue(TEXT("Previous suit rifle is cleaned up"), SuitRifle->IsActorBeingDestroyed());
 	TestTrue(TEXT("Suit replacement preserves the original hammer"), Inventory->GetWeaponInSlot(EWeaponSlot::Melee) == Hammer);
-	Shooter->EndActionLock(EShooterActionLock::Equip);
+	CompleteEquip(Shooter);
 	TestFalse(TEXT("Hammer replacement is also rejected while Rifle is current"), Pickup->Interact(Shooter));
 	TestTrue(TEXT("Rejected Melee pickup does not change the current Rifle"), Shooter->GetCurrentWeapon() == ReplacementRifle);
 	TestFalse(TEXT("Rejected Melee pickup does not start an action lock"), Shooter->IsActionLocked());
