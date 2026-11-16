@@ -197,6 +197,7 @@ private:
 	friend class AHackTargetPointNetworkProbe;
 	friend class FAutoTurretHackingTest;
 	friend class FEnemyPoolHackStateTest;
+	friend class FActorBodyTargetingTest;
 #endif
 	UPROPERTY(VisibleInstanceOnly, Category = "Hack")
 	FPartnerHackAbilityData CachedAbilityData;
@@ -264,7 +265,6 @@ private:
 	// 횟수 제한 없이 교차 지점까지 검사하며, 차폐 없음을 확인한 경우에만 true.
 	bool HasClearCursorPath(const FVector& Start, const FVector& End) const;
 	bool IsCursorIgnoredActor(const AActor* HitActor) const;
-	static bool IsCursorVisibleMesh(const UPrimitiveComponent* Component);
 	static void GatherCursorBodyComponents(AActor* Actor, TArray<UPrimitiveComponent*>& OutBodies);
 	void UpdateCursorHackHover();
 	void SetHoveredHackTarget(AActor* TargetActor);

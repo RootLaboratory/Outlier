@@ -858,6 +858,29 @@ void UInteractableComponent::TickHoldInteractions(float DeltaTime)
 	{
 		FHoldInteractionSession& Session = HoldSessions[Index];
 		AFirstPersonCharacter* Interactor = Session.Interactor.Get();
+		// 승인한 노드는 커서가 아닌 세션 대상으로 유지한다. 활성 세션에서만
+		// 기존 0.1초 탐색 주기에 맞춰 거리/차폐를 확인하고 무효화 경로를 공유한다.
+		if (InteractionNode && Interactor && !Session.bCompletionNotified)
+		{
+			Session.ValidationElapsedTime += DeltaTime;
+			if (Session.ValidationElapsedTime >= 0.1f)
+			{
+				Session.ValidationElapsedTime = 0.0f;
+				if (!Interactor->CanMaintainNodeInteraction(InteractionNode))
+				{
+					if (Interactor->IsLocallyControlled())
+					{
+						Interactor->CancelLocalHoldInteract(true);
+					}
+					else
+					{
+						EndHoldInteract(Interactor, true);
+						Interactor->NotifyHoldInteractInvalidated(GetOwner());
+					}
+					continue;
+				}
+			}
+		}
 		if (InteractionNode && Interactor && GetOwner()->HasAuthority()
 			&& (!Interactor->GetController() || !Interactor->CanInteract()
 				|| !CanInteract(Interactor->GetOwnedGameplayTagsForQuery())))

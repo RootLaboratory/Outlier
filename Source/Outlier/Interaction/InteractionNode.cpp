@@ -4,11 +4,14 @@
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/SceneComponent.h"
 #include "Components/MeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/SkinnedMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Interaction/InteractableComponent.h"
+#include "Interaction/ActorBodyTargeting.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Engine/World.h"
@@ -47,6 +50,7 @@ AInteractionNode::AInteractionNode()
 void AInteractionNode::BeginPlay()
 {
 	Super::BeginPlay();
+	RefreshInteractionBodies();
 	PresentationClock = GetWorld()->GetGameState();
 	InitializeEmissiveMaterial();
 	bPresentationInitialized = true;
@@ -91,6 +95,7 @@ void AInteractionNode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	LocalInteractor.Reset();
 	CanceledInteractor.Reset();
 	LatestServerAttemptIds.Reset();
+	InteractionBodies.Reset();
 	OutlierAudioFeedback::StopLoops(this);
 	if (bProgressIdRegistered)
 	{
@@ -110,6 +115,42 @@ void AInteractionNode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 UInteractableComponent* AInteractionNode::GetInteractableComponent() const
 {
 	return InteractableComponent;
+}
+
+void AInteractionNode::RefreshInteractionBodies()
+{
+	InteractionBodies.Reset();
+	if (!InteractionBodyReferences.IsEmpty())
+	{
+		for (const FComponentReference& Reference : InteractionBodyReferences)
+		{
+			UPrimitiveComponent* Body = Cast<UPrimitiveComponent>(Reference.GetComponent(this));
+			if (IsValid(Body) && Body->GetOwner() == this)
+			{
+				InteractionBodies.AddUnique(Body);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[InteractionNode] Invalid interaction body: %s"), *GetPathName());
+			}
+		}
+		return;
+	}
+
+	TInlineComponentArray<UMeshComponent*> Meshes(this);
+	for (UMeshComponent* Mesh : Meshes)
+	{
+		if (Mesh->IsA<UStaticMeshComponent>() || Mesh->IsA<USkinnedMeshComponent>())
+		{
+			InteractionBodies.Add(Mesh);
+		}
+	}
+}
+
+bool AInteractionNode::IsInteractionBodyVisible(const UPrimitiveComponent* Body) const
+{
+	// 서버에도 존재하는 표시 설정만 사용한다. 최근 렌더 여부는 권한 판정에 사용하지 않는다.
+	return !IsHidden() && ActorBodyTargeting::IsVisibleBody(Body) && Body->GetOwner() == this;
 }
 
 bool AInteractionNode::Interact(AFirstPersonCharacter* Interactor)

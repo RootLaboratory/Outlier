@@ -6,6 +6,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
+#include "Enemy/EnemyBase.h"
 #include "UI/ActorBasedWidgetSubsystem.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -23,7 +24,7 @@
 #include "Components/MeshComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SkinnedMeshComponent.h"
-#include "Components/StaticMeshComponent.h"
+#include "Interaction/ActorBodyTargeting.h"
 #include "MaterialShared.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
@@ -34,8 +35,6 @@ const FName UPartnerHackComponent::CursorIgnoreTag(TEXT("HackCursorIgnore"));
 
 namespace PartnerHackCursor
 {
-	// 적 실드처럼 외곽선에서 제외하는 보조 메시는 커서 몸체로도 보지 않는다.
-	const FName StencilExcludeTag(TEXT("Outlier.StencilExclude"));
 	constexpr float MinTraceLength = 5000.0f;
 }
 
@@ -776,49 +775,39 @@ AActor* UPartnerHackComponent::ResolveCursorHackTargetAlongRay(const FVector& St
 	const float TraceLength = FMath::Max(CachedAbilityData.EffectiveRange * 2.0f, PartnerHackCursor::MinTraceLength);
 	const FVector End = Start + Direction * TraceLength;
 
-	AActor* PreciseTarget = nullptr;
-	float PreciseDistance = TNumericLimits<float>::Max();
-	AActor* BoundsTarget = nullptr;
-	float BoundsDistance = TNumericLimits<float>::Max();
+	AActor* BestTarget = nullptr;
+	float BestDistance = TNumericLimits<float>::Max();
+	bool bBestPrecise = false;
 	TArray<UPrimitiveComponent*> Bodies;
 	for (AActor* Candidate : HackCandidateActors)
 	{
-		if (!IsValid(Candidate) || Candidate->IsHidden()) continue;
+		if (!IsValid(Candidate) || Candidate->IsHidden())
+		{
+			continue;
+		}
 		Bodies.Reset();
 		GatherCursorBodyComponents(Candidate, Bodies);
 		for (UPrimitiveComponent* Body : Bodies)
 		{
-			// 1) 실제 콜리전 형상(피직스 에셋·메시 콜리전)과 교차하는지 본다. 채널·오브젝트 타입 설정과 무관하다.
-			FHitResult Hit;
+			ActorBodyTargeting::FBodyHit Hit;
 			FCollisionQueryParams Params(SCENE_QUERY_STAT(PartnerHackCursorBody), true);
-			if (Body->LineTraceComponent(Hit, Start, End, Params))
+			if (!ActorBodyTargeting::IntersectBody(*Body, Start, End, Params, Hit))
 			{
-				const float Distance = FVector::Dist(Start, Hit.Location);
-				if (Distance < PreciseDistance && HasClearCursorPath(Start, Hit.Location))
-				{
-					PreciseDistance = Distance;
-					PreciseTarget = Candidate;
-				}
 				continue;
 			}
-			// 2) 콜리전이 없거나 빗나가면 메시 경계 상자로 보조 판정한다.
-			FVector HitLocation;
-			FVector HitNormal;
-			float HitTime = 0.0f;
-			if (FMath::LineExtentBoxIntersection(Body->Bounds.GetBox(), Start, End, FVector::ZeroVector,
-				HitLocation, HitNormal, HitTime))
+			// 해킹의 기존 거리 계산과 동률 선착순을 유지한다. 차폐를 통과한 후보만 갱신한다.
+			const float Distance = Hit.bPrecise ? FVector::Dist(Start, Hit.Location) : Hit.Time * TraceLength;
+			if (ActorBodyTargeting::IsBetterCandidate(Hit.bPrecise, Distance, bBestPrecise, BestDistance)
+				&& HasClearCursorPath(Start, Hit.Location))
 			{
-				const float Distance = HitTime * TraceLength;
-				if (Distance < BoundsDistance && HasClearCursorPath(Start, HitLocation))
-				{
-					BoundsDistance = Distance;
-					BoundsTarget = Candidate;
-				}
+				BestDistance = Distance;
+				BestTarget = Candidate;
+				bBestPrecise = Hit.bPrecise;
 			}
 		}
 	}
 	// 앞쪽 후보의 넉넉한 경계 상자가 뒤쪽 후보의 정확한 몸체 판정을 가로채지 않도록 정밀 판정을 우선한다.
-	return PreciseTarget ? PreciseTarget : BoundsTarget;
+	return BestTarget;
 }
 
 bool UPartnerHackComponent::HasClearCursorPath(const FVector& Start, const FVector& End) const
@@ -882,18 +871,6 @@ bool UPartnerHackComponent::IsCursorIgnoredActor(const AActor* HitActor) const
 	return false;
 }
 
-bool UPartnerHackComponent::IsCursorVisibleMesh(const UPrimitiveComponent* Component)
-{
-	// 커서 판정과 하이라이트에는 표시 가능한 몸체 메시만 사용한다.
-	const UMeshComponent* Mesh = Cast<UMeshComponent>(Component);
-	return IsValid(Mesh)
-		&& (Mesh->IsA<USkinnedMeshComponent>() || Mesh->IsA<UStaticMeshComponent>())
-		&& Mesh->IsRegistered() && Mesh->IsVisible() && !Mesh->bHiddenInGame
-		&& !Mesh->bOnlyOwnerSee && Mesh->bRenderInMainPass
-		&& !Mesh->ComponentHasTag(PartnerHackCursor::StencilExcludeTag)
-		&& !Mesh->ComponentHasTag(CursorIgnoreTag);
-}
-
 void UPartnerHackComponent::GatherCursorBodyComponents(AActor* Actor, TArray<UPrimitiveComponent*>& OutBodies)
 {
 	if (!IsValid(Actor)) return;
@@ -911,7 +888,7 @@ void UPartnerHackComponent::GatherCursorBodyComponents(AActor* Actor, TArray<UPr
 	if (!OutBodies.IsEmpty()) return;
 	for (UPrimitiveComponent* Primitive : Primitives)
 	{
-		if (IsCursorVisibleMesh(Primitive))
+		if (ActorBodyTargeting::IsVisibleMesh(Primitive))
 		{
 			OutBodies.Add(Primitive);
 		}
@@ -958,7 +935,10 @@ void UPartnerHackComponent::ApplyCursorHighlight(AActor* TargetActor)
 	TInlineComponentArray<UMeshComponent*> Meshes(TargetActor);
 	for (UMeshComponent* Mesh : Meshes)
 	{
-		if (!IsCursorVisibleMesh(Mesh)) continue;
+		if (!ActorBodyTargeting::IsVisibleMesh(Mesh))
+		{
+			continue;
+		}
 		if (Mesh->IsA<USkinnedMeshComponent>() && !bSkeletalUsable)
 		{
 			if (!bLoggedHighlightSkeletalUsage)

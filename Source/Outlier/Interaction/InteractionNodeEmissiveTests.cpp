@@ -3,7 +3,10 @@
 #include "Interaction/InteractionNode.h"
 
 #include "Components/StaticMeshComponent.h"
+#include "Components/BoxComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -303,6 +306,213 @@ bool FInteractionNodeHoldAttemptTest::RunTest(const FString& Parameters)
 	First->EndPlay(EEndPlayReason::RemovedFromWorld);
 	TestTrue(TEXT("EndPlay releases request records"), First->LatestServerAttemptIds.IsEmpty());
 	TestEqual(TEXT("EndPlay clears local state"), First->LocalAttemptId, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FInteractionNodeActorHoverTest, "Outlier.Interaction.Node.ActorHover",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FInteractionNodeActorHoverTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("NodeActorHoverTest")));
+	if (!TestNotNull(TEXT("World exists"), World))
+	{
+		return false;
+	}
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+	ON_SCOPE_EXIT
+	{
+		World->DestroyWorld(false);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	AFirstPersonCharacter* Character = World->SpawnActor<AFirstPersonCharacter>();
+	APlayerController* Controller = World->SpawnActor<APlayerController>();
+	AInteractionNode* Node = World->SpawnActor<AInteractionNode>();
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	if (!Character || !Controller || !Node || !TestNotNull(TEXT("Cube mesh exists"), Cube))
+	{
+		return false;
+	}
+	Character->OwnedQueryTags.AddTag(OutlierGameplayTags::Actor::Role::Partner());
+	Character->InteractionAvailableRange = 400.0f;
+	Character->InteractionWidgetExposedRange = 400.0f;
+	Controller->Possess(Character);
+	Controller->SetControlRotation(FRotator::ZeroRotator);
+	FVector Start;
+	FRotator Rotation;
+	Controller->GetPlayerViewPoint(Start, Rotation);
+
+	const auto AddBody = [&](AInteractionNode* Owner, const FVector& Position)
+	{
+		UStaticMeshComponent* Body = NewObject<UStaticMeshComponent>(Owner);
+		Owner->AddInstanceComponent(Body);
+		Body->SetupAttachment(Owner->GetRootComponent());
+		Body->SetStaticMesh(Cube);
+		Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Body->RegisterComponent();
+		Body->SetWorldLocation(Position);
+		Owner->RefreshInteractionBodies();
+		Character->CacheInteractionNode(Owner);
+		return Body;
+	};
+	UStaticMeshComponent* Body = AddBody(Node, Start + FVector(180.0, 80.0, 0.0));
+	const FVector Aim = (Body->GetComponentLocation() - Start).GetSafeNormal();
+	Controller->Player = NewObject<ULocalPlayer>(GEngine);
+	Controller->SetViewTarget(Character);
+	// 뷰포트/카메라 Tick이 없는 테스트 월드에서는 ViewTarget 회전도 직접 갱신한다.
+	const auto SetViewRotation = [&](const FRotator& ViewRotation)
+	{
+		Controller->SetControlRotation(ViewRotation);
+		Character->SetActorRotation(ViewRotation);
+	};
+	// 0.1초 탐색 타이머 없이도 다음 프레임에 호버가 반영되어야 한다.
+	SetViewRotation(Aim.Rotation());
+	Character->Tick(1.0f / 60.0f);
+	TestEqual(TEXT("Character tick selects the body before the range timer runs"), Character->HoveredInteractionNode.Get(), Node);
+	TestTrue(TEXT("Hover tick leaves the nearby range cache unchanged"), Character->NearbyInteractables.IsEmpty());
+	TestTrue(TEXT("Hover tick leaves the outline range cache unchanged"), Character->OutlineInteractables.IsEmpty());
+	SetViewRotation(FRotator::ZeroRotator);
+	Character->Tick(1.0f / 60.0f);
+	TestNull(TEXT("Next frame clears hover after looking away"), Character->HoveredInteractionNode.Get());
+	SetViewRotation(Aim.Rotation());
+	Character->UpdateInteractableFocus();
+	TestNull(TEXT("Range timer does not select node hover"), Character->HoveredInteractionNode.Get());
+	Character->Tick(1.0f / 60.0f);
+	TestEqual(TEXT("Next frame restores hover without waiting for another range scan"), Character->HoveredInteractionNode.Get(), Node);
+	Character->OwnedQueryTags.Reset();
+	Character->Tick(1.0f / 60.0f);
+	TestNull(TEXT("Role loss clears hover on the next frame"), Character->HoveredInteractionNode.Get());
+	Character->OwnedQueryTags.AddTag(OutlierGameplayTags::Actor::Role::Partner());
+	SetViewRotation(FRotator::ZeroRotator);
+	TestEqual(TEXT("Collision-free body is selectable away from camera center"), Character->FindNodeAlongRay(Start, Aim), Node);
+	TestTrue(TEXT("Server accepts the same off-center body ray"), Character->ValidateNodeStart(Node, Aim));
+	TestNull(TEXT("Camera-center ray misses the off-center body"), Character->FindNodeAlongRay(Start, FVector::ForwardVector));
+	TestFalse(TEXT("Zero direction is rejected"), Character->ValidateNodeStart(Node, FVector::ZeroVector));
+	TestFalse(TEXT("Unnormalized direction is rejected"), Character->ValidateNodeStart(Node, Aim * 4.0));
+	TestFalse(TEXT("Behind-camera direction is rejected"), Character->ValidateNodeStart(Node, -Aim));
+	TestFalse(TEXT("Non-finite direction is rejected"), Character->ValidateNodeStart(Node,
+		FVector(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0)));
+
+	// UI 기준점과 큰 탐지 상자는 몸체 선택 영역에 영향을 주지 않는다.
+	Node->InteractionTargetPoint->SetWorldLocation(Start + FVector(150.0, -180.0, 0.0));
+	UBoxComponent* Detection = NewObject<UBoxComponent>(Node);
+	Node->AddInstanceComponent(Detection);
+	Detection->SetupAttachment(Node->GetRootComponent());
+	Detection->SetBoxExtent(FVector(300.0));
+	Detection->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Detection->RegisterComponent();
+	Node->RefreshInteractionBodies();
+	TestEqual(TEXT("Only the mesh is cached as a default body"), Node->GetInteractionBodies().Num(), 1);
+	FComponentReference& ExplicitBody = Node->InteractionBodyReferences.AddDefaulted_GetRef();
+	ExplicitBody.OverrideComponent = Body;
+	Node->RefreshInteractionBodies();
+	TestEqual(TEXT("Explicit body reference selects the owned mesh"), Node->GetInteractionBodies().Num(), 1);
+	ExplicitBody.OverrideComponent.Reset();
+	ExplicitBody.ComponentProperty = TEXT("MissingBody");
+	Node->RefreshInteractionBodies();
+	TestTrue(TEXT("Invalid explicit reference does not fall back to automatic meshes"), Node->GetInteractionBodies().IsEmpty());
+	Node->InteractionBodyReferences.Reset();
+	Node->RefreshInteractionBodies();
+	TestNull(TEXT("UI point alone does not select the node"), Character->FindNodeAlongRay(Start,
+		(Node->InteractionTargetPoint->GetComponentLocation() - Start).GetSafeNormal()));
+	TArray<AActor*> Nearby;
+	Character->GetInteractablesInSphere(400.0f, false, Nearby);
+	TestTrue(TEXT("NoCollision node participates in nearby prompts"), Nearby.Contains(Node));
+
+	Body->SetHiddenInGame(true);
+	TestNull(TEXT("Hidden body is excluded"), Character->FindNodeAlongRay(Start, Aim));
+	Body->SetHiddenInGame(false);
+	Body->ComponentTags.Add(TEXT("HackCursorIgnore"));
+	TestNull(TEXT("Excluded body is not selectable"), Character->FindNodeAlongRay(Start, Aim));
+	Body->ComponentTags.Reset();
+
+	AActor* Wall = World->SpawnActor<AActor>();
+	UBoxComponent* WallBox = NewObject<UBoxComponent>(Wall);
+	Wall->SetRootComponent(WallBox);
+	WallBox->SetBoxExtent(FVector(10.0, 300.0, 300.0));
+	WallBox->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	WallBox->SetCollisionResponseToAllChannels(ECR_Block);
+	WallBox->RegisterComponent();
+	WallBox->SetWorldLocation(Start + FVector(90.0, 0.0, 0.0));
+	TestNull(TEXT("Wall occludes the body"), Character->FindNodeAlongRay(Start, Aim));
+	TestFalse(TEXT("Wall also invalidates hold maintenance"), Character->CanMaintainNodeInteraction(Node));
+	WallBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	// NoCollision도 컴포넌트 직접 트레이스는 가능하므로, 충돌 지오메트리가 없는 메시로 Bounds 폴백을 구성한다.
+	UStaticMesh* BoundsOnlyCube = DuplicateObject<UStaticMesh>(Cube, GetTransientPackage());
+	BoundsOnlyCube->SetBodySetup(nullptr);
+	Body->SetStaticMesh(BoundsOnlyCube);
+	AInteractionNode* Second = World->SpawnActor<AInteractionNode>();
+	UStaticMeshComponent* SecondBody = AddBody(Second, Start + Aim * 300.0);
+	UStaticMesh* SecondBoundsOnlyCube = DuplicateObject<UStaticMesh>(Cube, GetTransientPackage());
+	SecondBoundsOnlyCube->SetBodySetup(nullptr);
+	SecondBody->SetStaticMesh(SecondBoundsOnlyCube);
+	TestEqual(TEXT("Nearest Bounds candidate wins"), Character->FindNodeAlongRay(Start, Aim), Node);
+	SecondBody->SetStaticMesh(Cube);
+	SecondBody->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	SecondBody->SetCollisionResponseToAllChannels(ECR_Ignore);
+	FHitResult PreciseHit;
+	FCollisionQueryParams BodyParams(SCENE_QUERY_STAT(NodeHoverTest), true);
+	TestTrue(TEXT("Second body has precise collision"), SecondBody->LineTraceComponent(PreciseHit, Start, Start + Aim * 400.0, BodyParams));
+	TestEqual(TEXT("Precise collision takes priority over a nearer Bounds fallback"), Character->FindNodeAlongRay(Start, Aim), Second);
+	TestFalse(TEXT("Server rejects a different requested candidate"), Character->ValidateNodeStart(Node, Aim));
+	SecondBody->SetStaticMesh(SecondBoundsOnlyCube);
+	SecondBody->SetWorldLocation(Body->GetComponentLocation());
+	AInteractionNode* NameFirst = Node->GetPathName().Compare(Second->GetPathName()) < 0 ? Node : Second;
+	TestEqual(TEXT("Equal node Bounds use stable name order"), Character->FindNodeAlongRay(Start, Aim), NameFirst);
+	Character->InteractionNodes.Swap(0, 1);
+	TestEqual(TEXT("Reversing node cache preserves equal-hit selection"), Character->FindNodeAlongRay(Start, Aim), NameFirst);
+	Second->Destroy();
+
+	// 승인 대상은 고정한다. 시선을 돌려도 유지하지만 거리 이탈은 기존 취소 경로로 정리한다.
+	UInteractableComponent* Component = Node->GetInteractableComponent();
+	Component->MarkHoldReady();
+	const int32 Attempt = Node->BeginLocalHoldAttempt(Character);
+	Character->ServerBeginHoldInteract_Implementation(Node, Attempt, Aim);
+	TestTrue(TEXT("Server RPC accepts the off-center hold attempt"), Node->IsServerHoldAttemptCurrent(Character, Attempt));
+	TestEqual(TEXT("Server RPC starts one hold session"), Component->HoldSessions.Num(), 1);
+	TestFalse(TEXT("Server rejects completion before the hold duration"), Component->CanCommitHoldInteraction(Character));
+	Character->HoldingInteractActor = Node;
+	Controller->SetControlRotation(FRotator(0.0, 180.0, 0.0));
+	TestTrue(TEXT("Looking away preserves the held node"), Character->CanMaintainNodeInteraction(Node));
+	Node->HoldState.ServerStartTime = World->GetTimeSeconds() - Node->HoldState.Duration;
+	TestTrue(TEXT("Server time permits completion without looking back"), Component->CanCommitHoldInteraction(Character));
+	TestFalse(TEXT("Different attempt cannot complete the held node"), Node->IsServerHoldAttemptCurrent(Character, Attempt + 1));
+	Body->SetWorldLocation(Start + FVector(1000.0, 0.0, 0.0));
+	Component->TickHoldInteractions(0.11f);
+	TestNull(TEXT("Leaving range clears local held input"), Character->HoldingInteractActor.Get());
+	TestTrue(TEXT("Leaving range clears server/local session"), Component->HoldSessions.IsEmpty());
+	TestFalse(TEXT("Cancelled session cannot commit"), Component->CanCommitHoldInteraction(Character));
+	Body->SetWorldLocation(Start + FVector(180.0, 80.0, 0.0));
+	Character->OwnedQueryTags.Reset();
+	TestNull(TEXT("Non-Partner cannot select a node"), Character->FindNodeAlongRay(Start, Aim));
+	TestFalse(TEXT("Non-Partner cannot maintain a hold"), Character->CanMaintainNodeInteraction(Node));
+
+	// 실제 배치 BP도 자동 몸체 탐색으로 연결되는지 확인한다. 에셋은 저장하지 않는다.
+	UClass* NodeClass = LoadClass<AInteractionNode>(nullptr,
+		TEXT("/Game/Blueprints/Interaction/BP_InteractionNode.BP_InteractionNode_C"));
+	if (TestNotNull(TEXT("Production node Blueprint loads"), NodeClass))
+	{
+		AInteractionNode* BlueprintNode = World->SpawnActor<AInteractionNode>(NodeClass);
+		if (TestNotNull(TEXT("Production node spawns"), BlueprintNode))
+		{
+			BlueprintNode->RefreshInteractionBodies();
+			TestTrue(TEXT("Production node has cached bodies"), !BlueprintNode->GetInteractionBodies().IsEmpty());
+			for (const TWeakObjectPtr<UPrimitiveComponent>& Entry : BlueprintNode->GetInteractionBodies())
+			{
+				if (UPrimitiveComponent* BlueprintBody = Entry.Get())
+				{
+					AddInfo(FString::Printf(TEXT("Production body: %s, collision=%d, visible=%d"),
+						*BlueprintBody->GetName(), static_cast<int32>(BlueprintBody->GetCollisionEnabled()),
+						BlueprintNode->IsInteractionBodyVisible(BlueprintBody)));
+				}
+			}
+		}
+	}
 	return true;
 }
 

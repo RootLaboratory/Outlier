@@ -30,6 +30,7 @@ struct FHoldInteractionSession
 {
 	TWeakObjectPtr<AFirstPersonCharacter> Interactor;
 	float ElapsedTime = 0.0f;
+	float ValidationElapsedTime = 0.0f;
 	bool bCompletionNotified = false;
 };
 
@@ -143,6 +144,7 @@ private:
 	friend class AInteractionNode;
 	friend class FInteractionNodePresentationTest;
 	friend class FInteractionNodeHoldAttemptTest;
+	friend class FInteractionNodeActorHoverTest;
 	friend class FInteractionTargetPointTest;
 	UPROPERTY(Transient)
 	TObjectPtr<AInteractionNode> InteractionNode;
