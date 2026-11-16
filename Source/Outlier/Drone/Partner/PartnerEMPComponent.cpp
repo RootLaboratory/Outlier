@@ -41,9 +41,14 @@ void UPartnerEMPComponent::BeginPlay()
 
 void UPartnerEMPComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	// 월드가 먼저 정리된 뒤 GC가 EndPlay를 호출해도 EMP 자체의 정리는 남아 있다.
+	// 월드 서브시스템 등록 해제만 유효한 월드가 있을 때 수행한다.
+	if (UWorld* World = GetWorld())
 	{
-		Subsystem->UnregisterWidgetOwner(this);
+		if (UActorBasedWidgetSubsystem* Subsystem = World->GetSubsystem<UActorBasedWidgetSubsystem>())
+		{
+			Subsystem->UnregisterWidgetOwner(this);
+		}
 	}
 	ResetEMPEarlyCompleteTimer();
 	ResetAutoTarget();

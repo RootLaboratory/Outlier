@@ -213,9 +213,14 @@ void UInteractableComponent::TickComponent(
 
 void UInteractableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	// GC의 BeginDestroy에서 늦게 EndPlay가 호출되면 소유 Actor의 월드는 이미 없을 수 있다.
+	// 월드가 남아 있을 때만 등록을 해제하고, 컴포넌트 자체의 정리는 계속 수행한다.
+	if (UWorld* World = GetWorld())
 	{
-		Subsystem->UnregisterWidgetOwner(this);
+		if (UActorBasedWidgetSubsystem* Subsystem = World->GetSubsystem<UActorBasedWidgetSubsystem>())
+		{
+			Subsystem->UnregisterWidgetOwner(this);
+		}
 	}
 	CancelAllHoldSessions();
 	if (InteractKeyWidget)

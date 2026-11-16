@@ -53,9 +53,14 @@ void UOutlierWorldGuideTargetComponent::BeginPlay()
 
 void UOutlierWorldGuideTargetComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	// GC의 늦은 EndPlay에서는 월드가 없을 수 있다. 등록 해제만 조건부로 수행하고
+	// 안내 관리자 연결과 로컬 표시 정리는 기존 순서로 마무리한다.
+	if (UWorld* World = GetWorld())
 	{
-		Subsystem->UnregisterWidgetOwner(this);
+		if (UActorBasedWidgetSubsystem* Subsystem = World->GetSubsystem<UActorBasedWidgetSubsystem>())
+		{
+			Subsystem->UnregisterWidgetOwner(this);
+		}
 	}
 	if (AOutlierWorldGuideManager* Manager = GuideManager.Get()) Manager->UnregisterTarget(this);
 	ClearGuide();

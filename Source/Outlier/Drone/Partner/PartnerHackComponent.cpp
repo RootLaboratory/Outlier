@@ -62,9 +62,14 @@ void UPartnerHackComponent::BeginPlay()
 
 void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	// GC에서 늦게 호출되는 EndPlay는 월드 참조를 잃었을 수 있다.
+	// 등록 해제만 월드 생존 여부에 따라 건너뛰고 해킹/UI 정리는 계속한다.
+	if (UWorld* World = GetWorld())
 	{
-		Subsystem->UnregisterWidgetOwner(this);
+		if (UActorBasedWidgetSubsystem* Subsystem = World->GetSubsystem<UActorBasedWidgetSubsystem>())
+		{
+			Subsystem->UnregisterWidgetOwner(this);
+		}
 	}
 	if (GetOwner() && GetOwner()->HasAuthority() && IsValid(ActiveHackableComponent))
 	{
