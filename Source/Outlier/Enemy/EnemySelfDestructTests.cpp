@@ -139,21 +139,38 @@ bool FEnemyChargePresentationStateTest::RunTest(const FString& Parameters)
 	USoundWave* Sound = LoadObject<USoundWave>(nullptr,
 		TEXT("/Game/Audio/Raw/Enemy/Enemy_Drone_Explode_Sign.Enemy_Drone_Explode_Sign"));
 	if (!TestNotNull(TEXT("Canonical charge sound"), Sound)) return false;
-	TestTrue(TEXT("Sound uses the provided full-length source"), FMath::IsNearlyEqual(Sound->Duration, 4.029208f, 0.002f));
+	// 음원 재임포트로 길이는 바뀔 수 있다. 과거 음원의 상수 대신 현재 음원과
+	// 서버가 복제하는 metadata가 같은 길이를 사용하는지 검사한다.
+	TestTrue(TEXT("Canonical charge sound has a finite positive duration"),
+		FMath::IsFinite(Sound->Duration) && Sound->Duration > 0.0f);
 	TestFalse(TEXT("Charge wave does not loop"), Sound->bLooping);
 	FChargeTestWorld Fixture;
 	if (!TestNotNull(TEXT("World"), Fixture.World)) return false;
 	ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>();
 	if (!TestNotNull(TEXT("Drone"), Drone)) return false;
 	TestTrue(TEXT("Server metadata matches the imported sound"), FMath::IsNearlyEqual(Drone->ChargeSoundDuration, Sound->Duration, 0.002f));
+	UClass* ProductionClass = LoadClass<ASelfDestructDrone>(nullptr,
+		TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Explosion.BP_VECDrone_Explosion_C"));
+	if (!TestNotNull(TEXT("Production self-destruct drone class exists"), ProductionClass))
+	{
+		return false;
+	}
+	const ASelfDestructDrone* ProductionDefaults = ProductionClass->GetDefaultObject<ASelfDestructDrone>();
+	TestTrue(TEXT("Production drone metadata matches the imported sound"),
+		FMath::IsNearlyEqual(ProductionDefaults->ChargeSoundDuration, Sound->Duration, 0.002f));
 	TestTrue(TEXT("Direction commit succeeds"), Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 0, 400, 500));
 	TestTrue(TEXT("Commit locks gameplay before presentation duration is known"), Drone->IsSelfDestructCommitted());
 	TestFalse(TEXT("Zero duration does not play audio"), Drone->ChargeState.Playback.IsValid());
 	const uint32 CommitRevision = Drone->ChargeState.Revision;
-	Drone->SetCommittedChargeDuration(1.0f);
+	// Countdown은 음원보다 길게 재생할 수 없다. 현재 음원 안의 유효한 구간을 사용한다.
+	const float CountdownDuration = Sound->Duration * 0.5f;
+	Drone->SetCommittedChargeDuration(CountdownDuration);
 	TestTrue(TEXT("Actual countdown publishes a new revision"), Drone->ChargeState.Revision > CommitRevision);
-	TestEqual(TEXT("Countdown uses update duration"), Drone->ChargeState.Playback.Duration, 1.0f);
+	TestEqual(TEXT("Countdown uses update duration"), Drone->ChargeState.Playback.Duration, CountdownDuration);
 	TestTrue(TEXT("Countdown has a supported audio window"), Drone->ChargeState.Playback.IsValid());
+	Drone->SetCommittedChargeDuration(Sound->Duration + 1.0f);
+	TestFalse(TEXT("Countdown longer than the sound does not play an unsupported audio window"),
+		Drone->ChargeState.Playback.IsValid());
 	const uint32 ActiveRevision = Drone->ChargeState.Revision;
 	Drone->CancelCommittedSelfDestruct();
 	TestFalse(TEXT("Cancel clears shared active state"), Drone->IsSelfDestructCommitted());

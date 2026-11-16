@@ -101,7 +101,7 @@ protected:
 	FName MountedExplosiveSocketName;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Self Destruct Drone|Presentation", meta = (ClampMin = "0.0", Units = "s"))
-	float ChargeSoundDuration = 4.029208f;
+	float ChargeSoundDuration = 0.998118f;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, ReplicatedUsing = OnRep_MountedExplosives, Category = "Self Destruct Drone|Explosive")
 	TArray<TObjectPtr<AExplosiveProp>> MountedExplosives;
