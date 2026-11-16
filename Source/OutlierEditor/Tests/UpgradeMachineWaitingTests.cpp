@@ -40,7 +40,8 @@ bool FUpgradeMachineWaitingTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Server readiness shows waiting"), Widget->IsWaitingForPartner());
 	TestTrue(TEXT("Waiting can be cancelled"), Widget->CanCancelExit());
 	TestFalse(TEXT("Waiting disables upgrade button"), FUpgradeMachineTestAccessor::ButtonEnabled(Widget));
-	TestTrue(TEXT("Waiting displays Escape hint"), FUpgradeMachineTestAccessor::Message(Widget).ToString().Contains(TEXT("Esc:")));
+	// 입력 매핑이 없는 fixture에서는 고정 Esc 대신 미지정 취소 안내를 표시한다.
+	TestTrue(TEXT("Waiting displays the unmapped cancel hint"), FUpgradeMachineTestAccessor::Message(Widget).ToString().Contains(TEXT("미지정: 취소")));
 	FUpgradeMachineTestAccessor::Apply(Widget, 7, false);
 	TestFalse(TEXT("Accepted cancel leaves waiting"), Widget->IsWaitingForPartner());
 	TestTrue(TEXT("Accepted cancel restores upgrade button"), FUpgradeMachineTestAccessor::ButtonEnabled(Widget));

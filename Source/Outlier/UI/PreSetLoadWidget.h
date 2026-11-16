@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -27,7 +25,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPresetStageConfirmed, FName, Stag
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPresetStageHoverChanged, EOutlierStage /*Stage*/, bool /*bHovered*/);
 DECLARE_MULTICAST_DELEGATE(FOnPresetMouseLeft);
 
-/** Preset stage selection widget. */
+/** 프리셋 레벨 선택 위젯. */
 UCLASS()
 class OUTLIER_API UPreSetLoadWidget : public UUserWidget
 {
@@ -36,16 +34,18 @@ class OUTLIER_API UPreSetLoadWidget : public UUserWidget
 public:
 	virtual void NativeConstruct() override;
 
-	/** Keyboard selection shares the same stage index as mouse hover. */
+	/** 키보드 선택과 마우스 호버는 같은 스테이지 인덱스를 사용한다. */
 	void SelectFirstStage();
 	void MoveStageSelection(int32 Step);
 	bool ConfirmStageSelection();
+	void ResetStageSelection();
+	void SetRetainSelectedStage(bool bRetain);
 
-	/** 0..3 map to Level01..Level04. */
+	/** 인덱스 0~3은 각각 Level01~Level04에 대응한다. */
 	UFUNCTION(BlueprintPure, Category = "Preset|Stage")
 	int32 GetChosenStageIndex() const { return ChosenStageIndex; }
 
-	/** Returns the stage selected by the most recent button click. */
+	/** 가장 최근에 버튼을 클릭해 선택한 스테이지를 반환한다. */
 	UFUNCTION(BlueprintPure, Category = "Preset|Stage")
 	EOutlierStage GetSelectedStage() const { return SelectedStage; }
 
@@ -88,6 +88,7 @@ private:
 	TArray<FButtonStyle> OriginalStageButtonStyles;
 	int32 ChosenStageIndex = 0;
 	bool bShowStageSelection = false;
+	bool bRetainSelectedStage = false;
 
 	UFUNCTION()
 	void HandleStageButtonClicked(EOutlierStage Stage);

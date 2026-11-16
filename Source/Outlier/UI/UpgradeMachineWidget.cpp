@@ -7,6 +7,8 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "EnhancedInputSubsystems.h"
+#include "Input/ControllerInputConfig.h"
 #include "GameFramework/PlayerController.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Network/OutlierArenaSubsystem.h"
@@ -39,6 +41,14 @@ void UUpgradeMachineWidget::NativeOnInitialized()
 void UUpgradeMachineWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+		{
+			// 대기 문구가 한 개여서 타이머가 없어도 키 재설정 직후 안내를 갱신한다.
+			Input->ControlMappingsRebuiltDelegate.AddUniqueDynamic(this, &ThisClass::UpdateWaitingMessage);
+		}
+	}
 	bUIOpenedReported = false;
 	bSessionSynchronized = false;
 	bExitRequestInFlight = false;
@@ -69,6 +79,13 @@ void UUpgradeMachineWidget::NativeConstruct()
 
 void UUpgradeMachineWidget::NativeDestruct()
 {
+	if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+		{
+			Input->ControlMappingsRebuiltDelegate.RemoveDynamic(this, &ThisClass::UpdateWaitingMessage);
+		}
+	}
 	if (GetWorld())
 	{
 		GetWorld()->GetTimerManager().ClearTimer(WaitingMessageTimerHandle);
@@ -290,9 +307,30 @@ void UUpgradeMachineWidget::UpdateWaitingMessage()
 {
 	if (TextBlock_76 && WaitingMessages.IsValidIndex(WaitingMessageIndex))
 	{
+		const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+		const ULocalPlayerUILayerSubsystem* Layers = LocalPlayer
+			? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>() : nullptr;
+		const UControllerInputConfig* Config = Layers ? Layers->GetWidgetInputConfig() : nullptr;
+		const UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer
+			? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
+		TArray<FText> KeyNames;
+		// 취소 입력을 라우팅하는 UI 레이어와 같은 액션·현재 매핑을 조회한다. 고정 Esc로 대체하지 않는다.
+		if (Input && Config && Config->WidgetEscapeAction)
+		{
+			for (const FKey& Key : Input->QueryKeysMappedToAction(Config->WidgetEscapeAction))
+			{
+				if (Key.IsValid())
+				{
+					KeyNames.Add(Key.GetDisplayName(false));
+				}
+			}
+		}
+		const FText CancelKeys = KeyNames.IsEmpty()
+			? NSLOCTEXT("UpgradeMachineWidget", "CancelKeyUnbound", "미지정")
+			: FText::Join(FText::FromString(TEXT(" / ")), KeyNames);
 		TextBlock_76->SetText(FText::Format(
-			NSLOCTEXT("UpgradeMachineWidget", "WaitingCancel", "{0}\nEsc: 취소"),
-			WaitingMessages[WaitingMessageIndex]));
+			NSLOCTEXT("UpgradeMachineWidget", "WaitingCancelMapped", "{0}\n{1}: 취소"),
+			WaitingMessages[WaitingMessageIndex], CancelKeys));
 	}
 }
 

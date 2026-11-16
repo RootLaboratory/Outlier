@@ -166,7 +166,10 @@ bool AFirstPersonPlayerController::HandleDeveloperConvenienceKey(const FKey& Key
 					return true;
 				}
 			}
-			RequestDeveloperConvenienceSession(false, DeveloperConvenienceState);
+			if (auto* Widget = DeveloperConvenienceWidget.Get())
+			{
+				Widget->RequestAnimatedClose();
+			}
 		}
 		return true;
 	}

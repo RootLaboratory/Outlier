@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #include "UI/PreSetLoadWidget.h"
 #include "Audio/OutlierAudioFeedback.h"
 
@@ -8,7 +6,7 @@
 void UPreSetLoadWidget::NativeOnMouseLeave(const FPointerEvent& InMouseEvent)
 {
 	Super::NativeOnMouseLeave(InMouseEvent);
-	// Leaving the whole list closes it; moving between its buttons must keep it open.
+	// 목록 전체를 벗어난 경우에만 이탈을 알린다. 목록 안에서 버튼 사이를 이동할 때는 열린 상태를 유지한다.
 	OnPresetMouseLeft.Broadcast();
 }
 
@@ -67,6 +65,20 @@ void UPreSetLoadWidget::SelectFirstStage()
 	SetChosenStage(EOutlierStage::Level01, true);
 }
 
+void UPreSetLoadWidget::ResetStageSelection()
+{
+	SelectedStage = EOutlierStage::None;
+	ChosenStageIndex = 0;
+	bShowStageSelection = false;
+	ApplyStageSelection();
+}
+
+void UPreSetLoadWidget::SetRetainSelectedStage(bool bRetain)
+{
+	bRetainSelectedStage = bRetain;
+	ApplyStageSelection();
+}
+
 void UPreSetLoadWidget::MoveStageSelection(int32 Step)
 {
 	const int32 Direction = Step < 0 ? -1 : 1;
@@ -81,7 +93,7 @@ void UPreSetLoadWidget::MoveStageSelection(int32 Step)
 			if (ChosenStageIndex != PreviousIndex) OutlierAudioFeedback::MenuNavigate(this);
 			return;
 		}
-		// Optional stage buttons must not trap keyboard selection at a missing entry.
+		// 선택 사항인 스테이지 버튼이 없어도 키보드 선택이 해당 항목에 갇히지 않도록 건너뛴다.
 		NextIndex = (NextIndex + Direction + 4) % 4;
 	}
 }
@@ -116,13 +128,13 @@ void UPreSetLoadWidget::SetChosenStage(EOutlierStage Stage, bool bFocusButton)
 
 void UPreSetLoadWidget::HandleStageButtonUnhovered(EOutlierStage Stage)
 {
-	// A late Unhovered from the previous button must preserve the new selection's highlight.
+	// 이전 버튼의 호버 해제 알림이 늦게 도착해도 새 선택의 강조 표시는 유지한다.
 	if (static_cast<int32>(Stage) - 1 == ChosenStageIndex)
 	{
 		bShowStageSelection = false;
 		ApplyStageSelection();
 	}
-	// GameOver forwards this to the separate StagePreviewWidget, hiding its entire hierarchy.
+	// GameOver는 이 알림을 별도의 StagePreviewWidget에 전달해 미리보기 전체를 숨긴다.
 	OnPresetStageHoverChanged.Broadcast(Stage, false);
 }
 
@@ -136,7 +148,8 @@ void UPreSetLoadWidget::ApplyStageSelection()
 			continue;
 		}
 		FButtonStyle Style = OriginalStageButtonStyles[Index];
-		if (bShowStageSelection && Index == ChosenStageIndex + 1)
+		if ((bShowStageSelection && Index == ChosenStageIndex + 1)
+			|| (bRetainSelectedStage && Index == static_cast<int32>(SelectedStage)))
 		{
 			Style.SetNormal(Style.Hovered);
 		}
@@ -165,6 +178,10 @@ void UPreSetLoadWidget::HandleStageButtonClicked(EOutlierStage Stage)
 	if (StageButtons.IsValidIndex(StageIndex) && StageButtons[StageIndex])
 	{
 		SelectedStage = Stage;
+		if (bRetainSelectedStage)
+		{
+			ApplyStageSelection();
+		}
 		OnPresetStageConfirmed.Broadcast(GetSelectedStageId());
 	}
 }

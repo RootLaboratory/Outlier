@@ -86,6 +86,7 @@ private:
 	void HandleSessionChanged(uint32 SessionId, uint32 Generation, bool bPending, bool bFinalized, uint32 SyncRequestId);
 	void RefreshWaitingState();
 	void AdvanceWaitingMessage();
+	UFUNCTION()
 	void UpdateWaitingMessage();
 	void SynchronizeSession();
 	void OpenNodeScreen();
