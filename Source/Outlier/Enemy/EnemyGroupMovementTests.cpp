@@ -1,3 +1,4 @@
+#include "Drone/FlightPathfinding.h"
 #if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
 
 #include "Enemy/EnemyStateTreeMovementTasks.h"
@@ -200,6 +201,31 @@ bool FEnemyGroupQueryBoundaryTest::RunTest(const FString& Parameters)
 	EnemySearchTesting::CompleteQuery(Data, Result);
 	TestEqual(TEXT("EQS completion discards captured registry before publishing a destination"), Data.QueryResult, EEnemyEnvQueryResult::Stale);
 	TestFalse(TEXT("Stale EQS exposes no destination"), Data.bHasDestination);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyGroupFractionalBoundaryTest, "Outlier.Enemy.GroupMovement.FractionalBoundary",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyGroupFractionalBoundaryTest::RunTest(const FString& Parameters)
+{
+	FGroupMovementWorld Fixture;
+	FFlightPathRequest Request;
+	Request.bRequireRoom = true;
+	Request.Room = Fixture.Home;
+	Request.AllowedRooms = {Fixture.Home, Fixture.Sibling};
+	const FVector Start(81.88888549804688, 0, 0);
+	const FVector Goal(-250, 0, 0);
+	const FVector Extent(10, 10, 20);
+	// 실제 CharacterMovement가 만드는 소수 좌표에서도 접한 방 사이에 가짜 틈이 생기면 안 된다.
+	TestTrue(TEXT("Fractional movement crosses touching rooms"),
+		FlightPathfinding::IsSegmentInsideMovementRooms(Request, Start, Goal, Extent));
+	TestTrue(TEXT("Reverse movement uses the same touching-room boundary"),
+		FlightPathfinding::IsSegmentInsideMovementRooms(Request, Goal, Start, Extent));
+	// 수치 안정화는 경계 허용 오차를 늘리는 것이 아니다. 실제로 존재하는 얇은 틈은 거부한다.
+	Fixture.Sibling->SetActorLocation(FVector(300.0001, 0, 0));
+	TestFalse(TEXT("A real thin unregistered gap remains impassable"),
+		FlightPathfinding::IsSegmentInsideMovementRooms(Request, Start, Goal, Extent));
 	return true;
 }
 
