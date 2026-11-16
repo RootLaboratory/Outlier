@@ -19,6 +19,13 @@
 #include "Misc/App.h"
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Kismet/KismetMaterialLibrary.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
+#include "PostProcess/OutlierStencilSubsystem.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -774,6 +781,120 @@ bool FOutlierGasPartnerHackPossessionRechargeTest::RunTest(const FString& Parame
 	const float RechargeAfterCancel = AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime;
 	Fixture.Controller->CancelPendingEnemyPossessionTransition();
 	TestEqual(TEXT("Duplicate transition cancellation cannot restart recovery"), AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime, RechargeAfterCancel);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPartnerScanVisualTimingTest,
+	"Outlier.Partner.Scan.VisualTiming",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FPartnerScanVisualTimingTest::RunTest(const FString& Parameters)
+{
+	FPartnerAbilityTestWorld Fixture;
+	if (!Fixture.Initialize(*this)) return false;
+	UPartnerSupportComponent* Support = Fixture.Partner->FindComponentByClass<UPartnerSupportComponent>();
+	if (!TestNotNull(TEXT("Partner support exists"), Support)) return false;
+	AOutlierPostProcessVolume* Volume = Fixture.World->SpawnActor<AOutlierPostProcessVolume>();
+	UMaterialParameterCollection* Collection = LoadObject<UMaterialParameterCollection>(nullptr,
+		TEXT("/Game/Material/MaterialParameterData/MPC_Scan.MPC_Scan"));
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr,
+		TEXT("/Game/Material/PostProcess/MI_OT.MI_OT"));
+	if (!TestNotNull(TEXT("Scan volume exists"), Volume)
+		|| !TestNotNull(TEXT("Scan MPC exists"), Collection)
+		|| !TestNotNull(TEXT("Scan material exists"), Material)) return false;
+	// Configure the native volume as the level BP does, without modifying any saved asset.
+	auto* CollectionProperty = FindFProperty<FObjectProperty>(Volume->GetClass(), TEXT("ScanParameterCollection"));
+	auto* MaterialsProperty = FindFProperty<FMapProperty>(Volume->GetClass(), TEXT("PostProcessMaterials"));
+	if (!TestNotNull(TEXT("Scan collection binding exists"), CollectionProperty)
+		|| !TestNotNull(TEXT("Material bindings exist"), MaterialsProperty)) return false;
+	CollectionProperty->SetObjectPropertyValue_InContainer(Volume, Collection);
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Material, Volume);
+	MaterialsProperty->ContainerPtrToValuePtr<TMap<EOutlierPostProcessMaterialType, TObjectPtr<UMaterialInterface>>>(Volume)
+		->Add(EOutlierPostProcessMaterialType::Scan, MID);
+	Volume->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(0.0f, MID));
+	UMaterialPostProcessSubsystem* PostProcess = Fixture.World->GetSubsystem<UMaterialPostProcessSubsystem>();
+	PostProcess->RegisterPostProcessVolume(Volume);
+	UOutlierStencilSubsystem* Stencils = Fixture.World->GetSubsystem<UOutlierStencilSubsystem>();
+
+	const auto StartScan = [&](float VisualRange, float DetectionRange = 1000.0f, float DetectionDuration = 3.0f)
+	{
+		Support->MulticastStartScanVisual_Implementation(FVector::ZeroVector,
+			DetectionRange, DetectionDuration, VisualRange, false, false);
+		// Drive the update deterministically; world ticking below still exercises the dissolve timer.
+		Fixture.World->GetTimerManager().ClearTimer(Support->ScanClientUpdateTimerHandle);
+	};
+	const auto UpdateUntil = [&](float Time)
+	{
+		for (int32 Step = 0; Step < 1000 && Support->ActiveScanRange > 0.0f
+			&& Support->ScanElapsedTime < Time; ++Step) Support->UpdateScan_Client();
+	};
+
+	StartScan(2000.0f);
+	TestEqual(TEXT("Double visual range derives a six second duration"), Support->ActiveScanVisualDuration, 6.0f);
+	UpdateUntil(1.5f);
+	TestTrue(TEXT("Detection and visual fronts share speed before either finishes"),
+		FMath::IsNearlyEqual(Support->CurrentScanRadius,
+			UKismetMaterialLibrary::GetScalarParameterValue(Fixture.World, Collection, TEXT("Radius")), 0.001f));
+	TestTrue(TEXT("Material progress uses the visual range"), FMath::IsNearlyEqual(
+		UKismetMaterialLibrary::GetScalarParameterValue(Fixture.World, Collection, TEXT("Progress")),
+		Support->CurrentScanRadius / 2000.0f, 0.0001f));
+	UpdateUntil(3.01f);
+	TestTrue(TEXT("Detection finishes at DT duration"), Support->bScanDetectionFinished);
+	TestEqual(TEXT("Detection radius stops at DT range"), Support->CurrentScanRadius, 1000.0f);
+	TestFalse(TEXT("A longer visual is not dissolved with detection"), Support->bScanVisualDissolving);
+	TestTrue(TEXT("The material keeps expanding past the detection limit"),
+		UKismetMaterialLibrary::GetScalarParameterValue(Fixture.World, Collection, TEXT("Radius")) > 1000.0f);
+	UpdateUntil(6.01f);
+	TestTrue(TEXT("Long visual starts its own dissolve"), Support->bScanVisualDissolving);
+	TestEqual(TEXT("Material radius stops at its own range"),
+		UKismetMaterialLibrary::GetScalarParameterValue(Fixture.World, Collection, TEXT("Radius")), 2000.0f);
+	Fixture.Tick(0.4f);
+	TestEqual(TEXT("Long visual cleans up after its dissolve"), Support->ActiveScanRange, 0.0f);
+
+	StartScan(500.0f);
+	TestEqual(TEXT("Half visual range derives a 1.5 second duration"), Support->ActiveScanVisualDuration, 1.5f);
+	UpdateUntil(1.51f);
+	TestTrue(TEXT("Short visual dissolves before detection ends"), Support->bScanVisualDissolving);
+	TestFalse(TEXT("Short visual does not prematurely finish detection"), Support->bScanDetectionFinished);
+	Support->ScannedActors.Add(Fixture.Partner);
+	PostProcess->ApplyScanStencil(Fixture.Partner, 1, Support);
+	Fixture.Tick(0.4f);
+	TestTrue(TEXT("Visual dissolve completes independently"), Support->bScanVisualFinished);
+	TestFalse(TEXT("Visual completion preserves detected actors until scan cleanup"), Support->ScannedActors.IsEmpty());
+	TestEqual(TEXT("Visual completion preserves DT range"), Support->ActiveScanRange, 1000.0f);
+	TestTrue(TEXT("Material completion preserves scan stencil requests"), Stencils->HasEffect(EOutlierStencilEffect::Scan));
+	TestEqual(TEXT("Short visual clears its MPC flag independently"),
+		UKismetMaterialLibrary::GetScalarParameterValue(Fixture.World, Collection, TEXT("Flag")), 0.0f);
+	UpdateUntil(2.99f);
+	Support->UpdateScan_Client();
+	TestEqual(TEXT("Detection completion cleans up an already finished visual"), Support->ActiveScanRange, 0.0f);
+	TestTrue(TEXT("Final cleanup clears detected actors"), Support->ScannedActors.IsEmpty());
+	TestFalse(TEXT("Final cleanup removes scan stencil requests"), Stencils->HasEffect(EOutlierStencilEffect::Scan));
+
+	StartScan(1000.0f);
+	TestEqual(TEXT("Matching ranges preserve the existing duration"), Support->ActiveScanVisualDuration, 3.0f);
+	UpdateUntil(3.01f);
+	Support->MulticastCancelScanForReboot_Implementation();
+	TestFalse(TEXT("Cancellation clears the dissolve timer"),
+		Fixture.World->GetTimerManager().IsTimerActive(Support->ScanEdgeDissolveTimerHandle));
+	TestEqual(TEXT("Cancellation resets visual range"), Support->ActiveScanVisualRange, 0.0f);
+
+	StartScan(2000.0f, 0.0f);
+	TestEqual(TEXT("Zero detection range disables visual expansion"), Support->ActiveScanVisualRange, 0.0f);
+	TestTrue(TEXT("Zero detection range produces a finite duration"), FMath::IsFinite(Support->ActiveScanVisualDuration));
+	StartScan(2000.0f, 1000.0f, 0.0f);
+	TestEqual(TEXT("Zero DT duration preserves an instantaneous visual"), Support->ActiveScanVisualDuration, 0.0f);
+	Support->EndScan_Client();
+	auto* VisualRangeProperty = FindFProperty<FFloatProperty>(Fixture.Partner->GetClass(), TEXT("ScanVisualRange"));
+	if (!TestNotNull(TEXT("BP visual range setting exists"), VisualRangeProperty)) return false;
+	VisualRangeProperty->SetPropertyValue_InContainer(Fixture.Partner, 2500.0f);
+	TestTrue(TEXT("Server ability config is available"),
+		Fixture.Partner->GetOutlierAbilitySystemComponent()->ConfigurePartnerAbilities(MakeTestConfig()));
+	TestTrue(TEXT("Server starts scan with the Partner visual range"),
+		Support->TryScan_Server() == EPartnerSkillUseResult::Success);
+	TestEqual(TEXT("Server multicasts the BP-configurable visual range"), Support->ActiveScanVisualRange, 2500.0f);
+	TestEqual(TEXT("Client derives duration from authoritative detection settings"), Support->ActiveScanVisualDuration, 7.5f);
+	Support->CancelForReboot();
 	return true;
 }
 

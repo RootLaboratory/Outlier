@@ -726,6 +726,12 @@ void UMaterialPostProcessSubsystem::EndScanPostProcess(UObject* Source)
 	if (Source) Stencils->ClearSourceEffects(Source, EOutlierStencilEffect::Scan);
 	else ClearAllScanStencils();
 	if (Stencils->HasEffect(EOutlierStencilEffect::Scan)) return;
+	EndScanVisualPostProcess();
+}
+
+void UMaterialPostProcessSubsystem::EndScanVisualPostProcess()
+{
+	if (ShouldSkipRenderingWork()) return;
 	if (BoundPostProcessVolume)
 	{
 		BoundPostProcessVolume->SetScanEdgeDissolve(-1.0f, 0.3f);

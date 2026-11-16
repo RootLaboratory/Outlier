@@ -97,6 +97,7 @@ EPartnerSkillUseResult UPartnerSupportComponent::TryScan_Server()
 		InScanOrigin,
 		InScanRange,
 		InScanDuration,
+		PartnerCharacter->ScanVisualRange,
 		bRevealHackable,
 		bRevealNodeFragments
 	);
@@ -265,74 +266,98 @@ void UPartnerSupportComponent::UpdateScan_Client()
 
 	const float RadiusSq = FMath::Square(CurrentScanRadius);
 
-	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+	if (!bScanVisualDissolving && !bScanVisualFinished)
 	{
-		PostProcessSubsystem->UpdateScanPostProcess(ScanOrigin, CurrentScanRadius);
-	}
-
-	TArray<FOverlapResult> Results;
-
-	FCollisionObjectQueryParams ObjectParams;
-	ObjectParams.AddObjectTypesToQuery(ECC_Pawn);
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
-	ObjectParams.AddObjectTypesToQuery(ECC_PhysicsBody);
-
-	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PartnerScan), false);
-	QueryParams.AddIgnoredActor(PartnerCharacter);
-
-	World->OverlapMultiByObjectType(
-		Results,
-		ScanOrigin,
-		FQuat::Identity,
-		ObjectParams,
-		FCollisionShape::MakeSphere(CurrentScanRadius),
-		QueryParams
-	);
-
-	for (const FOverlapResult& Result : Results)
-	{
-		AActor* Actor = Result.GetActor();
-
-		if (!Actor)
-		{
-			continue;
-		}
-
-		if (ScannedActors.Contains(Actor))
-		{
-			continue;
-		}
-
-		const FVector ActorLocation = Actor->GetActorLocation();
-		const float DistanceSq = FVector::DistSquared(
-			ScanOrigin,
-			ActorLocation
-		);
-
-		if (DistanceSq > RadiusSq)
-		{
-			continue;
-		}
-
-		ScannedActors.Add(Actor);
-
-		ApplyScanEffect(Actor);
-	}
-
-	if (ScanProgress >= 1.0f)
-	{
-		World->GetTimerManager().ClearTimer(ScanClientUpdateTimerHandle);
+		const float VisualProgress = ActiveScanVisualDuration > 0.0f
+			? FMath::Clamp(ScanElapsedTime / ActiveScanVisualDuration, 0.0f, 1.0f) : 1.0f;
 		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 		{
-			PostProcessSubsystem->BeginScanEdgeDissolve(ScanEdgeDissolveDuration);
-			World->GetTimerManager().SetTimer(ScanEdgeDissolveTimerHandle, this,
-				&UPartnerSupportComponent::EndScan_Client, ScanEdgeDissolveDuration, false);
+			PostProcessSubsystem->UpdateScanPostProcess(ScanOrigin, ActiveScanVisualRange * VisualProgress);
+			if (VisualProgress >= 1.0f)
+			{
+				bScanVisualDissolving = true;
+				PostProcessSubsystem->BeginScanEdgeDissolve(ScanEdgeDissolveDuration);
+				World->GetTimerManager().SetTimer(ScanEdgeDissolveTimerHandle, this,
+					&UPartnerSupportComponent::EndScanVisual_Client, ScanEdgeDissolveDuration, false);
+			}
 		}
 		else
 		{
-			EndScan_Client();
+			bScanVisualFinished = true;
 		}
 	}
+
+	if (!bScanDetectionFinished)
+	{
+		TArray<FOverlapResult> Results;
+
+		FCollisionObjectQueryParams ObjectParams;
+		ObjectParams.AddObjectTypesToQuery(ECC_Pawn);
+		ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+		ObjectParams.AddObjectTypesToQuery(ECC_PhysicsBody);
+
+		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PartnerScan), false);
+		QueryParams.AddIgnoredActor(PartnerCharacter);
+
+		World->OverlapMultiByObjectType(
+			Results,
+			ScanOrigin,
+			FQuat::Identity,
+			ObjectParams,
+			FCollisionShape::MakeSphere(CurrentScanRadius),
+			QueryParams
+		);
+
+		for (const FOverlapResult& Result : Results)
+		{
+			AActor* Actor = Result.GetActor();
+
+			if (!Actor)
+			{
+				continue;
+			}
+
+			if (ScannedActors.Contains(Actor))
+			{
+				continue;
+			}
+
+			const FVector ActorLocation = Actor->GetActorLocation();
+			const float DistanceSq = FVector::DistSquared(
+				ScanOrigin,
+				ActorLocation
+			);
+
+			if (DistanceSq > RadiusSq)
+			{
+				continue;
+			}
+
+			ScannedActors.Add(Actor);
+
+			ApplyScanEffect(Actor);
+		}
+		bScanDetectionFinished = ScanProgress >= 1.0f;
+	}
+
+	if (bScanDetectionFinished && bScanVisualFinished)
+	{
+		EndScan_Client();
+	}
+}
+
+void UPartnerSupportComponent::EndScanVisual_Client()
+{
+	bScanVisualDissolving = false;
+	bScanVisualFinished = true;
+	if (UWorld* World = GetWorld())
+	{
+		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PostProcessSubsystem->EndScanVisualPostProcess();
+		}
+	}
+	if (bScanDetectionFinished) EndScan_Client();
 }
 
 void UPartnerSupportComponent::EndScan_Server()
@@ -387,6 +412,11 @@ void UPartnerSupportComponent::EndScan_Client()
 	ScanElapsedTime = 0.0f;
 	ActiveScanRange = 0.0f;
 	ActiveScanDuration = 0.0f;
+	ActiveScanVisualRange = 0.0f;
+	ActiveScanVisualDuration = 0.0f;
+	bScanDetectionFinished = false;
+	bScanVisualDissolving = false;
+	bScanVisualFinished = false;
 	bScanRevealHackable = false;
 	bScanRevealNodeFragments = false;
 
@@ -514,6 +544,7 @@ void UPartnerSupportComponent::MulticastStartScanVisual_Implementation(
 	FVector InScanOrigin,
 	float InScanRange,
 	float InScanDuration,
+	float InScanVisualRange,
 	bool bInRevealHackable,
 	bool bInRevealNodeFragments)
 {
@@ -535,13 +566,19 @@ void UPartnerSupportComponent::MulticastStartScanVisual_Implementation(
 	ScanElapsedTime = 0.0f;
 	ActiveScanRange = FMath::Max(0.0f, InScanRange);
 	ActiveScanDuration = FMath::Max(0.0f, InScanDuration);
+	ActiveScanVisualRange = FMath::IsFinite(InScanVisualRange) ? FMath::Max(0.0f, InScanVisualRange) : 0.0f;
+	// A zero detection range has no expansion speed; disable the visual in that case.
+	// A zero duration keeps the existing instantaneous detection/visual behavior.
+	ActiveScanVisualDuration = ActiveScanRange > 0.0f
+		? ActiveScanDuration * (ActiveScanVisualRange / ActiveScanRange) : 0.0f;
+	if (ActiveScanRange <= 0.0f) ActiveScanVisualRange = 0.0f;
 	bScanRevealHackable = bInRevealHackable;
 	bScanRevealNodeFragments = bInRevealNodeFragments;
 	ScannedActors.Reset();
 
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 	{
-		PostProcessSubsystem->StartScanPostProcess(ScanOrigin, CurrentScanRadius, ActiveScanRange);
+		PostProcessSubsystem->StartScanPostProcess(ScanOrigin, 0.0f, ActiveScanVisualRange);
 	}
 
 	World->GetTimerManager().SetTimer(
