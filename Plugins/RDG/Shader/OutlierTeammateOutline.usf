@@ -55,15 +55,23 @@ float FirstPersonBlock(float2 UV)
 }
 
 #if HAS_TURRETS
-float TurretDepth(float2 UV, int Owner, bool Excluded)
+float TurretSlotDepth(float2 UV, int Owner, bool Excluded)
 {
     if (any(UV < 0) || any(UV >= 1)) return 1.0e8;
     return TurretDepthTexture.Load(int4(SamplePixel(UV, TurretMaskMin, TurretMaskSize), Owner * 2 + (Excluded ? 1 : 0), 0));
 }
-bool IsExcludedSurface(float2 UV, int Owner, float FullDepth)
+bool IsExcludedSurface(float2 UV, int Owner)
 {
-    float Excluded = TurretDepth(UV, Owner, true);
-    return HasSurface(Excluded) && abs(Excluded - FullDepth) <= max(1.0, FullDepth * 0.0001);
+    // 슬롯 소속은 마스크로 확정한다. 깊이는 두 표면의 앞뒤만 비교하며 오차 범위를 두지 않는다.
+    // 정확히 겹친 표면은 제외 슬롯으로 분류한다.
+    float Excluded = TurretSlotDepth(UV, Owner, true);
+    return HasSurface(Excluded) && Excluded <= TurretSlotDepth(UV, Owner, false);
+}
+float TurretDepth(float2 UV, int Owner)
+{
+    // Debug 1의 시안 영역만 선의 입력으로 사용한다. 앞쪽 해치는 제외하되,
+    // 주황 영역을 윤곽 탐색에 섞거나 경계 선을 지우는 용도로 확장하지 않는다.
+    return IsExcludedSurface(UV, Owner) ? 1.0e8 : TurretSlotDepth(UV, Owner, false);
 }
 
 // 해치의 노출은 집계하지 않는다. Body/Head는 같은 Owner 슬라이스에 있으므로 함께 판정한다.
@@ -75,8 +83,8 @@ void TurretVisibilityCS(uint3 DispatchId : SV_DispatchThreadID, uint GroupIndex 
     if (all(DispatchId.xy < uint2(TurretMaskSize)) && DispatchId.z < uint(TurretCount))
     {
         float2 UV = (float2(DispatchId.xy) + 0.5) / TurretMaskSize;
-        float Depth = TurretDepth(UV, DispatchId.z, false);
-        if (HasSurface(Depth) && !IsExcludedSurface(UV, DispatchId.z, Depth)
+        float Depth = TurretDepth(UV, DispatchId.z);
+        if (HasSurface(Depth)
             && abs(Depth - SceneDepth(UV)) <= max(1.0, Depth * 0.0001))
             InterlockedOr(GroupVisible, 1u);
     }
@@ -126,8 +134,8 @@ bool CoveredByIncludedTarget(float2 UV, float Depth, int Owner)
     [loop] for (int Other = 0; Other < TurretCount; ++Other)
     {
         if (Other == Owner) continue;
-        float OtherDepth = TurretDepth(UV, Other, false);
-        if (HasSurface(OtherDepth) && OtherDepth <= Depth && !IsExcludedSurface(UV, Other, OtherDepth)) return true;
+        float OtherDepth = TurretDepth(UV, Other);
+        if (HasSurface(OtherDepth) && OtherDepth <= Depth) return true;
     }
     return false;
 }
@@ -194,11 +202,10 @@ void MainCS(uint3 DispatchId : SV_DispatchThreadID)
     bool ProtectLegacy = TurretCount > 0 && HasHigherPriorityOutline(UV);
     [loop] for (int Owner = 0; Owner < TurretCount; ++Owner)
     {
-        float FullCenter = TurretDepth(UV, Owner, false);
-        if (HasSurface(FullCenter) || ProtectLegacy) continue;
+        float TurretCenter = TurretDepth(UV, Owner);
+        if (HasSurface(TurretCenter) || ProtectLegacy) continue;
         float TurretSourceDepth = 1.0e8;
         float TurretDistance = 1.0e8;
-        float ExcludedDistance = 1.0e8;
         float2 TurretSourceUV = UV;
         [loop] for (int Y = -4; Y <= 4; ++Y)
         [loop] for (int X = -4; X <= 4; ++X)
@@ -206,17 +213,17 @@ void MainCS(uint3 DispatchId : SV_DispatchThreadID)
             float CandidateDistance = max(length(float2(X, Y)) - 0.5, 0);
             if (CandidateDistance > max(Style.x, Style.y) + 0.5) continue;
             float2 CandidateUV = UV + float2(X, Y) * OutputPixelScale / OutputSize;
-            float Depth = TurretDepth(CandidateUV, Owner, false);
+            float Depth = TurretDepth(CandidateUV, Owner);
             if (!HasSurface(Depth)) continue;
-            if (IsExcludedSurface(CandidateUV, Owner, Depth)) ExcludedDistance = min(ExcludedDistance, CandidateDistance);
-            if (CandidateDistance >= TurretDistance) continue;
+            if (CandidateDistance > TurretDistance) continue;
+            // 후보는 모두 시안 영역이다. 화면 거리가 같으면 앞쪽 본체 표면을 선택한다.
+            if (CandidateDistance == TurretDistance && Depth >= TurretSourceDepth) continue;
             TurretDistance = CandidateDistance;
             TurretSourceDepth = Depth;
             TurretSourceUV = CandidateUV;
         }
-        // 전체 형상으로 먼저 가장 가까운 경계를 고른 뒤 슬롯을 검사한다. 제외 소스를
-        // 건너뛰어 뒤쪽 본체를 다시 고르면 해치 가장자리에 선이 재생성되므로 재선택하지 않는다.
-        if (!HasSurface(TurretSourceDepth) || ExcludedDistance <= TurretDistance + 0.5
+        // 시안 영역 자체의 윤곽을 그린다. 해치와 맞닿은 경계도 본체의 윤곽에 포함한다.
+        if (!HasSurface(TurretSourceDepth)
             || CoveredByIncludedTarget(UV, TurretSourceDepth, Owner)) continue;
         float Tolerance = max(1.0, TurretSourceDepth * 0.0001);
         float TurretVisible = 1 - smoothstep(Tolerance, Tolerance * 2,
@@ -245,9 +252,10 @@ void MainCS(uint3 DispatchId : SV_DispatchThreadID)
 #if HAS_TURRETS
     [loop] for (int Owner = 0; Owner < TurretCount; ++Owner)
     {
-        float Depth = TurretDepth(UV, Owner, false);
+        // 디버그 색은 기존대로 유지해 실제 선의 입력(시안)과 제외 영역(주황)을 대조한다.
+        float Depth = min(TurretSlotDepth(UV, Owner, false), TurretSlotDepth(UV, Owner, true));
         if (!HasSurface(Depth)) continue;
-        DebugCoverage = IsExcludedSurface(UV, Owner, Depth) ? float3(1, 0.2, 0) : float3(0, 1, 1);
+        DebugCoverage = IsExcludedSurface(UV, Owner) ? float3(1, 0.2, 0) : float3(0, 1, 1);
         if (!HasSurface(CenterDepth) || Depth < CenterDepth) CenterDepth = Depth;
     }
 #endif
