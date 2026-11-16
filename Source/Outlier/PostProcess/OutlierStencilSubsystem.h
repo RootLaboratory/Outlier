@@ -18,6 +18,7 @@ struct FOutlierTurretOutlineMaskState
 {
 	TWeakObjectPtr<USkeletalMesh> Asset;
 	TWeakObjectPtr<UTeammateOutlineMaskComponent> Proxy;
+	TWeakObjectPtr<UTeammateOutlineMaskComponent> IncludedProxy;
 	uint32 ConfigurationHash = 0;
 	bool bFailureReported = false;
 };

@@ -20,8 +20,8 @@ namespace
 
 		virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override
 		{
-			// CaptureOnly만 설정하면 다른 SceneCapture에도 해치가 중복된다.
-			// 예약한 제외 마스크 View에서만 그려 반사·일반 깊이·다른 캡처에 섞이지 않게 한다.
+			// CaptureOnly만 설정하면 다른 SceneCapture에도 슬롯 프록시가 중복된다.
+			// 포함/제외 슬롯의 전용 마스크 View에서만 그려 반사·일반 깊이·다른 캡처에 섞이지 않게 한다.
 			if (!View->CustomRenderPass || View->CustomRenderPass->GetDebugName() != TEXT("OutlierTurretExcludedMask"))
 			{
 				return FPrimitiveViewRelevance();

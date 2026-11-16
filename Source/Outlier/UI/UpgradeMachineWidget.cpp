@@ -313,24 +313,19 @@ void UUpgradeMachineWidget::UpdateWaitingMessage()
 		const UControllerInputConfig* Config = Layers ? Layers->GetWidgetInputConfig() : nullptr;
 		const UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer
 			? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
-		TArray<FText> KeyNames;
-		// 취소 입력을 라우팅하는 UI 레이어와 같은 액션·현재 매핑을 조회한다. 고정 Esc로 대체하지 않는다.
+		FText CancelKey = NSLOCTEXT("UpgradeMachineWidget", "CancelKeyUnbound", "미지정");
+		// IA_Escape를 사용하는 UI 레이어의 현재 매핑에서 기존 키 표시 위젯과 동일하게 첫 키 하나만 표시한다.
 		if (Input && Config && Config->WidgetEscapeAction)
 		{
-			for (const FKey& Key : Input->QueryKeysMappedToAction(Config->WidgetEscapeAction))
+			const TArray<FKey> MappedKeys = Input->QueryKeysMappedToAction(Config->WidgetEscapeAction);
+			if (MappedKeys.IsValidIndex(0) && MappedKeys[0].IsValid())
 			{
-				if (Key.IsValid())
-				{
-					KeyNames.Add(Key.GetDisplayName(false));
-				}
+				CancelKey = MappedKeys[0].GetDisplayName(false);
 			}
 		}
-		const FText CancelKeys = KeyNames.IsEmpty()
-			? NSLOCTEXT("UpgradeMachineWidget", "CancelKeyUnbound", "미지정")
-			: FText::Join(FText::FromString(TEXT(" / ")), KeyNames);
 		TextBlock_76->SetText(FText::Format(
 			NSLOCTEXT("UpgradeMachineWidget", "WaitingCancelMapped", "{0}\n{1}: 취소"),
-			WaitingMessages[WaitingMessageIndex], CancelKeys));
+			WaitingMessages[WaitingMessageIndex], CancelKey));
 	}
 }
 

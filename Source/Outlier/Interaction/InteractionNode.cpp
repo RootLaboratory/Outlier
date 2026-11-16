@@ -94,6 +94,7 @@ void AInteractionNode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	CanceledAttemptId = 0;
 	LocalInteractor.Reset();
 	CanceledInteractor.Reset();
+	ResetEmissivePrediction();
 	LatestServerAttemptIds.Reset();
 	InteractionBodies.Reset();
 	OutlierAudioFeedback::StopLoops(this);
@@ -255,7 +256,11 @@ float FInteractionNodeHoldState::GetProgress(double ServerTime) const
 
 int32 AInteractionNode::BeginLocalHoldAttempt(AFirstPersonCharacter* Interactor)
 {
-	if (!IsValid(Interactor) || bCollected || NextLocalAttemptId == MAX_int32) return 0;
+	if (!IsValid(Interactor) || bCollected || NextLocalAttemptId == MAX_int32)
+	{
+		return 0;
+	}
+	ResetEmissivePrediction();
 	LocalAttemptId = ++NextLocalAttemptId;
 	LocalInteractor = Interactor;
 	return LocalAttemptId;
@@ -268,7 +273,10 @@ int32 AInteractionNode::GetLocalHoldAttemptId(const AFirstPersonCharacter* Inter
 
 void AInteractionNode::EndLocalHoldAttempt(const AFirstPersonCharacter* Interactor, bool bCanceled)
 {
-	if (LocalInteractor.Get() != Interactor) return;
+	if (LocalInteractor.Get() != Interactor)
+	{
+		return;
+	}
 	if (bCanceled && LocalAttemptId != 0)
 	{
 		CanceledAttemptId = LocalAttemptId;
@@ -276,6 +284,7 @@ void AInteractionNode::EndLocalHoldAttempt(const AFirstPersonCharacter* Interact
 	}
 	LocalAttemptId = 0;
 	LocalInteractor.Reset();
+	ResetEmissivePrediction();
 	UpdateHoldPresentation();
 }
 
@@ -308,7 +317,7 @@ bool AInteractionNode::IsServerHoldAttemptCurrent(const AFirstPersonCharacter* I
 double AInteractionNode::GetPresentationTime() const
 {
 	if (IsValid(PresentationClock)) return PresentationClock->GetServerWorldTimeSeconds();
-	// 클라이언트 로컬 시각으로 진행을 추측하지 않는다. 서버 시계가 준비되면 다시 계산한다.
+	// UI/완료 요청의 진행률은 로컬 시각으로 추측하지 않는다. 서버 시계가 준비되면 다시 계산한다.
 	const UWorld* World = GetWorld();
 	return HasAuthority() && World ? World->GetTimeSeconds() : HoldState.ServerStartTime;
 }
@@ -316,20 +325,32 @@ double AInteractionNode::GetPresentationTime() const
 void AInteractionNode::BeginHoldPresentation(AFirstPersonCharacter* Interactor, int32 AttemptId, float Duration)
 {
 	// 템플릿이나 월드가 없는 객체에서는 서버 진행 상태를 만들지 않는다.
-	if (bCollected || IsTemplate() || !GetWorld()) return;
+	if (bCollected || IsTemplate() || !GetWorld())
+	{
+		return;
+	}
 	if (HasAuthority())
 	{
 		PublishHoldState(true, AttemptId, Duration, Interactor);
 	}
 	else
 	{
-		// BeginLocalHoldAttempt에서 발급한 번호로 서버 승인을 기다린다.
+		// 로컬 Hold가 실제로 시작된 뒤에만 발광을 예측한다. 원격 관찰자는 서버 snapshot을 사용한다.
+		if (IsValid(Interactor) && Interactor->IsLocallyControlled()
+			&& AttemptId > 0 && AttemptId == GetLocalHoldAttemptId(Interactor)
+			&& FMath::IsFinite(Duration) && Duration > 0.0f)
+		{
+			LocalEmissiveStartTime = GetWorld()->GetTimeSeconds();
+			LocalEmissiveDuration = Duration;
+			bPredictingEmissive = true;
+		}
 		UpdateHoldPresentation();
 	}
 }
 
 void AInteractionNode::EndHoldPresentation(bool bCanceled)
 {
+	ResetEmissivePrediction();
 	if (HasAuthority())
 	{
 		PublishHoldState(false);
@@ -363,17 +384,74 @@ void AInteractionNode::PublishHoldState(bool bHolding, int32 AttemptId, float Du
 float AInteractionNode::GetHoldProgress() const
 {
 	// 번호는 노드별로 발급하며, 진행 snapshot은 상호작용한 Pawn까지 함께 구분한다.
-	const bool bCanceled = CanceledAttemptId != 0 && HoldState.AttemptId == CanceledAttemptId
+	// 새 시도를 승인 전에 취소했어도 이전 시도의 늦은 snapshot이 발광을 다시 켜면 안 된다.
+	const bool bCanceled = HoldState.AttemptId > 0 && HoldState.AttemptId <= CanceledAttemptId
 		&& HoldState.Interactor == CanceledInteractor.Get();
 	const bool bWaitingForApproval = LocalAttemptId != 0
 		&& (HoldState.AttemptId != LocalAttemptId || HoldState.Interactor != LocalInteractor.Get());
-	if (bCollected || bCanceled || bWaitingForApproval) return 0.0f;
+	if (bCollected || bCanceled || bWaitingForApproval)
+	{
+		return 0.0f;
+	}
 	return HoldState.GetProgress(GetPresentationTime());
 }
 
 bool AInteractionNode::NeedsPresentationUpdate() const
 {
 	return bPresentationUpdating;
+}
+
+void AInteractionNode::ResetEmissivePrediction()
+{
+	bPredictingEmissive = false;
+	bCorrectingEmissive = false;
+	LocalEmissiveStartTime = 0.0;
+	LocalEmissiveDuration = 0.0f;
+	EmissiveCorrectionStartTime = 0.0;
+	EmissiveCorrectionOffset = 0.0f;
+}
+
+float AInteractionNode::GetEmissiveProgress()
+{
+	if (bCollected || !LocalInteractor.IsValid() || LocalAttemptId == 0)
+	{
+		ResetEmissivePrediction();
+		return GetHoldProgress();
+	}
+
+	const double LocalTime = GetWorld()->GetTimeSeconds();
+	const float ServerProgress = GetHoldProgress();
+	if (bPredictingEmissive)
+	{
+		const float PredictedProgress = static_cast<float>(FMath::Clamp(
+			(LocalTime - LocalEmissiveStartTime) / LocalEmissiveDuration, 0.0, 1.0));
+		const bool bApproved = HoldState.bHolding && HoldState.AttemptId == LocalAttemptId
+			&& HoldState.Interactor == LocalInteractor.Get();
+		if (!bApproved)
+		{
+			return PredictedProgress;
+		}
+
+		// 승인 프레임의 표시값은 보존하고, 서버 진행률과의 차이만 짧게 제거한다.
+		// 보정 중에는 이 구간을 다시 시작하지 않아 서버 시각으로 확실히 수렴한다.
+		bPredictingEmissive = false;
+		bCorrectingEmissive = true;
+		EmissiveCorrectionStartTime = LocalTime;
+		EmissiveCorrectionOffset = PredictedProgress - ServerProgress;
+	}
+
+	if (bCorrectingEmissive)
+	{
+		constexpr double CorrectionSeconds = 0.1;
+		const float Alpha = static_cast<float>(FMath::Clamp(
+			(LocalTime - EmissiveCorrectionStartTime) / CorrectionSeconds, 0.0, 1.0));
+		if (Alpha < 1.0f)
+		{
+			return FMath::Clamp(ServerProgress + EmissiveCorrectionOffset * (1.0f - Alpha), 0.0f, 1.0f);
+		}
+		ResetEmissivePrediction();
+	}
+	return ServerProgress;
 }
 
 void AInteractionNode::OnRep_HoldState()
@@ -395,14 +473,23 @@ float AInteractionNode::GetEmissiveStrength(float Progress) const
 
 void AInteractionNode::UpdateHoldPresentation()
 {
-	if (!bPresentationInitialized) return;
-	if (!IsValid(PresentationClock)) PresentationClock = GetWorld()->GetGameState();
-	const float Progress = GetHoldProgress();
-	const bool bCanceled = CanceledAttemptId != 0 && HoldState.AttemptId == CanceledAttemptId
+	if (!bPresentationInitialized)
+	{
+		return;
+	}
+	if (!IsValid(PresentationClock))
+	{
+		PresentationClock = GetWorld()->GetGameState();
+	}
+	const float Progress = GetEmissiveProgress();
+	const bool bCanceled = HoldState.AttemptId > 0 && HoldState.AttemptId <= CanceledAttemptId
 		&& HoldState.Interactor == CanceledInteractor.Get();
-	// 마지막 100% 값을 적용한 뒤 갱신을 끈다. 대기/수집 중에는 MID를 반복 갱신하지 않는다.
-	bPresentationUpdating = GetNetMode() != NM_DedicatedServer && !bCollected && HoldState.bHolding
-		&& Progress < 1.0f && !bCanceled;
+	// 승인 전에도 발광을 갱신하고, 예측이 먼저 100%여도 승인 보정은 끝까지 처리한다.
+	// UI와 완료 요청은 기존 GetHoldProgress를 사용하므로 이 예측으로 수집되지는 않는다.
+	const bool bLocalPresentation = bPredictingEmissive || bCorrectingEmissive;
+	const bool bServerPresentation = HoldState.bHolding && Progress < 1.0f && !bCanceled;
+	bPresentationUpdating = GetNetMode() != NM_DedicatedServer && !bCollected
+		&& (bLocalPresentation || bServerPresentation);
 	if (IsValid(EmissiveMID) && IsValid(CachedEmissiveMesh))
 	{
 		EmissiveMID->SetScalarParameterValue(EmissiveParameterName, GetEmissiveStrength(Progress));

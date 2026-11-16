@@ -44,6 +44,7 @@ class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTag
 {
 	GENERATED_BODY()
 	friend class FInteractionNodePresentationTest;
+	friend class FInteractionNodeEmissivePredictionTest;
 	friend class FInteractionNodeHoldAttemptTest;
 	friend class FInteractionNodeActorHoverTest;
 	friend class FPartnerMovementRecoveryTest;

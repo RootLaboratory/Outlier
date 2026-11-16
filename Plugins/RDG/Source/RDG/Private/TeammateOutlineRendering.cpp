@@ -28,7 +28,7 @@ struct FTeammateOutlineViewResources
 {
 	struct FTurretMasks
 	{
-		FRDGTextureRef Full = nullptr;
+		FRDGTextureRef Included = nullptr;
 		FRDGTextureRef Excluded = nullptr;
 		FIntRect Rect;
 		bool bHasExclusions = false;
@@ -51,9 +51,10 @@ namespace
 		IMPLEMENT_CUSTOM_RENDER_PASS(FTeammateDepthPass);
 
 		FTeammateDepthPass(const FTeammateOutlineResources& InResources, EMask InMask,
-			FIntPoint Size, const FSceneView& MainView, int32 InTurretIndex = INDEX_NONE, bool bInExcluded = false)
+			FIntPoint Size, const FSceneView& MainView, int32 InTurretIndex = INDEX_NONE, bool bInExcluded = false,
+			bool bSlotMask = false)
 			// PrePass에 참여하지 않는 movable/비차폐 메시도 빠지지 않도록 최소 BasePass까지 실행한다.
-			: FCustomRenderPassBase(bInExcluded ? TEXT("OutlierTurretExcludedMask") : TEXT("OutlierTeammateMask"),
+			: FCustomRenderPassBase(bSlotMask ? TEXT("OutlierTurretExcludedMask") : TEXT("OutlierTeammateMask"),
 				ERenderMode::DepthAndBasePass, ERenderOutput::SceneDepth, Size)
 			, Resources(InResources), Mask(InMask), FirstPerson(MainView.SceneViewInitOptions.FirstPersonParams)
 			, TurretIndex(InTurretIndex), bExcluded(bInExcluded)
@@ -78,7 +79,7 @@ namespace
 			if (TurretIndex != INDEX_NONE)
 			{
 				auto& Turret = Resources->Turrets[TurretIndex];
-				(bExcluded ? Turret.Excluded : Turret.Full) = RenderTargetTexture;
+				(bExcluded ? Turret.Excluded : Turret.Included) = RenderTargetTexture;
 				Turret.Rect = Views[0]->ViewRect;
 			}
 			else Resources->Masks[Index] = RenderTargetTexture;
@@ -114,7 +115,7 @@ namespace
 	};
 
 	TSet<FPrimitiveComponentId> GatherPrimitiveIds(const TArray<TWeakObjectPtr<UPrimitiveComponent>>& Meshes,
-		bool bExcludedProxy = false, bool* OutReady = nullptr)
+		bool bSlotProxies = false, bool* OutReady = nullptr, const FSceneView* View = nullptr)
 	{
 		if (OutReady) *OutReady = true;
 		TSet<FPrimitiveComponentId> Result;
@@ -123,11 +124,18 @@ namespace
 		{
 			const UPrimitiveComponent* Mesh = WeakMesh.Get();
 			const AActor* Owner = IsValid(Mesh) ? Mesh->GetOwner() : nullptr;
-			if (bExcludedProxy)
+			if (bSlotProxies && !IsValid(Mesh))
+			{
+				if (OutReady) *OutReady = false;
+				continue;
+			}
+			if (bSlotProxies && IsValid(Mesh) && Mesh->ComponentHasTag(TEXT("Outlier.StencilExclude")))
 			{
 				const USkinnedMeshComponent* Proxy = Cast<USkinnedMeshComponent>(Mesh);
 				const USkinnedMeshComponent* Source = Proxy ? Proxy->LeaderPoseComponent.Get() : nullptr;
 				if (IsValid(Source) && (!Source->IsVisible() || Source->bHiddenInGame)) continue;
+				// View별 숨김은 원본 Primitive ID로 들어온다. 본체 프록시로 바꿔도 그대로 따른다.
+				if (IsValid(Source) && View && View->HiddenPrimitives.Contains(Source->GetPrimitiveSceneId())) continue;
 				// 숨긴 부위는 마스크가 필요 없다. 보이는 부위의 프록시 하나라도 준비되지 않았으면
 				// 부분 제외 마스크로 터렛을 전환하지 않고 대상 전체를 보수적으로 생략한다.
 				if (!IsValid(Source) || !Source->IsRegistered() || !IsValid(Proxy) || !Proxy->IsRegistered()
@@ -140,7 +148,7 @@ namespace
 			}
 			if (IsValid(Mesh) && Mesh->IsRegistered() && Mesh->IsVisible() && !Mesh->bHiddenInGame
 				&& IsValid(Owner) && !Owner->IsHidden() && !Owner->IsActorBeingDestroyed()
-				&& Mesh->bRenderInMainPass && (bExcludedProxy || !Mesh->ComponentHasTag(TEXT("Outlier.StencilExclude"))))
+				&& Mesh->bRenderInMainPass && (bSlotProxies || !Mesh->ComponentHasTag(TEXT("Outlier.StencilExclude"))))
 			{
 				Result.Add(Mesh->GetPrimitiveSceneId());
 			}
@@ -169,7 +177,8 @@ FTeammateOutlineResources FRDGTeammateOutlineRendering::QueueMasks(
 	Resources->Settings.TurretTargets.Reset();
 	Resources->Settings.OnMasksQueued.Unbind();
 	Resources->Settings.OnTurretMasksQueued.Unbind();
-	auto QueueDepth = [&](TSet<FPrimitiveComponentId> Primitives, EMask Mask, int32 TurretIndex, bool bExcluded)
+	auto QueueDepth = [&](TSet<FPrimitiveComponentId> Primitives, EMask Mask, int32 TurretIndex, bool bExcluded,
+		bool bSlotMask = false)
 	{
 		if (Primitives.IsEmpty()) return false;
 		FSceneInterface::FCustomRenderPassRendererInput Input;
@@ -182,9 +191,11 @@ FTeammateOutlineResources FRDGTeammateOutlineRendering::QueueMasks(
 		Input.ShowOnlyPrimitives = MoveTemp(Primitives);
 		Input.HiddenPrimitives = View.HiddenPrimitives;
 		Input.bUseMainViewFamilyShowFlags = true;
-		// 제외 프록시만 capture-only로 그린다. pair/FP/원본 터렛은 기존 소유자 가시성 판정을 유지한다.
+		// 포함 마스크에는 원본 메시도 남으므로 일반 View 가시성을 유지한다.
+		// 제외 프록시만 CaptureOnly이며, 두 슬롯 프록시 모두 전용 View 검사로 격리된다.
 		Input.bIsSceneCapture = bExcluded;
-		Input.CustomRenderPass = new FTeammateDepthPass(Resources, Mask, View.UnscaledViewRect.Max, View, TurretIndex, bExcluded);
+		Input.CustomRenderPass = new FTeammateDepthPass(Resources, Mask, View.UnscaledViewRect.Max, View,
+			TurretIndex, bExcluded, bSlotMask);
 		if (!Family.Scene->AddCustomRenderPass(&Family, Input))
 		{
 			delete Input.CustomRenderPass;
@@ -201,15 +212,18 @@ FTeammateOutlineResources FRDGTeammateOutlineRendering::QueueMasks(
 		if (!IsValid(Owner) || Owner->IsHidden() || Owner->IsActorBeingDestroyed()
 			|| !Target.IsEligible.IsBound() || !Target.IsEligible.Execute()
 			|| (Target.bHasExclusions && !Target.bExclusionResourcesReady)) continue;
-		auto FullIds = GatherPrimitiveIds(Target.Meshes);
+		bool bIncludedReady = true;
+		auto IncludedIds = GatherPrimitiveIds(Target.bHasExclusions ? Target.IncludedMeshes : Target.Meshes,
+			Target.bHasExclusions, &bIncludedReady, &View);
 		bool bExcludedReady = true;
-		auto ExcludedIds = GatherPrimitiveIds(Target.ExcludedMeshes, true, &bExcludedReady);
-		if (FullIds.IsEmpty() || (Target.bHasExclusions && (!bExcludedReady || Target.ExcludedMeshes.IsEmpty()))) continue;
+		auto ExcludedIds = GatherPrimitiveIds(Target.ExcludedMeshes, true, &bExcludedReady, &View);
+		if (IncludedIds.IsEmpty() || (Target.bHasExclusions
+			&& (!bIncludedReady || !bExcludedReady || Target.ExcludedMeshes.IsEmpty()))) continue;
 		const int32 Index = Resources->Turrets.AddDefaulted();
 		auto& Masks = Resources->Turrets[Index];
 		Masks.bHasExclusions = Target.bHasExclusions && !ExcludedIds.IsEmpty();
-		Masks.bQueued = QueueDepth(MoveTemp(FullIds), EMask::Target, Index, false)
-			&& (!Masks.bHasExclusions || QueueDepth(MoveTemp(ExcludedIds), EMask::Target, Index, true));
+		Masks.bQueued = QueueDepth(MoveTemp(IncludedIds), EMask::Target, Index, false, Target.bHasExclusions)
+			&& (!Masks.bHasExclusions || QueueDepth(MoveTemp(ExcludedIds), EMask::Target, Index, true, true));
 		if (Masks.bQueued) SuccessfulTurrets.Add(Target.Owner);
 	}
 	if (!Resources->bPairQueued && SuccessfulTurrets.IsEmpty()) return nullptr;
@@ -337,12 +351,12 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 	Parameters->FirstPersonDepthTexture = MaskOrEmpty(static_cast<int32>(EMask::FirstPerson),
 		Parameters->FirstPersonMin, Parameters->FirstPersonSize);
 
-	// 복수 터렛은 소유 대상별 두 슬라이스(전체/제외)를 유지한다. 합성은 기존 공통 패스 한 번뿐이다.
+	// 두 슬라이스를 포함/제외 슬롯에 직접 대응시킨다. 전체 형상은 합성에서 합집합으로 읽는다.
 	TArray<const FTeammateOutlineViewResources::FTurretMasks*> ReadyTurrets;
 	for (const auto& Turret : Resources->Turrets)
 	{
-		if (!Turret.bQueued || !Turret.Full || (Turret.bHasExclusions && !Turret.Excluded)) continue;
-		if (!ReadyTurrets.IsEmpty() && (Turret.Full->Desc.Extent != ReadyTurrets[0]->Full->Desc.Extent
+		if (!Turret.bQueued || !Turret.Included || (Turret.bHasExclusions && !Turret.Excluded)) continue;
+		if (!ReadyTurrets.IsEmpty() && (Turret.Included->Desc.Extent != ReadyTurrets[0]->Included->Desc.Extent
 			|| Turret.Rect != ReadyTurrets[0]->Rect)) continue;
 		ReadyTurrets.Add(&Turret);
 	}
@@ -353,7 +367,7 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 	{
 		Parameters->TurretMaskMin = ReadyTurrets[0]->Rect.Min;
 		Parameters->TurretMaskSize = ReadyTurrets[0]->Rect.Size();
-		const FIntPoint TurretExtent = ReadyTurrets[0]->Full->Desc.Extent;
+		const FIntPoint TurretExtent = ReadyTurrets[0]->Included->Desc.Extent;
 		FRDGTextureRef TurretDepth = GraphBuilder.CreateTexture(FRDGTextureDesc::Create2DArray(TurretExtent, PF_R32_FLOAT,
 			FClearValueBinding(FLinearColor(EmptyDepth, 0, 0, 0)),
 			TexCreate_ShaderResource | TexCreate_UAV, ReadyTurrets.Num() * 2), TEXT("Outlier.TurretDepthArray"));
@@ -364,7 +378,7 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 			FRHICopyTextureInfo Copy;
 			Copy.Size = FIntVector(TurretExtent.X, TurretExtent.Y, 1);
 			Copy.DestSliceIndex = Index * 2;
-			AddCopyTexturePass(GraphBuilder, Turret.Full, TurretDepth, Copy);
+			AddCopyTexturePass(GraphBuilder, Turret.Included, TurretDepth, Copy);
 			if (Turret.Excluded)
 			{
 				Copy.DestSliceIndex = Index * 2 + 1;

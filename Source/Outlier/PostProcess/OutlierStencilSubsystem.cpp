@@ -124,6 +124,7 @@ void UOutlierStencilSubsystem::ReleaseTurretMasks(AActor* Target)
 		if (!Target || !Source || Source->GetOwner() == Target)
 		{
 			if (auto* Proxy = It.Value().Proxy.Get()) Proxy->DestroyComponent();
+			if (auto* Proxy = It.Value().IncludedProxy.Get()) Proxy->DestroyComponent();
 			It.RemoveCurrent();
 		}
 	}
@@ -203,6 +204,7 @@ void UOutlierStencilSubsystem::GatherTurretOutlineTargets(const APlayerControlle
 		if (!InvalidHash) InvalidTurretConfigurations.Remove(Turret);
 		Target.bHasExclusions = !ExcludedSlots.IsEmpty();
 		Target.bExclusionResourcesReady = true;
+		Target.IncludedMeshes = Target.Meshes;
 		if (Target.bHasExclusions) ExcludedTurretOutlines.Add(Turret);
 		for (const auto& Pair : ExcludedSlots)
 		{
@@ -229,16 +231,21 @@ void UOutlierStencilSubsystem::GatherTurretOutlineTargets(const APlayerControlle
 			}
 			FOutlierTurretOutlineMaskState& State = TurretMasks.FindOrAdd(Source);
 			if (State.Asset.Get() != Asset || State.ConfigurationHash != Hash) State.bFailureReported = false;
-			if (State.Asset.Get() != Asset || State.ConfigurationHash != Hash || !State.Proxy.IsValid())
+			if (State.Asset.Get() != Asset || State.ConfigurationHash != Hash
+				|| !State.Proxy.IsValid() || !State.IncludedProxy.IsValid())
 			{
 				if (auto* Previous = State.Proxy.Get()) Previous->DestroyComponent();
+				if (auto* Previous = State.IncludedProxy.Get()) Previous->DestroyComponent();
 				State.Proxy.Reset();
+				State.IncludedProxy.Reset();
 				State.Asset = Asset;
 				State.ConfigurationHash = Hash;
 				auto* Proxy = NewObject<UTeammateOutlineMaskComponent>(Turret, NAME_None, RF_Transient);
-				if (RenderData && Proxy->InitializeFrom(Source))
+				auto* IncludedProxy = NewObject<UTeammateOutlineMaskComponent>(Turret, NAME_None, RF_Transient);
+				if (RenderData && Proxy->InitializeFrom(Source) && IncludedProxy->InitializeFrom(Source))
 				{
-					// 원본 섹션은 그대로 둔다. 프록시에는 제외 슬롯만 남겨 전체 깊이와 비교한다.
+					// 원본은 건드리지 않고 슬롯을 서로 겹치지 않는 두 마스크로 분리한다.
+					// 본체도 직접 그려 전체 깊이와 해치 깊이의 오차로 슬롯을 추정하지 않는다.
 					for (int32 LOD = 0; LOD < RenderData->LODRenderData.Num(); ++LOD)
 					{
 						const auto& Sections = RenderData->LODRenderData[LOD].RenderSections;
@@ -249,14 +256,21 @@ void UOutlierStencilSubsystem::GatherTurretOutlineTargets(const APlayerControlle
 							if (Info && Info->LODMaterialMap.IsValidIndex(Section) && Info->LODMaterialMap[Section] != INDEX_NONE)
 								Material = Info->LODMaterialMap[Section];
 							Proxy->ShowMaterialSection(Sections[Section].MaterialIndex, Section, Pair.Value.Contains(Material), LOD);
+							IncludedProxy->ShowMaterialSection(Sections[Section].MaterialIndex, Section, !Pair.Value.Contains(Material), LOD);
 						}
 					}
+					// 포함 패스는 원본 메시와 같은 일반 View 가시성을 유지한다.
+					// 전용 SceneProxy의 View 검사로 격리되므로 본 화면이나 다른 캡처에는 그려지지 않는다.
+					IncludedProxy->SetVisibleInSceneCaptureOnly(false);
 					Proxy->RegisterComponent();
+					IncludedProxy->RegisterComponent();
 					State.Proxy = Proxy;
+					State.IncludedProxy = IncludedProxy;
 				}
 				else
 				{
 					Proxy->DestroyComponent();
+					IncludedProxy->DestroyComponent();
 					if (!State.bFailureReported)
 					{
 						UE_LOG(LogTemp, Warning, TEXT("[TeammateOutline] %s: excluded-slot mask unavailable; teammate output suppressed until recovery."), *Source->GetPathName());
@@ -264,7 +278,12 @@ void UOutlierStencilSubsystem::GatherTurretOutlineTargets(const APlayerControlle
 					}
 				}
 			}
-			if (State.Proxy.IsValid()) Target.ExcludedMeshes.Add(State.Proxy);
+			if (State.Proxy.IsValid() && State.IncludedProxy.IsValid())
+			{
+				Target.ExcludedMeshes.Add(State.Proxy);
+				Target.IncludedMeshes.Remove(TWeakObjectPtr<UPrimitiveComponent>(Source));
+				Target.IncludedMeshes.Add(State.IncludedProxy);
+			}
 			else Target.bExclusionResourcesReady = false;
 		}
 	}
@@ -274,6 +293,7 @@ void UOutlierStencilSubsystem::GatherTurretOutlineTargets(const APlayerControlle
 		if (!UsedMasks.Contains(It.Key()))
 		{
 			if (auto* Proxy = It.Value().Proxy.Get()) Proxy->DestroyComponent();
+			if (auto* Proxy = It.Value().IncludedProxy.Get()) Proxy->DestroyComponent();
 			It.RemoveCurrent();
 		}
 	}

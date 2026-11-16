@@ -82,6 +82,7 @@ private:
 	friend class UInteractableComponent;
 	friend class FInteractionNodePresentationTest;
 	friend class FInteractionNodeHoldAttemptTest;
+	friend class FInteractionNodeEmissivePredictionTest;
 
 	// 비어 있으면 직접 소유한 표시용 메시를 사용한다. 지정 오류는 자동 탐색으로 숨기지 않는다.
 	UPROPERTY(EditAnywhere, Category = "Node|Interaction", meta = (UseComponentPicker, AllowedClasses = "/Script/Engine.PrimitiveComponent"))
@@ -91,6 +92,8 @@ private:
 	void BeginHoldPresentation(AFirstPersonCharacter* Interactor, int32 AttemptId, float Duration);
 	void EndHoldPresentation(bool bCanceled);
 	float GetHoldProgress() const;
+	float GetEmissiveProgress();
+	void ResetEmissivePrediction();
 	float GetEmissiveStrength(float Progress) const;
 	bool NeedsPresentationUpdate() const;
 	void UpdateHoldPresentation();
@@ -135,6 +138,13 @@ private:
 	TWeakObjectPtr<AFirstPersonCharacter> CanceledInteractor;
 	TMap<TWeakObjectPtr<const AFirstPersonCharacter>, int32> LatestServerAttemptIds;
 	float ResolvedIdleStrength = 0.0f;
+	// 로컬 입력의 발광만 먼저 진행한다. 서버 HoldState/UI/완료 판정에는 사용하지 않는다.
+	double LocalEmissiveStartTime = 0.0;
+	float LocalEmissiveDuration = 0.0f;
+	double EmissiveCorrectionStartTime = 0.0;
+	float EmissiveCorrectionOffset = 0.0f;
+	bool bPredictingEmissive = false;
+	bool bCorrectingEmissive = false;
 	bool bPresentationInitialized = false;
 	bool bPresentationUpdating = false;
 

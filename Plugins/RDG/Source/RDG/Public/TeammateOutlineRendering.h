@@ -14,12 +14,13 @@ DECLARE_DELEGATE_OneParam(FOnTeammateOutlineMasksQueued, bool);
 DECLARE_DELEGATE_RetVal(bool, FIsTeammateOutlineTargetEligible);
 DECLARE_DELEGATE_TwoParams(FOnTurretOutlineMasksQueued, const TArray<TWeakObjectPtr<AActor>>&, bool);
 
-/** 대상별 소유권은 GT에서 검증한다. 제외 깊이는 같은 대상의 전체 깊이와만 비교한다. */
+/** 대상별 소유권은 GT에서 검증한다. 슬롯으로 분리한 포함/제외 마스크를 전달한다. */
 struct RDG_API FTeammateOutlineTargetData
 {
 	TWeakObjectPtr<AActor> Owner;
 	TArray<TWeakObjectPtr<UPrimitiveComponent>> Meshes;
 	TArray<TWeakObjectPtr<UPrimitiveComponent>> ExcludedMeshes;
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> IncludedMeshes;
 	FIsTeammateOutlineTargetEligible IsEligible;
 	bool bHasExclusions = false;
 	bool bExclusionResourcesReady = false;
