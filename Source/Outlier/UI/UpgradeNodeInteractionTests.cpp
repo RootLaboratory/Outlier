@@ -18,6 +18,9 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/AutomationTest.h"
 #include "OutlierPlayerState.h"
+#include "OutlierGameMode.h"
+#include "Shooter/ShooterCharacter.h"
+#include "UObject/UnrealType.h"
 #include "PopupRetainerBox.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
@@ -162,6 +165,10 @@ struct FUpgradeNodeInteractionTestAccess
 	static bool Purchase(AFirstPersonPlayerController* Controller, AActor* Owner, FName Row, UOutlierUpgradeSetData* Data)
 	{
 		return Controller->TryActivateUpgradeNodeForRequest(Owner, Row, Data);
+	}
+	static void ReceiveConvenienceState(AFirstPersonPlayerController* Controller)
+	{
+		Controller->OnRep_DeveloperConvenienceState();
 	}
 	static void DeliverResult(AFirstPersonPlayerController* Controller, AActor* Owner, uint32 Id, bool bSucceeded)
 	{
@@ -504,6 +511,184 @@ bool FUpgradePurchaseAuthorityTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("A late response cannot undo activation"), Node->GetNodeState() == EOutlierUpgradeNodeState::Activated);
 	Controller->OnUpgradePurchaseResult.Remove(ResponseHandle);
 	Node->ResetUpgradeInteraction();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDeveloperConvenienceCurrencyTest, "Outlier.UI.DeveloperConvenience.Currency",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDeveloperConvenienceCurrencyTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UpgradeNodeInteractionTests::FTestWorld Context;
+	UWorld* World = Context.World;
+	if (!TestNotNull(TEXT("Currency fixture world"), World))
+	{
+		return false;
+	}
+	World->InitializeActorsForPlay(FURL());
+	UClass* ModeClass = LoadClass<AOutlierGameMode>(nullptr, TEXT("/Game/Blueprints/Outlier/BP_OutlierGM.BP_OutlierGM_C"));
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Project GameMode class"), ModeClass) || !TestNotNull(TEXT("Concrete Shooter class"), ShooterClass))
+	{
+		return false;
+	}
+	auto* Mode = World->SpawnActor<AOutlierGameMode>(ModeClass);
+	auto* Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass);
+	auto* Partner = World->SpawnActor<APartnerCharacter>();
+	auto* ShooterPC = World->SpawnActor<AFirstPersonPlayerController>();
+	auto* PartnerPC = World->SpawnActor<AFirstPersonPlayerController>();
+	if (!Mode || !Shooter || !Partner || !ShooterPC || !PartnerPC)
+	{
+		AddError(TEXT("Currency fixture actors must spawn"));
+		return false;
+	}
+	auto* AuthorityMode = FindFProperty<FObjectPropertyBase>(UWorld::StaticClass(), TEXT("AuthorityGameMode"));
+	if (!TestNotNull(TEXT("Authority GameMode property"), AuthorityMode))
+	{
+		return false;
+	}
+	AuthorityMode->SetObjectPropertyValue_InContainer(World, Mode);
+	const auto MakeState = [World](AFirstPersonPlayerController* PC, EOutlierPlayerRole Role)
+	{
+		auto* State = World->SpawnActor<AOutlierPlayerState>();
+		State->SetOwner(PC);
+		State->SetPairId(7);
+		State->SetPlayerRole(Role);
+		PC->PlayerState = State;
+		return State;
+	};
+	auto* ShooterState = MakeState(ShooterPC, EOutlierPlayerRole::Shooter);
+	auto* PartnerState = MakeState(PartnerPC, EOutlierPlayerRole::Partner);
+	for (auto* State : { ShooterState, PartnerState })
+	{
+		State->SetShooterCharacter(Shooter);
+		State->SetPartnerCharacter(Partner);
+	}
+	Shooter->SetPlayerState(ShooterState);
+	Partner->SetPlayerState(PartnerState);
+	Mode->RefreshDeveloperConveniencePair(ShooterState, PartnerState);
+	const auto MakeData = [](EOutlierUpgradeRole Role)
+	{
+		auto* Table = NewObject<UDataTable>();
+		Table->RowStruct = FOutlierUpgradeNodeRow::StaticStruct();
+		FOutlierUpgradeNodeRow Row;
+		Row.Role = Role;
+		Row.Cost = 5;
+		Table->AddRow(TEXT("Free"), Row);
+		Table->AddRow(TEXT("Next"), Row);
+		Row.ParentId = TEXT("MissingParent");
+		Table->AddRow(TEXT("Locked"), Row);
+		auto* Data = NewObject<UOutlierUpgradeSetData>();
+		Data->UpgradeRole = Role;
+		Data->UpgradeDataTable = Table;
+		return Data;
+	};
+	auto* ShooterData = MakeData(EOutlierUpgradeRole::Shooter);
+	auto* PartnerData = MakeData(EOutlierUpgradeRole::Partner);
+	auto* ShooterUpgrade = Shooter->GetUpgradeComponent();
+	auto* PartnerUpgrade = Partner->GetUpgradeComponent();
+	ShooterUpgrade->SetUpgradeSetData(ShooterData);
+	PartnerUpgrade->SetUpgradeSetData(PartnerData);
+	auto* ShooterNode = NewObject<UUpgradeNodeWidget>();
+	auto* PartnerNode = NewObject<UUpgradeNodeWidget>();
+	ShooterNode->NodeRowName = TEXT("Next");
+	PartnerNode->NodeRowName = TEXT("Next");
+	ShooterNode->SetUpgradePlayerState(ShooterState);
+	PartnerNode->SetUpgradePlayerState(PartnerState);
+	ShooterNode->SetUpgradeComponent(ShooterUpgrade);
+	PartnerNode->SetUpgradeComponent(PartnerUpgrade);
+	const auto PublishOptions = [&]()
+	{
+		Mode->PublishDeveloperConvenienceState();
+		// 이 월드에는 NetDriver/LocalPlayer가 없으므로 원격 수신의 OnRep 경계를 직접 실행한다.
+		Access::ReceiveConvenienceState(ShooterPC);
+		Access::ReceiveConvenienceState(PartnerPC);
+	};
+	TestFalse(TEXT("Default policy rejects unaffordable UI"), ShooterNode->CanAfford());
+	AddExpectedErrorPlain(TEXT("[Upgrade] Activate failed: insufficient node"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Default server policy rejects zero balance"), Access::Purchase(ShooterPC, Shooter, TEXT("Free"), ShooterData));
+
+	Mode->DeveloperConvenienceState.Options.bConsumeCurrency = false;
+	PublishOptions();
+	// 수신 알림으로 두 노드가 갱신되며 원본 비용은 무료 모드에서도 그대로 보존한다.
+	TestTrue(TEXT("Shooter UI refreshes without balance changes"), ShooterNode->CanAfford());
+	TestTrue(TEXT("Partner UI refreshes without balance changes"), PartnerNode->CanAfford());
+	TestTrue(TEXT("Component eligibility shares free policy"), ShooterUpgrade->CanActivateNode(TEXT("Free")));
+	FOutlierUpgradeNodeViewData View;
+	ShooterUpgrade->GetNodeViewData(TEXT("Free"), View);
+	TestTrue(TEXT("Component view shares free policy"), View.bCanAfford);
+	TestEqual(TEXT("Original cost is preserved"), View.NodeRow.Cost, 5);
+	TestTrue(TEXT("Shooter purchases with zero currency"), Access::Purchase(ShooterPC, Shooter, TEXT("Free"), ShooterData));
+	TestEqual(TEXT("Free purchase does not change currency"), ShooterState->GetNodeCount(), 0);
+	AddExpectedErrorPlain(TEXT("[Upgrade] Activate failed: already activated"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Free mode rejects duplicate purchases"), Access::Purchase(ShooterPC, Shooter, TEXT("Free"), ShooterData));
+	AddExpectedErrorPlain(TEXT("[Upgrade] Activate failed: locked"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Free mode retains prerequisites"), Access::Purchase(ShooterPC, Shooter, TEXT("Locked"), ShooterData));
+	TestFalse(TEXT("Free mode retains owner restrictions"), Access::Purchase(ShooterPC, Partner, TEXT("Next"), PartnerData));
+	TestFalse(TEXT("Free mode retains role restrictions"), Access::Purchase(PartnerPC, Partner, TEXT("Next"), ShooterData));
+	Partner->SetPlayerState(nullptr);
+	TestNull(TEXT("Original Partner body has no controller during possession"), Partner->GetController());
+	TestTrue(TEXT("Explicit PlayerState keeps original Partner purchase free"), Access::Purchase(PartnerPC, Partner, TEXT("Free"), PartnerData));
+	TestEqual(TEXT("Partner free purchase keeps balance"), PartnerState->GetNodeCount(), 0);
+
+	// Actor 역할만 바꿔 GameMode가 없는 원격 표시 경로도 실제 복제 스냅샷으로 검증한다.
+	Partner->SetRole(ROLE_SimulatedProxy);
+	TestFalse(TEXT("Client uses the owning PlayerState snapshot"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	FDeveloperConvenienceSnapshot InvalidSnapshot = PartnerPC->GetDeveloperConvenienceState();
+	InvalidSnapshot.PairId = 99;
+	PartnerPC->SetDeveloperConvenienceStateFromServer(InvalidSnapshot);
+	TestTrue(TEXT("Mismatched client snapshot falls back to normal cost"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	Partner->SetRole(ROLE_Authority);
+	PublishOptions();
+	Access::Begin(ShooterNode);
+	Mode->DeveloperConvenienceState.Options.bConsumeCurrency = true;
+	PublishOptions();
+	TestFalse(TEXT("ON restores unaffordable UI"), ShooterNode->CanAfford());
+	TestFalse(TEXT("ON cancels a now unaffordable hold"), ShooterNode->IsHoldingUpgrade());
+	TestFalse(TEXT("ON updates the injected Partner context"), PartnerNode->CanAfford());
+	TestTrue(TEXT("Previously purchased free upgrade remains"), ShooterState->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter).Contains(TEXT("Free")));
+	TestEqual(TEXT("ON does not charge retroactively"), ShooterState->GetNodeCount(), 0);
+	ShooterState->AddNode(7);
+	TestTrue(TEXT("ON permits a funded purchase"), Access::Purchase(ShooterPC, Shooter, TEXT("Next"), ShooterData));
+	TestEqual(TEXT("ON charges the original cost"), ShooterState->GetNodeCount(), 2);
+
+	Mode->DeveloperConvenienceState.Options.bConsumeCurrency = false;
+	Mode->DeveloperConvenienceState.SessionId = FGuid::NewGuid();
+	Mode->InvalidateDeveloperConvenienceSession();
+	TestFalse(TEXT("Closing menu preserves free policy"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	--Mode->DeveloperConvenienceState.GameplayGeneration;
+	Mode->RefreshDeveloperConveniencePair(ShooterState, PartnerState);
+	TestFalse(TEXT("Same-pair generation refresh preserves free policy"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	auto* ReplacementPartner = World->SpawnActor<APartnerCharacter>();
+	PartnerState->SetPartnerCharacter(ReplacementPartner);
+	ReplacementPartner->GetUpgradeComponent()->SetUpgradeSetData(PartnerData);
+	TestFalse(TEXT("Replacement Pawn reads the preserved policy"), ReplacementPartner->GetUpgradeComponent()->ShouldConsumeNodeCost(PartnerState));
+	Mode->ResetDeveloperConvenienceState();
+	TestTrue(TEXT("Match reset restores normal costs"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	// 표시 값을 임시 주입해 이전 컨텍스트의 알림이 더 이상 위젯을 갱신하지 않는지 확인한다.
+	ShooterNode->SetUpgradePlayerState(PartnerState);
+	View.RowName = TEXT("Next");
+	View.State = EOutlierUpgradeNodeState::Unlocked;
+	View.bCanAfford = true;
+	ShooterNode->InjectViewData(View);
+	ShooterPC->OnDeveloperConvenienceStateChanged.Broadcast(ShooterPC->GetDeveloperConvenienceState());
+	TestTrue(TEXT("Previous context no longer refreshes the widget"), ShooterNode->CanAfford());
+	PartnerPC->OnDeveloperConvenienceStateChanged.Broadcast(PartnerPC->GetDeveloperConvenienceState());
+	TestFalse(TEXT("New context refreshes the widget"), ShooterNode->CanAfford());
+	Access::Destruct(ShooterNode);
+	View.bCanAfford = true;
+	ShooterNode->InjectViewData(View);
+	PartnerPC->OnDeveloperConvenienceStateChanged.Broadcast(PartnerPC->GetDeveloperConvenienceState());
+	TestTrue(TEXT("Destructed widget no longer receives convenience changes"), ShooterNode->CanAfford());
+	auto* ConsumeProperty = FindFProperty<FBoolProperty>(UOutlierUpgradeComponent::StaticClass(), TEXT("bConsumeNodeCost"));
+	if (TestNotNull(TEXT("Existing local cost setting"), ConsumeProperty))
+	{
+		ConsumeProperty->SetPropertyValue_InContainer(PartnerUpgrade, false);
+		TestFalse(TEXT("Existing free component setting remains supported"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	}
+	ShooterNode->ResetUpgradeInteraction();
+	PartnerNode->ResetUpgradeInteraction();
 	return true;
 }
 

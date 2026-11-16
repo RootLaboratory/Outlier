@@ -638,6 +638,8 @@ protected:
 	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownEffectAddedHandle;
+	FDelegateHandle SkillCooldownTimeChangedHandle;
+	void HandleSkillCooldownTimeChanged(const FGameplayTag& CooldownTag);
 	FTimerHandle StealthCooldownUIRefreshTimer;
 	FDelegateHandle StealthSpeedTagChangedHandle;
 	FDelegateHandle PartnerRebootTagChangedHandle;

@@ -272,6 +272,24 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	{
 		return 0.0f;
 	}
+	if (OutlierDamage::IsDeveloperInvincible(this))
+	{
+		// Reboot/빙의 보호 등 다른 면역의 효과와 수명은 변경하지 않는다.
+		if (!OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+		{
+			if (Request.bHasDamageOrigin)
+			{
+				ClientShowDamageFeedback(Request.DamageOrigin, 0.0f);
+			}
+			NotifyStandbyActivity();
+			if (FaceSpriteAnimationComponent)
+			{
+				FaceSpriteAnimationComponent->SetTemporaryEmotion(EPartnerEmotion::Surprised);
+			}
+			OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.02.State.Hit"));
+		}
+		return 0.0f;
+	}
 	const AOutlierPlayerState* PartnerState = GetPlayerState<AOutlierPlayerState>();
 	const TWeakObjectPtr<AShooterCharacter> ShooterAtHit = CachedShooterCharacter.Get();
 	const bool bTriggerPairGameOver = ShooterAtHit.IsValid()
@@ -418,6 +436,8 @@ void APartnerCharacter::BindPartnerCooldownUIObserver()
 			&APartnerCharacter::HandlePartnerCooldownEffectAdded);
 	PartnerHackChargesChangedHandle = OutlierAbilitySystemComponent->OnPartnerHackChargeStateChanged.AddUObject(
 		this, &APartnerCharacter::HandlePartnerHackChargesChanged);
+	SkillCooldownTimeChangedHandle = OutlierAbilitySystemComponent->OnSkillCooldownTimeChanged.AddUObject(
+		this, &APartnerCharacter::HandleSkillCooldownTimeChanged);
 
 	// 쿨타임 시작은 EffectAdded로 받고, 종료는 태그 제거로 받는다.
 	// 로컬 게이지 예상 시간이 아니라 GAS의 종료 통지에서 회복 연출을 확정한다.
@@ -446,6 +466,7 @@ void APartnerCharacter::UnbindPartnerCooldownUIObserver()
 	if (OutlierAbilitySystemComponent)
 	{
 		OutlierAbilitySystemComponent->OnPartnerHackChargeStateChanged.Remove(PartnerHackChargesChangedHandle);
+		OutlierAbilitySystemComponent->OnSkillCooldownTimeChanged.Remove(SkillCooldownTimeChangedHandle);
 		for (const auto& Entry : PartnerCooldownTagHandles)
 		{
 			OutlierAbilitySystemComponent->RegisterGameplayTagEvent(Entry.Key, EGameplayTagEventType::NewOrRemoved)
@@ -454,6 +475,7 @@ void APartnerCharacter::UnbindPartnerCooldownUIObserver()
 	}
 	PartnerCooldownTagHandles.Reset();
 	PartnerHackChargesChangedHandle.Reset();
+	SkillCooldownTimeChangedHandle.Reset();
 }
 
 float APartnerCharacter::GetPossessedWeaponDamageMultiplier() const
@@ -687,6 +709,16 @@ void APartnerCharacter::HandlePartnerCooldownEffectAdded(
 			NotifyPartnerCooldownUI(CooldownTag);
 			return;
 		}
+	}
+}
+
+void APartnerCharacter::HandleSkillCooldownTimeChanged(const FGameplayTag& CooldownTag)
+{
+	if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::EMP()
+		|| CooldownTag == OutlierGameplayTags::Cooldown::Partner::Shield()
+		|| CooldownTag == OutlierGameplayTags::Cooldown::Partner::Scan())
+	{
+		NotifyPartnerCooldownUI(CooldownTag);
 	}
 }
 

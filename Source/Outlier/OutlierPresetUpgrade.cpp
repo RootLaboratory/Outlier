@@ -10,6 +10,34 @@
 #include "UI/UILayerGameplayTags.h"
 #include "Upgrade/OutlierPresetStageIds.h"
 
+EDeveloperConvenienceRequestResult AOutlierGameMode::RequestDeveloperConveniencePreset(
+	AFirstPersonPlayerController* Requester, const FDeveloperConveniencePresetRequest& Request)
+{
+	const auto Validation = ValidateDeveloperConvenienceAction(Requester, Request.RequestId,
+		Request.MatchId, Request.SessionId, Request.GameplayGeneration);
+	if (Validation != EDeveloperConvenienceRequestResult::Accepted)
+	{
+		return Validation;
+	}
+	if (!OutlierPresetStageIds::All().Contains(Request.StageId))
+	{
+		return EDeveloperConvenienceRequestResult::InvalidStage;
+	}
+	if (!PresetUpgradeWidgetClass || PresetUpgradeWidgetClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		return EDeveloperConvenienceRequestResult::UIUnavailable;
+	}
+	// 스폰/로드 사전 검증이 끝나기 전에는 메뉴와 정지를 유지한다.
+	const bool bAccepted = RequestPresetRespawn(Requester, Request.StageId, [this]()
+	{
+		DeveloperConvenienceState.bTransitioning = true;
+		PublishDeveloperConvenienceState();
+		return true;
+	});
+	return bAccepted ? EDeveloperConvenienceRequestResult::Accepted
+		: EDeveloperConvenienceRequestResult::TargetUnavailable;
+}
+
 bool AOutlierGameMode::OpenPairUpgradeUI(AOutlierPlayerState* ShooterState, AOutlierPlayerState* PartnerState,
 	TSubclassOf<UUpgradeMachineWidget> WidgetClass, AActor* RequestOwner, const FGuid& PresetRequestId,
 	TFunction<void()> BeforeOpen)

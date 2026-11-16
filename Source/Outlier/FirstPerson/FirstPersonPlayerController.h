@@ -13,6 +13,7 @@
 #include "Save/OutlierCheckpointRestartVote.h"
 #include "UI/UILayerTypes.h"
 #include "UI/GameOverPendingTypes.h"
+#include "UI/DeveloperConvenienceTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
@@ -24,6 +25,10 @@ class UInputMappingContext;
 class UInputAction;
 class UControllerInputConfig;
 class UInGameSettingWidget;
+class UDeveloperConvenienceWidget;
+class UUpgradeMachineWidget;
+class ULocalPlayerUILayerSubsystem;
+class UDamageFeedbackLayer;
 class UCameraShakeBase;
 class UOutlierUpgradeSetData;
 class UGameOverWidget;
@@ -100,11 +105,79 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 	friend class FOutlierSuitTransitionTest;
 	friend class FOutlierClientReloadRecoveryTest;
 	friend class FPresentationProtectionPairRestoreTest;
+	friend class FDeveloperConvenienceSessionTest;
+	friend class FDeveloperConvenienceWidgetLifecycleTest;
+	friend class FDeveloperConvenienceHitPresentationTest;
+	friend class FPresetUpgradeClientReadinessTest;
 	friend class ATuto_PassageTransitionVolume;
 	friend struct FUpgradeNodeInteractionTestAccess;
 	
 public:
 	AFirstPersonPlayerController();
+
+	UFUNCTION(BlueprintPure, Category = "Developer Convenience")
+	const FDeveloperConvenienceSnapshot& GetDeveloperConvenienceState() const { return DeveloperConvenienceState; }
+	UFUNCTION(BlueprintCallable, Category = "Developer Convenience")
+	FGuid RequestDeveloperConvenienceSession(bool bOpen, const FDeveloperConvenienceSnapshot& ExpectedState);
+	UPROPERTY(BlueprintAssignable, Category = "Developer Convenience")
+	FOnDeveloperConvenienceSessionResult OnDeveloperConvenienceSessionResult;
+	UFUNCTION(Server, Reliable)
+	void ServerRequestDeveloperConvenienceSession(FDeveloperConvenienceSessionRequest Request);
+	UFUNCTION(Client, Reliable)
+	void ClientDeveloperConvenienceSessionResult(FDeveloperConvenienceSessionResult Result);
+	UFUNCTION(Server, Reliable)
+	void ServerDeveloperConvenienceUIUnavailable(FGuid SessionId);
+	bool HandleDeveloperConvenienceKey(const FKey& Key, bool bShiftDown, bool bRepeat);
+	bool HasDeveloperConvenienceWidgetClass(bool bOperator) const;
+	UFUNCTION(Client, Reliable)
+	void ClientShowDeveloperConvenienceHit(APawn* DamagedPawn, FVector_NetQuantize DamageOrigin);
+	bool HasActivePresentationProtection() const { return !PresentationProtectionRequests.IsEmpty(); }
+
+	// 화면을 구성할 때 보관한 Snapshot을 전달한다. 오래된 화면의 클릭이 새 세션을 조작하면 안 된다.
+	UFUNCTION(BlueprintCallable, Category = "Developer Convenience")
+	FGuid RequestDeveloperConvenienceOption(EDeveloperConvenienceOption Option, bool bEnabled,
+		const FDeveloperConvenienceSnapshot& ExpectedState);
+
+	UPROPERTY(BlueprintAssignable, Category = "Developer Convenience")
+	FOnDeveloperConvenienceStateChanged OnDeveloperConvenienceStateChanged;
+	UPROPERTY(BlueprintAssignable, Category = "Developer Convenience")
+	FOnDeveloperConvenienceOptionResult OnDeveloperConvenienceOptionResult;
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	void SetDeveloperConvenienceStateFromServer(const FDeveloperConvenienceSnapshot& Snapshot);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestDeveloperConvenienceOption(FDeveloperConvenienceOptionRequest Request);
+	UFUNCTION(Client, Reliable)
+	void ClientDeveloperConvenienceOptionResult(FDeveloperConvenienceOptionResult Result);
+	// 회복 버튼에는 현재 화면의 Snapshot을 전달한다. 결과의 요청/세션 ID로 해당 클릭을 식별한다.
+	UFUNCTION(BlueprintCallable, Category = "Developer Convenience")
+	FGuid RequestDeveloperConvenienceTeamRecovery(const FDeveloperConvenienceSnapshot& ExpectedState);
+	UPROPERTY(BlueprintAssignable, Category = "Developer Convenience")
+	FOnDeveloperConvenienceRecoveryResult OnDeveloperConvenienceRecoveryResult;
+	UFUNCTION(Server, Reliable)
+	void ServerRequestDeveloperConvenienceTeamRecovery(FDeveloperConvenienceRecoveryRequest Request);
+	UFUNCTION(Client, Reliable)
+	void ClientDeveloperConvenienceRecoveryResult(FDeveloperConvenienceRecoveryResult Result);
+	// 기존 레벨 선택 모듈의 OnPresetStageConfirmed(StageId)를 이 요청에 연결한다.
+	UFUNCTION(BlueprintCallable, Category = "Developer Convenience")
+	FGuid RequestDeveloperConveniencePreset(FName StageId, const FDeveloperConvenienceSnapshot& ExpectedState);
+	UPROPERTY(BlueprintAssignable, Category = "Developer Convenience")
+	FOnDeveloperConveniencePresetResult OnDeveloperConveniencePresetResult;
+	UFUNCTION(Server, Reliable)
+	void ServerRequestDeveloperConveniencePreset(FDeveloperConveniencePresetRequest Request);
+	UFUNCTION(Client, Reliable)
+	void ClientDeveloperConveniencePresetResult(FDeveloperConveniencePresetResult Result);
+	UFUNCTION(BlueprintCallable, Category = "Developer Convenience")
+	FGuid RequestDeveloperConvenienceReturnToTitle(const FDeveloperConvenienceSnapshot& ExpectedState);
+	UPROPERTY(BlueprintAssignable, Category = "Developer Convenience")
+	FOnDeveloperConvenienceTitleResult OnDeveloperConvenienceTitleResult;
+	UFUNCTION(Server, Reliable)
+	void ServerRequestDeveloperConvenienceReturnToTitle(FDeveloperConvenienceTitleRequest Request);
+	UFUNCTION(Client, Reliable)
+	void ClientDeveloperConvenienceTitleResult(FDeveloperConvenienceTitleResult Result);
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareForTitleReturn(bool bWaitForServerTravel);
 	// 보호는 연출 Actor 대신 Controller가 소유한다. 원본 Actor가 종료돼도 화면 복구까지 유지한다.
 	bool BeginPresentationProtection(const FGuid& ExecutionId, AFirstPersonCharacter* Participant,
 		AFirstPersonPlayerController* Peer = nullptr);
@@ -145,11 +218,11 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerDebugWorldGuide(FName Command, FGameplayTag WidgetID, FGameplayTag NextWidgetID);
 
-	// TODO: 테스트 종료 후 제거. Shipping에서도 소유 클라이언트의 F1 요청을 허용한다.
+	// Tester에서 호출하는 서버 헬퍼다. 게임플레이 키에는 연결하지 않는다.
 	UFUNCTION(Server, Reliable)
 	void ServerDebugTogglePairInvulnerability();
 
-	// Temporary F2 test shortcut, intentionally available in Shipping.
+	// 은신 강화 검증용 서버 헬퍼다. 게임플레이 키에는 연결하지 않는다.
 	UFUNCTION(Server, Reliable)
 	void ServerDebugGrantStealthUpgrades();
 
@@ -650,6 +723,31 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|InGame Setting")
 	TSubclassOf<UInGameSettingWidget> InGameSettingWidgetClass;
+
+	// S3의 UI layer 진입에서 사용한다. 화면 제작과 버튼 배치는 프로젝트 WBP가 담당한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Developer Convenience")
+	TSubclassOf<UUserWidget> DeveloperConvenienceWidgetClass;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Developer Convenience")
+	TSubclassOf<UUserWidget> DeveloperConvenienceWaitingWidgetClass;
+
+	UPROPERTY(ReplicatedUsing = OnRep_DeveloperConvenienceState)
+	FDeveloperConvenienceSnapshot DeveloperConvenienceState;
+	UFUNCTION()
+	void OnRep_DeveloperConvenienceState();
+	void RefreshDeveloperConveniencePresentation();
+	void ClearDeveloperConveniencePresentation();
+	FUILayerHandle DeveloperConvenienceLayer;
+	bool bClientTitleReturnPrepared = false;
+	UPROPERTY(Transient)
+	TObjectPtr<UDeveloperConvenienceWidget> DeveloperConvenienceWidget;
+	FGuid PresentedDeveloperConvenienceSession;
+	bool bDeveloperConvenienceInputBlocked = false;
+	UPROPERTY(Transient)
+	TObjectPtr<UDamageFeedbackLayer> DeveloperHitWidget;
+	FUILayerHandle DeveloperHitLayer;
+	void ClearDeveloperHitPresentation();
+	UFUNCTION()
+	void HandleDeveloperHitPawnChanged(APawn* PreviousPawn, APawn* NewPawn);
 
 	UPROPERTY(EditDefaultsOnly, Category = "UI|Game Over")
 	TSubclassOf<UGameOverWidget> GameOverWidgetClass;

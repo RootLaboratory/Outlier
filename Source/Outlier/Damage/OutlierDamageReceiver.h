@@ -66,6 +66,8 @@ namespace OutlierDamage
 	OUTLIER_API FGameplayTag InstantKillTag();
 	// Tester와 임시 F1 디버그가 공유하는 서버 페어 무적이다. Shipping에서도 사용한다.
 	OUTLIER_API bool IsEditorInvulnerable(const AActor* TargetActor);
+	// 서버의 현재 페어/빙의 관계를 조회한다. 기존 Tester·스킬 면역과 별개다.
+	OUTLIER_API bool IsDeveloperInvincible(const AActor* TargetActor);
 	OUTLIER_API bool IsFromEnemy(const FOutlierDamageRequest& Request);
 	OUTLIER_API float Apply(AActor* TargetActor, const FOutlierDamageRequest& Request);
 }

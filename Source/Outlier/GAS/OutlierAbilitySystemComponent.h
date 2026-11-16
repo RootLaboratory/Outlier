@@ -33,6 +33,18 @@ struct OUTLIER_API FOutlierShadowChainPresentationState
 };
 
 DECLARE_MULTICAST_DELEGATE(FOutlierShadowChainPresentationChanged);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierSkillCooldownTimeChanged, const FGameplayTag&);
+
+// GE의 표시용 시작 시각이 이동해도 정상 회차의 기준은 유지한다. 빙의 중에는 Remaining을 동결한다.
+struct FOutlierSkillCooldownCycle
+{
+	FActiveGameplayEffectHandle Handle;
+	float NormalDuration = 0.0f;
+	float StartedAt = 0.0f;
+	float SuspendedAt = 0.0f;
+	float Remaining = 0.0f;
+	bool bSuspended = false;
+};
 
 // 서버의 한 충전 주기를 통째로 전달한다. UI가 남은 시간을 새 쿨타임으로 오해하지 않게 한다.
 USTRUCT()
@@ -94,6 +106,9 @@ class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponen
 
 public:
 	UOutlierAbilitySystemComponent();
+	void SetDeveloperConvenienceFastCooldown(bool bEnabled);
+	FOutlierSkillCooldownTimeChanged OnSkillCooldownTimeChanged;
+	virtual void OnGameplayEffectDurationChange(FActiveGameplayEffect& ActiveEffect) override;
 	FOutlierVitalityPresentationChanged OnVitalityPresentationChanged;
 	void GetVitalityPresentationSnapshot(TArray<FOutlierVitalityPresentationUpdate>& OutUpdates) const;
 	// GE 한 번에 여러 속성이 바뀌어도 최종값과 원인을 한 쌍으로 확정한다.
@@ -298,6 +313,18 @@ private:
 	FOutlierPartnerAbilityConfig BasePartnerAbilityConfig;
 	TArray<FGameplayAbilitySpecHandle> GrantedPartnerAbilityHandles;
 	TMap<FGameplayTag, float> SuspendedPartnerCooldowns;
+	bool IsDeveloperSkillCooldown(const FGameplayTag& Tag) const;
+	float ResolveDeveloperCooldownDuration(const FGameplayTag& Tag, float NormalDuration) const;
+	void TrackSkillCooldown(const FGameplayTag& Tag, FActiveGameplayEffectHandle Handle, float NormalDuration);
+	void HandleSkillCooldownRemoved(const FGameplayEffectRemovalInfo& Info, FGameplayTag Tag, FActiveGameplayEffectHandle Handle);
+	void SetSkillCooldownRemaining(FActiveGameplayEffectHandle Handle, float Remaining);
+	void RefreshSkillChargeTiming(const FGameplayTag& Tag, float Remaining);
+	void SuspendDeveloperCooldownCycles();
+	void ResumeDeveloperCooldownCycles();
+	TMap<FGameplayTag, FOutlierSkillCooldownCycle> SkillCooldownCycles;
+	FOutlierSkillCooldownCycle PartnerHackRetryCycle;
+	bool bDeveloperFastCooldown = false;
+	bool bResumingSkillCooldowns = false;
 	bool bPartnerAbilitiesConfigured = false;
 	bool bPartnerSkillCooldownsSuspended = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;

@@ -5872,6 +5872,14 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	}
 
 	const float PreviousHealth = GetCurrentHealth();
+	const bool bDeveloperInvincible = OutlierDamage::IsDeveloperInvincible(this);
+	if (bDeveloperInvincible && Request.bHasDamageOrigin)
+	{
+		if (auto* PartnerController = Cast<APartnerPlayerController>(GetController()))
+		{
+			PartnerController->ClientShowDeveloperConvenienceHit(this, Request.DamageOrigin);
+		}
+	}
 	const float DamageMultiplier = HitMultiplier * AdaptationMultiplier;
 	const float FinalDamage = Request.DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
 	const EOutlierAdaptationDamageCategory PreviousDamageCategory =
@@ -5947,7 +5955,10 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		}
 	}
 	float AppliedHitStunDuration = 0.0f;
-	if (AppliedDamage > 0.0f
+	// 편의성 무적은 피해 수치만 막는다. 기존 면역은 그대로 존중하면서 유효 명중의 스턴을 보존한다.
+	const bool bDeveloperProtectedHit = bDeveloperInvincible && !OutlierDamage::IsEditorInvulnerable(this)
+		&& !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune());
+	if ((AppliedDamage > 0.0f || bDeveloperProtectedHit)
 		&& !IsDead()
 		&& Request.StunDurationSeconds > 0.0f
 		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
@@ -6011,6 +6022,11 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	{
 		PlayAttackerConfirmAudio(Request, IsDead());
 		BroadcastDamageCue(Request, AppliedDamage);
+	}
+	else if (bDeveloperProtectedHit)
+	{
+		// 피격 표현을 위해 피해 성공/처치 보상으로 보고하지는 않는다.
+		BroadcastDamageCue(Request, 0.0f);
 	}
 
 	// 피해 판정과 무관한 표현이다. 내성 대상인 총기 피격만 방어막 파문으로 보여준다.

@@ -3,6 +3,10 @@
 #include "Network/OutlierGenerationNetworkProbe.h"
 #include "Outlier.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerVitalityComponent.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Weapon/WeaponBase.h"
@@ -248,11 +252,378 @@ AOutlierGameMode::AOutlierGameMode()
 	InitialIntroCompletedEventTag = FGameplayTag::RequestGameplayTag(TEXT("Event.006_Broken_Wall"), false);
 }
 
+bool AOutlierGameMode::IsDeveloperConvenienceParticipant(const AFirstPersonPlayerController* Controller) const
+{
+	const auto* State = IsValid(Controller) ? Controller->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	return State && Controller->GetWorld() == GetWorld() && State->GetPairId() != INDEX_NONE
+		&& State->GetPairId() == DeveloperConvenienceState.PairId
+		&& ((DeveloperConvenienceShooter == Controller && State->IsShooterPlayer())
+			|| (DeveloperConveniencePartner == Controller && State->IsPartnerPlayer()));
+}
+
+EDeveloperConvenienceRequestResult AOutlierGameMode::RequestDeveloperConvenienceSession(
+	AFirstPersonPlayerController* Requester, const FDeveloperConvenienceSessionRequest& Request)
+{
+	if (!HasAuthority() || !IsDeveloperConvenienceParticipant(Requester))
+		return EDeveloperConvenienceRequestResult::InvalidPair;
+	const auto* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	if (!Request.RequestId.IsValid() || !Request.MatchId.IsValid()
+		|| Request.MatchId != DeveloperConvenienceState.MatchId || !Arena
+		|| Request.GameplayGeneration != DeveloperConvenienceState.GameplayGeneration
+		|| Request.GameplayGeneration != Arena->GetGameplayGeneration())
+		return EDeveloperConvenienceRequestResult::StaleContext;
+
+	if (!Request.bOpen)
+	{
+		if (!DeveloperConvenienceState.SessionId.IsValid()) return EDeveloperConvenienceRequestResult::NoSession;
+		if (Request.SessionId != DeveloperConvenienceState.SessionId)
+			return EDeveloperConvenienceRequestResult::StaleContext;
+		if (DeveloperConvenienceOperator != Requester) return EDeveloperConvenienceRequestResult::NotOperator;
+		if (DeveloperConvenienceState.bTransitioning) return EDeveloperConvenienceRequestResult::Transitioning;
+		InvalidateDeveloperConvenienceSession();
+		return EDeveloperConvenienceRequestResult::Accepted;
+	}
+	// 열기에는 아직 세션 ID가 없다. 이전 화면에서 지연된 열기는 Revision으로 구분한다.
+	if (Request.SessionId.IsValid() || Request.Revision != DeveloperConvenienceState.Revision)
+		return EDeveloperConvenienceRequestResult::StaleContext;
+	if (DeveloperConvenienceState.SessionId.IsValid() || PendingPresetUpgradeRequestId.IsValid()
+		|| bArenaReloadInProgress || bCheckpointRestartInProgress
+		|| bListenHostReturnRequested || bArenaWorkerMatchCompleting || GameOverWorldPause.IsActive()
+		|| !GameOverActivePairs.IsEmpty() || SettingsPauseOwner.IsValid()
+		|| CheckpointRestartVote.GetState() != EOutlierCheckpointRestartVoteState::Idle
+		|| !IsPairGameplayReady() || GetWorld()->IsPaused())
+		return EDeveloperConvenienceRequestResult::Transitioning;
+
+	for (auto* PC : { DeveloperConvenienceShooter.Get(), DeveloperConveniencePartner.Get() })
+	{
+		if (!IsDeveloperConvenienceParticipant(PC) || PC->HasActivePresentationProtection()
+			|| PC->GetPlayerState<AOutlierPlayerState>()->IsStatAllocatorUIOpenForGeneration(Request.GameplayGeneration))
+			return EDeveloperConvenienceRequestResult::Transitioning;
+		if (!PC->HasDeveloperConvenienceWidgetClass(PC == Requester))
+			return EDeveloperConvenienceRequestResult::UIUnavailable;
+	}
+	if (!SetPause(Requester)) return EDeveloperConvenienceRequestResult::Transitioning;
+	DeveloperConveniencePauseOwner = GetWorld()->GetWorldSettings()->GetPauserPlayerState();
+	GetWorld()->GetWorldSettings()->ForceNetUpdate();
+	// Listen의 로컬 위젯 생성은 즉시 실패 보고할 수 있다. 알림 전에 전체 세션을 확정한다.
+	DeveloperConvenienceOperator = Requester;
+	DeveloperConvenienceState.SessionId = FGuid::NewGuid();
+	PublishDeveloperConvenienceState();
+	return DeveloperConvenienceState.SessionId.IsValid()
+		? EDeveloperConvenienceRequestResult::Accepted : EDeveloperConvenienceRequestResult::UIUnavailable;
+}
+
+void AOutlierGameMode::ClearDeveloperConvenienceWorldPause()
+{
+	auto* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
+	// 편의성이 획득한 정지만 해제한다. 다른 흐름이 인계받은 Pauser는 보존한다.
+	if (Settings && DeveloperConveniencePauseOwner.IsValid()
+		&& Settings->GetPauserPlayerState() == DeveloperConveniencePauseOwner.Get())
+	{
+		ClearPause();
+		Settings->ForceNetUpdate();
+	}
+	DeveloperConveniencePauseOwner.Reset();
+}
+
+void AOutlierGameMode::OnDeveloperConvenienceUIUnavailable(
+	AFirstPersonPlayerController* Controller, const FGuid& SessionId)
+{
+	if (HasAuthority() && IsDeveloperConvenienceParticipant(Controller) && SessionId.IsValid()
+		&& SessionId == DeveloperConvenienceState.SessionId) InvalidateDeveloperConvenienceSession();
+}
+
+void AOutlierGameMode::RefreshDeveloperConveniencePair(
+	AOutlierPlayerState* ShooterState, AOutlierPlayerState* PartnerState)
+{
+	if (!HasAuthority() || !ShooterState || !PartnerState || !ShooterState->IsShooterPlayer()
+		|| !PartnerState->IsPartnerPlayer() || ShooterState->GetPairId() == INDEX_NONE
+		|| ShooterState->GetPairId() != PartnerState->GetPairId()
+		|| bListenHostReturnRequested || bArenaWorkerMatchCompleting) return;
+	auto* Shooter = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(ShooterState));
+	auto* Partner = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(PartnerState));
+	if (!Shooter || !Partner || Shooter == Partner) return;
+	const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	const int64 Generation = Arena ? Arena->GetGameplayGeneration() : 0;
+	const bool bNewPair = !DeveloperConvenienceState.MatchId.IsValid()
+		|| DeveloperConvenienceState.PairId != ShooterState->GetPairId();
+	if (!bNewPair && DeveloperConvenienceShooter == Shooter && DeveloperConveniencePartner == Partner
+		&& DeveloperConvenienceState.GameplayGeneration == Generation)
+	{
+		ApplyDeveloperConvenienceCooldownOption();
+		return;
+	}
+	if (bNewPair)
+	{
+		ResetDeveloperConvenienceState();
+		DeveloperConvenienceState.PairId = ShooterState->GetPairId();
+		DeveloperConvenienceState.MatchId = FGuid::NewGuid();
+	}
+	else
+	{
+		// 재접속/세대 교체는 옵션을 보존하되 이전 화면의 조작 권한은 승계하지 않는다.
+		InvalidateDeveloperConvenienceSession();
+	}
+	DeveloperConvenienceShooter = Shooter;
+	DeveloperConveniencePartner = Partner;
+	DeveloperConvenienceState.GameplayGeneration = Generation;
+	PublishDeveloperConvenienceState();
+}
+
+void AOutlierGameMode::ApplyDeveloperConvenienceCooldownOption()
+{
+	const AFirstPersonPlayerController* Shooter = DeveloperConvenienceShooter.Get();
+	const AFirstPersonPlayerController* Partner = DeveloperConveniencePartner.Get();
+	if (!HasAuthority() || !IsDeveloperConvenienceParticipant(Shooter) || !IsDeveloperConvenienceParticipant(Partner))
+	{
+		return;
+	}
+	const AOutlierPlayerState* ShooterState = Shooter->GetPlayerState<AOutlierPlayerState>();
+	const AOutlierPlayerState* PartnerState = Partner->GetPlayerState<AOutlierPlayerState>();
+	AShooterCharacter* ShooterPawn = ShooterState->GetShooterCharacter();
+	APartnerCharacter* PartnerPawn = PartnerState->GetPartnerCharacter();
+	// 빙의 Enemy가 아니라 원래 Partner ASC의 동결된 회차에도 옵션을 적용한다.
+	if (ShooterPawn && ShooterPawn->GetOutlierAbilitySystemComponent())
+	{
+		ShooterPawn->GetOutlierAbilitySystemComponent()->SetDeveloperConvenienceFastCooldown(DeveloperConvenienceState.Options.bFastCooldown);
+	}
+	if (PartnerPawn && PartnerPawn->GetOutlierAbilitySystemComponent())
+	{
+		PartnerPawn->GetOutlierAbilitySystemComponent()->SetDeveloperConvenienceFastCooldown(DeveloperConvenienceState.Options.bFastCooldown);
+	}
+}
+
+void AOutlierGameMode::PublishDeveloperConvenienceState()
+{
+	if (!HasAuthority()) return;
+	ApplyDeveloperConvenienceCooldownOption();
+	++DeveloperConvenienceState.Revision;
+	for (AFirstPersonPlayerController* Controller :
+		{ DeveloperConvenienceShooter.Get(), DeveloperConveniencePartner.Get() })
+	{
+		if (!IsValid(Controller)) continue;
+		FDeveloperConvenienceSnapshot Snapshot = DeveloperConvenienceState;
+		Snapshot.bIsOperator = Snapshot.SessionId.IsValid() && DeveloperConvenienceOperator == Controller;
+		Controller->SetDeveloperConvenienceStateFromServer(Snapshot);
+	}
+}
+
+void AOutlierGameMode::InvalidateDeveloperConvenienceSession()
+{
+	if (!HasAuthority()) return;
+	ClearDeveloperConvenienceWorldPause();
+	const bool bHadSession = DeveloperConvenienceState.SessionId.IsValid()
+		|| DeveloperConvenienceState.bTransitioning || DeveloperConvenienceOperator.IsValid();
+	DeveloperConvenienceState.SessionId.Invalidate();
+	DeveloperConvenienceState.bTransitioning = false;
+	DeveloperConvenienceOperator.Reset();
+	if (bHadSession) PublishDeveloperConvenienceState();
+}
+
+void AOutlierGameMode::ResetDeveloperConvenienceState()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	PendingDeveloperTitleRequestId.Invalidate();
+	ClearDeveloperConvenienceWorldPause();
+	// 페어 식별자를 지우기 전에 기존 ASC에도 기본 옵션을 반영한다.
+	DeveloperConvenienceState.Options.bFastCooldown = false;
+	ApplyDeveloperConvenienceCooldownOption();
+	// 메뉴를 닫는 것과 매치를 끝내는 것을 구분한다. 기본값 복원은 이 매치 경계에서만 한다.
+	const int64 PreviousRevision = DeveloperConvenienceState.Revision;
+	DeveloperConvenienceState = FDeveloperConvenienceSnapshot();
+	DeveloperConvenienceState.Revision = PreviousRevision;
+	DeveloperConvenienceOperator.Reset();
+	PublishDeveloperConvenienceState();
+	DeveloperConvenienceShooter.Reset();
+	DeveloperConveniencePartner.Reset();
+}
+
+bool AOutlierGameMode::IsDeveloperConvenienceCurrencyFreeFor(const AOutlierPlayerState* PlayerState) const
+{
+	if (!HasAuthority() || !IsValid(PlayerState) || PlayerState->GetWorld() != GetWorld()
+		|| !DeveloperConvenienceState.MatchId.IsValid() || DeveloperConvenienceState.Options.bConsumeCurrency)
+	{
+		return false;
+	}
+	const AFirstPersonPlayerController* Shooter = DeveloperConvenienceShooter.Get();
+	const AFirstPersonPlayerController* Partner = DeveloperConveniencePartner.Get();
+	// 메뉴를 닫아도 옵션은 유지된다. 세션 대신 현재 페어의 PlayerState 소유 관계를 확인한다.
+	return IsDeveloperConvenienceParticipant(Shooter) && IsDeveloperConvenienceParticipant(Partner)
+		&& (PlayerState == Shooter->GetPlayerState<AOutlierPlayerState>()
+			|| PlayerState == Partner->GetPlayerState<AOutlierPlayerState>());
+}
+
+bool AOutlierGameMode::IsDeveloperConvenienceInvincible(const AActor* Target) const
+{
+	if (!HasAuthority() || !IsValid(Target) || Target->GetWorld() != GetWorld()
+		|| !DeveloperConvenienceState.MatchId.IsValid() || !DeveloperConvenienceState.Options.bInvincible)
+	{
+		return false;
+	}
+	const AFirstPersonPlayerController* Shooter = DeveloperConvenienceShooter.Get();
+	const AFirstPersonPlayerController* Partner = DeveloperConveniencePartner.Get();
+	if (!IsDeveloperConvenienceParticipant(Shooter) || !IsDeveloperConvenienceParticipant(Partner))
+	{
+		return false;
+	}
+	const AOutlierPlayerState* ShooterState = Shooter->GetPlayerState<AOutlierPlayerState>();
+	const AOutlierPlayerState* PartnerState = Partner->GetPlayerState<AOutlierPlayerState>();
+	if (Target == ShooterState->GetShooterCharacter() && Shooter->GetPawn() == Target)
+	{
+		return true;
+	}
+	// 원래 Partner 몸체는 빙의 중 Controller/PlayerState가 없어도 페어의 몸체로 남는다.
+	if (Target == PartnerState->GetPartnerCharacter() && Target == ShooterState->GetPartnerCharacter())
+	{
+		return true;
+	}
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(Target);
+	// 현재 소유 관계로만 판정한다. 빙의 대기 대상이나 해제된 적에는 보호 효과를 남기지 않는다.
+	return Enemy && Enemy->IsEnemyPossessed() && Cast<APartnerPlayerController>(Partner)
+		&& Enemy->GetController() == Partner && Partner->GetPawn() == Enemy;
+}
+
+EDeveloperConvenienceRequestResult AOutlierGameMode::ValidateDeveloperConvenienceAction(
+	AFirstPersonPlayerController* Requester, const FGuid& RequestId, const FGuid& MatchId,
+	const FGuid& SessionId, int64 GameplayGeneration) const
+{
+	if (!HasAuthority() || !IsDeveloperConvenienceParticipant(Requester))
+	{
+		return EDeveloperConvenienceRequestResult::InvalidPair;
+	}
+	const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	if (!RequestId.IsValid() || !MatchId.IsValid() || MatchId != DeveloperConvenienceState.MatchId
+		|| GameplayGeneration != DeveloperConvenienceState.GameplayGeneration
+		|| !Arena || GameplayGeneration != Arena->GetGameplayGeneration())
+	{
+		return EDeveloperConvenienceRequestResult::StaleContext;
+	}
+	if (!DeveloperConvenienceState.SessionId.IsValid())
+	{
+		return EDeveloperConvenienceRequestResult::NoSession;
+	}
+	if (SessionId != DeveloperConvenienceState.SessionId)
+	{
+		return EDeveloperConvenienceRequestResult::StaleContext;
+	}
+	if (DeveloperConvenienceOperator != Requester)
+	{
+		return EDeveloperConvenienceRequestResult::NotOperator;
+	}
+	if (DeveloperConvenienceState.bTransitioning || bArenaReloadInProgress || bCheckpointRestartInProgress
+		|| bListenHostReturnRequested || bArenaWorkerMatchCompleting || GameOverWorldPause.IsActive())
+	{
+		return EDeveloperConvenienceRequestResult::Transitioning;
+	}
+	return EDeveloperConvenienceRequestResult::Accepted;
+}
+
+EDeveloperConvenienceRequestResult AOutlierGameMode::RequestDeveloperConvenienceTeamRecovery(
+	AFirstPersonPlayerController* Requester, const FDeveloperConvenienceRecoveryRequest& Request)
+{
+	const auto Validation = ValidateDeveloperConvenienceAction(Requester, Request.RequestId,
+		Request.MatchId, Request.SessionId, Request.GameplayGeneration);
+	if (Validation != EDeveloperConvenienceRequestResult::Accepted)
+	{
+		return Validation;
+	}
+	if (bDeveloperConvenienceRecoveryInProgress)
+	{
+		return EDeveloperConvenienceRequestResult::Transitioning;
+	}
+	auto* ShooterController = DeveloperConvenienceShooter.Get();
+	auto* PartnerController = DeveloperConveniencePartner.Get();
+	if (!IsDeveloperConvenienceParticipant(ShooterController) || !IsDeveloperConvenienceParticipant(PartnerController))
+	{
+		return EDeveloperConvenienceRequestResult::InvalidPair;
+	}
+	auto* ShooterState = ShooterController->GetPlayerState<AOutlierPlayerState>();
+	auto* PartnerState = PartnerController->GetPlayerState<AOutlierPlayerState>();
+	auto* Shooter = ShooterState->GetShooterCharacter();
+	auto* Partner = PartnerState->GetPartnerCharacter();
+	// 현재 페어의 몸체만 회복한다. 빙의 Enemy나 교체되기 전 Pawn을 회복 대상으로 사용하지 않는다.
+	if (!IsValid(Shooter) || !IsValid(Partner) || Shooter->GetWorld() != GetWorld() || Partner->GetWorld() != GetWorld()
+		|| ShooterController->GetPawn() != Shooter || PartnerState->GetShooterCharacter() != Shooter
+		|| ShooterState->GetPartnerCharacter() != Partner || !IsValid(PartnerController->GetPawn()) || Shooter->IsDead())
+	{
+		return EDeveloperConvenienceRequestResult::TargetUnavailable;
+	}
+	auto* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	auto* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+	auto* Vitality = Partner->GetPartnerVitalityComponent();
+	if (!ShooterASC || !PartnerASC || !Vitality || ShooterASC->GetAvatarActor() != Shooter
+		|| PartnerASC->GetAvatarActor() != Partner || Shooter->GetMaxHealth() <= 0.0f || Shooter->GetCurHealth() <= 0.0f
+		|| PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead())
+		|| PartnerASC->GetNumericAttribute(UOutlierVitalAttributeSet::GetMaxHealthAttribute()) <= 0.0f
+		|| (!Vitality->IsRebooting() && PartnerASC->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute()) <= 0.0f))
+	{
+		return EDeveloperConvenienceRequestResult::TargetUnavailable;
+	}
+
+	// 효과 제거는 동기 콜백을 실행한다. 복구 도중 들어온 요청이 같은 종료 경로를 재진입하지 못하게 한다.
+	TGuardValue<bool> RecoveryGuard(bDeveloperConvenienceRecoveryInProgress, true);
+	if (Vitality->IsRebooting())
+	{
+		// 정확한 Reboot 효과만 제거한다. 기존 콜백이 HP·행동·감지를 복구하며 다른 면역/쿨타임은 유지한다.
+		if (!Vitality->RemoveRebootEffect())
+		{
+			return EDeveloperConvenienceRequestResult::TargetUnavailable;
+		}
+	}
+	else if (!PartnerASC->RestoreHealthToMax())
+	{
+		return EDeveloperConvenienceRequestResult::TargetUnavailable;
+	}
+	if (!ShooterASC->RestoreHealthToMax())
+	{
+		return EDeveloperConvenienceRequestResult::TargetUnavailable;
+	}
+	const float MissingShield = ShooterASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetMaxShieldAttribute())
+		- ShooterASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetShieldAttribute());
+	// 기본 실드만 채운다. Partner 추가 실드의 수치·최대치·효과 수명에는 접근하지 않는다.
+	if (MissingShield > 0.0f && !ShooterASC->ApplyShieldDeltaToSelf(MissingShield, EOutlierVitalityUpdatePolicy::Immediate))
+	{
+		return EDeveloperConvenienceRequestResult::TargetUnavailable;
+	}
+	return EDeveloperConvenienceRequestResult::Accepted;
+}
+
+EDeveloperConvenienceRequestResult AOutlierGameMode::RequestDeveloperConvenienceOption(
+	AFirstPersonPlayerController* Requester, const FDeveloperConvenienceOptionRequest& Request)
+{
+	const auto Validation = ValidateDeveloperConvenienceAction(Requester, Request.RequestId,
+		Request.MatchId, Request.SessionId, Request.GameplayGeneration);
+	if (Validation != EDeveloperConvenienceRequestResult::Accepted)
+	{
+		return Validation;
+	}
+
+	bool* Value = nullptr;
+	switch (Request.Option)
+	{
+	case EDeveloperConvenienceOption::Invincible: Value = &DeveloperConvenienceState.Options.bInvincible; break;
+	case EDeveloperConvenienceOption::ConsumeCurrency: Value = &DeveloperConvenienceState.Options.bConsumeCurrency; break;
+	case EDeveloperConvenienceOption::FastCooldown: Value = &DeveloperConvenienceState.Options.bFastCooldown; break;
+	default: return EDeveloperConvenienceRequestResult::InvalidOption;
+	}
+	if (*Value != Request.bEnabled)
+	{
+		// 공유 값을 먼저 확정하고 ASC 적용과 양쪽 UI 게시를 같은 경로로 처리한다.
+		*Value = Request.bEnabled;
+		PublishDeveloperConvenienceState();
+	}
+	return EDeveloperConvenienceRequestResult::Accepted;
+}
+
 bool AOutlierGameMode::BeginSettingsPause(AFirstPersonPlayerController* Controller,
 	AActor* LayerOwner, AFirstPersonPlayerController* OtherController)
 {
 	UWorld* World = GetWorld();
 	if (!HasAuthority() || !Controller || !World || GameOverWorldPause.IsActive()
+		|| DeveloperConvenienceState.SessionId.IsValid() || PendingPresetUpgradeRequestId.IsValid()
 		|| bArenaReloadInProgress || bCheckpointRestartInProgress
 		|| bListenHostReturnRequested || bArenaWorkerMatchCompleting)
 	{
@@ -691,6 +1062,7 @@ void AOutlierGameMode::InitGameState()
 
 void AOutlierGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ResetDeveloperConvenienceState();
 	if (ArenaRecoveryTickerHandle.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(ArenaRecoveryTickerHandle);
@@ -1257,6 +1629,7 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 	{
 		FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState::Rejected);
 	}
+	InvalidateDeveloperConvenienceSession();
 	// 설정 UI의 정지를 끝내고 사망 연출을 진행한다. 이후 양쪽 GameOver 준비가 정지를 인계받는다.
 	ClearSettingsWorldPause();
 	AOutlierPlayerState* ShooterPS = TriggeringPS->IsShooterPlayer()
@@ -1730,6 +2103,10 @@ void AOutlierGameMode::FailGameOverTransition()
 
 void AOutlierGameMode::CancelGameOverPendingForDisconnect(AController* Exiting)
 {
+	if (Exiting == DeveloperConvenienceShooter.Get() || Exiting == DeveloperConveniencePartner.Get())
+	{
+		InvalidateDeveloperConvenienceSession();
+	}
 	if (GameOverWorldPause.Contains(Exiting))
 	{
 		// 연결 종료는 복구 UI로 돌아가지 않는다. 남은 위젯의 이전 제안도 함께 닫는다.
@@ -1878,7 +2255,7 @@ bool AOutlierGameMode::ResolvePresetStageSpawn(
 	return false;
 }
 
-bool AOutlierGameMode::RequestPresetRespawn(AController* Requester, FName StageId)
+bool AOutlierGameMode::RequestPresetRespawn(AController* Requester, FName StageId, TFunction<bool()> BeforeReload)
 {
 	if (!HasAuthority() || !Requester)
 	{
@@ -1915,7 +2292,8 @@ bool AOutlierGameMode::RequestPresetRespawn(AController* Requester, FName StageI
 	}
 
 	const int32 NewNodeCount = ResolvePresetNodeCount(StageId);
-	return ReloadArenaAndRespawnPair(ShooterPS, PartnerPS, ShooterSpawn, PartnerSpawn, false, NewNodeCount);
+	return ReloadArenaAndRespawnPair(ShooterPS, PartnerPS, ShooterSpawn, PartnerSpawn, false, NewNodeCount,
+		MoveTemp(BeforeReload));
 }
 
 void AOutlierGameMode::StartMatchedPair(AController* FirstController, AController* SecondController, int32 PairId, EOutlierPlayerRole FirstRole, EOutlierPlayerRole SecondRole)
@@ -1990,6 +2368,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		}
 	}
 
+	ResetDeveloperConvenienceState();
 	FirstPS->SetPairId(PairId);
 	ActiveMatchPairId = PairId;
 	FirstPS->SetPlayerRole(FirstRole);
@@ -2311,6 +2690,7 @@ bool AOutlierGameMode::CompleteArenaMatch()
 		return false;
 	}
 
+	ResetDeveloperConvenienceState();
 	bArenaWorkerMatchCompleting = true;
 	GetWorldTimerManager().ClearTimer(ArenaWorkerAutoCompleteTimerHandle);
 	GetWorldTimerManager().ClearTimer(ArenaWorkerReconnectTimerHandle);
@@ -2402,22 +2782,65 @@ void AOutlierGameMode::TryStartInitialSaveRestore()
 	}
 }
 
+EDeveloperConvenienceRequestResult AOutlierGameMode::RequestDeveloperConvenienceReturnToTitle(
+	AFirstPersonPlayerController* Requester, const FDeveloperConvenienceTitleRequest& Request)
+{
+	const auto Validation = ValidateDeveloperConvenienceAction(Requester, Request.RequestId,
+		Request.MatchId, Request.SessionId, Request.GameplayGeneration);
+	if (Validation != EDeveloperConvenienceRequestResult::Accepted)
+	{
+		return Validation;
+	}
+	if (!IsDeveloperConvenienceParticipant(DeveloperConvenienceShooter.Get())
+		|| !IsDeveloperConvenienceParticipant(DeveloperConveniencePartner.Get()))
+	{
+		return EDeveloperConvenienceRequestResult::InvalidPair;
+	}
+	PendingDeveloperTitleRequestId = Request.RequestId;
+	DeveloperConvenienceState.bTransitioning = true;
+	PublishDeveloperConvenienceState();
+	ClearDeveloperConvenienceWorldPause();
+	const TWeakObjectPtr<AFirstPersonPlayerController> Operator = Requester;
+	const TWeakObjectPtr<AFirstPersonPlayerController> Other = Requester == DeveloperConvenienceShooter.Get()
+		? DeveloperConveniencePartner : DeveloperConvenienceShooter;
+	// 수락 결과를 먼저 보낸 뒤 Travel한다. Listen 호스트도 응답 전 Controller가 사라지지 않는다.
+	GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this, Request, Operator, Other]()
+	{
+		if (PendingDeveloperTitleRequestId != Request.RequestId || DeveloperConvenienceState.MatchId != Request.MatchId)
+		{
+			return;
+		}
+		PendingDeveloperTitleRequestId.Invalidate();
+		auto* ExitController = Operator.IsValid() ? Operator.Get() : Other.Get();
+		if (!ExitController || !HandleExplicitPlayerLeave(ExitController, false, true))
+		{
+			ResetDeveloperConvenienceState();
+		}
+	}));
+	return EDeveloperConvenienceRequestResult::Accepted;
+}
+
 bool AOutlierGameMode::HandleExplicitPlayerLeave(
-	AFirstPersonPlayerController* Requester, bool bQuitAfterLeave)
+	AFirstPersonPlayerController* Requester, bool bQuitAfterLeave, bool bReturnToTitle)
 {
 	if (!HasAuthority() || !Requester)
 	{
 		return false;
 	}
 	const ENetMode NetMode = GetNetMode();
-	if (!IsArenaWorkerProcess() && NetMode != NM_Standalone && NetMode != NM_ListenServer)
+	if (!IsArenaWorkerProcess() && NetMode != NM_Standalone && NetMode != NM_ListenServer
+		&& !(bReturnToTitle && NetMode == NM_DedicatedServer))
 	{
 		return false;
 	}
 
+	// Reset이 페어 참조를 비우기 전에 타이틀 복귀 대상을 고정한다.
+	const TArray<TWeakObjectPtr<AFirstPersonPlayerController>> TitleControllers = {
+		DeveloperConvenienceShooter, DeveloperConveniencePartner };
 	CancelCheckpointRestartVoteForDisconnect(Requester);
 	FinishGameOverFlow();
 	ClearSettingsWorldPause();
+	ResetDeveloperConvenienceState();
 
 	if (IsArenaWorkerProcess())
 	{
@@ -2432,7 +2855,20 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(
 			*ArenaWorkerAdmission.MatchId.ToString(),
 			*GetNameSafe(Requester));
 		// MatchCompleting을 실제 연결 종료보다 먼저 세워 Logout의 재접속 유예 경로를 막는다.
-		BeginArenaWorkerReleaseShutdown(Requester, bQuitAfterLeave);
+		BeginArenaWorkerReleaseShutdown(Requester, bQuitAfterLeave, bReturnToTitle);
+		return true;
+	}
+	if (bReturnToTitle && NetMode == NM_DedicatedServer)
+	{
+		// 일반 Dedicated는 프로세스를 계속 운영한다. 클라이언트만 연결을 정리해 로컬 타이틀로 이동한다.
+		ActiveMatchPairId = INDEX_NONE;
+		for (const auto& Controller : TitleControllers)
+		{
+			if (Controller.IsValid())
+			{
+				Controller->ClientPrepareForTitleReturn(false);
+			}
+		}
 		return true;
 	}
 
@@ -2445,13 +2881,23 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(
 	// 2인 Listen Match에서는 Host와 Guest 어느 쪽의 명시적 이탈이든 Match 전체를 끝낸다.
 	// Standalone도 같은 엔진 경로를 사용하며 GameDefaultMap인 Title로 돌아간다.
 	bListenHostReturnRequested = true;
-	// 종료 확인을 Travel보다 먼저 보내야 기존 Controller가 사라지기 전에 수신한다.
+	// 확인 처리가 GameInstance의 일반 이탈 상태를 정리하므로 최종 타이틀 의도보다 먼저 보낸다.
 	Requester->ConfirmExplicitLeaveFromServer(true, bQuitAfterLeave);
+	if (bReturnToTitle)
+	{
+		for (const auto& Controller : TitleControllers)
+		{
+			if (Controller.IsValid())
+			{
+				Controller->ClientPrepareForTitleReturn(true);
+			}
+		}
+	}
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReturn] Explicit leave requested; returning session to Title Player=%s NetMode=%d"),
 		*GetNameSafe(Requester),
 		static_cast<int32>(NetMode));
-	if (NetMode == NM_ListenServer)
+	if (NetMode == NM_ListenServer && !bReturnToTitle)
 	{
 		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 		{
@@ -3609,6 +4055,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	}
 
 	// 1) 사전 거절은 여기까지다. 확정부터는 동일 세대의 실패 경로만 사용한다.
+	InvalidateDeveloperConvenienceSession();
 	PendingGameplayGeneration = ReloadGeneration;
 	bArenaReloadInProgress = true;
 	bClearPresetGuidesAfterReload = bApplyPresetLoadout;
@@ -4891,7 +5338,7 @@ void AOutlierGameMode::HandleArenaWorkerReloadStallTimeout()
 }
 
 void AOutlierGameMode::BeginArenaWorkerReleaseShutdown(
-	AFirstPersonPlayerController* ExitRequester, bool bQuitAfterLeave)
+	AFirstPersonPlayerController* ExitRequester, bool bQuitAfterLeave, bool bReturnToTitle)
 {
 	if (bArenaWorkerMatchCompleting)
 	{
@@ -4899,6 +5346,7 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown(
 	}
 	FinishGameOverFlow();
 	ClearSettingsWorldPause();
+	ResetDeveloperConvenienceState();
 	// 종료 타이머는 월드 시간으로 진행되므로 준비 단계의 소유 정지도 해제한다.
 	ClearArenaWorkerWorldPause();
 
@@ -4920,6 +5368,7 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown(
 	const FString LobbyAddress = Settings
 		? Settings->ResolveLobbyAddress()
 		: FString();
+	const bool bTravelToLobby = Settings && Settings->bReturnToLobbyOnMatchEnd && !LobbyAddress.IsEmpty();
 	if (ExitRequester)
 	{
 		ExitRequester->ConfirmExplicitLeaveFromServer(true, bQuitAfterLeave);
@@ -4938,9 +5387,16 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown(
 				}
 				// 의도된 Worker 종료를 다음 NetworkFailure가 장애로 되돌리지 않도록
 				// 두 클라이언트 모두 Travel 전에 로컬 재접속 상태를 먼저 정리한다.
-				FirstPersonController->ClientPrepareForArenaExit();
+				if (bReturnToTitle)
+				{
+					FirstPersonController->ClientPrepareForTitleReturn(bTravelToLobby);
+				}
+				else
+				{
+					FirstPersonController->ClientPrepareForArenaExit();
+				}
 			}
-			if (Settings && Settings->bReturnToLobbyOnMatchEnd && !LobbyAddress.IsEmpty())
+			if (bTravelToLobby)
 			{
 				PlayerController->ClientTravel(LobbyAddress, TRAVEL_Absolute);
 			}
@@ -5378,6 +5834,7 @@ void AOutlierGameMode::RegisterSpawnedPair(
 	AShooterCharacter* Shooter,
 	APartnerCharacter* Partner)
 {
+	RefreshDeveloperConveniencePair(ShooterPlayerState, PartnerPlayerState);
 	if (ShooterPlayerState)
 	{
 		ShooterPlayerState->SetShooterCharacter(Shooter);

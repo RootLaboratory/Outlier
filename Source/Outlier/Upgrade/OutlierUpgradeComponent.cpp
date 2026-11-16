@@ -8,6 +8,9 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Net/UnrealNetwork.h"
+#include "Engine/World.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
+#include "OutlierGameMode.h"
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -252,7 +255,7 @@ bool UOutlierUpgradeComponent::CanActivateNode(FName NodeIdOrRowName) const
 		return false;
 	}
 
-	return !bConsumeNodeCost || GetCurrentNodeCount() >= Row->Cost;
+	return !ShouldConsumeNodeCost() || GetCurrentNodeCount() >= Row->Cost;
 }
 
 EOutlierUpgradeNodeState UOutlierUpgradeComponent::GetNodeState(FName NodeIdOrRowName) const
@@ -316,7 +319,7 @@ bool UOutlierUpgradeComponent::GetNodeViewData(FName NodeIdOrRowName, FOutlierUp
 	OutViewData.NodeRow = *Row;
 	OutViewData.State = GetNodeState(RowName);
 	OutViewData.CurrentNodeCount = GetCurrentNodeCount();
-	OutViewData.bCanAfford = !bConsumeNodeCost || OutViewData.CurrentNodeCount >= Row->Cost;
+	OutViewData.bCanAfford = !ShouldConsumeNodeCost() || OutViewData.CurrentNodeCount >= Row->Cost;
 	return true;
 }
 
@@ -991,9 +994,37 @@ FGameplayAttribute UOutlierUpgradeComponent::ResolveAttribute(const FGameplayTag
 	return FGameplayAttribute();
 }
 
+bool UOutlierUpgradeComponent::ShouldConsumeNodeCost(AOutlierPlayerState* InPlayerState) const
+{
+	if (!bConsumeNodeCost)
+	{
+		return false;
+	}
+	const AOutlierPlayerState* PlayerState = InPlayerState ? InPlayerState : GetOwningOutlierPlayerState();
+	const AActor* Owner = GetOwner();
+	if (!IsValid(PlayerState) || !Owner || PlayerState->GetWorld() != GetWorld())
+	{
+		return true;
+	}
+	// 실제 차감은 서버의 매치 상태로만 결정한다. 클라이언트 스냅샷은 표시 용도다.
+	if (Owner->HasAuthority())
+	{
+		const AOutlierGameMode* Mode = GetWorld()->GetAuthGameMode<AOutlierGameMode>();
+		return !Mode || !Mode->IsDeveloperConvenienceCurrencyFreeFor(PlayerState);
+	}
+	const AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(PlayerState->GetOwner());
+	if (!Controller || Controller->GetPlayerState<AOutlierPlayerState>() != PlayerState)
+	{
+		return true;
+	}
+	const FDeveloperConvenienceSnapshot& State = Controller->GetDeveloperConvenienceState();
+	return !State.MatchId.IsValid() || State.PairId == INDEX_NONE || State.PairId != PlayerState->GetPairId()
+		|| State.Options.bConsumeCurrency;
+}
+
 bool UOutlierUpgradeComponent::ConsumeNodeCost(int32 Cost, AOutlierPlayerState* InPlayerState) const
 {
-	if (!bConsumeNodeCost || Cost <= 0)
+	if (!ShouldConsumeNodeCost(InPlayerState) || Cost <= 0)
 	{
 		return true;
 	}

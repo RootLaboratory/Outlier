@@ -830,6 +830,8 @@ void AShooterCharacter::BindGasVitalityObservers()
 			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
 	StealthCooldownEffectAddedHandle = OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.AddUObject(
 		this, &AShooterCharacter::HandleStealthCooldownEffectAdded);
+	SkillCooldownTimeChangedHandle = OutlierAbilitySystemComponent->OnSkillCooldownTimeChanged.AddUObject(
+		this, &AShooterCharacter::HandleSkillCooldownTimeChanged);
 	StealthSpeedTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).AddUObject(
 			this, &AShooterCharacter::HandleStealthSpeedTagChanged);
@@ -866,6 +868,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.Remove(StealthCooldownEffectAddedHandle);
+	OutlierAbilitySystemComponent->OnSkillCooldownTimeChanged.Remove(SkillCooldownTimeChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).Remove(StealthSpeedTagChangedHandle);
 
@@ -882,6 +885,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
 	StealthCooldownEffectAddedHandle.Reset();
+	SkillCooldownTimeChangedHandle.Reset();
 	StealthSpeedTagChangedHandle.Reset();
 }
 
@@ -1280,6 +1284,18 @@ void AShooterCharacter::HandleStealthCooldownEffectAdded(UAbilitySystemComponent
 	if (EffectSpec.Def && EffectSpec.Def->GetGrantedTags().HasTagExact(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()))
 	{
+		QueueStealthCooldownUIRefresh();
+	}
+}
+
+void AShooterCharacter::HandleSkillCooldownTimeChanged(const FGameplayTag& CooldownTag)
+{
+	if (CooldownTag == OutlierGameplayTags::Cooldown::Shooter::BulletReflection()
+		|| CooldownTag == OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()
+		|| CooldownTag == OutlierGameplayTags::Cooldown::Shooter::Stealth()
+		|| CooldownTag == OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry())
+	{
+		// 태그 수가 그대로인 시간 변경도 반영한다. 복제 적용이 끝난 최종 상태를 기존 큐로 전달한다.
 		QueueStealthCooldownUIRefresh();
 	}
 }
@@ -3355,8 +3371,24 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	{
 		return 0.0f;
 	}
+	const bool bDeveloperInvincible = OutlierDamage::IsDeveloperInvincible(this);
+	if (bDeveloperInvincible && !IsDead() && Request.bHasDamageOrigin)
+	{
+		// 실제 피해량은 0으로 유지하고 기존 UI의 방향 인디케이터만 사용한다.
+		ClientShowDamageFeedback(Request.DamageOrigin, 0.0f);
+	}
 	if (TryReflectIncomingDamage(Request))
 	{
+		return 0.0f;
+	}
+	if (bDeveloperInvincible)
+	{
+		// 피격에 따른 실드 회복 지연은 보존한다. 체력/실드 소비와 피해 기반 스킬 효과는 실행하지 않는다.
+		if (HealthComponent && !IsDead())
+		{
+			HealthComponent->GetHit();
+			OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.01.State.Hit"));
+		}
 		return 0.0f;
 	}
 	float DamageAmount = Request.DamageAmount;

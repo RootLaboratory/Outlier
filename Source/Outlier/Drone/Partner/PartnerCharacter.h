@@ -581,6 +581,8 @@ protected:
 	void HandlePartnerHackChargesChanged(bool bRecovered);
 	void TryActivatePartnerSkill(const FGameplayTag& AbilityTag);
 	FDelegateHandle PartnerCooldownEffectAddedHandle;
+	FDelegateHandle SkillCooldownTimeChangedHandle;
+	void HandleSkillCooldownTimeChanged(const FGameplayTag& CooldownTag);
 	FDelegateHandle PartnerHackChargesChangedHandle;
 	TMap<FGameplayTag, FDelegateHandle> PartnerCooldownTagHandles;
 

@@ -19,6 +19,7 @@
 #include "MainUIBase.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "UI/InGamePauseWidget.h"
+#include "UI/DeveloperConvenienceWidget.h"
 #include "UI/InGameSettingWidget.h"
 #include "UI/UpgradeMachineWidget.h"
 #include "UI/UILayerGameplayTags.h"
@@ -640,6 +641,9 @@ FGameplayTag ULocalPlayerUILayerSubsystem::GetActiveInputModeTag() const
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput(bool bPopUnhandledInput)
 {
+	if (auto* Controller = Cast<AFirstPersonPlayerController>(GetLocalPlayerController());
+		Controller && Controller->GetDeveloperConvenienceState().SessionId.IsValid())
+		return Controller->HandleDeveloperConvenienceKey(EKeys::Escape, false, false);
 	auto* Audio = GetWorld()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>();
 	const uint64 Before = Audio ? Audio->MenuAudioSerial : 0;
 	const bool bHandled = RouteWidgetInput(&IUILayerInputReceiver::Execute_HandleUILayerEscape, bPopUnhandledInput);
@@ -971,7 +975,8 @@ void ULocalPlayerUILayerSubsystem::RefreshPostProcessSuspension()
 	{
 		const UUserWidget* Widget = Entry.Widget.Get();
 		return Widget && (Widget->IsA<UUpgradeMachineWidget>()
-			|| Widget->IsA<UInGameSettingWidget>() || Widget->IsA<UInGamePauseWidget>());
+			|| Widget->IsA<UInGameSettingWidget>() || Widget->IsA<UInGamePauseWidget>()
+			|| Widget->IsA<UDeveloperConvenienceWidget>());
 	});
 	PostProcess->SetUIEffectsSuspended(bSuspendUIEffects);
 }

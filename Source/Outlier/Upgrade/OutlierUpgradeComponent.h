@@ -97,6 +97,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	bool GetNodeViewData(FName NodeIdOrRowName, FOutlierUpgradeNodeViewData& OutViewData) const;
 
+	// 명시한 PlayerState는 빙의 중인 Partner의 원래 몸체 구매/UI에도 사용한다.
+	UFUNCTION(BlueprintPure, Category = "Upgrade")
+	bool ShouldConsumeNodeCost(AOutlierPlayerState* InPlayerState = nullptr) const;
+
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	bool ResolveNodeRowNameByTreeAndNodeId(FName TreeId, FName NodeId, FName& OutRowName) const;
 
