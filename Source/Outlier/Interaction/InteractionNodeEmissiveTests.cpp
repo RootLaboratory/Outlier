@@ -5,6 +5,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/GameStateBase.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/StaticMesh.h"
@@ -202,6 +203,170 @@ bool FInteractionNodePresentationTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Non-finite curve falls back to cubic fade"), First->GetEmissiveStrength(0.5f), 0.25f);
 	First->bCollected = true;
 	TestEqual(TEXT("Collection overrides the curve"), First->GetEmissiveStrength(0.0f), 0.0f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FInteractionNodeEmissivePredictionTest, "Outlier.Interaction.Node.EmissivePrediction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FInteractionNodeEmissivePredictionTest::RunTest(const FString& Parameters)
+{
+	if (!TestNotNull(TEXT("Engine exists"), GEngine))
+	{
+		return false;
+	}
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("NodeEmissivePredictionTest")));
+	if (!TestNotNull(TEXT("World exists"), World))
+	{
+		return false;
+	}
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+	ON_SCOPE_EXIT
+	{
+		World->DestroyWorld(false);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	AInteractionNode* Node = World->SpawnActor<AInteractionNode>();
+	AFirstPersonCharacter* Character = World->SpawnActor<AFirstPersonCharacter>();
+	APlayerController* Controller = World->SpawnActor<APlayerController>();
+	AGameStateBase* Clock = World->SpawnActor<AGameStateBase>();
+	if (!TestNotNull(TEXT("Node exists"), Node) || !TestNotNull(TEXT("Character exists"), Character)
+		|| !TestNotNull(TEXT("Controller exists"), Controller) || !TestNotNull(TEXT("Clock exists"), Clock))
+	{
+		return false;
+	}
+	// 접속 절차가 없는 테스트 월드에서도 입력 소유 클라이언트 조건을 명시한다.
+	Controller->SetAsLocalPlayerController();
+	Controller->Possess(Character);
+	if (!TestTrue(TEXT("Requester is locally controlled"), Character->IsLocallyControlled()))
+	{
+		return false;
+	}
+	Node->SetRole(ROLE_SimulatedProxy);
+	Node->PresentationClock = Clock;
+
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr,
+		TEXT("/Game/Environments/Props/Materials/MI_NeuralCore.MI_NeuralCore"));
+	if (!TestNotNull(TEXT("Cube exists"), Cube) || !TestNotNull(TEXT("Node material exists"), Material))
+	{
+		return false;
+	}
+	UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(Node);
+	Node->AddInstanceComponent(Mesh);
+	Mesh->SetStaticMesh(Cube);
+	Mesh->SetMaterial(0, Material);
+	Mesh->RegisterComponent();
+	Node->EmissiveMesh.OverrideComponent = Mesh;
+	Node->bUseMaterialIdleStrength = false;
+	Node->IdleEmissiveStrength = 2.0f;
+	Node->InitializeEmissiveMaterial();
+	Node->bPresentationInitialized = true;
+	if (!TestNotNull(TEXT("MID exists"), Node->EmissiveMID.Get()))
+	{
+		return false;
+	}
+	const auto Strength = [&]()
+	{
+		float Value = -1.0f;
+		Node->EmissiveMID->GetScalarParameterValue(FMaterialParameterInfo(Node->EmissiveParameterName), Value);
+		return Value;
+	};
+	UInteractableComponent* Component = Node->GetInteractableComponent();
+	const int32 Attempt = Node->BeginLocalHoldAttempt(Character);
+	Node->BeginHoldPresentation(Character, Attempt, 2.0f);
+	TestEqual(TEXT("Input frame preserves the curve start"), Strength(), 2.0f);
+	TestTrue(TEXT("Pending approval enables the component tick"), Component->IsComponentTickEnabled());
+
+	// 실제 시간 대기 대신 시작 시각을 옮기고, MID 갱신은 운영 코드의 컴포넌트 Tick을 통과시킨다.
+	Node->LocalEmissiveStartTime -= 1.0 / 60.0;
+	Component->TickComponent(1.0f / 60.0f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("First frame changes emissive before any server snapshot"), Strength() < 2.0f);
+	TestEqual(TEXT("Prediction does not advance UI/completion progress"), Node->GetHoldProgress(), 0.0f);
+	Node->LocalEmissiveStartTime = World->GetTimeSeconds() - 1.0;
+	Component->TickComponent(1.0f / 60.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Half predicted progress follows the existing curve"), Strength(), 0.25f);
+	TestFalse(TEXT("Prediction does not collect the node"), Node->bCollected);
+
+	// 과거 승인과 다른 Pawn의 같은 번호는 현재 로컬 연출을 인계받지 못한다.
+	Node->HoldState.bHolding = true;
+	Node->HoldState.AttemptId = Attempt - 1;
+	Node->HoldState.Interactor = Character;
+	Node->HoldState.Duration = 2.0f;
+	Node->HoldState.ServerStartTime = Clock->GetServerWorldTimeSeconds() - 0.5;
+	Node->OnRep_HoldState();
+	TestTrue(TEXT("Old snapshot preserves prediction"), Node->bPredictingEmissive);
+	Node->HoldState.AttemptId = Attempt;
+	Node->HoldState.Interactor = nullptr;
+	Node->OnRep_HoldState();
+	TestTrue(TEXT("Other requester cannot approve prediction"), Node->bPredictingEmissive);
+	Node->HoldState.Interactor = Character;
+	Node->OnRep_HoldState();
+	TestEqual(TEXT("Approval frame preserves displayed brightness"), Strength(), 0.25f);
+	TestFalse(TEXT("Matching approval ends prediction"), Node->bPredictingEmissive);
+	TestTrue(TEXT("Matching approval begins correction"), Node->bCorrectingEmissive);
+	Node->EmissiveCorrectionStartTime -= 0.05;
+	Component->TickComponent(1.0f / 60.0f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Correction moves between predicted and server brightness"),
+		Strength() > 0.25f && Strength() < Node->GetEmissiveStrength(Node->GetHoldProgress()));
+	Node->EmissiveCorrectionStartTime -= 0.06;
+	Component->TickComponent(1.0f / 60.0f, LEVELTICK_All, nullptr);
+	TestFalse(TEXT("Correction finishes without restarting its interval"), Node->bCorrectingEmissive);
+	TestEqual(TEXT("Correction converges to server brightness"),
+		Strength(), Node->GetEmissiveStrength(Node->GetHoldProgress()));
+
+	// 예측만으로 100%에 도달해도 공유 진행률이나 수집 상태는 변경하지 않는다.
+	Node->EndHoldPresentation(true);
+	Node->EndLocalHoldAttempt(Character, true);
+	TestEqual(TEXT("Cancellation restores idle immediately"), Strength(), 2.0f);
+	const int32 Retry = Node->BeginLocalHoldAttempt(Character);
+	Node->BeginHoldPresentation(Character, Retry, 2.0f);
+	Node->LocalEmissiveStartTime -= 3.0;
+	Component->TickComponent(1.0f / 60.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Predicted full fade reaches zero"), Strength(), 0.0f);
+	TestEqual(TEXT("Predicted completion cannot advance shared progress"), Node->GetHoldProgress(), 0.0f);
+	TestFalse(TEXT("Predicted completion cannot collect"), Node->bCollected);
+	TestTrue(TEXT("Pending prediction can still receive approval correction"), Node->NeedsPresentationUpdate());
+	Character->HoldingInteractActor = Node;
+	Character->ClientOnHoldInteractFailed_Implementation(Node, Attempt);
+	TestTrue(TEXT("Old rejection preserves retry prediction"), Node->bPredictingEmissive);
+	Character->ClientOnHoldInteractFailed_Implementation(Node, Retry);
+	TestFalse(TEXT("Current rejection clears prediction"), Node->bPredictingEmissive);
+	TestEqual(TEXT("Current rejection immediately restores idle"), Strength(), 2.0f);
+	Node->OnRep_HoldState();
+	TestEqual(TEXT("Old approval cannot relight a cancelled retry"), Strength(), 2.0f);
+	TestFalse(TEXT("Old approval cannot restart presentation tick"), Node->NeedsPresentationUpdate());
+
+	// 로컬 시도가 없는 관찰자는 예측 없이 서버 진행률만 적용한다.
+	Node->HoldState.AttemptId = Retry + 1;
+	Node->OnRep_HoldState();
+	TestFalse(TEXT("Observer does not predict emissive"), Node->bPredictingEmissive);
+	TestEqual(TEXT("Observer uses server brightness"),
+		Strength(), Node->GetEmissiveStrength(Node->GetHoldProgress()));
+	TestTrue(TEXT("Observer without a local session keeps presentation tick"), Node->NeedsPresentationUpdate());
+
+	// 수집 복제는 진행 snapshot보다 우선하며 남아 있는 로컬 예측도 함께 정리한다.
+	const int32 FinalAttempt = Node->BeginLocalHoldAttempt(Character);
+	Node->BeginHoldPresentation(Character, FinalAttempt, 2.0f);
+	Node->bCollected = true;
+	Node->OnRep_Collected();
+	TestEqual(TEXT("Collection turns emissive off"), Strength(), 0.0f);
+	TestFalse(TEXT("Collection clears prediction"), Node->bPredictingEmissive);
+	TestFalse(TEXT("Collection stops presentation updates"), Node->NeedsPresentationUpdate());
+	TestFalse(TEXT("Idle component has no residual presentation tick"), Component->IsComponentTickEnabled());
+
+	Node->bCollected = false;
+	Node->EndLocalHoldAttempt(Character, false);
+	Node->BeginLocalHoldAttempt(Character);
+	Node->BeginHoldPresentation(Character, Node->GetLocalHoldAttemptId(Character), 0.0f);
+	TestFalse(TEXT("Invalid duration cannot start prediction"), Node->bPredictingEmissive);
+	Node->BeginHoldPresentation(Character, Node->GetLocalHoldAttemptId(Character), 2.0f);
+	Node->EndPlay(EEndPlayReason::RemovedFromWorld);
+	TestFalse(TEXT("EndPlay clears prediction"), Node->bPredictingEmissive);
 	return true;
 }
 
