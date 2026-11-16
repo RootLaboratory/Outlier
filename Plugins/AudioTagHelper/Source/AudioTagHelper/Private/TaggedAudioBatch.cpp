@@ -16,6 +16,17 @@ UTaggedAudioBatchSettings::UTaggedAudioBatchSettings()
 
 namespace
 {
+	FName ResolveNotifyName(const FAnimNotifyEvent& Event)
+	{
+		// 객체형 Notify는 엔진의 AddAnimationNotifyEventObject가 NotifyName을 None으로
+		// 저장할 수 있다. 명시된 이름을 우선하고, 없을 때만 객체의 표시 이름을 사용한다.
+		if (!Event.NotifyName.IsNone() || !Event.Notify)
+		{
+			return Event.NotifyName;
+		}
+		return FName(*Event.Notify->GetNotifyName());
+	}
+
 	bool ReadPlacement(const FAnimNotifyEvent& Event, FTaggedAudioPlacement& Out)
 	{
 		// 알 수 없는 파생 클래스의 추가 동작을 일반 TaggedAudio 설정으로 잘라 복사하지 않는다.
@@ -138,11 +149,13 @@ namespace
 			if (bNamedNotify)
 			{
 				// Skeleton Notify와 객체형 Notify 모두 이름으로 찾되, 구간 길이가 있는 State는 옮기지 않는다.
-				if (Event.NotifyName == Settings.NotifyNameFilter && !Event.NotifyStateClass && Event.GetDuration() == 0.0f
+				if (ResolveNotifyName(Event) == Settings.NotifyNameFilter && !Event.NotifyStateClass && Event.GetDuration() == 0.0f
 					&& (Settings.NotifyTrackFilter.IsNone()
 						|| (Target->AnimNotifyTracks.IsValidIndex(Event.TrackIndex)
 							&& Target->AnimNotifyTracks[Event.TrackIndex].TrackName == Settings.NotifyTrackFilter)))
+				{
 					Existing.Add(&Event);
+				}
 				continue;
 			}
 			FTaggedAudioPlacement P;
@@ -195,7 +208,7 @@ namespace
 				{
 					P.Time = Existing[Index]->GetTime();
 					P.SourceNotify = Existing[Index]->Notify.Get();
-					Row.ExistingNotifyName = Existing[Index]->NotifyName;
+					Row.ExistingNotifyName = ResolveNotifyName(*Existing[Index]);
 					Row.PreviousTrackIndex = Existing[Index]->TrackIndex;
 				}
 				else ReadPlacement(*Existing[Index], P);
@@ -321,7 +334,7 @@ int32 TaggedAudioBatch::Apply(const UTaggedAudioBatchSettings& Settings, const T
 		{
 			// 오디오 태그 검증을 통과시키기 위해 일반 Notify를 TaggedAudio로 변환하지 않는다.
 			// 미리본 GUID/이름/객체/트랙/시간이 그대로일 때 원본 이벤트의 시간만 변경한다.
-			if (!ExistingEvent || ExistingEvent->NotifyName != Row.ExistingNotifyName
+			if (!ExistingEvent || ResolveNotifyName(*ExistingEvent) != Row.ExistingNotifyName
 				|| ExistingEvent->Notify.Get() != P.SourceNotify.Get() || ExistingEvent->TrackIndex != Row.PreviousTrackIndex
 				|| ExistingEvent->NotifyStateClass || ExistingEvent->GetDuration() != 0.0f
 				|| !FMath::IsNearlyEqual(ExistingEvent->GetTime(), Row.PreviousTime, 0.0001f)) continue;
