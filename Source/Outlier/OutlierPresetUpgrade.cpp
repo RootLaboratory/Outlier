@@ -89,12 +89,33 @@ void AOutlierGameMode::ArmPresetUpgradeUI(int32 PairId, uint32 Generation)
 	PendingPresetUpgradeRequestId = FGuid::NewGuid();
 	PendingPresetUpgradePairId = PairId;
 	PendingPresetUpgradeGeneration = Generation;
+	// 서버가 전환을 확정한 뒤, 메뉴 정리와 기존 Pawn 파괴보다 먼저 양쪽 화면을 가린다.
+	// Listen 호스트도 같은 소유 클라이언트 RPC를 사용하므로 원격 전용 리로드 분기를 거칠 필요가 없다.
+	for (EOutlierPlayerRole PlayerRole : { EOutlierPlayerRole::Shooter, EOutlierPlayerRole::Partner })
+	{
+		if (auto* Controller = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(FindPairPlayerState(PairId, PlayerRole))))
+		{
+			Controller->ClientBeginPresetTransition(PendingPresetUpgradeRequestId, Generation);
+		}
+	}
 }
 
 void AOutlierGameMode::ClearPendingPresetUpgradeUI()
 {
 	const FGuid RequestId = PendingPresetUpgradeRequestId;
-	const auto Controllers = PresetUpgradePreparedControllers;
+	auto Controllers = PresetUpgradePreparedControllers;
+	// UI 준비를 시작하기 전에 실패해도, 이미 암전한 양쪽 소유자에게 취소를 전달한다.
+	if (RequestId.IsValid())
+	{
+		for (EOutlierPlayerRole PlayerRole : { EOutlierPlayerRole::Shooter, EOutlierPlayerRole::Partner })
+		{
+			if (auto* Controller = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(
+				FindPairPlayerState(PendingPresetUpgradePairId, PlayerRole))))
+			{
+				Controllers.Add(Controller);
+			}
+		}
+	}
 	// Listen의 동기 RPC 콜백도 이미 종료된 요청을 재사용하지 못하도록 먼저 비운다.
 	PendingPresetUpgradeRequestId.Invalidate();
 	PendingPresetUpgradePairId = INDEX_NONE;

@@ -2,6 +2,11 @@
 
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/GameViewportClient.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "LocalPlayerUISubSystem.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Styling/CoreStyle.h"
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "HAL/PlatformTime.h"
@@ -62,6 +67,69 @@ void AFirstPersonPlayerController::ClearPendingPresetUpgradeUI()
 	PendingPresetUpgradeWidgetClass = nullptr;
 	PresetUpgradeArena.Reset();
 	PresetUpgradeLayers.Reset();
+}
+
+void AFirstPersonPlayerController::ClientBeginPresetTransition_Implementation(FGuid RequestId, uint32 GameplayGeneration)
+{
+	if (!IsLocalController() || !RequestId.IsValid() || bClientArenaExitPrepared
+		|| !UOutlierArenaSubsystem::IsGameplayGenerationNewer(GameplayGeneration, PresetTransitionGeneration))
+	{
+		return;
+	}
+	// UI 준비 문맥은 리로드 RPC에서 초기화된다. 암전 소유권은 별도로 유지해 그 사이 화면이 열리지 않게 한다.
+	PresetTransitionRequestId = RequestId;
+	PresetTransitionGeneration = GameplayGeneration;
+	AddCameraBlackoutReason(ECameraBlackoutReason::PresetTransition);
+	ULocalPlayer* Local = GetLocalPlayer();
+	if (Local && Local->ViewportClient && !PresetTransitionCover.IsValid())
+	{
+		// 화면 전체의 최상단에 붙인다. AddToViewport로 등록된 HUD·자막·강화 UI까지 덮고 숨은 클릭도 막는다.
+		PresetTransitionCover = SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+			.BorderBackgroundColor(FLinearColor::Black)
+			.Visibility(EVisibility::Visible)
+			.Cursor(EMouseCursor::None);
+		PresetTransitionViewport = Local->ViewportClient;
+		Local->ViewportClient->AddViewportWidgetContent(PresetTransitionCover.ToSharedRef(), 10001);
+	}
+	if (ULocalPlayerUISubSystem* UI = Local ? Local->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr)
+	{
+		UI->SetTransientWidgetsSuppressed(true);
+	}
+	if (UOutlierAudioSubsystem* Audio = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr)
+	{
+		Audio->SetPresetTransitionSuppressed(this, true);
+	}
+	RefreshHudVisibility();
+}
+
+void AFirstPersonPlayerController::EndPresetTransition(const FGuid& RequestId)
+{
+	if (!RequestId.IsValid() || RequestId != PresetTransitionRequestId)
+	{
+		return;
+	}
+	PresetTransitionRequestId.Invalidate();
+	// 요청 소유권이 일치할 때만 가림을 걷는다. 이전 요청의 늦은 취소는 새 전환을 복구하지 않는다.
+	if (PresetTransitionCover.IsValid())
+	{
+		if (UGameViewportClient* Viewport = PresetTransitionViewport.Get())
+		{
+			Viewport->RemoveViewportWidgetContent(PresetTransitionCover.ToSharedRef());
+		}
+	}
+	PresetTransitionCover.Reset();
+	PresetTransitionViewport.Reset();
+	if (UOutlierAudioSubsystem* Audio = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr)
+	{
+		Audio->SetPresetTransitionSuppressed(this, false);
+	}
+	RemoveCameraBlackoutReason(ECameraBlackoutReason::PresetTransition);
+	if (ULocalPlayerUISubSystem* UI = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr)
+	{
+		UI->SetTransientWidgetsSuppressed(bHudHiddenForDeath);
+	}
+	RefreshHudVisibility();
 }
 
 void AFirstPersonPlayerController::ClientPreparePresetUpgradeUI_Implementation(
@@ -147,6 +215,7 @@ void AFirstPersonPlayerController::TryReportPresetUpgradeUIReady()
 	if (!bReady && PendingPresetUpgradeRequestId == RequestId)
 	{
 		ClearPendingPresetUpgradeUI();
+		EndPresetTransition(RequestId);
 	}
 }
 
@@ -161,6 +230,8 @@ void AFirstPersonPlayerController::ServerPresetUpgradeUIReady_Implementation(
 
 void AFirstPersonPlayerController::ClientCancelPresetUpgradeUI_Implementation(FGuid RequestId)
 {
+	// 준비 RPC 이전의 로딩 실패도 정리하고, 이전 요청의 취소는 새 암전에 영향을 주지 않는다.
+	EndPresetTransition(RequestId);
 	if (RequestId == PendingPresetUpgradeRequestId)
 	{
 		ClearPendingPresetUpgradeUI();
@@ -171,9 +242,14 @@ void AFirstPersonPlayerController::ClientOpenPresetUpgradeUI_Implementation(
 	FGuid RequestId, uint32 Generation, const FUILayerPushRequest& Request)
 {
 	if (RequestId != PendingPresetUpgradeRequestId || RequestId == LastOpenedPresetUpgradeRequestId
-		|| Generation != PendingPresetUpgradeGeneration || !IsPresetUpgradeUIReady()
-		|| Request.WidgetClass != PendingPresetUpgradeWidgetClass)
+		|| Generation != PendingPresetUpgradeGeneration)
 	{
+		return;
+	}
+	if (!IsPresetUpgradeUIReady() || Request.WidgetClass != PendingPresetUpgradeWidgetClass)
+	{
+		ClientCancelPresetUpgradeUI_Implementation(RequestId);
+		UE_LOG(LogTemp, Warning, TEXT("[PresetUpgrade] Local context changed before opening PC=%s Gen=%u"), *GetNameSafe(this), Generation);
 		return;
 	}
 	const auto* State = GetPlayerState<AOutlierPlayerState>();
@@ -181,11 +257,21 @@ void AFirstPersonPlayerController::ClientOpenPresetUpgradeUI_Implementation(
 		|| Request.ContextActors[1] != State->GetPartnerCharacter()
 		|| Request.RequestOwner != State->GetShooterCharacter()->GetPlayerState())
 	{
+		ClientCancelPresetUpgradeUI_Implementation(RequestId);
 		return;
 	}
 	// 닫기 스냅샷보다 Open RPC가 먼저 와도 이전 메뉴가 새 강화 UI의 입력을 복구하지 않게 먼저 정리한다.
 	ClearDeveloperConveniencePresentation();
-	LastOpenedPresetUpgradeRequestId = RequestId;
+	// 양쪽 준비 ACK 뒤에도 위젯 생성은 실패할 수 있다. 실제 레이어 등록 결과를 확인한 뒤 화면을 연다.
+	const bool bOpened = PresetUpgradeLayers->PushWidget(Request).IsValid();
+	if (bOpened)
+	{
+		LastOpenedPresetUpgradeRequestId = RequestId;
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PresetUpgrade] Failed to open UI PC=%s Gen=%u"), *GetNameSafe(this), Generation);
+	}
 	ClearPendingPresetUpgradeUI();
-	ClientPushUILayer_Implementation(Request);
+	EndPresetTransition(RequestId);
 }

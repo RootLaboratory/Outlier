@@ -122,7 +122,10 @@ bool UOutlierAudioSubsystem::PlayLocalVoice(FGameplayTag SoundTag, int32 Priorit
 	FGameplayTag RequestTag, ULocalPlayer* Listener)
 {
 	if (IsEndingPresentationActive()) return false;
-	if (bStoppingAllLocalAudio) return false;
+	if (bStoppingAllLocalAudio || IsPresetTransitionSuppressed())
+	{
+		return false;
+	}
 	UWorld* World = GetWorld();
 	if (!SoundTag.IsValid() || !RequestTag.IsValid() || !IsValid(Listener)
 		|| Listener->GetGameInstance() != GetGameInstance() || !World
@@ -1673,6 +1676,39 @@ bool UOutlierAudioSubsystem::StopLoopAudioLocally(int32 AudioInstanceId, float F
 	return false;
 }
 
+bool UOutlierAudioSubsystem::IsPresetTransitionSuppressed() const
+{
+	for (const TWeakObjectPtr<AFirstPersonPlayerController>& Owner : PresetTransitionOwners)
+	{
+		if (Owner.IsValid())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void UOutlierAudioSubsystem::SetPresetTransitionSuppressed(AFirstPersonPlayerController* Owner, bool bSuppressed)
+{
+	if (!Owner)
+	{
+		return;
+	}
+	if (bSuppressed)
+	{
+		PresetTransitionOwners.Add(Owner);
+		// 이전 레벨의 보이스·자막 체인은 복구하지 않는다. BGM과 환경음은 음소거만 하여 새 레벨 상태를 유지한다.
+		StopLocalVoices(Owner->GetLocalPlayer());
+	}
+	else
+	{
+		PresetTransitionOwners.Remove(Owner);
+	}
+	RefreshActiveAudioComponentVolumes(EOutlierAudioVolumeType::Master);
+	UpdateMusicVolume();
+	UpdateZoneMusicVolumes();
+}
+
 void UOutlierAudioSubsystem::SetVolumeMultiplier(
 	EOutlierAudioVolumeType VolumeType,
 	float NewMultiplier)
@@ -2496,6 +2532,10 @@ void UOutlierAudioSubsystem::RefreshActiveAudioComponentVolumes(
 float UOutlierAudioSubsystem::GetCombinedVolumeMultiplier(
 	EOutlierAudioVolumeType VolumeType) const
 {
+	if (IsPresetTransitionSuppressed())
+	{
+		return 0.0f;
+	}
 	const float MasterMultiplier =
 		GetVolumeMultiplier(EOutlierAudioVolumeType::Master);
 	if (VolumeType == EOutlierAudioVolumeType::Master)

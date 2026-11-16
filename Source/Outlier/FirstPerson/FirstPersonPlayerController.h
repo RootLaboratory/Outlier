@@ -35,6 +35,8 @@ class UGameOverWidget;
 class UOutlierEndingWidget;
 class UGameOverPendingWidget;
 class UWidget;
+class SWidget;
+class UGameViewportClient;
 class AActor;
 class AFirstPersonCharacter;
 class UOutlierArenaSubsystem;
@@ -57,11 +59,12 @@ struct FHudWidgetCollapseState
 };
 
 // Controller 단 카메라 암전 사유. 하나라도 남아 있으면 월드 렌더링을 검게 덮는다.
-// Camera Fade는 씬에만 적용되므로 UMG 위젯은 그대로 보인다.
+// 프리셋 전환은 별도의 최상단 Slate 가림과 오디오 차단도 함께 소유한다.
 enum class ECameraBlackoutReason : uint8
 {
 	LevelLoad = 1 << 0, // 레벨 진입 후 인트로 재생(또는 인트로 없는 첫 Possess)까지
 	GameOver = 1 << 1,  // GameOver 위젯 표시부터 리스폰 Possess까지
+	PresetTransition = 1 << 2, // 레벨 선택 승인부터 새 강화 UI 표시까지
 };
 
 namespace FirstPersonInputModeTags
@@ -177,6 +180,8 @@ public:
 	void ClientOpenPresetUpgradeUI(FGuid RequestId, uint32 GameplayGeneration, const FUILayerPushRequest& Request);
 	UFUNCTION(Client, Reliable)
 	void ClientCancelPresetUpgradeUI(FGuid RequestId);
+	UFUNCTION(Client, Reliable)
+	void ClientBeginPresetTransition(FGuid RequestId, uint32 GameplayGeneration);
 	UFUNCTION(BlueprintCallable, Category = "Developer Convenience")
 	FGuid RequestDeveloperConvenienceReturnToTitle(const FDeveloperConvenienceSnapshot& ExpectedState);
 	UPROPERTY(BlueprintAssignable, Category = "Developer Convenience")
@@ -750,6 +755,12 @@ protected:
 	void TryReportPresetUpgradeUIReady();
 	bool IsPresetUpgradeUIReady() const;
 	void ClearPendingPresetUpgradeUI();
+	void EndPresetTransition(const FGuid& RequestId);
+	// 리로드에서 UI 레이어와 후처리를 초기화해도 유지되는 최상단 화면 가림이다.
+	TSharedPtr<SWidget> PresetTransitionCover;
+	TWeakObjectPtr<UGameViewportClient> PresetTransitionViewport;
+	FGuid PresetTransitionRequestId;
+	uint32 PresetTransitionGeneration = 0;
 	FGuid PendingPresetUpgradeRequestId;
 	FGuid LastOpenedPresetUpgradeRequestId;
 	uint32 PendingPresetUpgradeGeneration = 0;

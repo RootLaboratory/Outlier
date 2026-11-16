@@ -1074,6 +1074,8 @@ void AFirstPersonPlayerController::ClientPrepareForTitleReturn_Implementation(bo
 
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
+	EndPresetTransition(PresetTransitionRequestId);
+	PresetTransitionGeneration = 0;
 	ClearDeveloperConveniencePresentation();
 	ClearPendingPresetUpgradeUI();
 	bClientArenaExitPrepared = true;
@@ -1637,7 +1639,8 @@ void AFirstPersonPlayerController::BeginPlay()
 		: nullptr)
 	{
 		// LocalPlayer 서브시스템은 Controller / 월드 교체 후에도 살아남는다.
-		UISubsystem->SetTransientWidgetsSuppressed(bHudHiddenForDeath);
+		UISubsystem->SetTransientWidgetsSuppressed(bHudHiddenForDeath
+			|| HasCameraBlackoutReason(ECameraBlackoutReason::PresetTransition));
 	}
 
 	InitializeOutlierPlayerState();
@@ -1735,8 +1738,9 @@ void AFirstPersonPlayerController::ApplyCameraBlackout()
 	}
 	if (CameraBlackoutReasons != 0)
 	{
-		// 씬만 덮는 Manual Fade다. 오디오와 UMG에는 영향을 주지 않는다.
-		PlayerCameraManager->SetManualCameraFade(1.0f, FLinearColor::Black, false);
+		// 프리셋 전환만 전체 오디오도 차단한다. UMG는 별도의 Slate 가림이 맡는다.
+		PlayerCameraManager->SetManualCameraFade(1.0f, FLinearColor::Black,
+			HasCameraBlackoutReason(ECameraBlackoutReason::PresetTransition));
 		bCameraBlackoutApplied = true;
 	}
 	else if (bCameraBlackoutApplied)
@@ -2090,6 +2094,7 @@ void AFirstPersonPlayerController::Destroyed()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	EndPresetTransition(PresetTransitionRequestId);
 	ClearPendingPresetUpgradeUI();
 	ClearDeveloperHitPresentation();
 	ClearDeveloperConveniencePresentation();
@@ -3590,7 +3595,7 @@ void AFirstPersonPlayerController::RestoreMainWidgetAfterDeath()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 		: nullptr)
 	{
-		UISubsystem->SetTransientWidgetsSuppressed(false);
+		UISubsystem->SetTransientWidgetsSuppressed(HasCameraBlackoutReason(ECameraBlackoutReason::PresetTransition));
 	}
 	RefreshHudVisibility();
 }
@@ -3613,7 +3618,7 @@ void AFirstPersonPlayerController::RefreshHudVisibility()
 
 bool AFirstPersonPlayerController::ShouldShowMainWidget() const
 {
-	return !bHudHiddenForDeath;
+	return !bHudHiddenForDeath && !HasCameraBlackoutReason(ECameraBlackoutReason::PresetTransition);
 }
 
 void AFirstPersonPlayerController::RefreshPostProcessState()
