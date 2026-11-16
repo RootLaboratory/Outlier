@@ -606,6 +606,11 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 
 	RefreshFirstPersonShadowPolicy();
 	RefreshShooterSuitCooldownUI();
+	if (CombatComponent)
+	{
+		// Loadout이 Possess보다 먼저 복원된 경우에도 현재 빈 탄창을 다시 평가한다.
+		CombatComponent->RequestAutoReloadRecovery();
+	}
 }
 
 void AShooterCharacter::UnPossessed()
@@ -3344,6 +3349,12 @@ void AShooterCharacter::RefreshActionIntentsAfterEquip()
 		CombatComponent->RestoreAimIfRequested();
 	}
 	RefreshCombatState();
+	if (CombatComponent)
+	{
+		// Equip/행동 잠금이 끝난 뒤 현재 무기만 평가한다. 실제 시작은 이전 행동의
+		// 정리 콜백을 벗어난 다음 프레임에 서버에서 수행한다.
+		CombatComponent->RequestAutoReloadRecovery();
+	}
 }
 
 void AShooterCharacter::FinishEquipAction(uint32 Generation)

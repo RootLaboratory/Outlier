@@ -533,6 +533,12 @@ void UShooterInventoryComponent::RestoreLoadout(
 	}
 
 	const int32 CurrentSlotIndex = static_cast<int32>(Snapshot.CurrentSlot);
+	if (ShooterCharacter->CombatComponent)
+	{
+		// 같은 Pawn에 복원할 수도 있다. 이전 무기가 사라지기 전에 캐릭터의 Reload와
+		// 델리게이트를 함께 취소하여 새 Loadout에 이전 Reload bool이 남지 않게 한다.
+		ShooterCharacter->CombatComponent->CancelReloadInternal();
+	}
 	// Snapshot은 값으로 받으므로 기존 Actor를 정리해도 복원 기준은 유지된다.
 	// 같은 Pawn에 복원이 반복되어도 이전 망치가 슬롯 밖에 남지 않게 한다.
 	CleanupOwnedWeapons();
@@ -560,6 +566,12 @@ void UShooterInventoryComponent::RestoreLoadout(
 			Snapshot.SlotSnapshots[CurrentSlotIndex],
 			Snapshot.CurrentSlot,
 			bRestoreAmmo);
+	}
+
+	if (ShooterCharacter->CombatComponent)
+	{
+		// 슬롯별 임시 장착이 모두 끝난 뒤 저장 탄약이 적용된 현재 무기만 복구한다.
+		ShooterCharacter->CombatComponent->RequestAutoReloadRecovery();
 	}
 }
 

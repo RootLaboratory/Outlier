@@ -57,6 +57,7 @@ void UShooterCombatComponent::BeginPlay()
 
 void UShooterCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ResetAutoReloadRecovery();
 	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(OverchargeFireRecoveryTimerHandle);
 	ClearReloadRequest();
 	ClearPendingSprintExitFire();
@@ -213,6 +214,8 @@ void UShooterCombatComponent::TryReload()
 
 	SuspendAimInternal();
 
+	// 명시적인 수동 재장전은 이전 자동 복구 실패와 별개인 새 시도다.
+	ResetAutoReloadRecovery();
 	RangedWeapon->BeginReload();
 	if (!RangedWeapon->IsReloading())
 	{
@@ -264,26 +267,35 @@ void UShooterCombatComponent::HandleReloadResult(AWeaponBase* Weapon, uint32 Req
 	const bool bServerAutoRequest = (RequestId & ServerAutoReloadBit) != 0;
 	const uint32 AutoSequence = RequestId & ~ServerAutoReloadBit;
 	if (!Shooter->HasAuthority() && bServerAutoRequest && bAccepted && !bFinished
-		&& Weapon == Shooter->CurrentWeapon && EquipGeneration == Shooter->GetEquipActionGeneration()
-		&& !Shooter->IsWeaponEquipInputBlocked())
+		&& Weapon == Shooter->CurrentWeapon && EquipGeneration == Shooter->GetEquipActionGeneration())
 	{
 		// 서버 자동 요청은 상위 비트로 구분한다. 같은 무기/장착 세대의 이전 시작도 재생하지 않는다.
-		if (AutoSequence == 0 || static_cast<int32>(AutoSequence - LastReceivedAutoReloadSequence) <= 0) return;
+		if (AutoSequence == 0 || static_cast<int32>(AutoSequence - LastReceivedAutoReloadSequence) <= 0)
+		{
+			return;
+		}
 		LastReceivedAutoReloadSequence = AutoSequence;
-		if (ActiveReloadRequest != 0 && !(ActiveReloadRequest & ServerAutoReloadBit)) return;
-		if (ActiveReloadRequest != 0) CancelReloadInternal();
+		if (ActiveReloadRequest != 0 && !(ActiveReloadRequest & ServerAutoReloadBit))
+		{
+			return;
+		}
+		if (ActiveReloadRequest != 0)
+		{
+			CancelReloadInternal();
+		}
 		ActiveReloadRequest = RequestId;
 		ActiveReloadWeapon = Weapon;
 		ActiveReloadEquipGeneration = EquipGeneration;
 		bIsReloading = true;
-		Shooter->BeginActionLock(EShooterActionLock::Reload);
-		SuspendAimInternal();
+		// 서버 Equip 완료와 소유자 Raise 완료의 도착 순서는 다를 수 있다.
+		// 승인을 버리지 않고 보관하며, 연출은 소유자의 장착 정리가 끝난 뒤 시작한다.
+		bDeferredAutoReloadPresentation = true;
 		BindReloadMontageEndedDelegates();
 		const UAnimMontage* Montage = ActiveFirstPersonReloadMontage.Get();
 		const float Timeout = FMath::Clamp((Montage ? Montage->GetPlayLength() : 0.0f) + 3.0f, 3.0f, 30.0f);
 		Shooter->GetWorldTimerManager().SetTimer(ReloadPredictionTimerHandle, this,
 			&UShooterCombatComponent::ExpireReloadPrediction, Timeout, false);
-		Shooter->RefreshMovementState();
+		ResumeAutoReloadPresentation();
 		return;
 	}
 	if (RequestId != ActiveReloadRequest
@@ -296,6 +308,7 @@ void UShooterCombatComponent::HandleReloadResult(AWeaponBase* Weapon, uint32 Req
 
 void UShooterCombatComponent::ClearReloadRequest()
 {
+	bDeferredAutoReloadPresentation = false;
 	if (UWorld* World = GetWorld()) World->GetTimerManager().ClearTimer(ReloadPredictionTimerHandle);
 	ActiveReloadRequest = 0;
 	ActiveReloadWeapon.Reset();
@@ -331,6 +344,8 @@ void UShooterCombatComponent::PrepareForWeaponEquip()
 	// 의도를 먼저 지워야 취소 콜백이 ADS나 자동 사격을 복원하지 않는다.
 	CancelReloadInternal();
 	ClearReloadRequest();
+	// 취소 콜백이 예약한 이전 무기의 복구도 장착 경계를 넘기지 않는다.
+	ResetAutoReloadRecovery();
 	CancelMeleeAttack();
 	SuspendAimInternal();
 	if (AShooterCharacter* Shooter = GetShooterCharacter(); Shooter && Shooter->CurrentWeapon)
@@ -706,8 +721,30 @@ void UShooterCombatComponent::TryStartAttack()
 		bRequireFireRelease = true;
 		return;
 	}
-	if (bRequireFireRelease) return;
-	if (ShooterCharacter->GetWeaponType() != EWeaponType::Melee) UpdateFireInput(true);
+	if (bRequireFireRelease)
+	{
+		return;
+	}
+	if (ShooterCharacter->GetWeaponType() != EWeaponType::Melee)
+	{
+		UpdateFireInput(true);
+	}
+	if (const ARangedWeaponBase* Weapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon);
+		Weapon && !Weapon->HasUsableAmmo())
+	{
+		// 빈 탄창은 Sprint 복귀/발사 자격 검사에서 먼저 거절된다. 그 경로보다 앞에서
+		// 기존 무기·장착 세대 RPC로 서버에 전달하고, 발사 없이 재장전만 복구한다.
+		if (ShooterCharacter->HasAuthority())
+		{
+			RequestAutoReloadRecovery();
+		}
+		else
+		{
+			ShooterCharacter->ServerStartAttack(ShooterCharacter->CurrentWeapon,
+				ShooterCharacter->GetEquipActionGeneration());
+		}
+		return;
+	}
 	if (bPendingSprintExitFire) return;
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
@@ -903,6 +940,7 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority() || !CanReloadInCurrentState())
 	{
+		RequestAutoReloadRecovery();
 		return;
 	}
 
@@ -920,6 +958,7 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 
 	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Reload))
 	{
+		RequestAutoReloadRecovery();
 		return;
 	}
 
@@ -934,6 +973,137 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 	}
 
 	BeginReloadInternal();
+}
+
+void UShooterCombatComponent::RequestAutoReloadRecovery()
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter || Shooter->IsDead() || Shooter->IsActorBeingDestroyed())
+	{
+		return;
+	}
+	if (!Shooter->HasAuthority())
+	{
+		ResumeAutoReloadPresentation();
+		return;
+	}
+
+	ARangedWeaponBase* Weapon = Cast<ARangedWeaponBase>(Shooter->CurrentWeapon);
+	if (!Weapon || Weapon->GetCurrentAmmo() != 0 || !Weapon->CanReload() || bIsReloading)
+	{
+		return;
+	}
+
+	const uint32 Generation = Shooter->GetEquipActionGeneration();
+	if (AutoReloadRecoveryWeapon.Get() != Weapon || AutoReloadRecoveryEquipGeneration != Generation)
+	{
+		ResetAutoReloadRecovery();
+		AutoReloadRecoveryWeapon = Weapon;
+		AutoReloadRecoveryEquipGeneration = Generation;
+	}
+	if (bAutoReloadRecoveryBlocked)
+	{
+		return;
+	}
+
+	bAutoReloadRecoveryPending = true;
+	UWorld* World = GetWorld();
+	if (World && !World->GetTimerManager().TimerExists(AutoReloadRecoveryTimerHandle))
+	{
+		// 취소/장착 함수는 잠금을 푼 뒤에도 이전 몽타주와 참조를 정리한다.
+		// 그 호출이 끝난 다음 프레임에 시작하여 새 Reload가 이전 정리에 지워지지 않게 한다.
+		AutoReloadRecoveryTimerHandle = World->GetTimerManager().SetTimerForNextTick(
+			this, &UShooterCombatComponent::TryRecoverAutoReload);
+	}
+}
+
+void UShooterCombatComponent::TryRecoverAutoReload()
+{
+	AutoReloadRecoveryTimerHandle.Invalidate();
+	if (!bAutoReloadRecoveryPending || bAutoReloadRecoveryBlocked)
+	{
+		return;
+	}
+
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	ARangedWeaponBase* Weapon = Cast<ARangedWeaponBase>(AutoReloadRecoveryWeapon.Get());
+	if (!Shooter || !Shooter->HasAuthority() || Shooter->IsDead() || Shooter->IsActorBeingDestroyed()
+		|| !Weapon || Weapon != Shooter->CurrentWeapon
+		|| AutoReloadRecoveryEquipGeneration != Shooter->GetEquipActionGeneration())
+	{
+		ResetAutoReloadRecovery();
+		return;
+	}
+	if (Weapon->GetCurrentAmmo() != 0 || !Weapon->CanReload() || bIsReloading)
+	{
+		bAutoReloadRecoveryPending = false;
+		return;
+	}
+
+	Shooter->RefreshWeaponMode();
+	if (!Shooter->GetController() || !CanReloadInCurrentState()
+		|| !Shooter->CanStartAction(EShooterActionLock::Reload))
+	{
+		// 일시 차단은 반복 타이머로 감시하지 않는다. Possess/장착/잠금/슈트 전환의
+		// 완료 경계가 같은 현재 상태를 다시 평가하므로 대기 중 공격은 재생하지 않는다.
+		return;
+	}
+
+	bAutoReloadRecoveryPending = false;
+	HandleAutoReloadRequested();
+}
+
+void UShooterCombatComponent::ResetAutoReloadRecovery()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(AutoReloadRecoveryTimerHandle);
+	}
+	AutoReloadRecoveryWeapon.Reset();
+	AutoReloadRecoveryEquipGeneration = 0;
+	bAutoReloadRecoveryPending = false;
+	AutoReloadInterruptionCount = 0;
+	bAutoReloadRecoveryBlocked = false;
+}
+
+void UShooterCombatComponent::BlockAutoReloadRecovery()
+{
+	ResetAutoReloadRecovery();
+	if (const AShooterCharacter* Shooter = GetShooterCharacter())
+	{
+		AutoReloadRecoveryWeapon = Shooter->CurrentWeapon;
+		AutoReloadRecoveryEquipGeneration = Shooter->GetEquipActionGeneration();
+		bAutoReloadRecoveryBlocked = true;
+	}
+}
+
+void UShooterCombatComponent::ResumeAutoReloadPresentation()
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter || Shooter->HasAuthority() || !bDeferredAutoReloadPresentation)
+	{
+		return;
+	}
+	if (ActiveReloadWeapon.Get() != Shooter->CurrentWeapon
+		|| ActiveReloadEquipGeneration != Shooter->GetEquipActionGeneration())
+	{
+		CancelReloadInternal();
+		return;
+	}
+	if (Shooter->IsWeaponEquipInputBlocked() || Shooter->IsSuitTransitionBlocked())
+	{
+		return;
+	}
+
+	// 대기 중 완료/취소 응답은 ClearReloadRequest가 이미 제거한다. 아직 유효한
+	// 서버 승인만 표시하며, 이 함수에서는 서버 탄약이나 발사 입력을 변경하지 않는다.
+	bDeferredAutoReloadPresentation = false;
+	bIsReloading = true;
+	Shooter->BeginActionLock(EShooterActionLock::Reload);
+	SuspendAimInternal();
+	BindReloadMontageEndedDelegates();
+	Shooter->RefreshMovementState();
+	Shooter->PlayFirstPersonActionMontage(EShooterMontageAction::Reload, Shooter->GetWeaponType());
 }
 
 void UShooterCombatComponent::RefreshCombatState()
@@ -1182,6 +1352,9 @@ void UShooterCombatComponent::BeginReloadInternal()
 			// 호환 몽타주가 없거나 재생에 실패하면 Notify를 기다리며 잠긴 상태로 남기지 않는다.
 			UE_LOG(LogTemp, Warning, TEXT("[PresentationMontage] Reload cancelled: no playable authoritative montage Owner=%s"),
 				*ShooterCharacter->GetName());
+			// 설정 오류는 같은 장착 세대에서 자동 반복하지 않는다. 취소의 잠금 해제
+			// 콜백보다 먼저 차단해야 다음 프레임에 실패한 Reload가 다시 시작되지 않는다.
+			BlockAutoReloadRecovery();
 			CancelReloadInternal();
 			return;
 		}
@@ -1259,6 +1432,7 @@ void UShooterCombatComponent::FinishReloadInternal()
 		{
 			UE_LOG(LogTemp, Warning, TEXT("%s %s Reload end applying missed commit"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
 			RangedWeapon->FinishReload();
+			ResetAutoReloadRecovery();
 		}
 	}
 
@@ -1394,6 +1568,27 @@ void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bo
 
 	if (bInterrupted)
 	{
+		const ARangedWeaponBase* Weapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon);
+		if (Weapon && Weapon->GetCurrentAmmo() == 0)
+		{
+			if (AutoReloadRecoveryWeapon.Get() != Weapon
+				|| AutoReloadRecoveryEquipGeneration != ShooterCharacter->GetEquipActionGeneration())
+			{
+				ResetAutoReloadRecovery();
+				AutoReloadRecoveryWeapon = ShooterCharacter->CurrentWeapon;
+				AutoReloadRecoveryEquipGeneration = ShooterCharacter->GetEquipActionGeneration();
+			}
+			// 최초 시작 경로와 무관하게 충전 전 중단을 한 번 복구한다. 같은 세대에서
+			// 복구 몽타주까지 중단되면 설정/슬롯 충돌의 자동 재시작 고리를 끊는다.
+			++AutoReloadInterruptionCount;
+			if (AutoReloadInterruptionCount > 1)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[AutoReloadRecovery] Repeated interruption Owner=%s Weapon=%s Generation=%u"),
+					*ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon),
+					ShooterCharacter->GetEquipActionGeneration());
+				BlockAutoReloadRecovery();
+			}
+		}
 		CancelReloadInternal();
 		return;
 	}
@@ -1422,6 +1617,7 @@ void UShooterCombatComponent::HandleReloadCommitNotify()
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->FinishReload();
+		ResetAutoReloadRecovery();
 	}
 }
 

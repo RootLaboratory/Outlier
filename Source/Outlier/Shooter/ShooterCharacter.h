@@ -261,6 +261,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FShooterActionIntentTest;
 	friend class FShooterEquipLifecycleTest;
 	friend class FShooterEquipReloadTest;
+	friend class FShooterAutoReloadRecoveryTest;
 	friend class FShooterWeaponActionNotifyTest;
 	friend class FShooterSprintInputModeTest;
 	friend class FShooterCoyoteTimeTest;
