@@ -24,6 +24,7 @@ class AOutlierCheckpoint;
 class AOutlierPlayerState;
 class AOutlierArenaPausePlayerState;
 class UDataTable;
+class UUpgradeMachineWidget;
 enum class EOutlierPlayerRole : uint8;
 enum class EOutlierGameplayReloadPhase : uint8;
 enum class EOutlierGameplayReloadFailure : uint8;
@@ -116,6 +117,10 @@ public:
 
 	// StageId에 대응하는 APresetPlayerStart 위치로 페어를 리스폰시킨다 (레벨 리셋 + 업그레이드 노드 플러시 포함).
 	bool RequestPresetRespawn(AController* Requester, FName StageId);
+	// 장치 사용 자격/회복과 분리된 공통 UI 열기다. 자동 표시는 현재 세대 준비 확인 후에만 호출한다.
+	bool OpenPairUpgradeUI(AOutlierPlayerState* ShooterState, AOutlierPlayerState* PartnerState,
+		TSubclassOf<UUpgradeMachineWidget> WidgetClass, AActor* RequestOwner, const FGuid& PresetRequestId = FGuid(),
+		TFunction<void()> BeforeOpen = {});
 	bool RequestGameOverPendingChoice(
 		AFirstPersonPlayerController* Requester,
 		const FGameOverPendingRequest& Request);
