@@ -20,6 +20,7 @@
 #include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ConfigCacheIni.h"
 #include "HAL/FileManager.h"
 #include "Containers/Ticker.h"
 #include "Engine/GameViewportClient.h"
@@ -174,6 +175,7 @@ void UOutlierGameInstance::Shutdown()
 
 void UOutlierGameInstance::NotifyArenaHandoffStarted(const FString& ArenaUrl)
 {
+	ResetTitleReturn();
 	ArenaRecoveryFailureReason.Reset();
 	RemoveArenaRecoveryFailureNotice();
 	bArenaRecoveryExitRequested = false;
@@ -215,12 +217,54 @@ void UOutlierGameInstance::NotifyListenReconnectToken(const FGuid& Token)
 
 void UOutlierGameInstance::PrepareForExplicitLeave()
 {
+	ResetTitleReturn();
 	// 사용자가 직접 나가는 경우에는 뒤이어 발생하는 연결 종료를 장애로 오인해
 	// 이전 Worker URL로 재접속하면 안 된다. Travel 전에 Handoff 수명을 여기서 끝낸다.
 	ResetArenaHandoffState();
 	ResetListenReconnectState();
 	bLobbyReturnInFlight = false;
 	LobbyReturnDeadlineSeconds = 0.0;
+}
+
+void UOutlierGameInstance::ResetTitleReturn()
+{
+	bTitleReturnPending = false;
+	bTitleReturnTravelRequested = false;
+	TitleReturnDeadlineSeconds = 0.0;
+}
+
+void UOutlierGameInstance::PrepareForTitleReturn(bool bWaitForServerTravel)
+{
+	if (bTitleReturnPending)
+	{
+		return;
+	}
+	PrepareForExplicitLeave();
+	bQuitAfterExplicitLeave = false;
+	bTitleReturnPending = true;
+	// -Connect 실행 인자가 있어도 타이틀 도착 후 이전 서버로 자동 접속하지 않는다.
+	bTriedConnect = true;
+	if (bWaitForServerTravel)
+	{
+		TitleReturnDeadlineSeconds = FPlatformTime::Seconds() + 30.0;
+		EnsureArenaReconnectTicker();
+	}
+	else
+	{
+		FinishTitleReturn();
+	}
+}
+
+void UOutlierGameInstance::FinishTitleReturn()
+{
+	if (!bTitleReturnPending || bTitleReturnTravelRequested || !GetWorld())
+	{
+		return;
+	}
+	// 로비 도착/연결 실패/시간 초과가 경합해도 로컬 타이틀 Travel은 한 번만 요청한다.
+	bTitleReturnTravelRequested = true;
+	CompleteArenaReconnectAttempt();
+	ReturnToMainMenu();
 }
 
 void UOutlierGameInstance::HandleArenaRecoveryFailure(const FString& Reason)
@@ -309,6 +353,24 @@ void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		return;
 	}
 
+	if (bTitleReturnPending)
+	{
+		FString DefaultMap;
+		GConfig->GetString(TEXT("/Script/EngineSettings.GameMapsSettings"), TEXT("GameDefaultMap"), DefaultMap, GEngineIni);
+		const FString Destination = FSoftObjectPath(DefaultMap).GetLongPackageName();
+		if (!Destination.IsEmpty() && UWorld::RemovePIEPrefix(LoadedWorld->GetOutermost()->GetName()) == Destination)
+		{
+			ResetTitleReturn();
+			CompleteArenaReconnectAttempt();
+		}
+		else
+		{
+			// Worker는 기존 로비 경유를 마친 뒤 이곳에서 최종 타이틀로 이동한다.
+			FinishTitleReturn();
+		}
+		return;
+	}
+
 	if (bQuitAfterExplicitLeave)
 	{
 		// 리슨 호스트도 상대에게 복귀 RPC를 보내고 기존 NetDriver를 정리한 뒤 종료한다.
@@ -386,7 +448,15 @@ void UOutlierGameInstance::HandleNetworkFailure(
 	const FString& ErrorString)
 {
 	(void)ErrorString;
-	if (World && World->GetGameInstance() != this) return;
+	if (World && World->GetGameInstance() != this)
+	{
+		return;
+	}
+	if (bTitleReturnPending)
+	{
+		FinishTitleReturn();
+		return;
+	}
 	if ((bArenaReconnectTravelInFlight || bLobbyReturnInFlight)
 		&& NetDriver && NetDriver == ArenaReconnectPreviousNetDriver.Get()) return;
 	if (bLobbyReturnInFlight)
@@ -445,7 +515,15 @@ void UOutlierGameInstance::HandleTravelFailure(
 	UWorld* World, ETravelFailure::Type FailureType, const FString& ErrorString)
 {
 	(void)ErrorString;
-	if (World && World->GetGameInstance() != this) return;
+	if (World && World->GetGameInstance() != this)
+	{
+		return;
+	}
+	if (bTitleReturnPending)
+	{
+		FinishTitleReturn();
+		return;
+	}
 	if (bLobbyReturnInFlight)
 	{
 		bLobbyReturnInFlight = false;
@@ -510,6 +588,16 @@ bool UOutlierGameInstance::HandleArenaReconnectTick(float DeltaTime)
 {
 	(void)DeltaTime;
 	const double Now = FPlatformTime::Seconds();
+	if (bTitleReturnPending)
+	{
+		if (Now < TitleReturnDeadlineSeconds)
+		{
+			return true;
+		}
+		ArenaReconnectTickerHandle.Reset();
+		FinishTitleReturn();
+		return false;
+	}
 	if (bLobbyReturnInFlight)
 	{
 		if (Now < LobbyReturnDeadlineSeconds) return true;

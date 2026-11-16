@@ -26,6 +26,7 @@
 #include "Save/OutlierCheckpoint.h"
 #include "Tutorial/Actors/Tuto_EventTriggerVolume.h"
 #include "Tutorial/Actors/Tuto_PassageTransitionVolume.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -543,12 +544,14 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 
 			Combat->TryStartAttack();
 			InputWeapon->PerformAttack();
-			const int32 SwitchCancelledSequence = InputWeapon->GetAttackSequence();
+			const int32 PreservedSequence = InputWeapon->GetAttackSequence();
 			Inventory->SelectWeaponByIndex(static_cast<int32>(EWeaponSlot::Primary));
-			TestFalse(TEXT("Weapon slot input cancels Recovery even with an empty slot"), InputWeapon->IsAttacking());
-			InputWeapon->FinishAttack(SwitchCancelledSequence);
-			TestEqual(TEXT("Cancelled recovery cannot restart held input"), InputWeapon->GetAttackSequence(), SwitchCancelledSequence);
-			TestFalse(TEXT("Cancellation clears both repeat-cycle timers"), InputWeapon->HasPendingAttackTimers());
+			// 거절된 교체 요청은 현재 행동을 유지한다. 실제 교체 취소 경계는 아래에서 따로 검증한다.
+			TestEqual(TEXT("Empty slot preserves Recovery"), InputWeapon->GetAttackPhase(), EMeleeAttackPhase::Recovery);
+			InputWeapon->FinishAttack(PreservedSequence);
+			TestEqual(TEXT("Empty slot preserves held repeat input"), InputWeapon->GetAttackSequence(), PreservedSequence + 1);
+			Combat->CancelMeleeAttack();
+			TestFalse(TEXT("Explicit cancellation clears both repeat-cycle timers"), InputWeapon->HasPendingAttackTimers());
 
 			Shooter->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
 			Combat->TryStartAttack();
@@ -567,6 +570,42 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 			Combat->TryStartAttack();
 			Shooter->HandleDeath();
 			TestFalse(TEXT("Death cancels melee"), InputWeapon->IsAttacking());
+
+			// 실제 교체의 잠금/취소가 앞 입력 사례를 바꾸지 않도록 별도 소유자로 검증한다.
+			AShooterCharacter* SwitchShooter = World->SpawnActor<AShooterCharacter>(ShooterClass, FTransform::Identity, SpawnParameters);
+			AMeleeWeaponTestActor* SwitchWeapon = World->SpawnActor<AMeleeWeaponTestActor>();
+			AMeleeWeaponTestActor* SwitchTarget = World->SpawnActor<AMeleeWeaponTestActor>();
+			FArrayProperty* SlotsProperty = FindFProperty<FArrayProperty>(UShooterInventoryComponent::StaticClass(), TEXT("WeaponSlots"));
+			if (!TestNotNull(TEXT("Valid switch owner spawns"), SwitchShooter)
+				|| !TestNotNull(TEXT("Valid switch current weapon spawns"), SwitchWeapon)
+				|| !TestNotNull(TEXT("Valid switch target spawns"), SwitchTarget)
+				|| !TestNotNull(TEXT("Inventory slots property exists"), SlotsProperty))
+			{
+				return false;
+			}
+			SwitchShooter->AFirstPersonCharacter::EquipWeapon(SwitchWeapon);
+			SwitchShooter->RefreshCombatState();
+			UShooterInventoryComponent* SwitchInventory = SwitchShooter->FindComponentByClass<UShooterInventoryComponent>();
+			if (!TestNotNull(TEXT("Valid switch inventory exists"), SwitchInventory))
+			{
+				return false;
+			}
+			if (!SwitchInventory->HasBegunPlay())
+			{
+				SwitchInventory->BeginPlay();
+			}
+			SwitchWeapon->StartAttack();
+			SwitchWeapon->PerformAttack();
+			TestEqual(TEXT("Accepted switch fixture starts in Recovery"), SwitchWeapon->GetAttackPhase(), EMeleeAttackPhase::Recovery);
+			const int32 SwitchCancelledSequence = SwitchWeapon->GetAttackSequence();
+			// 소유 슬롯만 준비하고 실제 SelectWeaponSlot 경로로 교체를 시작한다.
+			TArray<TObjectPtr<AWeaponBase>>* Slots = SlotsProperty->ContainerPtrToValuePtr<TArray<TObjectPtr<AWeaponBase>>>(SwitchInventory);
+			(*Slots)[static_cast<int32>(EWeaponSlot::Melee)] = SwitchTarget;
+			SwitchInventory->SelectWeaponSlot(EWeaponSlot::Melee);
+			TestEqual(TEXT("Accepted weapon switch cancels Recovery"), SwitchWeapon->GetAttackPhase(), EMeleeAttackPhase::Idle);
+			SwitchWeapon->FinishAttack(SwitchCancelledSequence);
+			TestEqual(TEXT("Cancelled recovery cannot restart held input"), SwitchWeapon->GetAttackSequence(), SwitchCancelledSequence);
+			TestFalse(TEXT("Accepted switch clears both repeat-cycle timers"), SwitchWeapon->HasPendingAttackTimers());
 		}
 	}
 

@@ -146,7 +146,7 @@ struct FF4YieldWorld
 		return Target->GetObservedAimPoints(Observer, Observation);
 	}
 
-	void PlaceAllyOnMuzzleLine()
+	bool PlaceAllyOnMuzzleLine(bool bRefreshBlockerObservation = false)
 	{
 		Blocker->SetActorLocation(FMath::Lerp(Enemy->GetCombatShotOrigin(), Enemy->GetCombatAimPoint(Target), 0.5f));
 		Blocker->SetActorEnableCollision(true);
@@ -155,7 +155,17 @@ struct FF4YieldWorld
 		Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 		Capsule->SetCollisionResponseToAllChannels(ECR_Ignore);
 		Capsule->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
+		// 최초 관측 프레임에서 빈 사선을 이미 검사했다. 동료를 옮긴 뒤에는 실제
+		// 재검사 주기를 진행하여 제한된 주기 안에서 새 차폐가 감지되는지 검증한다.
+		Advance(FMath::Max(0.01f, Enemy->GetRuntimeStat().CombatYieldCheckInterval) + 0.01f);
+		// TP 관측 스냅샷은 시간 제한이 있으므로 주기를 진행한 뒤 실제 시야도 갱신한다.
+		// 일반 양보는 동료의 회전을 보존하고, 사격 우선권 검사는 동료 관측까지 갱신한다.
+		if (!Observe() || (bRefreshBlockerObservation && !Observe(Blocker)))
+		{
+			return false;
+		}
 		Enemy->UpdateCombatTacticalSightBlock();
+		return true;
 	}
 
 	void AddEnvironmentBeforeAlly()
@@ -231,7 +241,10 @@ bool FEnemyF4YieldIntegrationTest::RunTest(const FString& Parameters)
 		{
 			return false;
 		}
-		Fixture.PlaceAllyOnMuzzleLine();
+		if (!TestTrue(TEXT("Both guns retain current observations for priority arbitration"), Fixture.PlaceAllyOnMuzzleLine(true)))
+		{
+			return false;
+		}
 		if (!TestTrue(TEXT("Blocking Gun is normally attack-ready on its own open line"), Blocker->IsReadyForCombatYieldPriority())
 			|| !TestFalse(TEXT("Requester cannot normally attack through the allied capsule"), Enemy->IsReadyForCombatYieldPriority()))
 		{
@@ -302,13 +315,18 @@ bool FEnemyF4YieldIntegrationTest::RunTest(const FString& Parameters)
 		Blocker->ResetCombatTacticalEpisode();
 		TestEqual(TEXT("Blocker starts without a movement episode"), Blocker->GetCombatTacticalEpisodeSerial(), uint64(0));
 	}
+	// 양쪽 모두 사격 준비 중이면 실제 선택 요청의 순번으로 다음 차례를 정한다.
+	// Spawn 순서와 UObject ID 순서는 같지 않으므로 요청자의 선행 선택을 명시한다.
+	if (!TestTrue(TEXT("Requester owns the earlier tactical selection ticket"), Enemy->BeginCombatReservationRequest() != 0))
+	{
+		return false;
+	}
 	uint64 ExistingGrant = 0;
 	if (Parameters == TEXT("ExistingGrantDefersYield"))
 	{
 		// 양보 요청의 후보 순서는 먼저 확보하되, 동료의 현재 이동 허가를 중단할 권한은 부여하지 않는다.
 		Blocker->SetActorEnableCollision(true);
 		Blocker->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-		Enemy->BeginCombatReservationRequest();
 		ExistingGrant = Blocker->BeginCombatReservationRequest();
 		const FVector Start = Blocker->GetCapsuleComponent()->GetComponentLocation();
 		const FVector Destination = Start + FVector(0, 500, 0);
@@ -319,7 +337,10 @@ bool FEnemyF4YieldIntegrationTest::RunTest(const FString& Parameters)
 			return false;
 		}
 	}
-	Fixture.PlaceAllyOnMuzzleLine();
+	if (!TestTrue(TEXT("Requester refreshes actual observation after the bounded check interval"), Fixture.PlaceAllyOnMuzzleLine()))
+	{
+		return false;
+	}
 	TestFalse(TEXT("An ally still turning toward its target does not claim attack-ready priority"), Blocker->IsReadyForCombatYieldPriority());
 	int32 Checks = Parameters == TEXT("QueryBudget") ? 0 : 16;
 	FVector ShotOrigin;

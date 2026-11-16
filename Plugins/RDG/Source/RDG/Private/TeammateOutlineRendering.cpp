@@ -1,6 +1,7 @@
 #include "TeammateOutlineRendering.h"
 
 #include "Components/PrimitiveComponent.h"
+#include "Components/SkinnedMeshComponent.h"
 #include "CustomRenderPassSceneCapture.h"
 #include "GlobalShader.h"
 #include "GameFramework/Actor.h"
@@ -12,6 +13,7 @@
 #include "SceneRendering.h"
 #include "ScreenPass.h"
 #include "ShaderParameterStruct.h"
+#include "SystemTextures.h"
 
 namespace
 {
@@ -24,9 +26,19 @@ namespace
 
 struct FTeammateOutlineViewResources
 {
+	struct FTurretMasks
+	{
+		FRDGTextureRef Full = nullptr;
+		FRDGTextureRef Excluded = nullptr;
+		FIntRect Rect;
+		bool bHasExclusions = false;
+		bool bQueued = false;
+	};
 	FTeammateOutlineViewData Settings;
 	FRDGTextureRef Masks[MaskCount] = {};
 	FIntRect MaskRects[MaskCount];
+	TArray<FTurretMasks> Turrets;
+	bool bPairQueued = false;
 	const FRDGBuilder* Builder = nullptr;
 };
 
@@ -39,10 +51,12 @@ namespace
 		IMPLEMENT_CUSTOM_RENDER_PASS(FTeammateDepthPass);
 
 		FTeammateDepthPass(const FTeammateOutlineResources& InResources, EMask InMask,
-			FIntPoint Size, const FSceneView& MainView)
+			FIntPoint Size, const FSceneView& MainView, int32 InTurretIndex = INDEX_NONE, bool bInExcluded = false)
 			// PrePass에 참여하지 않는 movable/비차폐 메시도 빠지지 않도록 최소 BasePass까지 실행한다.
-			: FCustomRenderPassBase(TEXT("OutlierTeammateMask"), ERenderMode::DepthAndBasePass, ERenderOutput::SceneDepth, Size)
+			: FCustomRenderPassBase(bInExcluded ? TEXT("OutlierTurretExcludedMask") : TEXT("OutlierTeammateMask"),
+				ERenderMode::DepthAndBasePass, ERenderOutput::SceneDepth, Size)
 			, Resources(InResources), Mask(InMask), FirstPerson(MainView.SceneViewInitOptions.FirstPersonParams)
+			, TurretIndex(InTurretIndex), bExcluded(bInExcluded)
 		{
 			auto UserData = MakeUnique<FSceneCaptureCustomRenderPassUserData>();
 			UserData->bMainViewFamily = true;
@@ -56,12 +70,18 @@ namespace
 		{
 			const int32 Index = static_cast<int32>(Mask);
 			Resources->Builder = &GraphBuilder;
-			Resources->MaskRects[Index] = Views[0]->ViewRect;
+			if (TurretIndex == INDEX_NONE) Resources->MaskRects[Index] = Views[0]->ViewRect;
 			const FIntPoint Extent = RenderTargetSize.ComponentMax(Views[0]->ViewRect.Max);
 			RenderTargetTexture = GraphBuilder.CreateTexture(
 				FRDGTextureDesc::Create2D(Extent, PF_R32_FLOAT, FClearValueBinding(FLinearColor(EmptyDepth, 0, 0, 0)),
 					TexCreate_RenderTargetable | TexCreate_ShaderResource), TEXT("Outlier.TeammateDepth"));
-			Resources->Masks[Index] = RenderTargetTexture;
+			if (TurretIndex != INDEX_NONE)
+			{
+				auto& Turret = Resources->Turrets[TurretIndex];
+				(bExcluded ? Turret.Excluded : Turret.Full) = RenderTargetTexture;
+				Turret.Rect = Views[0]->ViewRect;
+			}
+			else Resources->Masks[Index] = RenderTargetTexture;
 
 			// CustomRenderPass의 기본 View에는 FP 보정이 복사되지 않는다.
 			// 본 View와 같은 FOV/축소 변환으로 uniform을 다시 만들어 FP 무기 커버리지를 맞춘다.
@@ -89,19 +109,38 @@ namespace
 		FTeammateOutlineResources Resources;
 		EMask Mask;
 		FFirstPersonParameters FirstPerson;
+		int32 TurretIndex;
+		bool bExcluded;
 	};
 
-	TSet<FPrimitiveComponentId> GatherPrimitiveIds(const TArray<TWeakObjectPtr<UPrimitiveComponent>>& Meshes)
+	TSet<FPrimitiveComponentId> GatherPrimitiveIds(const TArray<TWeakObjectPtr<UPrimitiveComponent>>& Meshes,
+		bool bExcludedProxy = false, bool* OutReady = nullptr)
 	{
+		if (OutReady) *OutReady = true;
 		TSet<FPrimitiveComponentId> Result;
 		Result.Reserve(Meshes.Num());
 		for (const auto& WeakMesh : Meshes)
 		{
 			const UPrimitiveComponent* Mesh = WeakMesh.Get();
 			const AActor* Owner = IsValid(Mesh) ? Mesh->GetOwner() : nullptr;
+			if (bExcludedProxy)
+			{
+				const USkinnedMeshComponent* Proxy = Cast<USkinnedMeshComponent>(Mesh);
+				const USkinnedMeshComponent* Source = Proxy ? Proxy->LeaderPoseComponent.Get() : nullptr;
+				if (IsValid(Source) && (!Source->IsVisible() || Source->bHiddenInGame)) continue;
+				// 숨긴 부위는 마스크가 필요 없다. 보이는 부위의 프록시 하나라도 준비되지 않았으면
+				// 부분 제외 마스크로 터렛을 전환하지 않고 대상 전체를 보수적으로 생략한다.
+				if (!IsValid(Source) || !Source->IsRegistered() || !IsValid(Proxy) || !Proxy->IsRegistered()
+					|| !Proxy->IsVisible() || Proxy->bHiddenInGame || Source->GetSkinnedAsset() != Proxy->GetSkinnedAsset()
+					|| !Source->SceneProxy || !Proxy->SceneProxy)
+				{
+					if (OutReady) *OutReady = false;
+					continue;
+				}
+			}
 			if (IsValid(Mesh) && Mesh->IsRegistered() && Mesh->IsVisible() && !Mesh->bHiddenInGame
 				&& IsValid(Owner) && !Owner->IsHidden() && !Owner->IsActorBeingDestroyed()
-				&& Mesh->bRenderInMainPass && !Mesh->ComponentHasTag(TEXT("Outlier.StencilExclude")))
+				&& Mesh->bRenderInMainPass && (bExcludedProxy || !Mesh->ComponentHasTag(TEXT("Outlier.StencilExclude"))))
 			{
 				Result.Add(Mesh->GetPrimitiveSceneId());
 			}
@@ -111,25 +150,28 @@ namespace
 }
 
 FTeammateOutlineResources FRDGTeammateOutlineRendering::QueueMasks(
-	FSceneViewFamily& Family, const FSceneView& View, const FTeammateOutlineViewData& Data)
+	FSceneViewFamily& Family, const FSceneView& View, const FTeammateOutlineViewData& Data,
+	TArray<TWeakObjectPtr<AActor>>* OutSuccessfulTurrets)
 {
 	check(IsInGameThread());
+	if (OutSuccessfulTurrets) OutSuccessfulTurrets->Reset();
 	// UE5.7의 main-view jitter 복사는 Views[0] 기준이다. 검증되지 않은 다중 View에는 출력하지 않는다.
-	if (!Data.bEnabled || !Family.Scene || Family.Views.Num() != 1 || View.bIsSceneCapture || Data.TargetMeshes.IsEmpty()) return nullptr;
+	if (!Data.bEnabled || !Family.Scene || Family.Views.Num() != 1 || View.bIsSceneCapture) return nullptr;
 	TSet<FPrimitiveComponentId> Ids[MaskCount] = {
 		GatherPrimitiveIds(Data.TargetMeshes),
 		GatherPrimitiveIds(Data.FirstPersonMeshes) };
-	if (Ids[0].IsEmpty()) return nullptr;
 
 	auto Resources = MakeShared<FTeammateOutlineViewResources, ESPMode::ThreadSafe>();
 	Resources->Settings = Data;
 	// 렌더 스레드로 넘어가는 스냅샷에는 UObject 참조가 필요 없다.
 	Resources->Settings.TargetMeshes.Reset();
 	Resources->Settings.FirstPersonMeshes.Reset();
+	Resources->Settings.TurretTargets.Reset();
 	Resources->Settings.OnMasksQueued.Unbind();
-	for (int32 Index = 0; Index < MaskCount; ++Index)
+	Resources->Settings.OnTurretMasksQueued.Unbind();
+	auto QueueDepth = [&](TSet<FPrimitiveComponentId> Primitives, EMask Mask, int32 TurretIndex, bool bExcluded)
 	{
-		if (Ids[Index].IsEmpty()) continue;
+		if (Primitives.IsEmpty()) return false;
 		FSceneInterface::FCustomRenderPassRendererInput Input;
 		Input.ViewLocation = View.ViewMatrices.GetViewOrigin();
 		Input.ViewRotationMatrix = View.ViewMatrices.GetViewMatrix().RemoveTranslation();
@@ -137,18 +179,49 @@ FTeammateOutlineResources FRDGTeammateOutlineRendering::QueueMasks(
 		// Custom View 생성 시 RHI 보정이 적용되므로 원본 카메라 투영 행렬을 전달한다.
 		Input.ProjectionMatrix = View.SceneViewInitOptions.ProjectionMatrix;
 		Input.ViewActor = View.ViewActor;
-		Input.ShowOnlyPrimitives = MoveTemp(Ids[Index]);
+		Input.ShowOnlyPrimitives = MoveTemp(Primitives);
 		Input.HiddenPrimitives = View.HiddenPrimitives;
 		Input.bUseMainViewFamilyShowFlags = true;
-		Input.bIsSceneCapture = false; // OnlyOwnerSee/OwnerNoSee는 본 플레이어 View 기준으로 판정한다.
-		Input.CustomRenderPass = new FTeammateDepthPass(Resources, static_cast<EMask>(Index), View.UnscaledViewRect.Max, View);
+		// 제외 프록시만 capture-only로 그린다. pair/FP/원본 터렛은 기존 소유자 가시성 판정을 유지한다.
+		Input.bIsSceneCapture = bExcluded;
+		Input.CustomRenderPass = new FTeammateDepthPass(Resources, Mask, View.UnscaledViewRect.Max, View, TurretIndex, bExcluded);
 		if (!Family.Scene->AddCustomRenderPass(&Family, Input))
 		{
 			delete Input.CustomRenderPass;
-			return nullptr;
+			return false;
 		}
+		return true;
+	};
+	Resources->bPairQueued = QueueDepth(MoveTemp(Ids[0]), EMask::Target, INDEX_NONE, false);
+	TArray<TWeakObjectPtr<AActor>> SuccessfulTurrets;
+	for (const FTeammateOutlineTargetData& Target : Data.TurretTargets)
+	{
+		const AActor* Owner = Target.Owner.Get();
+		// 캐시 수집 뒤 사망/해킹 해제/빙의가 발생해도 다음 제출부터 이전 마스크를 사용하지 않는다.
+		if (!IsValid(Owner) || Owner->IsHidden() || Owner->IsActorBeingDestroyed()
+			|| !Target.IsEligible.IsBound() || !Target.IsEligible.Execute()
+			|| (Target.bHasExclusions && !Target.bExclusionResourcesReady)) continue;
+		auto FullIds = GatherPrimitiveIds(Target.Meshes);
+		bool bExcludedReady = true;
+		auto ExcludedIds = GatherPrimitiveIds(Target.ExcludedMeshes, true, &bExcludedReady);
+		if (FullIds.IsEmpty() || (Target.bHasExclusions && (!bExcludedReady || Target.ExcludedMeshes.IsEmpty()))) continue;
+		const int32 Index = Resources->Turrets.AddDefaulted();
+		auto& Masks = Resources->Turrets[Index];
+		Masks.bHasExclusions = Target.bHasExclusions && !ExcludedIds.IsEmpty();
+		Masks.bQueued = QueueDepth(MoveTemp(FullIds), EMask::Target, Index, false)
+			&& (!Masks.bHasExclusions || QueueDepth(MoveTemp(ExcludedIds), EMask::Target, Index, true));
+		if (Masks.bQueued) SuccessfulTurrets.Add(Target.Owner);
 	}
+	if (!Resources->bPairQueued && SuccessfulTurrets.IsEmpty()) return nullptr;
+	// FP 차단을 준비하지 못한 프레임에는 어느 팀원도 무기 위에 그리지 않는다.
+	if (!Ids[1].IsEmpty() && !QueueDepth(MoveTemp(Ids[1]), EMask::FirstPerson, INDEX_NONE, false)) return nullptr;
+	if (OutSuccessfulTurrets) *OutSuccessfulTurrets = MoveTemp(SuccessfulTurrets);
 	return Resources;
+}
+
+bool FRDGTeammateOutlineRendering::HasPairMasks(const FTeammateOutlineResources& Resources)
+{
+	return Resources && Resources->bPairQueued;
 }
 
 class FTeammateOutlineCS : public FGlobalShader
@@ -156,12 +229,22 @@ class FTeammateOutlineCS : public FGlobalShader
 public:
 	DECLARE_GLOBAL_SHADER(FTeammateOutlineCS);
 	SHADER_USE_PARAMETER_STRUCT(FTeammateOutlineCS, FGlobalShader);
+	class FHasTurrets : SHADER_PERMUTATION_BOOL("HAS_TURRETS");
+	using FPermutationDomain = TShaderPermutationDomain<FHasTurrets>;
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, SceneDepthTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, TargetDepthTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, FirstPersonDepthTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2DArray<float>, TurretDepthTexture)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, TurretVisibility)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, CustomDepthTexture)
+		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<uint2>, CustomStencilTexture)
+		SHADER_PARAMETER(FIntPoint, TurretMaskMin)
+		SHADER_PARAMETER(FIntPoint, TurretMaskSize)
+		SHADER_PARAMETER(int32, TurretCount)
+		SHADER_PARAMETER(FVector4f, LegacyStyle)
 		SHADER_PARAMETER(FIntPoint, OutputMin)
 		SHADER_PARAMETER(FIntPoint, OutputSize)
 		SHADER_PARAMETER(FVector2f, OutputPixelScale)
@@ -184,11 +267,36 @@ public:
 
 IMPLEMENT_GLOBAL_SHADER(FTeammateOutlineCS, "/Plugin/RDG/OutlierTeammateOutline.usf", "MainCS", SF_Compute);
 
+/** 같은 터렛의 포함 표면만 집계한다. 다른 팀원/해치의 노출로 완전 가림 판정이 바뀌지 않는다. */
+class FTeammateTurretVisibilityCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FTeammateTurretVisibilityCS);
+	SHADER_USE_PARAMETER_STRUCT(FTeammateTurretVisibilityCS, FGlobalShader);
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, SceneDepthTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2DArray<float>, TurretDepthTexture)
+		SHADER_PARAMETER(FIntPoint, SceneDepthMin)
+		SHADER_PARAMETER(FIntPoint, SceneDepthSize)
+		SHADER_PARAMETER(FIntPoint, TurretMaskMin)
+		SHADER_PARAMETER(FIntPoint, TurretMaskSize)
+		SHADER_PARAMETER(int32, TurretCount)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, OutTurretVisibility)
+	END_SHADER_PARAMETER_STRUCT()
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+IMPLEMENT_GLOBAL_SHADER(FTeammateTurretVisibilityCS, "/Plugin/RDG/OutlierTeammateOutline.usf", "TurretVisibilityCS", SF_Compute);
+
 FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 	FRDGBuilder& GraphBuilder, const FSceneView& View, FScreenPassTexture SceneColor,
-	FRDGTextureRef SceneDepth, const FTeammateOutlineResources& Resources)
+	FRDGTextureRef SceneDepth, const FTeammateOutlineResources& Resources,
+	FRDGTextureRef CustomDepth, FRDGTextureSRVRef CustomStencil)
 {
-	if (!Resources || Resources->Builder != &GraphBuilder || !Resources->Masks[0] || !SceneDepth || !SceneColor.IsValid()) return SceneColor;
+	if (!Resources || Resources->Builder != &GraphBuilder || !SceneDepth || !SceneColor.IsValid()) return SceneColor;
 	// 카메라 Fade는 Tonemap에서 이미 적용됐다. 완전 암전에서는 디버그 출력도 원본 화면을 보존한다.
 	const float CameraFade = FMath::Clamp(View.OverlayColor.A, 0.0f, 1.0f);
 	if (CameraFade >= 1.0f) return SceneColor;
@@ -197,7 +305,6 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 	Parameters->View = View.ViewUniformBuffer;
 	Parameters->SceneColorTexture = SceneColor.Texture;
 	Parameters->SceneDepthTexture = SceneDepth;
-	Parameters->TargetDepthTexture = Resources->Masks[0];
 	Parameters->OutputMin = SceneColor.ViewRect.Min;
 	Parameters->OutputSize = SceneColor.ViewRect.Size();
 	Parameters->OutputPixelScale = FVector2f(
@@ -205,8 +312,6 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 		float(SceneColor.ViewRect.Height()) / FMath::Max(View.UnscaledViewRect.Height(), 1));
 	Parameters->SceneDepthMin = RenderView.ViewRect.Min;
 	Parameters->SceneDepthSize = RenderView.ViewRect.Size();
-	Parameters->MaskMin = Resources->MaskRects[0].Min;
-	Parameters->MaskSize = Resources->MaskRects[0].Size();
 
 	FRDGTextureRef Empty = nullptr;
 	auto MaskOrEmpty = [&](int32 Index, FIntPoint& Min, FIntPoint& Size)
@@ -227,8 +332,75 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 		Size = FIntPoint(1, 1);
 		return Empty;
 	};
+	Parameters->TargetDepthTexture = MaskOrEmpty(static_cast<int32>(EMask::Target),
+		Parameters->MaskMin, Parameters->MaskSize);
 	Parameters->FirstPersonDepthTexture = MaskOrEmpty(static_cast<int32>(EMask::FirstPerson),
 		Parameters->FirstPersonMin, Parameters->FirstPersonSize);
+
+	// 복수 터렛은 소유 대상별 두 슬라이스(전체/제외)를 유지한다. 합성은 기존 공통 패스 한 번뿐이다.
+	TArray<const FTeammateOutlineViewResources::FTurretMasks*> ReadyTurrets;
+	for (const auto& Turret : Resources->Turrets)
+	{
+		if (!Turret.bQueued || !Turret.Full || (Turret.bHasExclusions && !Turret.Excluded)) continue;
+		if (!ReadyTurrets.IsEmpty() && (Turret.Full->Desc.Extent != ReadyTurrets[0]->Full->Desc.Extent
+			|| Turret.Rect != ReadyTurrets[0]->Rect)) continue;
+		ReadyTurrets.Add(&Turret);
+	}
+	Parameters->TurretCount = ReadyTurrets.Num();
+	// pair만 있을 때에는 기존 합성만 실행한다. 터렛용 배열/집계 버퍼와 clear 패스를 만들지 않는다.
+	const bool bHasTurrets = !ReadyTurrets.IsEmpty();
+	if (bHasTurrets)
+	{
+		Parameters->TurretMaskMin = ReadyTurrets[0]->Rect.Min;
+		Parameters->TurretMaskSize = ReadyTurrets[0]->Rect.Size();
+		const FIntPoint TurretExtent = ReadyTurrets[0]->Full->Desc.Extent;
+		FRDGTextureRef TurretDepth = GraphBuilder.CreateTexture(FRDGTextureDesc::Create2DArray(TurretExtent, PF_R32_FLOAT,
+			FClearValueBinding(FLinearColor(EmptyDepth, 0, 0, 0)),
+			TexCreate_ShaderResource | TexCreate_UAV, ReadyTurrets.Num() * 2), TEXT("Outlier.TurretDepthArray"));
+		AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(TurretDepth), FVector4f(EmptyDepth, 0, 0, 0));
+		for (int32 Index = 0; Index < ReadyTurrets.Num(); ++Index)
+		{
+			const auto& Turret = *ReadyTurrets[Index];
+			FRHICopyTextureInfo Copy;
+			Copy.Size = FIntVector(TurretExtent.X, TurretExtent.Y, 1);
+			Copy.DestSliceIndex = Index * 2;
+			AddCopyTexturePass(GraphBuilder, Turret.Full, TurretDepth, Copy);
+			if (Turret.Excluded)
+			{
+				Copy.DestSliceIndex = Index * 2 + 1;
+				AddCopyTexturePass(GraphBuilder, Turret.Excluded, TurretDepth, Copy);
+			}
+		}
+		Parameters->TurretDepthTexture = TurretDepth;
+		FRDGBufferRef Visibility = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32),
+			ReadyTurrets.Num()), TEXT("Outlier.TurretVisibility"));
+		AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(Visibility), 0u);
+		Parameters->TurretVisibility = GraphBuilder.CreateSRV(Visibility);
+		if (!ReadyTurrets.IsEmpty())
+		{
+			auto* VisibilityParameters = GraphBuilder.AllocParameters<FTeammateTurretVisibilityCS::FParameters>();
+			VisibilityParameters->View = View.ViewUniformBuffer;
+			VisibilityParameters->SceneDepthTexture = SceneDepth;
+			VisibilityParameters->TurretDepthTexture = TurretDepth;
+			VisibilityParameters->SceneDepthMin = Parameters->SceneDepthMin;
+			VisibilityParameters->SceneDepthSize = Parameters->SceneDepthSize;
+			VisibilityParameters->TurretMaskMin = Parameters->TurretMaskMin;
+			VisibilityParameters->TurretMaskSize = Parameters->TurretMaskSize;
+			VisibilityParameters->TurretCount = ReadyTurrets.Num();
+			VisibilityParameters->OutTurretVisibility = GraphBuilder.CreateUAV(Visibility);
+			TShaderMapRef<FTeammateTurretVisibilityCS> VisibilityShader(GetGlobalShaderMap(View.GetFeatureLevel()));
+			FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("OutlierTurretVisibility"), VisibilityShader, VisibilityParameters,
+				FIntVector(FMath::DivideAndRoundUp(Parameters->TurretMaskSize.X, 8),
+					FMath::DivideAndRoundUp(Parameters->TurretMaskSize.Y, 8), ReadyTurrets.Num()));
+		}
+		const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
+		Parameters->CustomDepthTexture = CustomDepth ? CustomDepth : SystemTextures.Black;
+		Parameters->CustomStencilTexture = CustomStencil ? CustomStencil : SystemTextures.StencilDummySRV;
+		const auto& Settings = Resources->Settings;
+		const bool bValidLegacy = CustomDepth && CustomStencil && CustomDepth->Desc.Extent.X > 1 && CustomDepth->Desc.Extent.Y > 1;
+		Parameters->LegacyStyle = FVector4f(FMath::Clamp(Settings.LegacyThickness, 0.0f, 4.0f),
+			FMath::Max(Settings.LegacyDepthTolerance, 0.0f), FMath::Max(Settings.LegacyDepthEdgeThreshold, 0.0f), bValidLegacy ? 1.0f : 0.0f);
+	}
 	const auto& Settings = Resources->Settings;
 	// 배경을 다시 Fade하면 이중 적용된다. 새로 합성하는 선 색에만 같은 Fade를 반영한다.
 	Parameters->OutlineColor = FVector4f(FMath::Lerp(Settings.Color, View.OverlayColor, CameraFade));
@@ -242,7 +414,9 @@ FScreenPassTexture FRDGTeammateOutlineRendering::Composite(
 		FClearValueBinding::None, TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_UAV);
 	FRDGTextureRef Output = GraphBuilder.CreateTexture(Desc, TEXT("Outlier.TeammateOutlineColor"));
 	Parameters->OutputTexture = GraphBuilder.CreateUAV(Output);
-	TShaderMapRef<FTeammateOutlineCS> Shader(GetGlobalShaderMap(View.GetFeatureLevel()));
+	FTeammateOutlineCS::FPermutationDomain Permutation;
+	Permutation.Set<FTeammateOutlineCS::FHasTurrets>(bHasTurrets);
+	TShaderMapRef<FTeammateOutlineCS> Shader(GetGlobalShaderMap(View.GetFeatureLevel()), Permutation);
 	FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("OutlierTeammateOutline"), Shader, Parameters,
 		FComputeShaderUtils::GetGroupCount(SceneColor.ViewRect.Size(), FIntPoint(8, 8)));
 	return FScreenPassTexture(Output, SceneColor.ViewRect);

@@ -201,6 +201,7 @@ private:
 	friend class FEnemyAdaptationGenerationDamageTest;
 	friend class FOutlierArenaRecoveryWatchdogTest;
 	friend class FOutlierClientReloadRecoveryTest;
+	friend class FPresetUpgradeReadinessTest;
 	bool bGameplayLevelsResolved = false;
 	bool bInitialGameplayLevelsRequested = false;
 	bool bPreloadAfterRelease = false;

@@ -9,6 +9,7 @@
 #include "NativeGameplayTags.h"
 #include "Engine/World.h"
 #include "OutlierPlayerState.h"
+#include "OutlierGameMode.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
 
@@ -86,6 +87,17 @@ bool OutlierDamage::IsEditorInvulnerable(const AActor* TargetActor)
 		return Partner->IsDebugPairInvulnerable();
 	}
 	return false;
+}
+
+bool OutlierDamage::IsDeveloperInvincible(const AActor* TargetActor)
+{
+	if (!IsValid(TargetActor) || !TargetActor->HasAuthority() || !TargetActor->GetWorld()
+		|| !TargetActor->GetWorld()->IsGameWorld())
+	{
+		return false;
+	}
+	const AOutlierGameMode* Mode = TargetActor->GetWorld()->GetAuthGameMode<AOutlierGameMode>();
+	return Mode && Mode->IsDeveloperConvenienceInvincible(TargetActor);
 }
 
 bool OutlierDamage::IsFromEnemy(const FOutlierDamageRequest& Request)

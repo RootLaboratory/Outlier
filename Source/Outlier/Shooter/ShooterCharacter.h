@@ -261,6 +261,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FShooterActionIntentTest;
 	friend class FShooterEquipLifecycleTest;
 	friend class FShooterEquipReloadTest;
+	friend class FShooterAutoReloadRecoveryTest;
 	friend class FShooterWeaponActionNotifyTest;
 	friend class FShooterSprintInputModeTest;
 	friend class FShooterCoyoteTimeTest;
@@ -638,6 +639,8 @@ protected:
 	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownEffectAddedHandle;
+	FDelegateHandle SkillCooldownTimeChangedHandle;
+	void HandleSkillCooldownTimeChanged(const FGameplayTag& CooldownTag);
 	FTimerHandle StealthCooldownUIRefreshTimer;
 	FDelegateHandle StealthSpeedTagChangedHandle;
 	FDelegateHandle PartnerRebootTagChangedHandle;

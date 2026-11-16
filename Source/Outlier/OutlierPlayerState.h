@@ -28,6 +28,8 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnPlayerCharactersChanged, AOutlierPlayerSt
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnAcquiredSuitChanged, AOutlierPlayerState*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnNodeCountChanged, int32);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnStatAllocatorExitPendingChanged, AOutlierPlayerState*);
+DECLARE_MULTICAST_DELEGATE_FiveParams(FOnStatAllocatorSessionChanged,
+	uint32 /*SessionId*/, uint32 /*Generation*/, bool /*Pending*/, bool /*Finalized*/, uint32 /*SyncRequestId*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnStatAllocatorUICompleted, AOutlierPlayerState*, uint32 /*GameplayGeneration*/);
 DECLARE_MULTICAST_DELEGATE(FOnActivatedUpgradeNodesChanged);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPendingPresetSelectionChanged, AOutlierPlayerState*);
@@ -138,10 +140,25 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Stat Allocator")
 	bool IsStatAllocatorExitPending() const { return bStatAllocatorExitPending; }
 
+	// 장치가 양쪽 화면을 열기 직전에 서버에서 한 번 시작한다.
+	void BeginStatAllocatorSession(AOutlierPlayerState* Partner);
+	uint32 GetStatAllocatorSessionId() const { return StatAllocatorSessionId; }
+	bool IsStatAllocatorExitFinalized() const { return bStatAllocatorExitFinalized; }
+	void RequestStatAllocatorExitPending(uint32 SessionId, uint32 Generation, bool bPending);
+	void SynchronizeStatAllocatorSession(uint32 SyncRequestId);
+	FOnStatAllocatorSessionChanged OnStatAllocatorSessionChanged;
+
 	void ReportStatAllocatorUIOpened(uint32 GameplayGeneration);
 	void ReportStatAllocatorUIClosed(uint32 GameplayGeneration);
 	// 서버의 이번 Gameplay Generation 완료 상태. Gate가 늦게 로드되어도 조회할 수 있다.
 	bool IsStatAllocatorUICompletedForGeneration(uint32 GameplayGeneration) const;
+	bool IsStatAllocatorUIOpenForGeneration(uint32 GameplayGeneration) const
+	{
+		// 장치 세션은 완료 기록과 수명이 다르다. 같은 세대에 다시 연 강화창도 포함한다.
+		return HasAuthority() && ((StatAllocatorSessionGeneration == GameplayGeneration
+			&& StatAllocatorPartner.IsValid() && !bStatAllocatorExitFinalized)
+			|| (StatAllocatorUIGeneration == GameplayGeneration && bStatAllocatorUIOpened && !bStatAllocatorUICompleted));
+	}
 	FOnStatAllocatorUICompleted OnStatAllocatorUICompleted;
 
 	UFUNCTION(BlueprintCallable, Category = "Lobby")
@@ -329,6 +346,23 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerReportStatAllocatorUIState(uint32 GameplayGeneration, bool bOpened);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestStatAllocatorExitPending(uint32 SessionId, uint32 Generation, bool bPending);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSynchronizeStatAllocatorSession(uint32 SyncRequestId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientStatAllocatorSessionChanged(uint32 SessionId, uint32 Generation,
+		bool bPending, bool bFinalized, uint32 SyncRequestId);
+
+	void ApplyStatAllocatorExitPending(bool bPending);
+	void SendStatAllocatorSession(uint32 SyncRequestId = 0);
+	TWeakObjectPtr<AOutlierPlayerState> StatAllocatorPartner;
+	uint32 StatAllocatorSessionId = 0;
+	uint32 StatAllocatorSessionGeneration = 0;
+	bool bStatAllocatorExitFinalized = false;
 
 	void HandlePlayerRoleChanged();
 	void HandlePendingLobbyStateChanged();

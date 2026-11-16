@@ -19,6 +19,7 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Engine/GameInstance.h"
+#include "Engine/SkeletalMesh.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
@@ -953,6 +954,8 @@ void AAutoTurret::SetTurretLifecycleState(EAutoTurretLifecycleState NewState)
 		ApplyTurretLifecycleState();
 	}
 	RefreshEnemyAudioState();
+	// 사망 몽타주가 끝날 때까지 기다리지 않고, 수명 전환에서 표시 자격을 먼저 맞춘다.
+	RefreshTeammateOutline();
 
 	if (HasAuthority() && HasActorBegunPlay())
 	{
@@ -1371,6 +1374,8 @@ void AAutoTurret::OnRep_TurretLifecycleState()
 		ApplyTurretLifecycleState();
 	}
 	RefreshEnemyAudioState();
+	// Dead 태그와 수명 복제 중 먼저 도착한 상태만으로도 팀원 출력을 해제한다.
+	RefreshTeammateOutline();
 }
 
 bool AAutoTurret::ShouldPlayCombatLoopAudio() const
@@ -2170,11 +2175,27 @@ void AAutoTurret::FinishTurretAttackExecution(uint32 ExecutionId)
 	}
 }
 
+bool AAutoTurret::IsEligibleForTeammateOutline() const
+{
+	return bHackedToPlayerTeam && !IsActorBeingDestroyed() && !IsDead()
+		&& TurretLifecycleState != EAutoTurretLifecycleState::DeadPresentation
+		&& TurretLifecycleState != EAutoTurretLifecycleState::DeadPersistent;
+}
+
+void AAutoTurret::RefreshCombatStatePresentation()
+{
+	Super::RefreshCombatStatePresentation();
+	// 기존 Dead 태그 통보를 재사용한다. 수명 복제가 늦어도 사망을 관측한 프레임에 내린다.
+	RefreshTeammateOutline();
+}
+
 void AAutoTurret::RefreshTeammateOutline()
 {
 	if (UOutlierStencilSubsystem* Stencils = GetWorld() ? GetWorld()->GetSubsystem<UOutlierStencilSubsystem>() : nullptr)
 	{
-		Stencils->SetActorTeammate(this, bHackedToPlayerTeam && !IsActorBeingDestroyed());
+		Stencils->SetActorTeammate(this, IsEligibleForTeammateOutline());
+		// 등록 집합이 같아도 새 수명/복제 상태의 메시 스냅샷은 다음 갱신에서 다시 수집한다.
+		Stencils->MarkTeammatesDirty();
 	}
 }
 

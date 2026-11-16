@@ -57,6 +57,8 @@
 #include "UI/ActorBasedWidgetSubsystem.h"
 #include "UI/GameOverPendingWidget.h"
 #include "UI/UILayerKeyHintWidget.h"
+#include "UI/DeveloperConvenienceWidget.h"
+#include "DamageFeedbackLayer.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
 #include "Misc/StringOutputDevice.h"
@@ -64,6 +66,351 @@
 #include "Engine/Level.h"
 #include "Engine/LevelStreaming.h"
 #include "HAL/PlatformTime.h"
+#include "Net/UnrealNetwork.h"
+
+void AFirstPersonPlayerController::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME_CONDITION(AFirstPersonPlayerController, DeveloperConvenienceState, COND_OwnerOnly);
+}
+
+void AFirstPersonPlayerController::SetDeveloperConvenienceStateFromServer(
+	const FDeveloperConvenienceSnapshot& Snapshot)
+{
+	if (!HasAuthority() || DeveloperConvenienceState == Snapshot) return;
+	DeveloperConvenienceState = Snapshot;
+	ForceNetUpdate();
+	// Listen/Standalone은 OnRep가 자동 실행되지 않으므로 원격 클라이언트와 같은 알림 경로를 쓴다.
+	if (IsLocalController()) OnRep_DeveloperConvenienceState();
+}
+
+void AFirstPersonPlayerController::OnRep_DeveloperConvenienceState()
+{
+	RefreshDeveloperConveniencePresentation();
+	OnDeveloperConvenienceStateChanged.Broadcast(DeveloperConvenienceState);
+}
+
+bool AFirstPersonPlayerController::HasDeveloperConvenienceWidgetClass(bool bOperator) const
+{
+	const UClass* Class = bOperator ? DeveloperConvenienceWidgetClass.Get() : DeveloperConvenienceWaitingWidgetClass.Get();
+	return Class && Class->IsChildOf(UDeveloperConvenienceWidget::StaticClass())
+		&& !Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists);
+}
+
+FGuid AFirstPersonPlayerController::RequestDeveloperConvenienceSession(
+	bool bOpen, const FDeveloperConvenienceSnapshot& ExpectedState)
+{
+	FDeveloperConvenienceSessionRequest Request;
+	Request.RequestId = FGuid::NewGuid();
+	Request.MatchId = ExpectedState.MatchId;
+	Request.SessionId = ExpectedState.SessionId;
+	Request.GameplayGeneration = ExpectedState.GameplayGeneration;
+	Request.Revision = ExpectedState.Revision;
+	Request.bOpen = bOpen;
+	if (IsLocalController()) ServerRequestDeveloperConvenienceSession(Request);
+	return Request.RequestId;
+}
+
+void AFirstPersonPlayerController::ServerRequestDeveloperConvenienceSession_Implementation(
+	FDeveloperConvenienceSessionRequest Request)
+{
+	FDeveloperConvenienceSessionResult Result;
+	Result.RequestId = Request.RequestId;
+	Result.MatchId = Request.MatchId;
+	Result.SessionId = Request.SessionId;
+	Result.bOpen = Request.bOpen;
+	if (auto* Mode = GetWorld()->GetAuthGameMode<AOutlierGameMode>())
+		Result.Result = Mode->RequestDeveloperConvenienceSession(this, Request);
+	else Result.Result = EDeveloperConvenienceRequestResult::InvalidPair;
+	ClientDeveloperConvenienceSessionResult(Result);
+}
+
+void AFirstPersonPlayerController::ClientDeveloperConvenienceSessionResult_Implementation(
+	FDeveloperConvenienceSessionResult Result)
+{
+	OnDeveloperConvenienceSessionResult.Broadcast(Result);
+}
+
+void AFirstPersonPlayerController::ServerDeveloperConvenienceUIUnavailable_Implementation(FGuid SessionId)
+{
+	if (auto* Mode = GetWorld()->GetAuthGameMode<AOutlierGameMode>())
+		Mode->OnDeveloperConvenienceUIUnavailable(this, SessionId);
+}
+
+bool AFirstPersonPlayerController::HandleDeveloperConvenienceKey(const FKey& Key, bool bShiftDown, bool bRepeat)
+{
+	if (!IsLocalController())
+	{
+		return false;
+	}
+	const bool bToggle = Key == EKeys::O && bShiftDown;
+	const bool bActive = DeveloperConvenienceState.SessionId.IsValid();
+	if (!bToggle && !(bActive && Key == EKeys::Escape))
+	{
+		return false;
+	}
+	if (bRepeat)
+	{
+		return true;
+	}
+	if (bActive)
+	{
+		if (DeveloperConvenienceState.bIsOperator)
+		{
+			if (Key == EKeys::Escape)
+			{
+				if (auto* Widget = DeveloperConvenienceWidget.Get();
+					Widget && Widget->GetDeveloperConveniencePage() == EDeveloperConveniencePage::LevelSelection)
+				{
+					Widget->SetDeveloperConveniencePage(EDeveloperConveniencePage::MainMenu);
+					return true;
+				}
+			}
+			if (auto* Widget = DeveloperConvenienceWidget.Get())
+			{
+				Widget->RequestAnimatedClose();
+			}
+		}
+		return true;
+	}
+	const auto* LayerSubsystem = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>() : nullptr;
+	const auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr;
+	if (!GetPawn() || IsHudHiddenForDeath() || IsEndingPresentationActive()
+		|| !LayerSubsystem || LayerSubsystem->IsLayerActive(UILayerTags::GameMenu())
+		|| LayerSubsystem->IsLayerActive(UILayerTags::Modal()) || LayerSubsystem->IsLayerActive(UILayerTags::System())
+		|| IsFirstPersonInputMode(FirstPersonInputModeTags::UI())
+		|| (Cinematic && Cinematic->GetState() != EOutlierCinematicState::Idle))
+	{
+		return true;
+	}
+	RequestDeveloperConvenienceSession(true, DeveloperConvenienceState);
+	return true;
+}
+
+void AFirstPersonPlayerController::ClientShowDeveloperConvenienceHit_Implementation(
+	APawn* DamagedPawn, FVector_NetQuantize DamageOrigin)
+{
+	// 이전 빙의 Pawn에서 늦게 도착한 피격은 새 몸체의 방향 표시로 사용하지 않는다.
+	if (!IsLocalController() || !IsValid(DamagedPawn) || GetPawn() != DamagedPawn || !GetLocalPlayer()
+		|| IsHudHiddenForDeath() || IsEndingPresentationActive())
+	{
+		return;
+	}
+	auto* LayerSubsystem = GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>();
+	if (!LayerSubsystem || !ShooterUIInstance || !ShooterUIInstance->DamageFeedbackLayer)
+	{
+		return;
+	}
+	if (DeveloperHitWidget && !DeveloperHitWidget->GetParent())
+	{
+		ClearDeveloperHitPresentation();
+	}
+	if (!DeveloperHitWidget)
+	{
+		// 빙의 중에는 MainUI가 Collapsed다. 같은 피격 WBP 클래스를 독립 레이어에서 재사용한다.
+		auto* CreatedWidget = CreateWidget<UDamageFeedbackLayer>(this, ShooterUIInstance->DamageFeedbackLayer->GetClass());
+		if (!CreatedWidget || GetPawn() != DamagedPawn || IsHudHiddenForDeath() || IsEndingPresentationActive())
+		{
+			return;
+		}
+		DeveloperHitWidget = CreatedWidget;
+		OnPossessedPawnChanged.AddUniqueDynamic(this, &AFirstPersonPlayerController::HandleDeveloperHitPawnChanged);
+		// 입력을 받지 않는 HUD이므로 InputModeTag는 적용되지 않는다.
+		const FUILayerHandle CreatedLayer = LayerSubsystem->PushWidget(UILayerTags::Gameplay(), CreatedWidget,
+			FirstPersonInputModeTags::UI(), this, EUILayerFocusTarget::None, false, false);
+		// WBP 생성/부착 콜백 중 Pawn이 교체되면 방금 반환된 이전 레이어만 정리한다.
+		if (GetPawn() != DamagedPawn || DeveloperHitWidget != CreatedWidget)
+		{
+			LayerSubsystem->PopLayer(CreatedLayer);
+			return;
+		}
+		DeveloperHitLayer = CreatedLayer;
+		if (!DeveloperHitLayer.IsValid())
+		{
+			ClearDeveloperHitPresentation();
+			return;
+		}
+	}
+	DeveloperHitWidget->ShowDamageFeedback(DamagedPawn, FVector(DamageOrigin), 0.0f);
+}
+
+void AFirstPersonPlayerController::HandleDeveloperHitPawnChanged(APawn* PreviousPawn, APawn* NewPawn)
+{
+	(void)PreviousPawn;
+	(void)NewPawn;
+	ClearDeveloperHitPresentation();
+}
+
+void AFirstPersonPlayerController::ClearDeveloperHitPresentation()
+{
+	OnPossessedPawnChanged.RemoveDynamic(this, &AFirstPersonPlayerController::HandleDeveloperHitPawnChanged);
+	if (DeveloperHitWidget)
+	{
+		DeveloperHitWidget->ClearDamageFeedback();
+	}
+	const FUILayerHandle PreviousLayer = DeveloperHitLayer;
+	DeveloperHitWidget = nullptr;
+	DeveloperHitLayer.Reset();
+	if (auto* LayerSubsystem = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>() : nullptr;
+		LayerSubsystem && PreviousLayer.IsValid())
+	{
+		LayerSubsystem->PopLayer(PreviousLayer);
+	}
+}
+
+void AFirstPersonPlayerController::RefreshDeveloperConveniencePresentation()
+{
+	if (!IsLocalController() || !GetLocalPlayer()) return;
+	if (!DeveloperConvenienceState.SessionId.IsValid())
+	{
+		ClearDeveloperConveniencePresentation();
+		return;
+	}
+	if (PresentedDeveloperConvenienceSession == DeveloperConvenienceState.SessionId)
+	{
+		if (DeveloperConvenienceWidget) DeveloperConvenienceWidget->InitializeDeveloperConvenience(DeveloperConvenienceState);
+		return;
+	}
+	ClearDeveloperConveniencePresentation();
+	auto* LayerSubsystem = GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>();
+	const FGuid SessionId = DeveloperConvenienceState.SessionId;
+	const bool bOperator = DeveloperConvenienceState.bIsOperator;
+	if (!LayerSubsystem || !HasDeveloperConvenienceWidgetClass(bOperator))
+	{
+		ServerDeveloperConvenienceUIUnavailable(SessionId);
+		return;
+	}
+	const TSubclassOf<UUserWidget> Class = bOperator ? DeveloperConvenienceWidgetClass : DeveloperConvenienceWaitingWidgetClass;
+	auto* CreatedWidget = Cast<UDeveloperConvenienceWidget>(CreateWidget<UUserWidget>(this, Class));
+	// Listen에서는 WBP 초기화 중에도 종료 요청이 즉시 처리된다. 끝난 세션의 위젯을 다시 채택하지 않는다.
+	if (DeveloperConvenienceState.SessionId != SessionId) return;
+	if (!CreatedWidget)
+	{
+		ServerDeveloperConvenienceUIUnavailable(SessionId);
+		return;
+	}
+	DeveloperConvenienceWidget = CreatedWidget;
+	PresentedDeveloperConvenienceSession = SessionId;
+	DeveloperConvenienceWidget->InitializeDeveloperConvenience(DeveloperConvenienceState);
+	// 모드 재구성 전에 발사/이동 캐시를 비운다. 다른 연출이 건 입력 차단 카운터는 건드리지 않는다.
+	FlushPressedKeys();
+	SetIgnoreMoveInput(true);
+	SetIgnoreLookInput(true);
+	bDeveloperConvenienceInputBlocked = true;
+	const FUILayerHandle CreatedLayer = LayerSubsystem->PushWidget(UILayerTags::GameMenu(), CreatedWidget,
+		FirstPersonInputModeTags::UI(), this, EUILayerFocusTarget::Widget, bOperator, true);
+	// Construct/포커스 콜백이 세션을 닫으면 Clear 시점에는 아직 새 핸들이 없다.
+	// 반환된 이전 레이어만 제거해, 콜백에서 열린 다음 세션은 보존한다.
+	if (DeveloperConvenienceState.SessionId != SessionId
+		|| PresentedDeveloperConvenienceSession != SessionId || DeveloperConvenienceWidget != CreatedWidget)
+	{
+		CreatedWidget->ReleaseDeveloperConvenienceContext();
+		if (CreatedLayer.IsValid()) LayerSubsystem->PopLayer(CreatedLayer);
+		return;
+	}
+	DeveloperConvenienceLayer = CreatedLayer;
+	if (!DeveloperConvenienceLayer.IsValid())
+	{
+		ClearDeveloperConveniencePresentation();
+		ServerDeveloperConvenienceUIUnavailable(SessionId);
+	}
+}
+
+void AFirstPersonPlayerController::ClearDeveloperConveniencePresentation()
+{
+	// 정상 종료의 NativeDestruct는 생성 실패로 보고하지 않는다. 편의성의 핸들만 제거한다.
+	if (DeveloperConvenienceWidget) DeveloperConvenienceWidget->ReleaseDeveloperConvenienceContext();
+	const FUILayerHandle PreviousLayer = DeveloperConvenienceLayer;
+	DeveloperConvenienceLayer.Reset();
+	DeveloperConvenienceWidget = nullptr;
+	PresentedDeveloperConvenienceSession.Invalidate();
+	if (bDeveloperConvenienceInputBlocked)
+	{
+		bDeveloperConvenienceInputBlocked = false;
+		FlushPressedKeys();
+		SetIgnoreMoveInput(false);
+		SetIgnoreLookInput(false);
+	}
+	// Pop의 포커스 콜백이 다음 세션을 열 수 있으므로, 현재 참조를 먼저 비운다.
+	if (auto* LayerSubsystem = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>() : nullptr;
+		LayerSubsystem && PreviousLayer.IsValid()) LayerSubsystem->PopLayer(PreviousLayer);
+}
+
+FGuid AFirstPersonPlayerController::RequestDeveloperConvenienceOption(
+	EDeveloperConvenienceOption Option, bool bEnabled, const FDeveloperConvenienceSnapshot& ExpectedState)
+{
+	FDeveloperConvenienceOptionRequest Request;
+	Request.RequestId = FGuid::NewGuid();
+	Request.MatchId = ExpectedState.MatchId;
+	Request.SessionId = ExpectedState.SessionId;
+	Request.GameplayGeneration = ExpectedState.GameplayGeneration;
+	Request.Option = Option;
+	Request.bEnabled = bEnabled;
+	ServerRequestDeveloperConvenienceOption(Request);
+	return Request.RequestId;
+}
+
+void AFirstPersonPlayerController::ServerRequestDeveloperConvenienceOption_Implementation(
+	FDeveloperConvenienceOptionRequest Request)
+{
+	FDeveloperConvenienceOptionResult Result;
+	Result.RequestId = Request.RequestId;
+	Result.MatchId = Request.MatchId;
+	Result.SessionId = Request.SessionId;
+	Result.Option = Request.Option;
+	Result.bRequestedValue = Request.bEnabled;
+	if (AOutlierGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		Result.Result = Mode->RequestDeveloperConvenienceOption(this, Request);
+	}
+	else Result.Result = EDeveloperConvenienceRequestResult::InvalidPair;
+	ClientDeveloperConvenienceOptionResult(Result);
+}
+
+void AFirstPersonPlayerController::ClientDeveloperConvenienceOptionResult_Implementation(
+	FDeveloperConvenienceOptionResult Result)
+{
+	// 상태는 복제 Snapshot만 갱신한다. 이전 세션의 늦은 결과로 현재 토글을 되돌리지 않는다.
+	OnDeveloperConvenienceOptionResult.Broadcast(Result);
+}
+
+FGuid AFirstPersonPlayerController::RequestDeveloperConvenienceTeamRecovery(
+	const FDeveloperConvenienceSnapshot& ExpectedState)
+{
+	FDeveloperConvenienceRecoveryRequest Request;
+	Request.RequestId = FGuid::NewGuid();
+	Request.MatchId = ExpectedState.MatchId;
+	Request.SessionId = ExpectedState.SessionId;
+	Request.GameplayGeneration = ExpectedState.GameplayGeneration;
+	ServerRequestDeveloperConvenienceTeamRecovery(Request);
+	return Request.RequestId;
+}
+
+void AFirstPersonPlayerController::ServerRequestDeveloperConvenienceTeamRecovery_Implementation(
+	FDeveloperConvenienceRecoveryRequest Request)
+{
+	FDeveloperConvenienceRecoveryResult Result;
+	Result.RequestId = Request.RequestId;
+	Result.MatchId = Request.MatchId;
+	Result.SessionId = Request.SessionId;
+	Result.GameplayGeneration = Request.GameplayGeneration;
+	if (auto* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		Result.Result = Mode->RequestDeveloperConvenienceTeamRecovery(this, Request);
+	}
+	else
+	{
+		Result.Result = EDeveloperConvenienceRequestResult::InvalidPair;
+	}
+	ClientDeveloperConvenienceRecoveryResult(Result);
+}
+
+void AFirstPersonPlayerController::ClientDeveloperConvenienceRecoveryResult_Implementation(
+	FDeveloperConvenienceRecoveryResult Result)
+{
+	// 결과 알림은 원래 문맥 그대로 전달한다. 회복으로 메뉴나 공유 옵션을 변경하지 않는다.
+	OnDeveloperConvenienceRecoveryResult.Broadcast(Result);
+}
 
 bool AFirstPersonPlayerController::NotifyTutorialVolumeEntered(ATuto_EventTriggerVolume* Volume)
 {
@@ -674,8 +1021,63 @@ void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementa
 	OnCheckpointRestartVoteViewChanged.Broadcast(CheckpointRestartVoteView);
 }
 
+FGuid AFirstPersonPlayerController::RequestDeveloperConvenienceReturnToTitle(
+	const FDeveloperConvenienceSnapshot& ExpectedState)
+{
+	if (!IsLocalController())
+	{
+		return FGuid();
+	}
+	FDeveloperConvenienceTitleRequest Request;
+	Request.RequestId = FGuid::NewGuid();
+	Request.MatchId = ExpectedState.MatchId;
+	Request.SessionId = ExpectedState.SessionId;
+	Request.GameplayGeneration = ExpectedState.GameplayGeneration;
+	ServerRequestDeveloperConvenienceReturnToTitle(Request);
+	return Request.RequestId;
+}
+
+void AFirstPersonPlayerController::ServerRequestDeveloperConvenienceReturnToTitle_Implementation(
+	FDeveloperConvenienceTitleRequest Request)
+{
+	FDeveloperConvenienceTitleResult Result;
+	Result.RequestId = Request.RequestId;
+	Result.MatchId = Request.MatchId;
+	Result.SessionId = Request.SessionId;
+	Result.GameplayGeneration = Request.GameplayGeneration;
+	if (auto* Mode = GetWorld()->GetAuthGameMode<AOutlierGameMode>())
+	{
+		Result.Result = Mode->RequestDeveloperConvenienceReturnToTitle(this, Request);
+	}
+	ClientDeveloperConvenienceTitleResult(Result);
+}
+
+void AFirstPersonPlayerController::ClientDeveloperConvenienceTitleResult_Implementation(
+	FDeveloperConvenienceTitleResult Result)
+{
+	OnDeveloperConvenienceTitleResult.Broadcast(Result);
+}
+
+void AFirstPersonPlayerController::ClientPrepareForTitleReturn_Implementation(bool bWaitForServerTravel)
+{
+	if (bClientTitleReturnPrepared)
+	{
+		return;
+	}
+	bClientTitleReturnPrepared = true;
+	ClientPrepareForArenaExit_Implementation();
+	if (auto* Instance = Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		Instance->PrepareForTitleReturn(bWaitForServerTravel);
+	}
+}
+
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
+	EndPresetTransition(PresetTransitionRequestId);
+	PresetTransitionGeneration = 0;
+	ClearDeveloperConveniencePresentation();
+	ClearPendingPresetUpgradeUI();
 	bClientArenaExitPrepared = true;
 	if (auto* Cinematic = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
@@ -1237,7 +1639,8 @@ void AFirstPersonPlayerController::BeginPlay()
 		: nullptr)
 	{
 		// LocalPlayer 서브시스템은 Controller / 월드 교체 후에도 살아남는다.
-		UISubsystem->SetTransientWidgetsSuppressed(bHudHiddenForDeath);
+		UISubsystem->SetTransientWidgetsSuppressed(bHudHiddenForDeath
+			|| HasCameraBlackoutReason(ECameraBlackoutReason::PresetTransition));
 	}
 
 	InitializeOutlierPlayerState();
@@ -1335,8 +1738,9 @@ void AFirstPersonPlayerController::ApplyCameraBlackout()
 	}
 	if (CameraBlackoutReasons != 0)
 	{
-		// 씬만 덮는 Manual Fade다. 오디오와 UMG에는 영향을 주지 않는다.
-		PlayerCameraManager->SetManualCameraFade(1.0f, FLinearColor::Black, false);
+		// 프리셋 전환만 전체 오디오도 차단한다. UMG는 별도의 Slate 가림이 맡는다.
+		PlayerCameraManager->SetManualCameraFade(1.0f, FLinearColor::Black,
+			HasCameraBlackoutReason(ECameraBlackoutReason::PresetTransition));
 		bCameraBlackoutApplied = true;
 	}
 	else if (bCameraBlackoutApplied)
@@ -1482,21 +1886,19 @@ bool AFirstPersonPlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
 	if (IsLocalController())
 	{
-		// Pawn/입력 모드가 바뀌어도 같은 키를 사용하며, 무적 변경은 서버에서만 확정한다.
-		if (Params.Key == EKeys::F1)
+		if ((Params.Event == IE_Pressed || Params.Event == IE_Repeat)
+			&& HandleDeveloperConvenienceKey(Params.Key,
+				IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift), Params.Event == IE_Repeat))
 		{
-			if (Params.Event == IE_Pressed) ServerDebugTogglePairInvulnerability();
-			return true;
-		}
-		if (Params.Key == EKeys::F2)
-		{
-			if (Params.Event == IE_Pressed) ServerDebugGrantStealthUpgrades();
 			return true;
 		}
 		if (auto* Cinematic = GetLocalPlayer() ? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
 		{
 			// 스킵 홀드 키(누름/반복/해제)가 점프·위젯 확인 등으로 새지 않도록 Enhanced Input보다 먼저 처리한다.
-			if (Cinematic->HandleCompleteCinematicKey(Params.Key, Params.Event)) return true;
+			if (Cinematic->HandleCompleteCinematicKey(Params.Key, Params.Event))
+			{
+				return true;
+			}
 		}
 	}
 	return Super::InputKey(Params);
@@ -1612,7 +2014,8 @@ void AFirstPersonPlayerController::SetupInputComponent()
 
 void AFirstPersonPlayerController::HandleWidgetEscapeInput()
 {
-
+	if (DeveloperConvenienceState.SessionId.IsValid()
+		&& HandleDeveloperConvenienceKey(EKeys::Escape, false, false)) return;
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
 		: nullptr;
@@ -1691,6 +2094,10 @@ void AFirstPersonPlayerController::Destroyed()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	EndPresetTransition(PresetTransitionRequestId);
+	ClearPendingPresetUpgradeUI();
+	ClearDeveloperHitPresentation();
+	ClearDeveloperConveniencePresentation();
 	ClearPresentationProtection();
 	if (ULocalPlayer* Local = GetLocalPlayer(); Local && Local->PlayerController == this)
 	{
@@ -2542,6 +2949,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	}
 
 	// 오래된 리로드 요청은 위에서 거부한다. 유효한 리로드가 시작될 때만 이전 슈트 연출 콜백을 끊는다.
+	ClearPendingPresetUpgradeUI();
 	if (ATuto_PassageTransitionVolume* Passage = LocalPassageTransitionVolume.Get()) Passage->ResetLocalPassageForReload();
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
@@ -3187,13 +3595,17 @@ void AFirstPersonPlayerController::RestoreMainWidgetAfterDeath()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 		: nullptr)
 	{
-		UISubsystem->SetTransientWidgetsSuppressed(false);
+		UISubsystem->SetTransientWidgetsSuppressed(HasCameraBlackoutReason(ECameraBlackoutReason::PresetTransition));
 	}
 	RefreshHudVisibility();
 }
 
 void AFirstPersonPlayerController::RefreshHudVisibility()
 {
+	if (IsHudHiddenForDeath() || IsEndingPresentationActive())
+	{
+		ClearDeveloperHitPresentation();
+	}
 	const bool bWasCollapsed = MainWidgetCollapseState.bCollapsed;
 	MainWidgetCollapseState.Apply(ShooterUIInstance, ShouldShowMainWidget());
 	if (bWasCollapsed != MainWidgetCollapseState.bCollapsed && GetLocalPlayer())
@@ -3206,7 +3618,7 @@ void AFirstPersonPlayerController::RefreshHudVisibility()
 
 bool AFirstPersonPlayerController::ShouldShowMainWidget() const
 {
-	return !bHudHiddenForDeath;
+	return !bHudHiddenForDeath && !HasCameraBlackoutReason(ECameraBlackoutReason::PresetTransition);
 }
 
 void AFirstPersonPlayerController::RefreshPostProcessState()

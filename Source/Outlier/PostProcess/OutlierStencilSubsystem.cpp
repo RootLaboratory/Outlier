@@ -12,6 +12,11 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Weapon/WeaponBase.h"
+#include "Enemy/AutoTurret.h"
+#include "PostProcess/TeammateOutlineMaskComponent.h"
+#include "TeammateOutlineRendering.h"
+#include "Engine/SkeletalMesh.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 
 namespace
 {
@@ -95,6 +100,186 @@ void UOutlierStencilSubsystem::SetIndependentPairOutlineEnabled(bool bEnabled)
 	bIndependentPairOutlineEnabled = bEnabled;
 	Reconcile();
 	MarkTeammatesDirty();
+}
+
+void UOutlierStencilSubsystem::SetIndependentTurretOutlineState(
+	const TArray<TWeakObjectPtr<AActor>>& ReadyTargets, bool bEnabled, bool bReleaseMasks)
+{
+	if (bReleaseMasks) ReleaseTurretMasks();
+	TSet<TWeakObjectPtr<AActor>> Ready;
+	for (const auto& Target : ReadyTargets) if (Target.IsValid()) Ready.Add(Target);
+	if (bTurretOutlineManaged && bTurretOutlineEnabled == bEnabled
+		&& Ready.Num() == ReadyTurretOutlines.Num() && Ready.Includes(ReadyTurretOutlines)) return;
+	bTurretOutlineManaged = true;
+	bTurretOutlineEnabled = bEnabled;
+	ReadyTurretOutlines = MoveTemp(Ready);
+	Reconcile();
+}
+
+void UOutlierStencilSubsystem::ReleaseTurretMasks(AActor* Target)
+{
+	for (auto It = TurretMasks.CreateIterator(); It; ++It)
+	{
+		USkeletalMeshComponent* Source = It.Key().Get();
+		if (!Target || !Source || Source->GetOwner() == Target)
+		{
+			if (auto* Proxy = It.Value().Proxy.Get()) Proxy->DestroyComponent();
+			It.RemoveCurrent();
+		}
+	}
+	if (Target)
+	{
+		ReadyTurretOutlines.Remove(Target);
+		ExcludedTurretOutlines.Remove(Target);
+		InvalidTurretConfigurations.Remove(Target);
+	}
+	else
+	{
+		ReadyTurretOutlines.Reset();
+		ExcludedTurretOutlines.Reset();
+		InvalidTurretConfigurations.Reset();
+	}
+}
+
+void UOutlierStencilSubsystem::GatherTurretOutlineTargets(const APlayerController* Viewer,
+	TArray<FTeammateOutlineTargetData>& OutTargets)
+{
+	OutTargets.Reset();
+	if (!IsValid(Viewer) || !Viewer->IsLocalController() || Viewer->GetWorld() != GetWorld()
+		|| GetWorld()->GetNetMode() == NM_DedicatedServer) return;
+	TSet<TWeakObjectPtr<USkeletalMeshComponent>> UsedMasks;
+	const TSet<TWeakObjectPtr<AActor>> PreviousExclusions = ExcludedTurretOutlines;
+	ExcludedTurretOutlines.Reset();
+	for (const auto& WeakTarget : RegisteredTeammates)
+	{
+		AAutoTurret* Turret = Cast<AAutoTurret>(WeakTarget.Get());
+		if (!Turret || !Turret->IsEligibleForTeammateOutline() || Turret == Viewer->GetPawn()) continue;
+		const auto* Controller = Cast<APlayerController>(Turret->GetController());
+		if (Controller && Controller->IsLocalController()) continue;
+		FTeammateOutlineTargetData& Target = OutTargets.AddDefaulted_GetRef();
+		Target.Owner = Turret;
+		const int32 Generation = Turret->GetRoomWaveGameplayGeneration();
+		const int32 Activation = Turret->GetRoomWaveActivationSerial();
+		Target.IsEligible.BindWeakLambda(Turret, [Turret, Generation, Activation]()
+		{
+			const auto* LocalController = Cast<APlayerController>(Turret->GetController());
+			// 풀의 같은 Actor가 다시 아군이 되어도 이전 수명의 메시 스냅샷은 재사용하지 않는다.
+			return Turret->IsEligibleForTeammateOutline() && Turret->GetRoomWaveGameplayGeneration() == Generation
+				&& Turret->GetRoomWaveActivationSerial() == Activation && !(LocalController && LocalController->IsLocalController());
+		});
+		TArray<UMeshComponent*> Meshes;
+		Turret->GetComponents<UMeshComponent>(Meshes);
+		for (UMeshComponent* Mesh : Meshes)
+		{
+			if (IsEligibleMesh(Mesh)) Target.Meshes.Add(Mesh);
+		}
+
+		// 슬롯 이름은 정상 갱신 시에만 해석한다. 렌더 제출에서는 이 캐시와 생존 자격만 읽는다.
+		TMap<USkeletalMeshComponent*, TSet<int32>> ExcludedSlots;
+		uint32 InvalidHash = 0;
+		for (const auto& Setting : Turret->GetTeammateOutlineExclusions())
+		{
+			if (Setting.MaterialSlotNames.IsEmpty()) continue;
+			auto* Source = Cast<USkeletalMeshComponent>(Setting.MeshComponent.GetComponent(Turret));
+			if (!Source || Source->GetOwner() != Turret || !IsEligibleMesh(Source))
+			{
+				InvalidHash = HashCombine(InvalidHash, GetTypeHash(Setting.MeshComponent.ComponentProperty));
+				InvalidHash = HashCombine(InvalidHash, 1u);
+				continue;
+			}
+			const TArray<FName> Slots = Source->GetMaterialSlotNames();
+			for (FName Name : Setting.MaterialSlotNames)
+			{
+				const int32 Slot = Slots.IndexOfByKey(Name);
+				if (Slot != INDEX_NONE) ExcludedSlots.FindOrAdd(Source).Add(Slot);
+				else InvalidHash = HashCombine(HashCombine(InvalidHash, GetTypeHash(Name)), 1u);
+			}
+		}
+		if (InvalidHash && InvalidTurretConfigurations.FindRef(Turret) != InvalidHash)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TeammateOutline] %s: invalid mesh/slot entries ignored; select an owned mesh and its material slot name."), *Turret->GetName());
+			InvalidTurretConfigurations.Add(Turret, InvalidHash);
+		}
+		if (!InvalidHash) InvalidTurretConfigurations.Remove(Turret);
+		Target.bHasExclusions = !ExcludedSlots.IsEmpty();
+		Target.bExclusionResourcesReady = true;
+		if (Target.bHasExclusions) ExcludedTurretOutlines.Add(Turret);
+		for (const auto& Pair : ExcludedSlots)
+		{
+			USkeletalMeshComponent* Source = Pair.Key;
+			UsedMasks.Add(Source);
+			const FSkeletalMeshRenderData* RenderData = Source->GetSkeletalMeshRenderData();
+			USkeletalMesh* Asset = Source->GetSkeletalMeshAsset();
+			uint32 Hash = 0;
+			// 순서가 다른 중복 설정도 같은 결과를 내도록 실제 슬롯 순서로 해시한다.
+			for (int32 Slot = 0; Slot < Source->GetNumMaterials(); ++Slot)
+			{
+				Hash = HashCombine(Hash, Pair.Value.Contains(Slot) ? 1u : 0u);
+				Hash = HashCombine(Hash, GetTypeHash(Source->GetMaterial(Slot)));
+			}
+			if (RenderData)
+			{
+				for (int32 LOD = 0; LOD < RenderData->LODRenderData.Num(); ++LOD)
+				{
+					const FSkeletalMeshLODInfo* Info = Asset->GetLODInfo(LOD);
+					for (const auto& Section : RenderData->LODRenderData[LOD].RenderSections)
+						Hash = HashCombine(Hash, Section.MaterialIndex);
+					if (Info) for (int32 Material : Info->LODMaterialMap) Hash = HashCombine(Hash, GetTypeHash(Material));
+				}
+			}
+			FOutlierTurretOutlineMaskState& State = TurretMasks.FindOrAdd(Source);
+			if (State.Asset.Get() != Asset || State.ConfigurationHash != Hash) State.bFailureReported = false;
+			if (State.Asset.Get() != Asset || State.ConfigurationHash != Hash || !State.Proxy.IsValid())
+			{
+				if (auto* Previous = State.Proxy.Get()) Previous->DestroyComponent();
+				State.Proxy.Reset();
+				State.Asset = Asset;
+				State.ConfigurationHash = Hash;
+				auto* Proxy = NewObject<UTeammateOutlineMaskComponent>(Turret, NAME_None, RF_Transient);
+				if (RenderData && Proxy->InitializeFrom(Source))
+				{
+					// 원본 섹션은 그대로 둔다. 프록시에는 제외 슬롯만 남겨 전체 깊이와 비교한다.
+					for (int32 LOD = 0; LOD < RenderData->LODRenderData.Num(); ++LOD)
+					{
+						const auto& Sections = RenderData->LODRenderData[LOD].RenderSections;
+						const FSkeletalMeshLODInfo* Info = Asset->GetLODInfo(LOD);
+						for (int32 Section = 0; Section < Sections.Num(); ++Section)
+						{
+							int32 Material = Sections[Section].MaterialIndex;
+							if (Info && Info->LODMaterialMap.IsValidIndex(Section) && Info->LODMaterialMap[Section] != INDEX_NONE)
+								Material = Info->LODMaterialMap[Section];
+							Proxy->ShowMaterialSection(Sections[Section].MaterialIndex, Section, Pair.Value.Contains(Material), LOD);
+						}
+					}
+					Proxy->RegisterComponent();
+					State.Proxy = Proxy;
+				}
+				else
+				{
+					Proxy->DestroyComponent();
+					if (!State.bFailureReported)
+					{
+						UE_LOG(LogTemp, Warning, TEXT("[TeammateOutline] %s: excluded-slot mask unavailable; teammate output suppressed until recovery."), *Source->GetPathName());
+						State.bFailureReported = true;
+					}
+				}
+			}
+			if (State.Proxy.IsValid()) Target.ExcludedMeshes.Add(State.Proxy);
+			else Target.bExclusionResourcesReady = false;
+		}
+	}
+	// 메시 교체·풀 재사용·설정 삭제에서 이전 마스크가 새 수명에 남지 않게 정리한다.
+	for (auto It = TurretMasks.CreateIterator(); It; ++It)
+	{
+		if (!UsedMasks.Contains(It.Key()))
+		{
+			if (auto* Proxy = It.Value().Proxy.Get()) Proxy->DestroyComponent();
+			It.RemoveCurrent();
+		}
+	}
+	// 준비 결과가 계속 빈 집합이어도 제외 설정이 바뀌면 fallback 자격은 즉시 다시 계산한다.
+	if (PreviousExclusions.Num() != ExcludedTurretOutlines.Num()
+		|| !PreviousExclusions.Includes(ExcludedTurretOutlines)) Reconcile();
 }
 
 bool UOutlierStencilSubsystem::IsEligibleMesh(const UMeshComponent* Mesh)
@@ -187,6 +372,7 @@ void UOutlierStencilSubsystem::ClearActorEffects(AActor* Target)
 	Requests.RemoveAll([=](const auto& Item) { return Item.Target.Get() == Target; });
 	// 사망/풀 반납 경로다. 해킹된 터렛은 사망 후 풀 리셋 전까지 팀 플래그가 남으므로 여기서 함께 해제한다.
 	RegisteredTeammates.Remove(TWeakObjectPtr<AActor>(Target));
+	if (Target) ReleaseTurretMasks(Target);
 	MarkTeammatesDirty();
 	Reconcile();
 }
@@ -244,6 +430,14 @@ void UOutlierStencilSubsystem::Reconcile()
 		for (const auto& Target : *Teammates)
 		{
 			if (!Target.IsValid()) continue;
+			if (const AAutoTurret* Turret = Cast<AAutoTurret>(Target.Get()))
+			{
+				if (!Turret->IsEligibleForTeammateOutline()) continue;
+				// OFF/사망은 legacy로 되살리지 않는다. 제외 마스크 실패도 해치를 다시 그리지 않는다.
+				// 제외 설정 없는 대상만 RDG 준비 실패 시 기존 경로로 복구할 수 있다.
+				if (bTurretOutlineManaged && (!bTurretOutlineEnabled
+					|| ReadyTurretOutlines.Contains(Target) || ExcludedTurretOutlines.Contains(Target))) continue;
+			}
 			// 해킹으로 빙의한 드론처럼 내가 조종 중인 Pawn에는 팀원 외곽선을 그리지 않는다.
 			// IsLocallyControlled는 서버의 AIController도 로컬로 판정하므로(해킹된 터렛) 로컬 PC만 본다.
 			if (const APawn* Pawn = Cast<APawn>(Target.Get()))
@@ -318,6 +512,7 @@ void UOutlierStencilSubsystem::SetActorTeammate(AActor* Target, bool bTeammate)
 	if (!bTeammate)
 	{
 		bChanged = RegisteredTeammates.Remove(Key) > 0;
+		ReleaseTurretMasks(Target);
 	}
 	else if (IsValid(Target) && Target->GetWorld() == World && !Target->IsActorBeingDestroyed())
 	{
@@ -325,7 +520,11 @@ void UOutlierStencilSubsystem::SetActorTeammate(AActor* Target, bool bTeammate)
 		RegisteredTeammates.Add(Key, &bAlreadyRegistered);
 		bChanged = !bAlreadyRegistered;
 	}
-	if (bChanged) Reconcile();
+	if (bChanged)
+	{
+		MarkTeammatesDirty();
+		Reconcile();
+	}
 }
 
 void UOutlierStencilSubsystem::Tick(float DeltaTime)
@@ -356,6 +555,7 @@ TStatId UOutlierStencilSubsystem::GetStatId() const
 
 void UOutlierStencilSubsystem::Deinitialize()
 {
+	ReleaseTurretMasks();
 	for (const auto& Pair : MeshStates)
 	{
 		if (UMeshComponent* Mesh = Pair.Key.Get())

@@ -67,6 +67,36 @@ bool FStatAllocatorCompletionTest::RunTest(const FString& Parameters)
 
 	Shooter->SetAcquiredSuit(true);
 	Partner->SetAcquiredSuit(true);
+	// 준비 취소는 구매 상태나 실제 UI 완료와 독립적이다.
+	Shooter->AddNode(7);
+	Shooter->AddActivatedUpgradeNode(EOutlierUpgradeRole::Shooter, TEXT("PurchasedBeforeWaiting"));
+	Shooter->BeginStatAllocatorSession(Partner);
+	const uint32 Session = Shooter->GetStatAllocatorSessionId();
+	Shooter->RequestStatAllocatorExitPending(Session, Generation, true);
+	Shooter->RequestStatAllocatorExitPending(Session, Generation, false);
+	TestFalse(TEXT("Cancel clears only the requester's readiness"), Shooter->IsStatAllocatorExitPending());
+	TestEqual(TEXT("Cancel preserves remaining currency"), Shooter->GetNodeCount(), 7);
+	TestTrue(TEXT("Cancel preserves purchased upgrades"), Shooter->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter).Contains(TEXT("PurchasedBeforeWaiting")));
+	TestFalse(TEXT("Cancel does not complete the UI"), Shooter->IsStatAllocatorUICompletedForGeneration(Generation));
+	Shooter->BeginStatAllocatorSession(Partner);
+	TestEqual(TEXT("Duplicate open preserves the current session"), Shooter->GetStatAllocatorSessionId(), Session);
+	Partner->RequestStatAllocatorExitPending(Session, Generation, true);
+	TestTrue(TEXT("Partner readiness remains set"), Partner->IsStatAllocatorExitPending());
+	TestFalse(TEXT("Cancel before partner readiness prevents finalization"), Shooter->IsStatAllocatorExitFinalized());
+	Shooter->RequestStatAllocatorExitPending(Session, Generation, true);
+	TestTrue(TEXT("Both ready finalizes Shooter"), Shooter->IsStatAllocatorExitFinalized());
+	TestTrue(TEXT("Both ready finalizes Partner"), Partner->IsStatAllocatorExitFinalized());
+	Shooter->RequestStatAllocatorExitPending(Session, Generation, false);
+	TestTrue(TEXT("Late cancel cannot undo finalization"), Shooter->IsStatAllocatorExitPending());
+	Shooter->SetStatAllocatorExitPending(false);
+	TestTrue(TEXT("Unversioned host setter cannot undo finalization"), Shooter->IsStatAllocatorExitPending());
+	Shooter->BeginStatAllocatorSession(Partner);
+	const uint32 NextSession = Shooter->GetStatAllocatorSessionId();
+	TestTrue(TEXT("Reopening creates a distinct session"), NextSession != Session);
+	Shooter->RequestStatAllocatorExitPending(Session, Generation, true);
+	TestFalse(TEXT("Old session request is rejected"), Shooter->IsStatAllocatorExitPending());
+	Shooter->RequestStatAllocatorExitPending(NextSession, Generation + 1, true);
+	TestFalse(TEXT("Wrong generation request is rejected"), Shooter->IsStatAllocatorExitPending());
 	Shooter->ReportStatAllocatorUIClosed(Generation);
 	TestFalse(TEXT("Closed without a matching Opened is rejected"),
 		Shooter->IsStatAllocatorUICompletedForGeneration(Generation));

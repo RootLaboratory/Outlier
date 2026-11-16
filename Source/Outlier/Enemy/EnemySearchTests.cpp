@@ -2289,11 +2289,14 @@ bool FEnemyRoomTrackingTest::RunTest(const FString& Parameters)
 	else if (Parameters == TEXT("KeepCurrent") || Parameters == TEXT("Alternative") || Parameters == TEXT("Priority"))
 	{
 		// 후보 수신은 즉시 교체가 아니다. 이후의 안전한 선택 경계에서 유지/거리/우선순위를 적용한다.
-		if (Parameters != TEXT("Priority")) Other->SetActorLocation(FVector(100, 100, 300));
+		if (Parameters != TEXT("Priority"))
+		{
+			Other->SetActorLocation(FVector(100, 100, 300));
+		}
 		Rooms->ReportRoomTargetContact(OtherObserver, Other, Other->GetActorLocation());
-		Controller->SetCachedVisibleTargetForTesting(Other);
-		Receiver->SetPlayerCurrentlyVisible(true);
-		TestEqual(TEXT("A new visible/shared candidate cannot steal the current target"),
+		// 이 시나리오는 공유 후보의 유지/재선택 정책을 검사한다. 직접 시야까지 주면
+		// 숨은 현재 대상보다 보이는 후보를 즉시 우선하는 별도 시야 인계 경로가 실행된다.
+		TestEqual(TEXT("A new shared candidate cannot steal the current target"),
 			Receiver->GetTrackedTarget(), static_cast<AActor*>(Target));
 		if (Parameters == TEXT("Priority"))
 		{

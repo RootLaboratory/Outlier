@@ -22,9 +22,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShooterSlideFireTest,
 bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
 	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
 		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
-	if (!TestNotNull(TEXT("Concrete Shooter Blueprint"), ShooterClass)) return false;
+	if (!TestNotNull(TEXT("Concrete Shooter Blueprint"), ShooterClass))
+	{
+		return false;
+	}
 
 	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("SlideFire"),
 		EUniqueObjectNameOptions::GloballyUnique);
@@ -37,6 +41,9 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 	}
 	World->AddToRoot();
 	Context.SetCurrentWorld(World);
+	// 서버/소유자 RPC를 실제 로컬 구현으로 전달할 수 있도록 액터 초기화 경계를 연다.
+	// 월드 전체 BeginPlay/이동 Tick은 실행하지 않아 아래 발사 타이머 측정과 분리한다.
+	World->InitializeActorsForPlay(FURL());
 	ON_SCOPE_EXIT
 	{
 		GEngine->ShutdownWorldNetDriver(World);
@@ -47,7 +54,10 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 	};
 
 	AActor* Floor = World->SpawnActor<AActor>();
-	if (!TestNotNull(TEXT("Floor actor"), Floor)) return false;
+	if (!TestNotNull(TEXT("Floor actor"), Floor))
+	{
+		return false;
+	}
 	UBoxComponent* Box = NewObject<UBoxComponent>(Floor);
 	Floor->SetRootComponent(Box);
 	Box->SetBoxExtent(FVector(10000.0, 10000.0, 50.0));
@@ -62,9 +72,15 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	AShooterCharacter* Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass,
 		FVector(0.0, 0.0, 200.0), FRotator::ZeroRotator, Spawn);
-	if (!TestNotNull(TEXT("Shooter fixture"), Shooter)) return false;
+	if (!TestNotNull(TEXT("Shooter fixture"), Shooter))
+	{
+		return false;
+	}
 	APlayerController* Controller = World->SpawnActor<APlayerController>(Spawn);
-	if (!TestNotNull(TEXT("Server fire controller"), Controller)) return false;
+	if (!TestNotNull(TEXT("Server fire controller"), Controller))
+	{
+		return false;
+	}
 	Controller->Possess(Shooter);
 	Controller->SetAsLocalPlayerController();
 	auto* Movement = Cast<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
@@ -72,24 +88,45 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 	auto* Combat = Shooter->FindComponentByClass<UShooterCombatComponent>();
 	if (!TestNotNull(TEXT("Slide simulation"), Movement)
 		|| !TestNotNull(TEXT("Movement intent"), Input)
-		|| !TestNotNull(TEXT("Combat intent"), Combat)) return false;
+		|| !TestNotNull(TEXT("Combat intent"), Combat))
+		{
+			return false;
+		}
 	const FBoolProperty* InfiniteAmmoProperty = FindFProperty<FBoolProperty>(ARangedWeaponBase::StaticClass(), TEXT("bInfiniteAmmo"));
-	if (!TestNotNull(TEXT("Finite-ammo fixture setting"), InfiniteAmmoProperty)) return false;
+	if (!TestNotNull(TEXT("Finite-ammo fixture setting"), InfiniteAmmoProperty))
+	{
+		return false;
+	}
+	const FIntProperty* MagazineSizeProperty = FindFProperty<FIntProperty>(ARangedWeaponBase::StaticClass(), TEXT("MagazineSize"));
+	if (!TestNotNull(TEXT("Finite magazine fixture setting"), MagazineSizeProperty))
+	{
+		return false;
+	}
 	Movement->bRunPhysicsWithNoController = true;
+	// 점프 경계는 사격으로 Sprint 토글을 해제하는 계약을 검증한다. Blueprint의
+	// 기본 Hold 모드는 사격 중에도 의도를 보존하므로 테스트 입력 모드를 명시한다.
+	Movement->SetSprintInputMode(EOutlierSprintInputMode::Toggle);
 	Movement->SetMovementMode(MOVE_Walking);
 	Shooter->SetActorLocation(FVector(0.0, 0.0, Shooter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 2.15));
 	Movement->bForceNextFloorCheck = true;
 	Movement->PerformMovement(1.0f / 60.0f);
-	if (!TestTrue(TEXT("Fixture has a real walkable floor"), Movement->CurrentFloor.IsWalkableFloor())) return false;
+	if (!TestTrue(TEXT("Fixture has a real walkable floor"), Movement->CurrentFloor.IsWalkableFloor()))
+	{
+		return false;
+	}
 	Shooter->SlideDuration = 10.0f;
 	Shooter->MinSlideSpeed = 200.0f;
 	Movement->Velocity = FVector(400.0, 0.0, 0.0);
 	// 로컬 입력은 다음 이동에서 소비된다. Sprint와 Crouch를 실제 입력 순서로 판정한다.
+	Movement->NotifyFreshSprintPress();
 	Input->HandleSprintPressed();
 	Shooter->CheckJumpInput(1.0f / 60.0f);
 	Input->HandleCrouchPressed();
 	Shooter->CheckJumpInput(1.0f / 60.0f);
-	if (!TestTrue(TEXT("Gameplay input starts the slide"), Input->IsSliding() && Movement->IsSlideSimulating())) return false;
+	if (!TestTrue(TEXT("Gameplay input starts the slide"), Input->IsSliding() && Movement->IsSlideSimulating()))
+	{
+		return false;
+	}
 
 	// 월드 전체 Tick 없이 발사 타이머만 전진시킨다. 이동/애니메이션의 갱신 시점과 분리해
 	// 발사 입력과 ADS 전환 자체가 Slide 속도나 경과 시간을 덮어쓰는지 확인한다.
@@ -103,11 +140,17 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 		TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C")})
 	{
 		UClass* WeaponClass = LoadClass<ARangedWeaponBase>(nullptr, WeaponPath);
-		if (!TestNotNull(TEXT("Concrete firearm Blueprint"), WeaponClass)) return false;
+		if (!TestNotNull(TEXT("Concrete firearm Blueprint"), WeaponClass))
+		{
+			return false;
+		}
 		for (const bool bStartAiming : {false, true})
 		{
 			ARangedWeaponBase* Weapon = World->SpawnActor<ARangedWeaponBase>(WeaponClass, Spawn);
-			if (!TestNotNull(TEXT("Firearm fixture"), Weapon)) return false;
+			if (!TestNotNull(TEXT("Firearm fixture"), Weapon))
+			{
+				return false;
+			}
 			// 실제 장착을 거쳐 서버의 소유자/장착 상태와 캐릭터의 무기 타입을 함께 준비한다.
 			Shooter->AFirstPersonCharacter::EquipWeapon(Weapon);
 			Shooter->RefreshWeaponMode();
@@ -116,18 +159,32 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 			AddInfo(FString::Printf(TEXT("[SlideFireTest] Weapon=%s ConfiguredInfiniteAmmo=%d FixtureInfiniteAmmo=0"),
 				*GetNameSafe(Weapon), InfiniteAmmoProperty->GetPropertyValue_InContainer(Weapon) ? 1 : 0));
 			InfiniteAmmoProperty->SetPropertyValue_InContainer(Weapon, false);
+			// 현재 권총은 무한 탄약 1발 탄창이다. 유한 탄약만 켜면 첫발이 즉시 Reload로
+			// 넘어가므로, Hip/ADS 전환·연사 주기 검증에는 마지막 탄이 아닌 탄창을 준비한다.
+			// 빈 탄창의 공격 거절은 아래에서 별도로 검사한다.
+			MagazineSizeProperty->SetPropertyValue_InContainer(Weapon, FMath::Max(3, Weapon->GetMagazineSize()));
+			Weapon->RestoreCheckpointAmmo(Weapon->GetMagazineSize());
 			Combat->ApplyAimInput(bStartAiming);
 			if (!TestEqual(TEXT("Slide applies the requested Hip/ADS state"), Combat->IsAiming(), bStartAiming)
 				|| !TestEqual(TEXT("Slide keeps the requested Aim intent"), Combat->WantsToAim(), bStartAiming)
-				|| !TestTrue(TEXT("Equipped server weapon can fire"), Weapon->CanAttack())) return false;
+				|| !TestTrue(TEXT("Equipped server weapon can fire"), Weapon->CanAttack()))
+				{
+					return false;
+				}
 
 			const FFloatProperty* IntervalProperty = FindFProperty<FFloatProperty>(WeaponClass, TEXT("AttackInterval"));
 			const FBoolProperty* AutomaticProperty = FindFProperty<FBoolProperty>(WeaponClass, TEXT("bIsAutomatic"));
 			if (!TestNotNull(TEXT("Existing attack interval property"), IntervalProperty)
-				|| !TestNotNull(TEXT("Existing automatic fire property"), AutomaticProperty)) return false;
+				|| !TestNotNull(TEXT("Existing automatic fire property"), AutomaticProperty))
+				{
+					return false;
+				}
 			const float Interval = IntervalProperty->GetPropertyValue_InContainer(Weapon);
 			const bool bAutomatic = AutomaticProperty->GetPropertyValue_InContainer(Weapon);
-			if (!TestTrue(TEXT("Fixture uses a positive fire interval"), Interval > KINDA_SMALL_NUMBER)) return false;
+			if (!TestTrue(TEXT("Fixture uses a positive fire interval"), Interval > KINDA_SMALL_NUMBER))
+			{
+				return false;
+			}
 			const FVector Velocity = Movement->Velocity;
 			const FVector Direction = Movement->GetSlideDirection();
 			const float Elapsed = Movement->GetSlideElapsedTime();
@@ -165,6 +222,9 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 				TestFalse(TEXT("Non-Slide action locks still reject fire"), Combat->CanFireInCurrentState());
 				Combat->TryStartAttack();
 				TestEqual(TEXT("Rejected fire cannot consume ammo"), Weapon->GetCurrentAmmo(), AfterRelease);
+				// Equip 중 눌렀던 입력은 실제 Release 전까지 차단된다. 각 거절 사례도
+				// Press/Release 한 쌍을 마쳐 다음 발사 검증에 이전 입력을 남기지 않는다.
+				Combat->TryStopAttack();
 				Shooter->EndActionLock(Lock);
 				Shooter->BeginActionLock(EShooterActionLock::Slide);
 			}
@@ -172,6 +232,7 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 			Combat->TryStartAttack();
 			TestEqual(TEXT("Empty firearm cannot consume more ammo"), Weapon->GetCurrentAmmo(), 0);
 			TestFalse(TEXT("Empty firearm cannot start an attack"), Weapon->IsAttacking());
+			Combat->TryStopAttack();
 		}
 	}
 
@@ -179,9 +240,15 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 	// 새 연사 무기를 사용해 직전 무기의 탄약/쿨다운과 경계 검증을 분리한다.
 	UClass* RifleClass = LoadClass<ARangedWeaponBase>(nullptr,
 		TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
-	if (!TestNotNull(TEXT("Jump boundary rifle class"), RifleClass)) return false;
+	if (!TestNotNull(TEXT("Jump boundary rifle class"), RifleClass))
+	{
+		return false;
+	}
 	ARangedWeaponBase* Rifle = World->SpawnActor<ARangedWeaponBase>(RifleClass, Spawn);
-	if (!TestNotNull(TEXT("Jump boundary rifle"), Rifle)) return false;
+	if (!TestNotNull(TEXT("Jump boundary rifle"), Rifle))
+	{
+		return false;
+	}
 	Shooter->AFirstPersonCharacter::EquipWeapon(Rifle);
 	Shooter->RefreshWeaponMode();
 	// 점프/착지 경계도 같은 탄약 측정 조건을 사용한다.
@@ -190,9 +257,15 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 	const FBoolProperty* RifleAutomaticProperty = FindFProperty<FBoolProperty>(RifleClass, TEXT("bIsAutomatic"));
 	if (!TestNotNull(TEXT("Jump boundary fire interval"), RifleIntervalProperty)
 		|| !TestNotNull(TEXT("Jump boundary automatic setting"), RifleAutomaticProperty)
-		|| !TestTrue(TEXT("Jump boundary uses an automatic rifle"), RifleAutomaticProperty->GetPropertyValue_InContainer(Rifle))) return false;
+		|| !TestTrue(TEXT("Jump boundary uses an automatic rifle"), RifleAutomaticProperty->GetPropertyValue_InContainer(Rifle)))
+		{
+			return false;
+		}
 	const float RifleInterval = RifleIntervalProperty->GetPropertyValue_InContainer(Rifle);
-	if (!TestTrue(TEXT("Jump boundary fire interval is positive"), RifleInterval > KINDA_SMALL_NUMBER)) return false;
+	if (!TestTrue(TEXT("Jump boundary fire interval is positive"), RifleInterval > KINDA_SMALL_NUMBER))
+	{
+		return false;
+	}
 	UCurveFloat* JumpCurve = NewObject<UCurveFloat>(Movement);
 	JumpCurve->FloatCurve.AddKey(0.0f, 1.0f);
 	JumpCurve->FloatCurve.AddKey(1.0f, 0.0f);
@@ -200,14 +273,23 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 	// 점프는 로컬 입력 이력을 소비하므로 Aim도 물리 입력 경로로 기록한다.
 	Combat->HandleAimPressed();
 	Shooter->CheckJumpInput(0.0f);
-	if (!TestTrue(TEXT("Jump boundary starts with Slide ADS"), Combat->IsAiming() && Input->IsSliding())) return false;
+	if (!TestTrue(TEXT("Jump boundary starts with Slide ADS"), Combat->IsAiming() && Input->IsSliding()))
+	{
+		return false;
+	}
 	const int32 BeforeJumpFire = Rifle->GetCurrentAmmo();
 	Combat->TryStartAttack();
-	if (!TestEqual(TEXT("Jump boundary fires its initial round"), Rifle->GetCurrentAmmo(), BeforeJumpFire - 1)) return false;
+	if (!TestEqual(TEXT("Jump boundary fires its initial round"), Rifle->GetCurrentAmmo(), BeforeJumpFire - 1))
+	{
+		return false;
+	}
 	TickFireTimers(0.0f);
 	Input->DoJumpStart();
 	Shooter->CheckJumpInput(0.0f);
-	if (!TestTrue(TEXT("Held fire allows a real Slide jump"), Movement->IsFalling() && Shooter->JumpCurrentCount == 1)) return false;
+	if (!TestTrue(TEXT("Held fire allows a real Slide jump"), Movement->IsFalling() && Shooter->JumpCurrentCount == 1))
+	{
+		return false;
+	}
 	Input->DoJumpEnd();
 	TestFalse(TEXT("Takeoff suspends ADS under the existing airborne policy"), Combat->IsAiming());
 	TestTrue(TEXT("Takeoff preserves held Aim for landing"), Combat->WantsToAim());
@@ -239,12 +321,21 @@ bool FShooterSlideFireTest::RunTest(const FString& Parameters)
 	Shooter->CheckJumpInput(0.0f);
 	Input->HandleCrouchPressed();
 	Shooter->CheckJumpInput(0.0f);
-	if (!TestTrue(TEXT("Melee policy fixture reenters Slide after landing"), Input->IsSliding())) return false;
+	if (!TestTrue(TEXT("Melee policy fixture reenters Slide after landing"), Input->IsSliding()))
+	{
+		return false;
+	}
 	UClass* MeleeClass = LoadClass<AWeaponBase>(nullptr,
 		TEXT("/Game/Blueprints/Weapon/BP_Hammer.BP_Hammer_C"));
-	if (!TestNotNull(TEXT("Concrete melee Blueprint"), MeleeClass)) return false;
+	if (!TestNotNull(TEXT("Concrete melee Blueprint"), MeleeClass))
+	{
+		return false;
+	}
 	AWeaponBase* Melee = World->SpawnActor<AWeaponBase>(MeleeClass, Spawn);
-	if (!TestNotNull(TEXT("Melee fixture"), Melee)) return false;
+	if (!TestNotNull(TEXT("Melee fixture"), Melee))
+	{
+		return false;
+	}
 	Shooter->AFirstPersonCharacter::EquipWeapon(Melee);
 	Shooter->RefreshWeaponMode();
 	for (const bool bAllowMelee : {false, true})

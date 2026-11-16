@@ -3,6 +3,7 @@
 #include "TaggedAudioBatch.h"
 #include "TaggedAudioBatchSettings.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/Skeleton.h"
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "AnimationBlueprintLibrary.h"
 #include "Editor.h"
@@ -11,6 +12,27 @@
 #include "Shooter/Anim/AnimNotify_MakeNoise.h"
 #include "Shooter/Anim/AnimNotifyState_TaggedAudio.h"
 #include "UObject/StrongObjectPtr.h"
+
+namespace
+{
+	bool InitializeTestAnimation(FAutomationTestBase& Test, UAnimSequence* Animation, int32 Frames)
+	{
+		USkeleton* Skeleton = LoadObject<USkeleton>(nullptr,
+			TEXT("/Game/Characters/1P/Workwear/3_Meshes/M_Player1_3_Skeleton.M_Player1_3_Skeleton"));
+		if (!Test.TestNotNull(TEXT("Animation data model has a valid skeleton"), Skeleton))
+		{
+			return false;
+		}
+		// UE5.7의 데이터 모델 초기화는 FK Control Rig도 생성한다. Skeleton 없이
+		// 모델을 만들면 Notify 검증과 관계없는 Rig 초기화 오류가 발생한다.
+		Animation->SetSkeleton(Skeleton);
+		auto& Controller = Animation->GetController();
+		Controller.InitializeModel();
+		Controller.SetFrameRate(FFrameRate(30, 1), false);
+		Controller.SetNumberOfFrames(FFrameNumber(Frames), false);
+		return true;
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaggedAudioBatchTest,
 	"Outlier.Editor.Audio.TaggedNotifyBatch", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -21,15 +43,11 @@ bool FTaggedAudioBatchTest::RunTest(const FString& Parameters)
 	Settings->Mode = ETaggedAudioBatchMode::Add;
 	TStrongObjectPtr<UAnimSequence> Source(NewObject<UAnimSequence>(GetTransientPackage(), NAME_None, RF_Transactional));
 	TStrongObjectPtr<UAnimSequence> Target(NewObject<UAnimSequence>(GetTransientPackage(), NAME_None, RF_Transactional));
-	const auto SetLength = [](UAnimSequence* Animation, int32 Frames)
+	if (!InitializeTestAnimation(*this, Source.Get(), 30)
+		|| !InitializeTestAnimation(*this, Target.Get(), 60))
 	{
-		auto& Controller = Animation->GetController();
-		Controller.InitializeModel();
-		Controller.SetFrameRate(FFrameRate(30, 1), false);
-		Controller.SetNumberOfFrames(FFrameNumber(Frames), false);
-	};
-	SetLength(Source.Get(), 30);
-	SetLength(Target.Get(), 60);
+		return false;
+	}
 	Settings->Times = { 0.25f, 0.25f, 0.75f };
 	Settings->SocketName = TEXT("foot_l");
 	auto Rows = TaggedAudioBatch::Preview(*Settings, { Source.Get() });
@@ -113,10 +131,10 @@ bool FTaggedAudioMarkerBatchTest::RunTest(const FString& Parameters)
 {
 	TStrongObjectPtr<UTaggedAudioBatchSettings> Settings(NewObject<UTaggedAudioBatchSettings>());
 	TStrongObjectPtr<UAnimSequence> Target(NewObject<UAnimSequence>(GetTransientPackage(), NAME_None, RF_Transactional));
-	auto& Controller = Target->GetController();
-	Controller.InitializeModel();
-	Controller.SetFrameRate(FFrameRate(30, 1), false);
-	Controller.SetNumberOfFrames(FFrameNumber(60), false);
+	if (!InitializeTestAnimation(*this, Target.Get(), 60))
+	{
+		return false;
+	}
 	const auto AddMarker = [&](FName Name, float Time)
 	{
 		FAnimSyncMarker& Marker = Target->AuthoredSyncMarkers.AddDefaulted_GetRef();
@@ -233,10 +251,10 @@ bool FNamedNotifyMarkerBatchTest::RunTest(const FString& Parameters)
 {
 	TStrongObjectPtr<UTaggedAudioBatchSettings> Settings(NewObject<UTaggedAudioBatchSettings>());
 	TStrongObjectPtr<UAnimSequence> Target(NewObject<UAnimSequence>(GetTransientPackage(), NAME_None, RF_Transactional));
-	auto& Controller = Target->GetController();
-	Controller.InitializeModel();
-	Controller.SetFrameRate(FFrameRate(30, 1), false);
-	Controller.SetNumberOfFrames(FFrameNumber(60), false);
+	if (!InitializeTestAnimation(*this, Target.Get(), 60))
+	{
+		return false;
+	}
 	for (int32 Index = 0; Index < 2; ++Index)
 	{
 		FAnimSyncMarker& Marker = Target->AuthoredSyncMarkers.AddDefaulted_GetRef();
@@ -253,6 +271,7 @@ bool FNamedNotifyMarkerBatchTest::RunTest(const FString& Parameters)
 	UAnimationBlueprintLibrary::AddAnimationNotifyEventObject(Target.Get(), 0.2f, Noise, TEXT("AI"));
 	auto* OtherNoise = NewObject<UAnimNotify_MakeNoise>(Target.Get(), NAME_None, RF_Transactional);
 	UAnimationBlueprintLibrary::AddAnimationNotifyEventObject(Target.Get(), 1.2f, OtherNoise, TEXT("AI"));
+	TestTrue(TEXT("Native object notify can omit the saved name"), Target->Notifies[0].NotifyName.IsNone());
 	const FGuid NoiseGuid = Target->Notifies[0].Guid;
 	const int32 NoiseTrack = Target->Notifies[0].TrackIndex;
 	FAnimNotifyEvent& Unrelated = Target->Notifies.AddDefaulted_GetRef();
@@ -282,6 +301,7 @@ bool FNamedNotifyMarkerBatchTest::RunTest(const FString& Parameters)
 	{
 		TestEqual(TEXT("Noise time follows L marker"), Moved->GetTime(), 0.4f);
 		TestTrue(TEXT("Noise object and class remain unchanged"), Moved->Notify.Get() == Noise);
+		TestTrue(TEXT("Alignment preserves the omitted saved name"), Moved->NotifyName.IsNone());
 		TestEqual(TEXT("Original track remains unchanged"), Moved->TrackIndex, NoiseTrack);
 	}
 	TestEqual(TEXT("Noise loudness is preserved"), Noise->Loudness, 0.75f);

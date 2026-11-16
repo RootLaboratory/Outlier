@@ -471,6 +471,20 @@ void UUpgradeNodeWidget::HandleUpgradeResult(uint32 RequestId, AActor* UpgradeOw
 
 void UUpgradeNodeWidget::BindUpgradeContextEvents()
 {
+	AFirstPersonPlayerController* Controller = IsValid(CachedPlayerState)
+		? Cast<AFirstPersonPlayerController>(CachedPlayerState->GetOwner()) : nullptr;
+	if (ConvenienceController.Get() != Controller)
+	{
+		if (AFirstPersonPlayerController* Previous = ConvenienceController.Get())
+		{
+			Previous->OnDeveloperConvenienceStateChanged.RemoveDynamic(this, &UUpgradeNodeWidget::HandleDeveloperConvenienceStateChanged);
+		}
+		ConvenienceController = Controller;
+	}
+	if (Controller)
+	{
+		Controller->OnDeveloperConvenienceStateChanged.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleDeveloperConvenienceStateChanged);
+	}
 	if (IsValid(CachedUpgradeComponent))
 	{
 		CachedUpgradeComponent->OnUpgradeStateChanged.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleUpgradeStateChanged);
@@ -491,6 +505,11 @@ void UUpgradeNodeWidget::BindUpgradeContextEvents()
 
 void UUpgradeNodeWidget::UnbindUpgradeContextEvents()
 {
+	if (AFirstPersonPlayerController* Controller = ConvenienceController.Get())
+	{
+		Controller->OnDeveloperConvenienceStateChanged.RemoveDynamic(this, &UUpgradeNodeWidget::HandleDeveloperConvenienceStateChanged);
+	}
+	ConvenienceController.Reset();
 	if (IsValid(CachedUpgradeComponent))
 	{
 		CachedUpgradeComponent->OnUpgradeStateChanged.RemoveDynamic(this, &UUpgradeNodeWidget::HandleUpgradeStateChanged);
@@ -502,6 +521,12 @@ void UUpgradeNodeWidget::UnbindUpgradeContextEvents()
 	}
 	NodeCountChangedHandle.Reset();
 	ActivatedNodesChangedHandle.Reset();
+}
+
+void UUpgradeNodeWidget::HandleDeveloperConvenienceStateChanged(const FDeveloperConvenienceSnapshot& Snapshot)
+{
+	// 잔액이 그대로여도 무료 구매 여부가 바뀌므로 노드와 열린 설명창을 함께 갱신한다.
+	HandleUpgradeStateChanged();
 }
 
 void UUpgradeNodeWidget::HandleUpgradeStateChanged()
@@ -1031,7 +1056,8 @@ void UUpgradeNodeWidget::ApplyInjectedPlayerState(FOutlierUpgradeNodeViewData& I
 	}
 
 	InOutViewData.CurrentNodeCount = CachedPlayerState->GetNodeCount();
-	InOutViewData.bCanAfford = InOutViewData.CurrentNodeCount >= InOutViewData.NodeRow.Cost;
+	InOutViewData.bCanAfford = (CachedUpgradeComponent && !CachedUpgradeComponent->ShouldConsumeNodeCost(CachedPlayerState))
+		|| InOutViewData.CurrentNodeCount >= InOutViewData.NodeRow.Cost;
 
 	// ���ἱ�� ���� ���� ����� ����Ѵ�. ������Ʈ�� ������ �ʾ �ڹ��� ��⸦ ���� �����ؾ� �Ѵ�.
 	const TArray<FName>& ActivatedNodes = CachedPlayerState->GetActivatedUpgradeNodeIds(InOutViewData.NodeRow.Role);

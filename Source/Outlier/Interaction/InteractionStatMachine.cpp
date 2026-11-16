@@ -16,6 +16,7 @@
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Interaction/InteractableComponent.h"
 #include "OutlierPlayerState.h"
+#include "OutlierGameMode.h"
 #include "Room/RoomTagComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "UI/UpgradeMachineWidget.h"
@@ -135,32 +136,19 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 		return false;
 	}
 
-	if (ShooterPlayerState)
+	auto* Mode = GetWorld()->GetAuthGameMode<AOutlierGameMode>();
+	if (!Mode || !Mode->OpenPairUpgradeUI(ShooterPlayerState, PartnerPlayerState,
+		UpgradeMachineWidgetClass, this, FGuid(), [this, ShooterCharacter, PartnerCharacter]()
+		{
+			bIndicateAudio = false;
+			OnRep_IndicateAudio();
+			ForceNetUpdate();
+			// 장치 사용 자격과 공통 UI 검증이 끝난 뒤에만 장치의 회복 보상을 적용한다.
+			TryRecoverPair(ShooterCharacter, PartnerCharacter, CachedHackingPairId);
+		}))
 	{
-		ShooterPlayerState->SetStatAllocatorExitPending(false);
+		return false;
 	}
-
-	if (PartnerPlayerState)
-	{
-		PartnerPlayerState->SetStatAllocatorExitPending(false);
-	}
-
-	FUILayerPushRequest PushRequest;
-	PushRequest.WidgetClass = UpgradeMachineWidgetClass;
-	PushRequest.LayerTag = UILayerTags::GameMenu();
-	PushRequest.InputModeTag = FirstPersonInputModeTags::UI();
-	PushRequest.RequestOwner = this;
-	PushRequest.ContextActors = {ShooterCharacter, PartnerCharacter};
-	PushRequest.FocusTarget = EUILayerFocusTarget::Widget;
-	PushRequest.bShowCursor = true;
-
-	bIndicateAudio = false;
-	OnRep_IndicateAudio();
-	ForceNetUpdate();
-	// 모든 사용 자격이 확정된 뒤 회복한다. UI를 다시 여는 요청은 기록에 걸려 회복만 생략된다.
-	TryRecoverPair(ShooterCharacter, PartnerCharacter, CachedHackingPairId);
-	ShooterController->ClientPushUILayer(PushRequest);
-	PartnerController->ClientPushUILayer(PushRequest);
 	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
 		this,
 		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),

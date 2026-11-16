@@ -30,6 +30,8 @@ public:
 	void NotifyArenaHandoffStarted(const FString& ArenaUrl);
 	void NotifyListenReconnectToken(const FGuid& Token);
 	void PrepareForExplicitLeave();
+	// Worker 로비 경유/Listen 종료 Travel 동안에도 최종 타이틀 목적지를 보존한다.
+	void PrepareForTitleReturn(bool bWaitForServerTravel);
 	void HandleArenaRecoveryFailure(const FString& Reason);
 	void SetArenaRecoveryFailureReason(const FString& Reason);
 	void ReturnAfterArenaRecoveryFailure(bool bReturnToLobby);
@@ -43,6 +45,12 @@ public:
 private:
 	friend class FOutlierArenaReturnLifecycleTest;
 	friend class FOutlierReconnectWatchdogTest;
+	friend class FDeveloperConvenienceTitleTravelTest;
+	void FinishTitleReturn();
+	void ResetTitleReturn();
+	bool bTitleReturnPending = false;
+	bool bTitleReturnTravelRequested = false;
+	double TitleReturnDeadlineSeconds = 0.0;
 
 	void HandlePostLoadMap(UWorld* LoadedWorld);
 	void HandlePreLoadMap(const FString& MapName);

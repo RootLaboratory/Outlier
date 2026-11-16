@@ -13,6 +13,7 @@ class USceneComponent;
 class UMaterialInstanceDynamic;
 class UMeshComponent;
 class AGameStateBase;
+class UPrimitiveComponent;
 
 USTRUCT()
 struct FInteractionNodeHoldState
@@ -49,6 +50,12 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	// BP 구성 완료 후 한 번 수집한다. 런타임에 몸체를 교체한 경우에만 명시적으로 갱신한다.
+	UFUNCTION(BlueprintCallable, Category = "Node|Interaction")
+	void RefreshInteractionBodies();
+	const TArray<TWeakObjectPtr<UPrimitiveComponent>>& GetInteractionBodies() const { return InteractionBodies; }
+	bool IsInteractionBodyVisible(const UPrimitiveComponent* Body) const;
+
 	// 입력은 Character의 RPC로 전달하고, 시도 번호의 발급과 검증은 대상 Node가 맡는다.
 	int32 BeginLocalHoldAttempt(AFirstPersonCharacter* Interactor);
 	int32 GetLocalHoldAttemptId(const AFirstPersonCharacter* Interactor) const;
@@ -71,9 +78,15 @@ protected:
 	TObjectPtr<USceneComponent> InteractionTargetPoint;
 
 private:
+	friend class FInteractionNodeActorHoverTest;
 	friend class UInteractableComponent;
 	friend class FInteractionNodePresentationTest;
 	friend class FInteractionNodeHoldAttemptTest;
+
+	// 비어 있으면 직접 소유한 표시용 메시를 사용한다. 지정 오류는 자동 탐색으로 숨기지 않는다.
+	UPROPERTY(EditAnywhere, Category = "Node|Interaction", meta = (UseComponentPicker, AllowedClasses = "/Script/Engine.PrimitiveComponent"))
+	TArray<FComponentReference> InteractionBodyReferences;
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> InteractionBodies;
 
 	void BeginHoldPresentation(AFirstPersonCharacter* Interactor, int32 AttemptId, float Duration);
 	void EndHoldPresentation(bool bCanceled);

@@ -118,7 +118,7 @@ bool FShadowChainSnapshotContractTest::RunTest(const FString& Parameters)
 
 #if WITH_EDITOR
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShadowChainDebugKeyTest,
-	"Outlier.UI.ShadowChain.DebugF2",
+	"Outlier.UI.ShadowChain.DebugHelperWithoutKeys",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FShadowChainDebugKeyTest::RunTest(const FString& Parameters)
@@ -141,6 +141,7 @@ bool FShadowChainDebugKeyTest::RunTest(const FString& Parameters)
 	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
 	if (!TestTrue(TEXT("Server debug fixture"), Controller && State && Shooter)) return false;
 	State->SetPlayerRole(EOutlierPlayerRole::Shooter);
+	State->SetPairId(7);
 	State->SetShooterCharacter(Shooter);
 	Shooter->SetPlayerState(State);
 	Controller->SetPlayerState(State);
@@ -157,10 +158,22 @@ bool FShadowChainDebugKeyTest::RunTest(const FString& Parameters)
 	Upgrades->SetUpgradeSetData(Set);
 	State->RestoreCheckpointProgress(7, EOutlierUpgradeRole::Shooter, {TEXT("Unrelated")});
 	Upgrades->SyncFromPlayerState();
-	FInputKeyEventArgs Key;
-	Key.Key = EKeys::F2;
-	Key.Event = IE_Pressed;
-	TestTrue(TEXT("F2 consumed in game worlds"), static_cast<APlayerController*>(Controller)->InputKey(Key));
+	// 기존 키 입력은 제거하고 Tester가 쓰는 서버 헬퍼는 그대로 유지한다.
+	const uint32 BeforeKeys = State->GetUpgradeRestoreRevision(EOutlierUpgradeRole::Shooter);
+	for (const FKey& DebugKey : { EKeys::F1, EKeys::F2 })
+	{
+		for (EInputEvent Event : { IE_Pressed, IE_Repeat, IE_Released, IE_Pressed })
+		{
+			FInputKeyEventArgs Key;
+			Key.Key = DebugKey;
+			Key.Event = Event;
+			static_cast<APlayerController*>(Controller)->InputKey(Key);
+			TestFalse(TEXT("Each legacy key event leaves invincibility disabled"), State->IsDebugPairInvulnerable());
+		}
+	}
+	TestEqual(TEXT("Legacy keys do not grant upgrades"), State->GetUpgradeRestoreRevision(EOutlierUpgradeRole::Shooter), BeforeKeys);
+	TestFalse(TEXT("Legacy keys do not toggle invincibility"), State->IsDebugPairInvulnerable());
+	Controller->ServerDebugGrantStealthUpgrades();
 	const TArray<FName> Granted = State->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter);
 	for (const TCHAR* Node : {TEXT("Shooter_Stealth_001"), TEXT("Shooter_Stealth_002"), TEXT("Shooter_Stealth_003"),
 		TEXT("Shooter_Stealth_004A"), TEXT("Shooter_Stealth_004B"), TEXT("Shooter_Stealth_005A"), TEXT("Shooter_Stealth_005B")})
@@ -172,16 +185,14 @@ bool FShadowChainDebugKeyTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Currency is preserved"), State->GetNodeCount(), 7);
 	TestTrue(TEXT("Normal projection unlocks the ShadowChain UI snapshot"), ASC->GetShadowChainPresentationState().bUnlocked);
 	const uint32 Revision = State->GetUpgradeRestoreRevision(EOutlierUpgradeRole::Shooter);
-	for (EInputEvent Event : {IE_Repeat, IE_Released, IE_Pressed})
+	for (int32 Attempt = 0; Attempt < 3; ++Attempt)
 	{
-		Key.Event = Event;
-		static_cast<APlayerController*>(Controller)->InputKey(Key);
+		Controller->ServerDebugGrantStealthUpgrades();
 	}
 	TestEqual(TEXT("Repeated presses never duplicate grants or replay restore"), State->GetUpgradeRestoreRevision(EOutlierUpgradeRole::Shooter), Revision);
 	State->SetPlayerRole(EOutlierPlayerRole::Partner);
 	State->RestoreCheckpointProgress(7, EOutlierUpgradeRole::Shooter, {});
-	Key.Event = IE_Pressed;
-	static_cast<APlayerController*>(Controller)->InputKey(Key);
+	Controller->ServerDebugGrantStealthUpgrades();
 	TestTrue(TEXT("Partner cannot grant Shooter upgrades"), State->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter).IsEmpty());
 	return true;
 }

@@ -725,7 +725,22 @@ namespace
 				}
 				if ((DA < 0.0 && DB > 0.0) || (DA > 0.0 && DB < 0.0))
 				{
-					const FVector Intersection = A + (B - A) * (DA / (DA - DB));
+					FVector Intersection = A + (B - A) * (DA / (DA - DB));
+					// 보간 오차로 교점이 평면 반대편에 남으면 접한 다음 Room에서 가짜 틈이 생긴다.
+					// 가장 큰 법선 축을 평면 식으로 재구성한다. 공간 허용 오차는 추가하지 않는다.
+					const FVector AbsoluteNormal = Plane.Normal.GetAbs();
+					const int32 Axis = AbsoluteNormal.X >= AbsoluteNormal.Y
+						? (AbsoluteNormal.X >= AbsoluteNormal.Z ? 0 : 2)
+						: (AbsoluteNormal.Y >= AbsoluteNormal.Z ? 1 : 2);
+					double OtherCoordinates = 0.0;
+					for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+					{
+						if (Coordinate != Axis)
+						{
+							OtherCoordinates += Plane.Normal[Coordinate] * Intersection[Coordinate];
+						}
+					}
+					Intersection[Axis] = (Plane.Distance - OtherCoordinates) / Plane.Normal[Axis];
 					Clipped.Add(Intersection);
 					Cap.AddUnique(Intersection);
 				}

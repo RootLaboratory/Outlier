@@ -13,6 +13,8 @@
 #include "OutlierUpgradeEffectToolWidget.h"
 #include "OutlierShooterSuitTestToolWidget.h"
 #include "PlayInEditorDataTypes.h"
+#include "PropertyEditorModule.h"
+#include "TurretOutlineExclusionCustomization.h"
 #include "ProceduralAnimValuesExporter.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Styling/AppStyle.h"
@@ -35,6 +37,10 @@ class FOutlierEditorModule : public IModuleInterface
 public:
 	virtual void StartupModule() override
 	{
+		FPropertyEditorModule& PropertyEditor = FModuleManager::LoadModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
+		PropertyEditor.RegisterCustomPropertyTypeLayout(TEXT("AutoTurretOutlineExclusion"),
+			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FTurretOutlineExclusionCustomization::MakeInstance));
+
 		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
 			OutlierEditor::InputMappableToolTabName,
 			FOnSpawnTab::CreateRaw(this, &FOutlierEditorModule::SpawnInputMappableToolTab))
@@ -74,6 +80,11 @@ public:
 
 	virtual void ShutdownModule() override
 	{
+		if (FPropertyEditorModule* PropertyEditor = FModuleManager::GetModulePtr<FPropertyEditorModule>(TEXT("PropertyEditor")))
+		{
+			PropertyEditor->UnregisterCustomPropertyTypeLayout(TEXT("AutoTurretOutlineExclusion"));
+		}
+
 		FEditorDelegates::BeginPIE.RemoveAll(this);
 		FEditorDelegates::PreBeginPIE.RemoveAll(&StableIdTool);
 		StableIdTool.Shutdown();

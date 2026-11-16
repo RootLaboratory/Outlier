@@ -7,9 +7,9 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
-#include "GameFramework/GameStateBase.h"
+#include "EnhancedInputSubsystems.h"
+#include "Input/ControllerInputConfig.h"
 #include "GameFramework/PlayerController.h"
-#include "GameFramework/PlayerState.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierPlayerState.h"
@@ -41,12 +41,26 @@ void UUpgradeMachineWidget::NativeOnInitialized()
 void UUpgradeMachineWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+		{
+			// 대기 문구가 한 개여서 타이머가 없어도 키 재설정 직후 안내를 갱신한다.
+			Input->ControlMappingsRebuiltDelegate.AddUniqueDynamic(this, &ThisClass::UpdateWaitingMessage);
+		}
+	}
 	bUIOpenedReported = false;
+	bSessionSynchronized = false;
+	bExitRequestInFlight = false;
+	bExitFinalized = false;
+	bFinalizedCloseRetryUsed = false;
+	bLocalExitRequested = false;
+	OpenedSessionId = 0;
 	OpenedPlayerState.Reset();
-	BindExitPendingStates();
+	BindSessionState();
 	if (Button)
 	{
-		Button->SetIsEnabled(true);
+		Button->SetIsEnabled(false);
 	}
 	RefreshWaitingState();
 
@@ -59,16 +73,26 @@ void UUpgradeMachineWidget::NativeConstruct()
 		OpenedGameplayGeneration = Arena->GetGameplayGeneration();
 		bUIOpenedReported = true;
 		PlayerState->ReportStatAllocatorUIOpened(OpenedGameplayGeneration);
+		SynchronizeSession();
 	}
 }
 
 void UUpgradeMachineWidget::NativeDestruct()
 {
+	if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+		{
+			Input->ControlMappingsRebuiltDelegate.RemoveDynamic(this, &ThisClass::UpdateWaitingMessage);
+		}
+	}
 	if (GetWorld())
 	{
 		GetWorld()->GetTimerManager().ClearTimer(WaitingMessageTimerHandle);
+		GetWorld()->GetTimerManager().ClearTimer(FinalizedCloseRetryHandle);
 	}
-	UnbindExitPendingStates();
+	UnbindSessionState();
+	bSessionSynchronized = false;
 	Super::NativeDestruct();
 }
 
@@ -76,28 +100,31 @@ void UUpgradeMachineWidget::InitializeUILayerContext_Implementation(const TArray
 {
 	ShooterCharacter = ContextActors.IsValidIndex(0) ? Cast<AShooterCharacter>(ContextActors[0]) : nullptr;
 	PartnerCharacter = ContextActors.IsValidIndex(1) ? Cast<APartnerCharacter>(ContextActors[1]) : nullptr;
-	bLocalExitRequested = false;
-	if (AOutlierPlayerState* PlayerState = GetLocalPlayerState())
+	BindSessionState();
+	if (bUIOpenedReported)
 	{
-		PlayerState->SetStatAllocatorExitPending(false);
-	}
-	BindExitPendingStates();
-	if (Button)
-	{
-		Button->SetIsEnabled(true);
+		// 중복 Push는 NativeConstruct 없이 컨텍스트만 다시 주입하므로 여기서도 동기화한다.
+		SynchronizeSession();
 	}
 	RefreshWaitingState();
 }
 
 bool UUpgradeMachineWidget::HandleUILayerEscape_Implementation()
 {
-	RequestExit();
+	if (bLocalExitRequested)
+	{
+		CancelExit();
+	}
+	else
+	{
+		RequestExit();
+	}
 	return true;
 }
 
 bool UUpgradeMachineWidget::HandleUILayerConfirmed_Implementation()
 {
-	if (!bLocalExitRequested)
+	if (bSessionSynchronized && !bLocalExitRequested && !bExitRequestInFlight && !bExitFinalized)
 	{
 		HandleButtonClicked();
 		return true;
@@ -107,7 +134,7 @@ bool UUpgradeMachineWidget::HandleUILayerConfirmed_Implementation()
 
 void UUpgradeMachineWidget::HandleButtonClicked()
 {
-	if (!bLocalExitRequested)
+	if (bSessionSynchronized && !bLocalExitRequested && !bExitRequestInFlight && !bExitFinalized)
 	{
 		OpenNodeScreen();
 	}
@@ -162,51 +189,68 @@ void UUpgradeMachineWidget::OpenNodeScreen()
 		EUILayerFocusTarget::Widget, true, true);
 }
 
-void UUpgradeMachineWidget::BindExitPendingStates()
+void UUpgradeMachineWidget::BindSessionState()
 {
-	UnbindExitPendingStates();
-	AOutlierPlayerState* LocalPlayerState = GetLocalPlayerState();
-	AOutlierPlayerState* PairedPlayerState = FindPairedPlayerState();
-	if (LocalPlayerState)
+	UnbindSessionState();
+	if (AOutlierPlayerState* PlayerState = GetLocalPlayerState())
 	{
-		LocalPlayerState->OnStatAllocatorExitPendingChanged.AddUObject(this, &ThisClass::HandleExitPendingChanged);
-		BoundExitPendingPlayerStates.Add(LocalPlayerState);
-	}
-	if (PairedPlayerState && PairedPlayerState != LocalPlayerState)
-	{
-		PairedPlayerState->OnStatAllocatorExitPendingChanged.AddUObject(this, &ThisClass::HandleExitPendingChanged);
-		BoundExitPendingPlayerStates.Add(PairedPlayerState);
+		PlayerState->OnStatAllocatorSessionChanged.AddUObject(this, &ThisClass::HandleSessionChanged);
+		BoundSessionPlayerState = PlayerState;
 	}
 }
 
-void UUpgradeMachineWidget::UnbindExitPendingStates()
+void UUpgradeMachineWidget::UnbindSessionState()
 {
-	for (const TWeakObjectPtr<AOutlierPlayerState>& PlayerStatePtr : BoundExitPendingPlayerStates)
+	if (AOutlierPlayerState* PlayerState = BoundSessionPlayerState.Get())
 	{
-		if (AOutlierPlayerState* PlayerState = PlayerStatePtr.Get())
+		PlayerState->OnStatAllocatorSessionChanged.RemoveAll(this);
+	}
+	BoundSessionPlayerState.Reset();
+}
+
+void UUpgradeMachineWidget::HandleSessionChanged(
+	uint32 SessionId, uint32 Generation, bool bPending, bool bFinalized, uint32 SyncRequestId)
+{
+	if (!bUIOpenedReported || Generation != OpenedGameplayGeneration || SessionId == 0)
+	{
+		return;
+	}
+	if (!bSessionSynchronized)
+	{
+		// 재사용 위젯에는 이전 화면의 응답도 도착할 수 있다. 이번 열기의 확인 응답만 받는다.
+		if (SyncRequestId != SessionSyncRequestId)
 		{
-			PlayerState->OnStatAllocatorExitPendingChanged.RemoveAll(this);
+			return;
 		}
+		OpenedSessionId = SessionId;
+		bSessionSynchronized = true;
 	}
-	BoundExitPendingPlayerStates.Reset();
-}
-
-void UUpgradeMachineWidget::HandleExitPendingChanged(AOutlierPlayerState* ChangedPlayerState)
-{
-	(void)ChangedPlayerState;
+	if (SessionId != OpenedSessionId)
+	{
+		return;
+	}
+	bExitRequestInFlight = false;
+	bLocalExitRequested = bPending;
+	bExitFinalized = bFinalized;
 	RefreshWaitingState();
+	if (bExitFinalized)
+	{
+		TryPopMachineLayer();
+	}
 }
 
 void UUpgradeMachineWidget::RefreshWaitingState()
 {
-	const AOutlierPlayerState* PairedPlayerState = FindPairedPlayerState();
-	const bool bOtherExiting = PairedPlayerState && PairedPlayerState->IsStatAllocatorExitPending();
+	if (Button)
+	{
+		Button->SetIsEnabled(bSessionSynchronized && !bLocalExitRequested && !bExitRequestInFlight && !bExitFinalized);
+	}
 	if (TextBlock_76)
 	{
 		TextBlock_76->SetRenderOpacity(bLocalExitRequested ? 1.0f : 0.0f);
 		if (bLocalExitRequested && WaitingMessages.IsValidIndex(WaitingMessageIndex))
 		{
-			TextBlock_76->SetText(WaitingMessages[WaitingMessageIndex]);
+			UpdateWaitingMessage();
 		}
 	}
 
@@ -228,10 +272,7 @@ void UUpgradeMachineWidget::RefreshWaitingState()
 		}
 	}
 
-	if (bLocalExitRequested && bOtherExiting)
-	{
-		TryPopMachineLayer();
-	}
+	OnWaitingStateChanged.Broadcast();
 }
 
 void UUpgradeMachineWidget::AdvanceWaitingMessage()
@@ -241,25 +282,85 @@ void UUpgradeMachineWidget::AdvanceWaitingMessage()
 		return;
 	}
 	WaitingMessageIndex = (WaitingMessageIndex + 1) % WaitingMessages.Num();
-	TextBlock_76->SetText(WaitingMessages[WaitingMessageIndex]);
+	UpdateWaitingMessage();
+}
+
+void UUpgradeMachineWidget::SynchronizeSession()
+{
+	if (AOutlierPlayerState* PlayerState = OpenedPlayerState.Get())
+	{
+		bSessionSynchronized = false;
+		bExitRequestInFlight = false;
+		static uint32 NextSyncRequestId = 0;
+		SessionSyncRequestId = ++NextSyncRequestId;
+		if (SessionSyncRequestId == 0)
+		{
+			SessionSyncRequestId = ++NextSyncRequestId;
+		}
+		RefreshWaitingState();
+		// 열기 RPC와 복제 순서 대신 이번 화면의 확인 응답으로 세션을 연결한다.
+		PlayerState->SynchronizeStatAllocatorSession(SessionSyncRequestId);
+	}
+}
+
+void UUpgradeMachineWidget::UpdateWaitingMessage()
+{
+	if (TextBlock_76 && WaitingMessages.IsValidIndex(WaitingMessageIndex))
+	{
+		const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+		const ULocalPlayerUILayerSubsystem* Layers = LocalPlayer
+			? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>() : nullptr;
+		const UControllerInputConfig* Config = Layers ? Layers->GetWidgetInputConfig() : nullptr;
+		const UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer
+			? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
+		TArray<FText> KeyNames;
+		// 취소 입력을 라우팅하는 UI 레이어와 같은 액션·현재 매핑을 조회한다. 고정 Esc로 대체하지 않는다.
+		if (Input && Config && Config->WidgetEscapeAction)
+		{
+			for (const FKey& Key : Input->QueryKeysMappedToAction(Config->WidgetEscapeAction))
+			{
+				if (Key.IsValid())
+				{
+					KeyNames.Add(Key.GetDisplayName(false));
+				}
+			}
+		}
+		const FText CancelKeys = KeyNames.IsEmpty()
+			? NSLOCTEXT("UpgradeMachineWidget", "CancelKeyUnbound", "미지정")
+			: FText::Join(FText::FromString(TEXT(" / ")), KeyNames);
+		TextBlock_76->SetText(FText::Format(
+			NSLOCTEXT("UpgradeMachineWidget", "WaitingCancelMapped", "{0}\n{1}: 취소"),
+			WaitingMessages[WaitingMessageIndex], CancelKeys));
+	}
 }
 
 void UUpgradeMachineWidget::RequestExit()
 {
-	if (bLocalExitRequested)
+	if (!bSessionSynchronized || bLocalExitRequested || bExitRequestInFlight || bExitFinalized)
 	{
 		return;
 	}
-	bLocalExitRequested = true;
-	if (Button)
+	if (AOutlierPlayerState* PlayerState = OpenedPlayerState.Get())
 	{
-		Button->SetIsEnabled(false);
+		bExitRequestInFlight = true;
+		RefreshWaitingState();
+		PlayerState->RequestStatAllocatorExitPending(OpenedSessionId, OpenedGameplayGeneration, true);
 	}
-	if (AOutlierPlayerState* PlayerState = GetLocalPlayerState())
+}
+
+void UUpgradeMachineWidget::CancelExit()
+{
+	if (!CanCancelExit())
 	{
-		PlayerState->SetStatAllocatorExitPending(true);
+		return;
 	}
-	RefreshWaitingState();
+	if (AOutlierPlayerState* PlayerState = OpenedPlayerState.Get())
+	{
+		bExitRequestInFlight = true;
+		RefreshWaitingState();
+		// Layer와 강화 컨텍스트는 그대로 두고 서버의 본인 준비 상태만 해제한다.
+		PlayerState->RequestStatAllocatorExitPending(OpenedSessionId, OpenedGameplayGeneration, false);
+	}
 }
 
 void UUpgradeMachineWidget::TryPopMachineLayer()
@@ -268,8 +369,20 @@ void UUpgradeMachineWidget::TryPopMachineLayer()
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
 		: nullptr;
-	if (!LayerSubsystem || !LayerSubsystem->PopWidget(this))
+	if (!LayerSubsystem || !bExitFinalized)
 	{
+		return;
+	}
+	if (!LayerSubsystem->PopWidget(this))
+	{
+		// Listen/Standalone의 즉시 응답은 NativeConstruct 중 도착할 수 있다.
+		// Layer 등록 직후 한 번만 다시 닫고, 제거 시 예약도 함께 해제한다.
+		if (!bFinalizedCloseRetryUsed && GetWorld())
+		{
+			bFinalizedCloseRetryUsed = true;
+			FinalizedCloseRetryHandle = GetWorld()->GetTimerManager().SetTimerForNextTick(
+				this, &ThisClass::TryPopMachineLayer);
+		}
 		return;
 	}
 	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.Object.SavePoint.EXIT"), TEXT("Audio.Type.Interactable"));
@@ -287,26 +400,6 @@ AOutlierPlayerState* UUpgradeMachineWidget::GetLocalPlayerState() const
 {
 	const APlayerController* PlayerController = GetOwningPlayer();
 	return PlayerController ? PlayerController->GetPlayerState<AOutlierPlayerState>() : nullptr;
-}
-
-AOutlierPlayerState* UUpgradeMachineWidget::FindPairedPlayerState() const
-{
-	const AOutlierPlayerState* LocalPlayerState = GetLocalPlayerState();
-	const AGameStateBase* GameState = GetWorld() ? GetWorld()->GetGameState() : nullptr;
-	if (!LocalPlayerState || !GameState || LocalPlayerState->GetPairId() == INDEX_NONE)
-	{
-		return nullptr;
-	}
-	for (APlayerState* RawPlayerState : GameState->PlayerArray)
-	{
-		AOutlierPlayerState* Candidate = Cast<AOutlierPlayerState>(RawPlayerState);
-		if (Candidate && Candidate != LocalPlayerState
-			&& Candidate->GetPairId() == LocalPlayerState->GetPairId())
-		{
-			return Candidate;
-		}
-	}
-	return nullptr;
 }
 
 TSubclassOf<UUpgradeNodeGroupWidget> UUpgradeMachineWidget::ResolveNodeGroupClass() const

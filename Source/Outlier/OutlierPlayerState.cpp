@@ -297,6 +297,17 @@ void AOutlierPlayerState::SetStatAllocatorExitPending(bool bPending)
 		return;
 	}
 
+	// 세션이 열린 뒤에는 Listen 호스트도 번호가 있는 요청 경로만 사용한다.
+	if (StatAllocatorPartner.IsValid())
+	{
+		SendStatAllocatorSession();
+		return;
+	}
+	ApplyStatAllocatorExitPending(bPending);
+}
+
+void AOutlierPlayerState::ApplyStatAllocatorExitPending(bool bPending)
+{
 	if (bStatAllocatorExitPending == bPending)
 	{
 		return;
@@ -305,6 +316,106 @@ void AOutlierPlayerState::SetStatAllocatorExitPending(bool bPending)
 	bStatAllocatorExitPending = bPending;
 	HandleStatAllocatorExitPendingChanged();
 	ForceNetUpdate();
+}
+
+void AOutlierPlayerState::BeginStatAllocatorSession(AOutlierPlayerState* Partner)
+{
+	const UOutlierArenaSubsystem* Arena = GetWorld() ? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!HasAuthority() || !Arena || !IsValid(Partner) || Partner == this
+		|| !Partner->HasAuthority() || Partner->GetWorld() != GetWorld()
+		|| PairId == INDEX_NONE || Partner->PairId != PairId
+		|| !((IsShooterPlayer() && Partner->IsPartnerPlayer())
+			|| (IsPartnerPlayer() && Partner->IsShooterPlayer())))
+	{
+		return;
+	}
+
+	// 같은 장치의 중복 열기는 기존 준비 상태를 유지한다.
+	if (StatAllocatorPartner.Get() == Partner && Partner->StatAllocatorPartner.Get() == this
+		&& StatAllocatorSessionGeneration == Arena->GetGameplayGeneration()
+		&& !bStatAllocatorExitFinalized && !Partner->bStatAllocatorExitFinalized)
+	{
+		return;
+	}
+
+	// 같은 전투 세대에서 다시 열어도 이전 화면의 늦은 요청과 구별한다.
+	uint32 NewSessionId = FMath::Max(StatAllocatorSessionId, Partner->StatAllocatorSessionId) + 1;
+	if (NewSessionId == 0)
+	{
+		NewSessionId = 1;
+	}
+	for (AOutlierPlayerState* PlayerState : {this, Partner})
+	{
+		PlayerState->StatAllocatorSessionId = NewSessionId;
+		PlayerState->StatAllocatorSessionGeneration = Arena->GetGameplayGeneration();
+		PlayerState->StatAllocatorPartner = PlayerState == this ? Partner : this;
+		PlayerState->bStatAllocatorExitFinalized = false;
+		PlayerState->ApplyStatAllocatorExitPending(false);
+	}
+}
+
+void AOutlierPlayerState::SynchronizeStatAllocatorSession(uint32 SyncRequestId)
+{
+	if (!HasAuthority())
+	{
+		ServerSynchronizeStatAllocatorSession(SyncRequestId);
+		return;
+	}
+	SendStatAllocatorSession(SyncRequestId);
+}
+
+void AOutlierPlayerState::RequestStatAllocatorExitPending(uint32 SessionId, uint32 Generation, bool bPending)
+{
+	if (!HasAuthority())
+	{
+		ServerRequestStatAllocatorExitPending(SessionId, Generation, bPending);
+		return;
+	}
+
+	const UOutlierArenaSubsystem* Arena = GetWorld() ? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	AOutlierPlayerState* Partner = StatAllocatorPartner.Get();
+	if (!Arena || SessionId == 0 || SessionId != StatAllocatorSessionId
+		|| Generation != StatAllocatorSessionGeneration || Generation != Arena->GetGameplayGeneration()
+		|| !Partner || PairId == INDEX_NONE || Partner->PairId != PairId
+		|| Partner->StatAllocatorPartner.Get() != this || Partner->StatAllocatorSessionId != SessionId
+		|| Partner->StatAllocatorSessionGeneration != Generation || bStatAllocatorExitFinalized)
+	{
+		SendStatAllocatorSession();
+		return;
+	}
+
+	ApplyStatAllocatorExitPending(bPending);
+	if (bStatAllocatorExitPending && Partner->bStatAllocatorExitPending)
+	{
+		// 두 상태를 먼저 확정한 뒤 통보한다. 이 이후 도착한 취소는 화면을 되살리지 못한다.
+		bStatAllocatorExitFinalized = true;
+		Partner->bStatAllocatorExitFinalized = true;
+		Partner->SendStatAllocatorSession();
+	}
+	SendStatAllocatorSession();
+}
+
+void AOutlierPlayerState::SendStatAllocatorSession(uint32 SyncRequestId)
+{
+	ClientStatAllocatorSessionChanged(StatAllocatorSessionId, StatAllocatorSessionGeneration,
+		bStatAllocatorExitPending, bStatAllocatorExitFinalized, SyncRequestId);
+}
+
+void AOutlierPlayerState::ClientStatAllocatorSessionChanged_Implementation(
+	uint32 SessionId, uint32 Generation, bool bPending, bool bFinalized, uint32 SyncRequestId)
+{
+	OnStatAllocatorSessionChanged.Broadcast(SessionId, Generation, bPending, bFinalized, SyncRequestId);
+}
+
+void AOutlierPlayerState::ServerSynchronizeStatAllocatorSession_Implementation(uint32 SyncRequestId)
+{
+	SynchronizeStatAllocatorSession(SyncRequestId);
+}
+
+void AOutlierPlayerState::ServerRequestStatAllocatorExitPending_Implementation(
+	uint32 SessionId, uint32 Generation, bool bPending)
+{
+	RequestStatAllocatorExitPending(SessionId, Generation, bPending);
 }
 
 void AOutlierPlayerState::ReportStatAllocatorUIOpened(uint32 GameplayGeneration)
@@ -358,7 +469,8 @@ void AOutlierPlayerState::RecordStatAllocatorUIState(uint32 GameplayGeneration, 
 	if (StatAllocatorUIGeneration != GameplayGeneration)
 	{
 		// 리로드 후 같은 PlayerState가 남아도 이전 UI 확인은 새 전투 진행에 쓰지 않는다.
-		ResetStatAllocatorUIState();
+		bStatAllocatorUIOpened = false;
+		bStatAllocatorUICompleted = false;
 		StatAllocatorUIGeneration = GameplayGeneration;
 	}
 
@@ -385,6 +497,8 @@ void AOutlierPlayerState::RecordStatAllocatorUIState(uint32 GameplayGeneration, 
 
 void AOutlierPlayerState::ResetStatAllocatorUIState()
 {
+	StatAllocatorPartner.Reset();
+	bStatAllocatorExitFinalized = false;
 	StatAllocatorUIGeneration = 0;
 	bStatAllocatorUIOpened = false;
 	bStatAllocatorUICompleted = false;

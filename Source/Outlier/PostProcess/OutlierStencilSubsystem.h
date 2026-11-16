@@ -8,6 +8,19 @@
 class UMeshComponent;
 class APlayerController;
 class AFirstPersonCharacter;
+class AAutoTurret;
+class USkeletalMeshComponent;
+class USkeletalMesh;
+class UTeammateOutlineMaskComponent;
+struct FTeammateOutlineTargetData;
+
+struct FOutlierTurretOutlineMaskState
+{
+	TWeakObjectPtr<USkeletalMesh> Asset;
+	TWeakObjectPtr<UTeammateOutlineMaskComponent> Proxy;
+	uint32 ConfigurationHash = 0;
+	bool bFailureReported = false;
+};
 
 // Scripts/Editor/ApplyOutlinePolicy.py와 공유한다. 관리 표식으로 ADS(3)와 기존
 // 에셋 스텐실을 게임 외곽선 패스에서 제외한다. 하위 2비트는 스캔 유형을 나타낸다.
@@ -70,6 +83,10 @@ public:
 	FSimpleMulticastDelegate OnTeammateMeshesChanged;
 	/** 독립 패스가 pair 외곽선을 맡을 때만 기존 스텐실의 pair 팀원 비트를 해제한다. */
 	void SetIndependentPairOutlineEnabled(bool bEnabled);
+	/** 터렛은 공통 RDG 준비 결과에 따라 팀원 비트만 전환한다. 다른 스타일은 계속 보존한다. */
+	void SetIndependentTurretOutlineState(const TArray<TWeakObjectPtr<AActor>>& ReadyTargets, bool bEnabled,
+		bool bReleaseMasks = false);
+	void GatherTurretOutlineTargets(const APlayerController* Viewer, TArray<FTeammateOutlineTargetData>& OutTargets);
 	/** 해킹된 터렛처럼 플레이어 쌍 외의 팀원을 등록하거나 해제한다. ResetTransientEffects에 지워지지 않는다. */
 	void SetActorTeammate(AActor* Target, bool bTeammate);
 
@@ -85,9 +102,16 @@ private:
 	TMap<TWeakObjectPtr<UMeshComponent>, FOutlierStencilMeshState> MeshStates;
 	bool bTeammatesDirty = true;
 	bool bIndependentPairOutlineEnabled = false;
+	bool bTurretOutlineManaged = false;
+	bool bTurretOutlineEnabled = false;
+	TSet<TWeakObjectPtr<AActor>> ReadyTurretOutlines;
+	TSet<TWeakObjectPtr<AActor>> ExcludedTurretOutlines;
+	TMap<TWeakObjectPtr<USkeletalMeshComponent>, FOutlierTurretOutlineMaskState> TurretMasks;
+	TMap<TWeakObjectPtr<AActor>, uint32> InvalidTurretConfigurations;
 	float FallbackElapsed = 0.f;
 	bool RefreshPairTeammates();
 	FOutlierStencilMeshState& TrackMesh(UMeshComponent* Mesh);
 	void Reconcile();
+	void ReleaseTurretMasks(AActor* Target = nullptr);
 	static void WriteMesh(UMeshComponent* Mesh, bool bEnabled, int32 Stencil, ERendererStencilMask WriteMask);
 };

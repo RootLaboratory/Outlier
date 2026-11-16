@@ -6,6 +6,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Curves/CurveFloat.h"
+#include "Drone/FlightPathfinding.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -203,6 +204,31 @@ bool FEnemyGroupQueryBoundaryTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyGroupFractionalBoundaryTest, "Outlier.Enemy.GroupMovement.FractionalBoundary",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyGroupFractionalBoundaryTest::RunTest(const FString& Parameters)
+{
+	FGroupMovementWorld Fixture;
+	FFlightPathRequest Request;
+	Request.bRequireRoom = true;
+	Request.Room = Fixture.Home;
+	Request.AllowedRooms = {Fixture.Home, Fixture.Sibling};
+	const FVector Start(81.88888549804688, 0, 0);
+	const FVector Goal(-250, 0, 0);
+	const FVector Extent(10, 10, 20);
+	// 실제 CharacterMovement가 만드는 소수 좌표에서도 접한 방 사이에 가짜 틈이 생기면 안 된다.
+	TestTrue(TEXT("Fractional movement crosses touching rooms"),
+		FlightPathfinding::IsSegmentInsideMovementRooms(Request, Start, Goal, Extent));
+	TestTrue(TEXT("Reverse movement uses the same touching-room boundary"),
+		FlightPathfinding::IsSegmentInsideMovementRooms(Request, Goal, Start, Extent));
+	// 수치 안정화는 경계 허용 오차를 늘리는 것이 아니다. 실제로 존재하는 얇은 틈은 거부한다.
+	Fixture.Sibling->SetActorLocation(FVector(300.0001, 0, 0));
+	TestFalse(TEXT("A real thin unregistered gap remains impassable"),
+		FlightPathfinding::IsSegmentInsideMovementRooms(Request, Start, Goal, Extent));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyGroupReturnMovementTest, "Outlier.Enemy.GroupMovement.ActualReturn",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -220,8 +246,18 @@ bool FEnemyGroupReturnMovementTest::RunTest(const FString& Parameters)
 	auto Data = Fixture.Flight(FVector::ZeroVector);
 	Data.bReturnHome = true;
 	Data.AcceptanceRadius = 1;
+	// 실제 Returning은 SelectHome이 목적지와 요청 세대를 소유한 뒤 FlyHome으로 넘긴다.
+	// 이동 Task만 직접 구동하는 이 fixture도 같은 선택 경계를 먼저 실행한다.
+	if (!TestTrue(TEXT("Return selector owns a current home destination"),
+		Fixture.Enemy->TrySelectReturnHomeDestination(Data.Destination)))
+	{
+		return false;
+	}
 	if (!TestEqual(TEXT("Return resolves home destination and starts actual route"),
-		EnemyFlightTesting::StartPath(Data), EStateTreeRunStatus::Running)) return false;
+		EnemyFlightTesting::StartPath(Data), EStateTreeRunStatus::Running))
+	{
+		return false;
+	}
 	TestFalse(TEXT("Return cannot complete at sibling start"), Fixture.Enemy->CompleteReturnHome());
 	EStateTreeRunStatus Status = EStateTreeRunStatus::Running;
 	bool bSawIntermediateMovement = false;
@@ -230,11 +266,33 @@ bool FEnemyGroupReturnMovementTest::RunTest(const FString& Parameters)
 	{
 		const FVector Before = Fixture.Enemy->GetActorLocation();
 		Status = EnemyFlightTesting::TickPath(Data, Step);
+		if (Data.bWaitingForPath && Data.RepathAttempts == 0)
+		{
+			// 실제 이동 중 중단되면 등록 세대, 합집합 경계, 충돌 검사를 구분할 근거를 남긴다.
+			FFlightPathRequest Request;
+			Request.Start = Before;
+			Request.Goal = Data.Destination;
+			Request.bRequireRoom = true;
+			Request.Room = Data.CachedRoom;
+			Request.AllowedRooms = Data.MovementRooms.Rooms;
+			Request.Clearance = Data.PathClearance;
+			const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(
+				Data.CachedCapsule->GetScaledCapsuleRadius(), Data.CachedCapsule->GetScaledCapsuleHalfHeight(),
+				Data.CachedCapsule->GetComponentQuat());
+			AddInfo(FString::Printf(TEXT("Return interruption: position=(%.17g,%.17g,%.17g) context=%d union=%d collision=%s"),
+				Before.X, Before.Y, Before.Z,
+				Fixture.Rooms->IsEnemyMovementRoomContextCurrent(Fixture.Enemy, Data.MovementRooms),
+				FlightPathfinding::IsSegmentInsideMovementRooms(Request, Before, Data.Destination, Extent),
+				*UEnum::GetValueAsString(FlightPathfinding::CheckSegment(*Fixture.World, *Data.CachedCapsule, Request))));
+		}
 		// 위치를 직접 갱신하지 않는다. 실제 CharacterMovement가 Task 입력과 캡슐 충돌을 처리한다.
 		Movement->TickComponent(Step, LEVELTICK_All, nullptr);
 		const FVector After = Fixture.Enemy->GetActorLocation();
 		bSawIntermediateMovement |= After.X > 25 && After.X < 225;
-		if (!TestTrue(TEXT("Return has no teleport-sized step"), FVector::Distance(Before, After) <= 10.0)) break;
+		if (!TestTrue(TEXT("Return has no teleport-sized step"), FVector::Distance(Before, After) <= 10.0))
+		{
+			break;
+		}
 	}
 	TestTrue(TEXT("Real movement passes intermediate sibling positions"), bSawIntermediateMovement);
 	TestEqual(TEXT("Actual Fly reaches home"), Status, EStateTreeRunStatus::Succeeded);

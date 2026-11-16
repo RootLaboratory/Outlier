@@ -10,6 +10,7 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Save/OutlierCheckpointRestartVote.h"
 #include "UI/GameOverPendingTypes.h"
+#include "UI/DeveloperConvenienceTypes.h"
 #include "OutlierGameMode.generated.h"
 
 class APlayerController;
@@ -24,6 +25,7 @@ class AOutlierCheckpoint;
 class AOutlierPlayerState;
 class AOutlierArenaPausePlayerState;
 class UDataTable;
+class UUpgradeMachineWidget;
 enum class EOutlierPlayerRole : uint8;
 enum class EOutlierGameplayReloadPhase : uint8;
 enum class EOutlierGameplayReloadFailure : uint8;
@@ -115,7 +117,17 @@ public:
 	void HandlePlayerDeath(AShooterCharacter* Character);
 
 	// StageId에 대응하는 APresetPlayerStart 위치로 페어를 리스폰시킨다 (레벨 리셋 + 업그레이드 노드 플러시 포함).
-	bool RequestPresetRespawn(AController* Requester, FName StageId);
+	bool RequestPresetRespawn(AController* Requester, FName StageId, TFunction<bool()> BeforeReload = {});
+	// 장치 사용 자격/회복과 분리된 공통 UI 열기다. 자동 표시는 현재 세대 준비 확인 후에만 호출한다.
+	bool OpenPairUpgradeUI(AOutlierPlayerState* ShooterState, AOutlierPlayerState* PartnerState,
+		TSubclassOf<UUpgradeMachineWidget> WidgetClass, AActor* RequestOwner, const FGuid& PresetRequestId = FGuid(),
+		TFunction<void()> BeforeOpen = {});
+	UPROPERTY(EditDefaultsOnly, Category = "Respawn|Upgrade UI")
+	TSubclassOf<UUpgradeMachineWidget> PresetUpgradeWidgetClass;
+	EDeveloperConvenienceRequestResult RequestDeveloperConveniencePreset(
+		AFirstPersonPlayerController* Requester, const FDeveloperConveniencePresetRequest& Request);
+	void OnClientPresetUpgradeUIReady(AFirstPersonPlayerController* Controller,
+		const FGuid& RequestId, uint32 GameplayGeneration, bool bAvailable);
 	bool RequestGameOverPendingChoice(
 		AFirstPersonPlayerController* Requester,
 		const FGameOverPendingRequest& Request);
@@ -130,6 +142,17 @@ public:
 	bool BeginSettingsPause(AFirstPersonPlayerController* Controller, AActor* LayerOwner,
 		AFirstPersonPlayerController* OtherController);
 	void EndSettingsPause(AFirstPersonPlayerController* Controller);
+
+	const FDeveloperConvenienceOptions& GetDeveloperConvenienceOptions() const { return DeveloperConvenienceState.Options; }
+	bool IsDeveloperConvenienceInvincible(const AActor* Target) const;
+	bool IsDeveloperConvenienceCurrencyFreeFor(const AOutlierPlayerState* PlayerState) const;
+	EDeveloperConvenienceRequestResult RequestDeveloperConvenienceTeamRecovery(
+		AFirstPersonPlayerController* Requester, const FDeveloperConvenienceRecoveryRequest& Request);
+	EDeveloperConvenienceRequestResult RequestDeveloperConvenienceOption(
+		AFirstPersonPlayerController* Requester, const FDeveloperConvenienceOptionRequest& Request);
+	EDeveloperConvenienceRequestResult RequestDeveloperConvenienceSession(
+		AFirstPersonPlayerController* Requester, const FDeveloperConvenienceSessionRequest& Request);
+	void OnDeveloperConvenienceUIUnavailable(AFirstPersonPlayerController* Controller, const FGuid& SessionId);
 
 	void StartMatchedPair(
 		AController* FirstController,
@@ -167,7 +190,10 @@ public:
 	bool RespondCheckpointRestart(AFirstPersonPlayerController* Responder, bool bApprove);
 	bool CancelCheckpointRestart(AFirstPersonPlayerController* Requester);
 	bool HandleCheckpointRestartEscape(AFirstPersonPlayerController* Controller);
-	bool HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester, bool bQuitAfterLeave = false);
+	bool HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester, bool bQuitAfterLeave = false,
+		bool bReturnToTitle = false);
+	EDeveloperConvenienceRequestResult RequestDeveloperConvenienceReturnToTitle(
+		AFirstPersonPlayerController* Requester, const FDeveloperConvenienceTitleRequest& Request);
 	EOutlierCheckpointRestartVoteState GetLastCheckpointRestartVoteResult() const
 	{
 		return LastCheckpointRestartVoteResult;
@@ -175,6 +201,41 @@ public:
 
 
 private:
+	friend class FDeveloperConvenienceStateTest;
+	friend class FDeveloperConvenienceSessionTest;
+	friend class FDeveloperConvenienceDamageTest;
+	friend class FDeveloperConvenienceRecoveryTest;
+	friend class FDeveloperConvenienceCurrencyTest;
+	friend class FDeveloperConvenienceCooldownTest;
+	friend class FDeveloperConveniencePresetTest;
+	friend class FPresetUpgradeReadinessTest;
+	friend class FDeveloperConvenienceTitleTest;
+	FGuid PendingDeveloperTitleRequestId;
+	void ArmPresetUpgradeUI(int32 PairId, uint32 GameplayGeneration);
+	void ClearPendingPresetUpgradeUI();
+	void TryPreparePresetUpgradeUI();
+	bool IsPresetUpgradeContextCurrent() const;
+	FGuid PendingPresetUpgradeRequestId;
+	int32 PendingPresetUpgradePairId = INDEX_NONE;
+	uint32 PendingPresetUpgradeGeneration = 0;
+	TSet<TWeakObjectPtr<AFirstPersonPlayerController>> PresetUpgradePreparedControllers;
+	TSet<TWeakObjectPtr<AFirstPersonPlayerController>> PresetUpgradeReadyControllers;
+	EDeveloperConvenienceRequestResult ValidateDeveloperConvenienceAction(
+		AFirstPersonPlayerController* Requester, const FGuid& RequestId, const FGuid& MatchId,
+		const FGuid& SessionId, int64 GameplayGeneration) const;
+	bool bDeveloperConvenienceRecoveryInProgress = false;
+	bool IsDeveloperConvenienceParticipant(const AFirstPersonPlayerController* Controller) const;
+	void ClearDeveloperConvenienceWorldPause();
+	void RefreshDeveloperConveniencePair(AOutlierPlayerState* ShooterState, AOutlierPlayerState* PartnerState);
+	void PublishDeveloperConvenienceState();
+	void ApplyDeveloperConvenienceCooldownOption();
+	void ResetDeveloperConvenienceState();
+	void InvalidateDeveloperConvenienceSession();
+	FDeveloperConvenienceSnapshot DeveloperConvenienceState;
+	TWeakObjectPtr<AFirstPersonPlayerController> DeveloperConvenienceShooter;
+	TWeakObjectPtr<AFirstPersonPlayerController> DeveloperConveniencePartner;
+	TWeakObjectPtr<AFirstPersonPlayerController> DeveloperConvenienceOperator;
+	TWeakObjectPtr<APlayerState> DeveloperConveniencePauseOwner;
 	bool BuildFixedRestoreLoadout(FOutlierLoadoutSnapshot& Snapshot) const;
 	friend class FOutlierGenerationNetworkProbe;
 	friend class FOutlierGameOverPendingFailureTest;
@@ -232,7 +293,8 @@ private:
 	void TryCompleteArenaPossessions();
 	bool bDispatchingArenaPossessions = false;
 	void BeginArenaWorkerReleaseShutdown(
-		AFirstPersonPlayerController* ExitRequester = nullptr, bool bQuitAfterLeave = false);
+		AFirstPersonPlayerController* ExitRequester = nullptr, bool bQuitAfterLeave = false,
+		bool bReturnToTitle = false);
 	void ClearArenaGameplayReloadDelegates();
 	void ClearPendingArenaReloadPawns();
 	void CompleteServerArenaReload();

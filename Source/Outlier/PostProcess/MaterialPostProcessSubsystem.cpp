@@ -1089,6 +1089,18 @@ void UMaterialPostProcessSubsystem::HandleTeammateOutlineMasksQueued(bool bMasks
 	}
 }
 
+void UMaterialPostProcessSubsystem::HandleTurretOutlineMasksQueued(const TArray<TWeakObjectPtr<AActor>>& ReadyTargets,
+	bool bOutputAllowed)
+{
+	if (UOutlierStencilSubsystem* Stencils = OutlineStencils.Get())
+	{
+		const bool bEnabled = bOutputAllowed && bIndependentOutlineRequested && !ShouldSkipRenderingWork()
+			&& IsValid(BoundPostProcessVolume) && BoundPostProcessVolume->bEnabled
+			&& BoundPostProcessVolume->bEnableIndependentTeammateOutline;
+		Stencils->SetIndependentTurretOutlineState(ReadyTargets, bEnabled);
+	}
+}
+
 void UMaterialPostProcessSubsystem::RefreshIndependentTeammateOutline()
 {
 	// pair 비트 전환은 스텐실 재조정을 일으킨다. 그 과정의 변경 통보가 이 갱신으로
@@ -1101,10 +1113,12 @@ void UMaterialPostProcessSubsystem::RefreshIndependentTeammateOutline()
 		&& BoundPostProcessVolume->bEnableIndependentTeammateOutline && Stencils;
 	// 중단은 즉시 복원한다. 활성 전환은 View에서 마스크 등록에 성공했을 때 처리한다.
 	if (Stencils && !bEnabled) Stencils->SetIndependentPairOutlineEnabled(false);
+	if (Stencils && !bEnabled) Stencils->SetIndependentTurretOutlineState({}, false, true);
 
 	FTeammateOutlineViewData Data;
 	Data.bEnabled = bEnabled;
 	Data.OnMasksQueued.BindUObject(this, &UMaterialPostProcessSubsystem::HandleTeammateOutlineMasksQueued);
+	Data.OnTurretMasksQueued.BindUObject(this, &UMaterialPostProcessSubsystem::HandleTurretOutlineMasksQueued);
 	if (bEnabled)
 	{
 		Data.Color = BoundPostProcessVolume->TeammateOutlineColor;
@@ -1127,6 +1141,14 @@ void UMaterialPostProcessSubsystem::RefreshIndependentTeammateOutline()
 		Data.VisibleStrength = FMath::Clamp(BoundPostProcessVolume->TeammateVisibleStrength, 0.0f, 1.0f);
 		Data.OccludedStrength = FMath::Min(FMath::Clamp(BoundPostProcessVolume->TeammateOccludedStrength, 0.0f, 1.0f),
 			Data.VisibleStrength);
+		// 기존 머티리얼의 실제 검출 폭/깊이 조건으로 Guide·Melee 우선 영역을 보존한다.
+		const auto* Legacy = BoundPostProcessVolume->PostProcessMaterials.Find(EOutlierPostProcessMaterialType::PartnerOutline);
+		if (Legacy && Legacy->Get())
+		{
+			Legacy->Get()->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Thickness")), Data.LegacyThickness);
+			Legacy->Get()->GetScalarParameterValue(FMaterialParameterInfo(TEXT("DepthTolerance")), Data.LegacyDepthTolerance);
+			Legacy->Get()->GetScalarParameterValue(FMaterialParameterInfo(TEXT("DepthEdgeThreshold")), Data.LegacyDepthEdgeThreshold);
+		}
 	}
 
 	TArray<UMeshComponent*> TeammateMeshes;
@@ -1156,6 +1178,7 @@ void UMaterialPostProcessSubsystem::RefreshIndependentTeammateOutline()
 		Stencils->GatherOutlineMeshes(Viewer, TeammateMeshes, FirstPersonMeshes);
 		Data.TargetMeshes.Reset();
 		Data.FirstPersonMeshes.Reset();
+		Stencils->GatherTurretOutlineTargets(Viewer, Data.TurretTargets);
 		for (UMeshComponent* Mesh : TeammateMeshes) Data.TargetMeshes.Add(Mesh);
 		for (UMeshComponent* Mesh : FirstPersonMeshes) Data.FirstPersonMeshes.Add(Mesh);
 		View->SetTeammateOutlineData(Data, GetWorld());

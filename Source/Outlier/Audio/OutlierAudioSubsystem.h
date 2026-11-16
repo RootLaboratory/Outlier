@@ -43,6 +43,7 @@ UCLASS()
 class OUTLIER_API UOutlierAudioSubsystem : public UGameInstanceSubsystem
 {
 	GENERATED_BODY()
+	friend class FPresetUpgradeClientReadinessTest;
 
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
@@ -68,6 +69,10 @@ public:
 	/** 로컬 Voice 뱅크 직렬 재생. P0 > P1 > P2 > P3 순이며, 더 높은 우선순위는 기존 음성과 자막을 중단한다. 같거나 낮으면 대기한다. */
 	bool PlayLocalVoice(FGameplayTag SoundTag, int32 Priority, FGameplayTag RequestTag, ULocalPlayer* Listener);
 	void StopLocalVoices(ULocalPlayer* Listener);
+
+	// 사용자 음량 설정과 별개로 전환 중 재생만 차단한다. 여러 로컬 소유자는 각각 해제해야 한다.
+	void SetPresetTransitionSuppressed(AFirstPersonPlayerController* Owner, bool bSuppressed);
+	bool IsPresetTransitionSuppressed() const;
 	/** Voice 오디오 컴포넌트 재생 시작 시 발생한다. RequestTag는 호출자의 EventTag이다. */
 	FOnOutlierVoiceStarted OnVoiceStarted;
 	/** 자연 종료 시 bCompleted=true, 중단/명시적 정지/재생 실패 시 false. */
@@ -480,6 +485,7 @@ private:
 	TMap<FSoftObjectPath, TArray<FPendingPlay>> PendingPlaysBySound;
 	TMap<FSoftObjectPath, TSharedPtr<FStreamableHandle>> ActiveLoadHandles;
 	TMap<EOutlierAudioVolumeType, float> VolumeMultipliers;
+	TSet<TWeakObjectPtr<AFirstPersonPlayerController>> PresetTransitionOwners;
 	TArray<FActiveAudioPlayback> ActiveAudioPlaybacks;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UAudioComponent>> LoopAudioComponentPool;

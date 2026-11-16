@@ -213,9 +213,14 @@ void UInteractableComponent::TickComponent(
 
 void UInteractableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	// GC의 BeginDestroy에서 늦게 EndPlay가 호출되면 소유 Actor의 월드는 이미 없을 수 있다.
+	// 월드가 남아 있을 때만 등록을 해제하고, 컴포넌트 자체의 정리는 계속 수행한다.
+	if (UWorld* World = GetWorld())
 	{
-		Subsystem->UnregisterWidgetOwner(this);
+		if (UActorBasedWidgetSubsystem* Subsystem = World->GetSubsystem<UActorBasedWidgetSubsystem>())
+		{
+			Subsystem->UnregisterWidgetOwner(this);
+		}
 	}
 	CancelAllHoldSessions();
 	if (InteractKeyWidget)
@@ -858,6 +863,29 @@ void UInteractableComponent::TickHoldInteractions(float DeltaTime)
 	{
 		FHoldInteractionSession& Session = HoldSessions[Index];
 		AFirstPersonCharacter* Interactor = Session.Interactor.Get();
+		// 승인한 노드는 커서가 아닌 세션 대상으로 유지한다. 활성 세션에서만
+		// 기존 0.1초 탐색 주기에 맞춰 거리/차폐를 확인하고 무효화 경로를 공유한다.
+		if (InteractionNode && Interactor && !Session.bCompletionNotified)
+		{
+			Session.ValidationElapsedTime += DeltaTime;
+			if (Session.ValidationElapsedTime >= 0.1f)
+			{
+				Session.ValidationElapsedTime = 0.0f;
+				if (!Interactor->CanMaintainNodeInteraction(InteractionNode))
+				{
+					if (Interactor->IsLocallyControlled())
+					{
+						Interactor->CancelLocalHoldInteract(true);
+					}
+					else
+					{
+						EndHoldInteract(Interactor, true);
+						Interactor->NotifyHoldInteractInvalidated(GetOwner());
+					}
+					continue;
+				}
+			}
+		}
 		if (InteractionNode && Interactor && GetOwner()->HasAuthority()
 			&& (!Interactor->GetController() || !Interactor->CanInteract()
 				|| !CanInteract(Interactor->GetOwnedGameplayTagsForQuery())))

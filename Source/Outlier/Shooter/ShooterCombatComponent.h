@@ -19,6 +19,7 @@ class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBas
 	friend class FShooterSprintInputModeTest;
 	friend class FShooterSprintReloadTest;
 	friend class FShooterEquipReloadTest;
+	friend class FShooterAutoReloadRecoveryTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -50,6 +51,17 @@ protected:
 	FTimerHandle PendingSprintExitFireTimerHandle;
 	FTimerHandle OverchargeFireRecoveryTimerHandle;
 	FTimerHandle ReloadPredictionTimerHandle;
+	FTimerHandle AutoReloadRecoveryTimerHandle;
+	TWeakObjectPtr<AWeaponBase> AutoReloadRecoveryWeapon;
+	uint32 AutoReloadRecoveryEquipGeneration = 0;
+	bool bAutoReloadRecoveryPending = false;
+	uint8 AutoReloadInterruptionCount = 0;
+	bool bAutoReloadRecoveryBlocked = false;
+	bool bDeferredAutoReloadPresentation = false;
+	void TryRecoverAutoReload();
+	void ResetAutoReloadRecovery();
+	void BlockAutoReloadRecovery();
+	void ResumeAutoReloadPresentation();
 	TWeakObjectPtr<AWeaponBase> ActiveReloadWeapon;
 	uint32 ActiveReloadEquipGeneration = 0;
 	uint32 ReloadRequestSequence = 0;
@@ -129,6 +141,7 @@ public:
 	void CancelMeleeAttack();
 	void HandleWeaponAttackStopped();
 	void HandleAutoReloadRequested();
+	void RequestAutoReloadRecovery();
 	void ResumeHeldFireAfterWeaponOvercharge();
 
 	void RefreshCombatState();

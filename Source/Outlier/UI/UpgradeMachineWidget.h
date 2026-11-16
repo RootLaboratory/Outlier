@@ -7,6 +7,8 @@
 #include "UI/UILayerInputReceiver.h"
 #include "UpgradeMachineWidget.generated.h"
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUpgradeWaitingStateChanged);
+
 class AOutlierPlayerState;
 class APartnerCharacter;
 class AShooterCharacter;
@@ -24,6 +26,18 @@ class OUTLIER_API UUpgradeMachineWidget : public UUserWidget,
 
 public:
 	UUpgradeMachineWidget(const FObjectInitializer& ObjectInitializer);
+
+	UFUNCTION(BlueprintCallable, Category = "Upgrade|Waiting")
+	void CancelExit();
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade|Waiting")
+	bool IsWaitingForPartner() const { return bLocalExitRequested; }
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade|Waiting")
+	bool CanCancelExit() const { return bSessionSynchronized && bLocalExitRequested && !bExitRequestInFlight && !bExitFinalized; }
+
+	UPROPERTY(BlueprintAssignable, Category = "Upgrade|Waiting")
+	FOnUpgradeWaitingStateChanged OnWaitingStateChanged;
 
 protected:
 	virtual void NativeOnInitialized() override;
@@ -61,19 +75,24 @@ protected:
 	float WaitingMessageInterval = 0.6f;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend struct FUpgradeMachineTestAccessor;
+#endif
 	UFUNCTION()
 	void HandleButtonClicked();
 
-	void BindExitPendingStates();
-	void UnbindExitPendingStates();
-	void HandleExitPendingChanged(AOutlierPlayerState* ChangedPlayerState);
+	void BindSessionState();
+	void UnbindSessionState();
+	void HandleSessionChanged(uint32 SessionId, uint32 Generation, bool bPending, bool bFinalized, uint32 SyncRequestId);
 	void RefreshWaitingState();
 	void AdvanceWaitingMessage();
+	UFUNCTION()
+	void UpdateWaitingMessage();
+	void SynchronizeSession();
 	void OpenNodeScreen();
 	void RequestExit();
 	void TryPopMachineLayer();
 	AOutlierPlayerState* GetLocalPlayerState() const;
-	AOutlierPlayerState* FindPairedPlayerState() const;
 	TSubclassOf<UUpgradeNodeGroupWidget> ResolveNodeGroupClass() const;
 
 	UPROPERTY(Transient)
@@ -85,11 +104,18 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UUpgradeNodeGroupWidget> ActiveNodeGroupWidget;
 
-	TArray<TWeakObjectPtr<AOutlierPlayerState>> BoundExitPendingPlayerStates;
+	TWeakObjectPtr<AOutlierPlayerState> BoundSessionPlayerState;
 	TWeakObjectPtr<AOutlierPlayerState> OpenedPlayerState;
 	FTimerHandle WaitingMessageTimerHandle;
+	FTimerHandle FinalizedCloseRetryHandle;
 	uint32 OpenedGameplayGeneration = 0;
 	int32 WaitingMessageIndex = 0;
+	uint32 OpenedSessionId = 0;
+	uint32 SessionSyncRequestId = 0;
+	bool bSessionSynchronized = false;
+	bool bExitRequestInFlight = false;
+	bool bExitFinalized = false;
+	bool bFinalizedCloseRetryUsed = false;
 	bool bLocalExitRequested = false;
 	bool bUIOpenedReported = false;
 };

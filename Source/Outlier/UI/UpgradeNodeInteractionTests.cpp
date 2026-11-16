@@ -3,6 +3,7 @@
 #include "UI/UpgradeNodeWidget.h"
 #include "UI/UpgradeDescWidget.h"
 
+#include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/Image.h"
@@ -18,6 +19,9 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/AutomationTest.h"
 #include "OutlierPlayerState.h"
+#include "OutlierGameMode.h"
+#include "Shooter/ShooterCharacter.h"
+#include "UObject/UnrealType.h"
 #include "PopupRetainerBox.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
@@ -163,6 +167,10 @@ struct FUpgradeNodeInteractionTestAccess
 	{
 		return Controller->TryActivateUpgradeNodeForRequest(Owner, Row, Data);
 	}
+	static void ReceiveConvenienceState(AFirstPersonPlayerController* Controller)
+	{
+		Controller->OnRep_DeveloperConvenienceState();
+	}
 	static void DeliverResult(AFirstPersonPlayerController* Controller, AActor* Owner, uint32 Id, bool bSucceeded)
 	{
 		Controller->ClientUpgradePurchaseResult_Implementation(Id, Owner, TEXT("Node"), bSucceeded);
@@ -211,6 +219,7 @@ struct FUpgradeNodeInteractionTestAccess
 	static void BindPreviewVisibility(UUpgradeDescWidget* Desc) { Desc->BindPreviewVisibility(); }
 	static void DestructDescription(UUpgradeDescWidget* Desc) { Desc->NativeDestruct(); }
 	static void AddPopupRetainer(UUpgradeDescWidget* Desc) { Desc->PopupRetainer = NewObject<UPopupRetainerBox>(Desc); }
+	static void RemovePopupRetainer(UUpgradeDescWidget* Desc) { Desc->PopupRetainer = nullptr; }
 	static void FinishPopupClose(UUpgradeDescWidget* Desc) { Desc->HandlePopupClosed(); }
 };
 
@@ -507,6 +516,184 @@ bool FUpgradePurchaseAuthorityTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDeveloperConvenienceCurrencyTest, "Outlier.UI.DeveloperConvenience.Currency",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDeveloperConvenienceCurrencyTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UpgradeNodeInteractionTests::FTestWorld Context;
+	UWorld* World = Context.World;
+	if (!TestNotNull(TEXT("Currency fixture world"), World))
+	{
+		return false;
+	}
+	World->InitializeActorsForPlay(FURL());
+	UClass* ModeClass = LoadClass<AOutlierGameMode>(nullptr, TEXT("/Game/Blueprints/Outlier/BP_OutlierGM.BP_OutlierGM_C"));
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Project GameMode class"), ModeClass) || !TestNotNull(TEXT("Concrete Shooter class"), ShooterClass))
+	{
+		return false;
+	}
+	auto* Mode = World->SpawnActor<AOutlierGameMode>(ModeClass);
+	auto* Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass);
+	auto* Partner = World->SpawnActor<APartnerCharacter>();
+	auto* ShooterPC = World->SpawnActor<AFirstPersonPlayerController>();
+	auto* PartnerPC = World->SpawnActor<AFirstPersonPlayerController>();
+	if (!Mode || !Shooter || !Partner || !ShooterPC || !PartnerPC)
+	{
+		AddError(TEXT("Currency fixture actors must spawn"));
+		return false;
+	}
+	auto* AuthorityMode = FindFProperty<FObjectPropertyBase>(UWorld::StaticClass(), TEXT("AuthorityGameMode"));
+	if (!TestNotNull(TEXT("Authority GameMode property"), AuthorityMode))
+	{
+		return false;
+	}
+	AuthorityMode->SetObjectPropertyValue_InContainer(World, Mode);
+	const auto MakeState = [World](AFirstPersonPlayerController* PC, EOutlierPlayerRole Role)
+	{
+		auto* State = World->SpawnActor<AOutlierPlayerState>();
+		State->SetOwner(PC);
+		State->SetPairId(7);
+		State->SetPlayerRole(Role);
+		PC->PlayerState = State;
+		return State;
+	};
+	auto* ShooterState = MakeState(ShooterPC, EOutlierPlayerRole::Shooter);
+	auto* PartnerState = MakeState(PartnerPC, EOutlierPlayerRole::Partner);
+	for (auto* State : { ShooterState, PartnerState })
+	{
+		State->SetShooterCharacter(Shooter);
+		State->SetPartnerCharacter(Partner);
+	}
+	Shooter->SetPlayerState(ShooterState);
+	Partner->SetPlayerState(PartnerState);
+	Mode->RefreshDeveloperConveniencePair(ShooterState, PartnerState);
+	const auto MakeData = [](EOutlierUpgradeRole Role)
+	{
+		auto* Table = NewObject<UDataTable>();
+		Table->RowStruct = FOutlierUpgradeNodeRow::StaticStruct();
+		FOutlierUpgradeNodeRow Row;
+		Row.Role = Role;
+		Row.Cost = 5;
+		Table->AddRow(TEXT("Free"), Row);
+		Table->AddRow(TEXT("Next"), Row);
+		Row.ParentId = TEXT("MissingParent");
+		Table->AddRow(TEXT("Locked"), Row);
+		auto* Data = NewObject<UOutlierUpgradeSetData>();
+		Data->UpgradeRole = Role;
+		Data->UpgradeDataTable = Table;
+		return Data;
+	};
+	auto* ShooterData = MakeData(EOutlierUpgradeRole::Shooter);
+	auto* PartnerData = MakeData(EOutlierUpgradeRole::Partner);
+	auto* ShooterUpgrade = Shooter->GetUpgradeComponent();
+	auto* PartnerUpgrade = Partner->GetUpgradeComponent();
+	ShooterUpgrade->SetUpgradeSetData(ShooterData);
+	PartnerUpgrade->SetUpgradeSetData(PartnerData);
+	auto* ShooterNode = NewObject<UUpgradeNodeWidget>();
+	auto* PartnerNode = NewObject<UUpgradeNodeWidget>();
+	ShooterNode->NodeRowName = TEXT("Next");
+	PartnerNode->NodeRowName = TEXT("Next");
+	ShooterNode->SetUpgradePlayerState(ShooterState);
+	PartnerNode->SetUpgradePlayerState(PartnerState);
+	ShooterNode->SetUpgradeComponent(ShooterUpgrade);
+	PartnerNode->SetUpgradeComponent(PartnerUpgrade);
+	const auto PublishOptions = [&]()
+	{
+		Mode->PublishDeveloperConvenienceState();
+		// 이 월드에는 NetDriver/LocalPlayer가 없으므로 원격 수신의 OnRep 경계를 직접 실행한다.
+		Access::ReceiveConvenienceState(ShooterPC);
+		Access::ReceiveConvenienceState(PartnerPC);
+	};
+	TestFalse(TEXT("Default policy rejects unaffordable UI"), ShooterNode->CanAfford());
+	AddExpectedErrorPlain(TEXT("[Upgrade] Activate failed: insufficient node"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Default server policy rejects zero balance"), Access::Purchase(ShooterPC, Shooter, TEXT("Free"), ShooterData));
+
+	Mode->DeveloperConvenienceState.Options.bConsumeCurrency = false;
+	PublishOptions();
+	// 수신 알림으로 두 노드가 갱신되며 원본 비용은 무료 모드에서도 그대로 보존한다.
+	TestTrue(TEXT("Shooter UI refreshes without balance changes"), ShooterNode->CanAfford());
+	TestTrue(TEXT("Partner UI refreshes without balance changes"), PartnerNode->CanAfford());
+	TestTrue(TEXT("Component eligibility shares free policy"), ShooterUpgrade->CanActivateNode(TEXT("Free")));
+	FOutlierUpgradeNodeViewData View;
+	ShooterUpgrade->GetNodeViewData(TEXT("Free"), View);
+	TestTrue(TEXT("Component view shares free policy"), View.bCanAfford);
+	TestEqual(TEXT("Original cost is preserved"), View.NodeRow.Cost, 5);
+	TestTrue(TEXT("Shooter purchases with zero currency"), Access::Purchase(ShooterPC, Shooter, TEXT("Free"), ShooterData));
+	TestEqual(TEXT("Free purchase does not change currency"), ShooterState->GetNodeCount(), 0);
+	AddExpectedErrorPlain(TEXT("[Upgrade] Activate failed: already activated"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Free mode rejects duplicate purchases"), Access::Purchase(ShooterPC, Shooter, TEXT("Free"), ShooterData));
+	AddExpectedErrorPlain(TEXT("[Upgrade] Activate failed: locked"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Free mode retains prerequisites"), Access::Purchase(ShooterPC, Shooter, TEXT("Locked"), ShooterData));
+	TestFalse(TEXT("Free mode retains owner restrictions"), Access::Purchase(ShooterPC, Partner, TEXT("Next"), PartnerData));
+	TestFalse(TEXT("Free mode retains role restrictions"), Access::Purchase(PartnerPC, Partner, TEXT("Next"), ShooterData));
+	Partner->SetPlayerState(nullptr);
+	TestNull(TEXT("Original Partner body has no controller during possession"), Partner->GetController());
+	TestTrue(TEXT("Explicit PlayerState keeps original Partner purchase free"), Access::Purchase(PartnerPC, Partner, TEXT("Free"), PartnerData));
+	TestEqual(TEXT("Partner free purchase keeps balance"), PartnerState->GetNodeCount(), 0);
+
+	// Actor 역할만 바꿔 GameMode가 없는 원격 표시 경로도 실제 복제 스냅샷으로 검증한다.
+	Partner->SetRole(ROLE_SimulatedProxy);
+	TestFalse(TEXT("Client uses the owning PlayerState snapshot"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	FDeveloperConvenienceSnapshot InvalidSnapshot = PartnerPC->GetDeveloperConvenienceState();
+	InvalidSnapshot.PairId = 99;
+	PartnerPC->SetDeveloperConvenienceStateFromServer(InvalidSnapshot);
+	TestTrue(TEXT("Mismatched client snapshot falls back to normal cost"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	Partner->SetRole(ROLE_Authority);
+	PublishOptions();
+	Access::Begin(ShooterNode);
+	Mode->DeveloperConvenienceState.Options.bConsumeCurrency = true;
+	PublishOptions();
+	TestFalse(TEXT("ON restores unaffordable UI"), ShooterNode->CanAfford());
+	TestFalse(TEXT("ON cancels a now unaffordable hold"), ShooterNode->IsHoldingUpgrade());
+	TestFalse(TEXT("ON updates the injected Partner context"), PartnerNode->CanAfford());
+	TestTrue(TEXT("Previously purchased free upgrade remains"), ShooterState->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter).Contains(TEXT("Free")));
+	TestEqual(TEXT("ON does not charge retroactively"), ShooterState->GetNodeCount(), 0);
+	ShooterState->AddNode(7);
+	TestTrue(TEXT("ON permits a funded purchase"), Access::Purchase(ShooterPC, Shooter, TEXT("Next"), ShooterData));
+	TestEqual(TEXT("ON charges the original cost"), ShooterState->GetNodeCount(), 2);
+
+	Mode->DeveloperConvenienceState.Options.bConsumeCurrency = false;
+	Mode->DeveloperConvenienceState.SessionId = FGuid::NewGuid();
+	Mode->InvalidateDeveloperConvenienceSession();
+	TestFalse(TEXT("Closing menu preserves free policy"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	--Mode->DeveloperConvenienceState.GameplayGeneration;
+	Mode->RefreshDeveloperConveniencePair(ShooterState, PartnerState);
+	TestFalse(TEXT("Same-pair generation refresh preserves free policy"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	auto* ReplacementPartner = World->SpawnActor<APartnerCharacter>();
+	PartnerState->SetPartnerCharacter(ReplacementPartner);
+	ReplacementPartner->GetUpgradeComponent()->SetUpgradeSetData(PartnerData);
+	TestFalse(TEXT("Replacement Pawn reads the preserved policy"), ReplacementPartner->GetUpgradeComponent()->ShouldConsumeNodeCost(PartnerState));
+	Mode->ResetDeveloperConvenienceState();
+	TestTrue(TEXT("Match reset restores normal costs"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	// 표시 값을 임시 주입해 이전 컨텍스트의 알림이 더 이상 위젯을 갱신하지 않는지 확인한다.
+	ShooterNode->SetUpgradePlayerState(PartnerState);
+	View.RowName = TEXT("Next");
+	View.State = EOutlierUpgradeNodeState::Unlocked;
+	View.bCanAfford = true;
+	ShooterNode->InjectViewData(View);
+	ShooterPC->OnDeveloperConvenienceStateChanged.Broadcast(ShooterPC->GetDeveloperConvenienceState());
+	TestTrue(TEXT("Previous context no longer refreshes the widget"), ShooterNode->CanAfford());
+	PartnerPC->OnDeveloperConvenienceStateChanged.Broadcast(PartnerPC->GetDeveloperConvenienceState());
+	TestFalse(TEXT("New context refreshes the widget"), ShooterNode->CanAfford());
+	Access::Destruct(ShooterNode);
+	View.bCanAfford = true;
+	ShooterNode->InjectViewData(View);
+	PartnerPC->OnDeveloperConvenienceStateChanged.Broadcast(PartnerPC->GetDeveloperConvenienceState());
+	TestTrue(TEXT("Destructed widget no longer receives convenience changes"), ShooterNode->CanAfford());
+	auto* ConsumeProperty = FindFProperty<FBoolProperty>(UOutlierUpgradeComponent::StaticClass(), TEXT("bConsumeNodeCost"));
+	if (TestNotNull(TEXT("Existing local cost setting"), ConsumeProperty))
+	{
+		ConsumeProperty->SetPropertyValue_InContainer(PartnerUpgrade, false);
+		TestFalse(TEXT("Existing free component setting remains supported"), PartnerUpgrade->ShouldConsumeNodeCost(PartnerState));
+	}
+	ShooterNode->ResetUpgradeInteraction();
+	PartnerNode->ResetUpgradeInteraction();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeDescStatusImageTest, "Outlier.UI.Upgrade.Description.StatusImage",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -612,6 +799,8 @@ bool FUpgradeFillStateTest::RunTest(const FString& Parameters)
 	UUpgradeNodeWidget* Node = Access::MakeNode();
 	Access::ConfigureAppearance(Node, nullptr);
 	UImage* Fill = Access::ConfigureFill(Node, Material);
+	const TSharedRef<SWidget> FillSlate = Fill->TakeWidget();
+	Access::RefreshAppearance(Node);
 	UMaterialInstanceDynamic* FillMID = Access::FillMaterial(Node);
 	if (!TestNotNull(TEXT("Background has a state material"), FillMID)) return false;
 	TestEqual(TEXT("Idle starts at the base state"), Access::MaterialProgress(FillMID), 0.0f);
@@ -743,6 +932,8 @@ bool FUpgradeHoverAppearanceTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Leaving restores the frame state color"), Color, StateColor);
 		TestEqual(TEXT("Only activated nodes keep Glow after leaving"), Access::GlowImage(Node)->GetRenderOpacity(), bActivated ? 1.0f : 0.0f);
 	}
+	const TSharedRef<SWidget> FrameSlate = Access::FrameImage(Node)->TakeWidget();
+	Access::RefreshAppearance(Node);
 	TestTrue(TEXT("Frame cannot intercept input"), Access::FrameImage(Node)->GetVisibility() == ESlateVisibility::HitTestInvisible);
 	TestTrue(TEXT("Icon cannot intercept input"), Access::IconImage(Node)->GetVisibility() == ESlateVisibility::HitTestInvisible);
 	// 일반 이미지 모드도 디자이너에서 지정한 Tint를 잃지 않고 되돌아와야 한다.
@@ -885,7 +1076,7 @@ bool FUpgradeUnlockMissingMaterialTest::RunTest(const FString& Parameters)
 {
 	using Access = FUpgradeNodeInteractionTestAccess;
 	UUpgradeNodeWidget* Node = Access::MakeNode();
-	AddExpectedError(TEXT("[Upgrade.Unlock] Invalid UnlockLock"), EAutomationExpectedErrorFlags::Contains, 1);
+	AddExpectedErrorPlain(TEXT("[Upgrade.Unlock] Invalid UnlockLock"), EAutomationExpectedErrorFlags::Contains, 1);
 	Access::ConfigureUnlock(Node, nullptr);
 	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
 	TestFalse(TEXT("Missing material never leaves an unlock wait"), Node->IsUnlockPresentationPlaying());
@@ -940,9 +1131,12 @@ bool FUpgradeDescHoverLifetimeTest::RunTest(const FString& Parameters)
 		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
 	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
 	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	// 실제 가시성/부모 숨김 경로를 검증하도록 Slate 수명을 테스트 끝까지 보존한다.
+	const TSharedRef<SWidget> DescSlate = Desc->TakeWidget();
 	Access::AddPopupRetainer(Desc);
 	UCanvasPanel* Canvas = NewObject<UCanvasPanel>();
 	Canvas->AddChild(Desc);
+	const TSharedRef<SWidget> CanvasSlate = Canvas->TakeWidget();
 	UUpgradeNodeWidget* Node = NewObject<UUpgradeNodeWidget>();
 	Canvas->AddChild(Node);
 	Node->SetUpgradeDescWidget(Desc);
@@ -986,11 +1180,14 @@ bool FUpgradeDescPreviewStateTest::RunTest(const FString& Parameters)
 		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
 	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
 	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	// 실제 가시성/부모 숨김 경로를 검증하도록 Slate 수명을 테스트 끝까지 보존한다.
+	const TSharedRef<SWidget> DescSlate = Desc->TakeWidget();
 	UFileMediaSource* SourceA = NewObject<UFileMediaSource>(Desc);
 	UFileMediaSource* SourceB = NewObject<UFileMediaSource>(Desc);
 	const FOutlierUpgradeNodeRow Row;
 	UCanvasPanel* Canvas = NewObject<UCanvasPanel>();
 	Canvas->AddChild(Desc);
+	const TSharedRef<SWidget> CanvasSlate = Canvas->TakeWidget();
 	UUpgradeNodeWidget* NodeA = NewObject<UUpgradeNodeWidget>();
 	UUpgradeNodeWidget* NodeB = NewObject<UUpgradeNodeWidget>();
 	for (UUpgradeNodeWidget* Node : { NodeA, NodeB })
@@ -1015,6 +1212,7 @@ bool FUpgradeDescPreviewStateTest::RunTest(const FString& Parameters)
 	TestNull(TEXT("Legacy injection without RowName cannot reuse previous media"), Access::PreviewSource(Desc));
 
 	Access::SetPreviewImage(Desc);
+	const TSharedRef<SWidget> PreviewSlate = Access::PreviewImage(Desc)->TakeWidget();
 	Desc->UpdateNodeData(TEXT("A"), Row, EOutlierUpgradeNodeState::Locked, 0, false);
 	Access::SeedPreviewSession(Desc);
 	UMediaPlayer* Session = Access::PreviewPlayer(Desc);
@@ -1032,6 +1230,9 @@ bool FUpgradeDescPreviewStateTest::RunTest(const FString& Parameters)
 	}
 	Desc->HideNodeData(TEXT("B"));
 	TestTrue(TEXT("Another node cannot close this session"), Access::PreviewPlayer(Desc) == Session);
+	// TakeWidget은 BP의 Retainer도 바인딩한다. 이 사례는 닫힘 애니메이션이 없는
+	// 위젯의 즉시 정리 경로를 검사하므로 해당 선택 바인딩을 명시적으로 비운다.
+	Access::RemovePopupRetainer(Desc);
 	Desc->HideNodeData(TEXT("A"));
 	TestNull(TEXT("Closing without a retainer releases the player"), Access::PreviewPlayer(Desc));
 	TestNull(TEXT("Closing clears the image resource"), Access::PreviewImage(Desc)->GetBrush().GetResourceObject());
@@ -1049,7 +1250,10 @@ bool FUpgradeDescPreviewLifetimeTest::RunTest(const FString& Parameters)
 		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
 	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
 	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	// 실제 가시성/부모 숨김 경로를 검증하도록 Slate 수명을 테스트 끝까지 보존한다.
+	const TSharedRef<SWidget> DescSlate = Desc->TakeWidget();
 	Access::SetPreviewImage(Desc);
+	const TSharedRef<SWidget> PreviewSlate = Access::PreviewImage(Desc)->TakeWidget();
 	Desc->ShowNodeData(TEXT("A"), FOutlierUpgradeNodeRow(), EOutlierUpgradeNodeState::Locked, 0, false, nullptr);
 	TestTrue(TEXT("Missing media still opens the description"), Access::DescriptionOpen(Desc));
 	TestFalse(TEXT("Missing media hides only the preview"), Access::PreviewImage(Desc)->IsVisible());
@@ -1081,8 +1285,13 @@ bool FUpgradeDescPreviewLifetimeTest::RunTest(const FString& Parameters)
 
 	// 부모 숨김은 자식의 NativeDestruct를 호출하지 않을 수 있어 실제 가시성 이벤트로 검증한다.
 	UUpgradeDescWidget* Parent = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
-	UCanvasPanel* Canvas = NewObject<UCanvasPanel>(Parent);
+	const TSharedRef<SWidget> ParentSlate = Parent->TakeWidget();
+	Parent->SetVisibility(ESlateVisibility::Visible);
+	// 일반 UWidget의 FieldNotify는 소유 WidgetTree의 확장에 등록된다.
+	// 실제 UMG와 같은 Outer로 생성해야 중간 Panel의 가시성 변경도 전달된다.
+	UCanvasPanel* Canvas = Parent->WidgetTree->ConstructWidget<UCanvasPanel>();
 	Canvas->AddChild(Desc);
+	const TSharedRef<SWidget> CanvasSlate = Canvas->TakeWidget();
 	Access::SeedPreviewSession(Desc);
 	Access::BindPreviewVisibility(Desc);
 	Parent->SetVisibility(ESlateVisibility::Collapsed);

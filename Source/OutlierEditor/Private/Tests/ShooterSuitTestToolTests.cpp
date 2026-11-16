@@ -419,23 +419,22 @@ bool FPairInvulnerabilityDebugKeyTest::RunTest(const FString& Parameters)
 	FInputKeyEventArgs Key;
 	Key.Key = EKeys::F1;
 	Key.Event = IE_Pressed;
-	TestTrue(TEXT("Local controller consumes F1"), static_cast<APlayerController*>(Controller)->InputKey(Key));
-	if (!TestTrue(TEXT("F1 enables server pair state outside PIE"), Fixture.ShooterState->IsDebugPairInvulnerable())) return false;
+	static_cast<APlayerController*>(Controller)->InputKey(Key);
+	TestFalse(TEXT("Retired F1 shortcut cannot enable protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
 	Key.Event = IE_Repeat;
 	static_cast<APlayerController*>(Controller)->InputKey(Key);
-	TestTrue(TEXT("Holding F1 does not repeatedly toggle protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
-	Key.Event = IE_Released;
-	TestTrue(TEXT("F1 release is consumed"), static_cast<APlayerController*>(Controller)->InputKey(Key));
-	TestTrue(TEXT("Releasing F1 preserves protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
-	Key.Event = IE_Pressed;
-	static_cast<APlayerController*>(Controller)->InputKey(Key);
-	TestFalse(TEXT("The next F1 press disables protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	TestFalse(TEXT("Repeating retired F1 cannot enable protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
 	Key.Event = IE_Released;
 	static_cast<APlayerController*>(Controller)->InputKey(Key);
-	TestFalse(TEXT("Release cannot re-enable protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
-	Key.Event = IE_Pressed;
-	static_cast<APlayerController*>(Controller)->InputKey(Key);
-	TestTrue(TEXT("Another press restores protection for damage checks"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	TestFalse(TEXT("Releasing retired F1 cannot enable protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	// F1은 개발 편의 메뉴 도입으로 제거됐다. 키에 보호 기능을 다시 연결하지 않고
+	// 기존 서버 요청의 Pair 권한과 실제 피해 차단 계약을 계속 검증한다.
+	Controller->ServerDebugTogglePairInvulnerability();
+	TestTrue(TEXT("Explicit server request enables protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	Controller->ServerDebugTogglePairInvulnerability();
+	TestFalse(TEXT("Next server request disables protection"), Fixture.ShooterState->IsDebugPairInvulnerable());
+	Controller->ServerDebugTogglePairInvulnerability();
+	TestTrue(TEXT("Server request restores protection for damage checks"), Fixture.ShooterState->IsDebugPairInvulnerable());
 	TestFalse(TEXT("Shooter damage is rejected"), Fixture.Shooter->GetOutlierAbilitySystemComponent()
 		->ApplyDamageToSelf(10.0f, nullptr, nullptr, OutlierDamage::InstantKillTag()));
 	TestFalse(TEXT("Partner damage is rejected"), Fixture.Partner->GetOutlierAbilitySystemComponent()

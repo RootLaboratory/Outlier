@@ -25,6 +25,9 @@ class ULocalPlayerSettingsSubsystem;
 class AFirstPersonCharacter;
 class UEnemyRoomSubsystem;
 class UOutlierArenaSubsystem;
+class AInteractionNode;
+class UPartnerHackComponent;
+class UPartnerEMPComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnSuitTransitionParticipantInvalidated, AFirstPersonCharacter*);
@@ -42,6 +45,7 @@ class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTag
 	GENERATED_BODY()
 	friend class FInteractionNodePresentationTest;
 	friend class FInteractionNodeHoldAttemptTest;
+	friend class FInteractionNodeActorHoverTest;
 	friend class FPartnerMovementRecoveryTest;
 	// 상호작용 세션은 캐릭터의 기존 입력 가능 판정을 재사용한다.
 	friend class UInteractableComponent;
@@ -170,10 +174,10 @@ protected:
 	virtual void UnPossessed() override;
 
 	UFUNCTION(Server, Reliable)
-	void ServerInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
+	void ServerInteract(AActor* TargetActor, int32 HoldAttemptId = 0, FVector_NetQuantizeNormal NodeAimDirection = FVector::ZeroVector);
 
 	UFUNCTION(Server, Reliable)
-	void ServerBeginHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
+	void ServerBeginHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0, FVector_NetQuantizeNormal NodeAimDirection = FVector::ZeroVector);
 
 	UFUNCTION(Server, Reliable)
 	void ServerCancelHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
@@ -198,6 +202,7 @@ protected:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 #if WITH_EDITOR
@@ -267,6 +272,19 @@ private:
 	uint8 CustomMovementModeBeforeSuitTransition = 0;
 
 	void UpdateInteractableFocus();
+	void UpdateNodeInteractionHover();
+	void CacheInteractionNode(AActor* Actor);
+	TArray<TWeakObjectPtr<AInteractionNode>> InteractionNodes;
+	FDelegateHandle NodeSpawnedHandle;
+	TWeakObjectPtr<AInteractionNode> HoveredInteractionNode;
+	TWeakObjectPtr<UPartnerHackComponent> NodeBlockingHack;
+	TWeakObjectPtr<UPartnerEMPComponent> NodeBlockingEMP;
+	bool BuildNodeInteractionRay(FVector& Start, FVector& Direction) const;
+	AInteractionNode* FindNodeAlongRay(const FVector& Start, const FVector& Direction) const;
+	bool ValidateNodeStart(const AInteractionNode* Node, const FVector& Direction) const;
+	bool CanMaintainNodeInteraction(const AInteractionNode* Node) const;
+	bool HasNodeInteractionPath(const AInteractionNode* Node, const FVector& Start, const FVector& End) const;
+	bool CanUseNodeInteraction() const;
 
 	void SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables);
 	void SyncOutlineInteractables(const TArray<AActor*>& CurrentInteractables);
@@ -276,10 +294,14 @@ private:
 	void GetInteractablesInSphere(float Range, bool bOutlineSphere, TArray<AActor*>& OutInteractables) const;
 	void NormalizeInteractionSphereRanges();
 
-	AActor* FindInteractTargetByTrace() const;
+	AActor* FindInteractTargetByTrace(FVector* OutNodeAimDirection = nullptr) const;
+	AActor* FindLegacyInteractTargetByTrace() const;
+	// 자유 커서가 화면 가장자리를 가리킬 수 있도록 허용하되 뒤쪽 방향 요청은 거절한다.
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction|Node", meta = (ClampMin = "1.0", ClampMax = "89.0", Units = "deg"))
+	float NodeMaxAimAngle = 80.0f;
 
 	bool IsInteractTargetByTrace(AActor* TargetActor) const;
-	bool HasInteractionLineOfSight(AActor* TargetActor, const UPrimitiveComponent* TargetComponent) const;
+	bool HasInteractionLineOfSight(const AActor* TargetActor, const UPrimitiveComponent* TargetComponent) const;
 
 	// void ArenaReload();
 

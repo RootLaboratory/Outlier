@@ -244,7 +244,9 @@ bool FUpgradeLineMappingTest::RunTest(const FString& Parameters)
 	Context.Group->RebuildConnectionLines();
 	TestEqual(TEXT("Unselected node is rejected"), Access::Lines(Context.Group).Num(), 3);
 	Context.Group->ConnectionLines[0].DestinationNodeWidgetName = TEXT("Node_EndA");
-	Context.Group->ConnectionLines.Add(Context.Group->ConnectionLines[0]);
+	// 배열 확장 전에 복사하여 재할당으로 원본 참조가 무효화되지 않게 한다.
+	const auto DuplicateLine = Context.Group->ConnectionLines[0];
+	Context.Group->ConnectionLines.Add(DuplicateLine);
 	AddExpectedErrorPlain(TEXT("[Upgrade.Line] Invalid image/texture/parent mapping: Line0"), EAutomationExpectedErrorFlags::Contains, 1);
 	Context.Group->RebuildConnectionLines();
 	TestEqual(TEXT("One Image cannot share multiple runtime MIDs"), Access::Lines(Context.Group).Num(), 4);

@@ -34,6 +34,13 @@
 #include "LocalPlayerUISubSystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Network/OutlierArenaSubsystem.h"
+#include "EngineUtils.h"
+#include "Engine/Level.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerHackComponent.h"
+#include "Drone/Partner/PartnerEMPComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
+#include "Interaction/ActorBodyTargeting.h"
 
 
 // Sets default values
@@ -160,6 +167,26 @@ void AFirstPersonCharacter::BeginPlay()
 		}
 	}
 	NormalizeInteractionSphereRanges();
+	NodeBlockingHack = FindComponentByClass<UPartnerHackComponent>();
+	NodeBlockingEMP = FindComponentByClass<UPartnerEMPComponent>();
+	// 충돌 없는 노드도 후보에 포함한다. 초기 검색 뒤에는 생성/레벨 추가 알림으로만 갱신한다.
+	for (TActorIterator<AInteractionNode> It(GetWorld()); It; ++It)
+	{
+		CacheInteractionNode(*It);
+	}
+	NodeSpawnedHandle = GetWorld()->AddOnActorSpawnedHandler(
+		FOnActorSpawned::FDelegate::CreateUObject(this, &ThisClass::CacheInteractionNode));
+	// 스트리밍으로 역직렬화된 배치 액터는 Spawn 알림을 거치지 않으므로 별도로 수집한다.
+	FWorldDelegates::LevelAddedToWorld.AddWeakLambda(this, [this](ULevel* Level, UWorld* World)
+	{
+		if (World == GetWorld() && Level)
+		{
+			for (AActor* Actor : Level->Actors)
+			{
+				CacheInteractionNode(Actor);
+			}
+		}
+	});
 
 	GetWorldTimerManager().SetTimer(
 		InteractionTraceTimerHandle,
@@ -186,6 +213,9 @@ void AFirstPersonCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	ClearPresentationProtection(0);
 	if (PresentationArena.IsValid()) PresentationArena->OnArenaGameplayReloadStarted.RemoveAll(this);
 	GetWorldTimerManager().ClearTimer(InteractionTraceTimerHandle);
+	GetWorld()->RemoveOnActorSpawnedHandler(NodeSpawnedHandle);
+	FWorldDelegates::LevelAddedToWorld.RemoveAll(this);
+	InteractionNodes.Reset();
 	ClearInteractionDetection();
 	OnSuitTransitionParticipantInvalidated.Broadcast(this);
 	OnSuitTransitionParticipantInvalidated.Clear();
@@ -328,7 +358,8 @@ void AFirstPersonCharacter::TryInteract()
 		return;
 	}
 
-	AActor* TargetActor = FindInteractTargetByTrace();
+	FVector NodeAimDirection = FVector::ZeroVector;
+	AActor* TargetActor = FindInteractTargetByTrace(&NodeAimDirection);
 	if (!TargetActor)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -355,22 +386,28 @@ void AFirstPersonCharacter::TryInteract()
 
 			AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
 			const int32 HoldAttemptId = Node ? Node->BeginLocalHoldAttempt(this) : 0;
-			if (Node && HoldAttemptId == 0) return;
+			if (Node && HoldAttemptId == 0)
+			{
+				return;
+			}
 			if (!InteractableComponent->BeginHoldInteract(this, HoldAttemptId))
 			{
-				if (Node) Node->EndLocalHoldAttempt(this, true);
+				if (Node)
+				{
+					Node->EndLocalHoldAttempt(this, true);
+				}
 				return;
 			}
 
 			HoldingInteractActor = TargetActor;
-			ServerBeginHoldInteract(TargetActor, HoldAttemptId);
+			ServerBeginHoldInteract(TargetActor, HoldAttemptId, NodeAimDirection);
 			return;
 		}
 	}
 
 	//Hold Interaction Actor의 판정은 Hold Actor가 ServerInteract를 실행하는 식으로 처리. 업데이트는 해당 Actor에서 처리. 판정은 Character 에서
 	//Hold or 즉발
-	ServerInteract(TargetActor);
+	ServerInteract(TargetActor, 0, NodeAimDirection);
 }
 
 void AFirstPersonCharacter::EndInteract()
@@ -390,16 +427,15 @@ void AFirstPersonCharacter::NotifyHoldInteractCompleted(AActor* CompletedActor)
 		return;
 	}
 
-	AActor* CurrentTargetActor = FindInteractTargetByTrace();
-
-	if (CurrentTargetActor != HoldingInteractActor)
+	const AInteractionNode* Node = Cast<AInteractionNode>(CompletedActor);
+	// 노드는 시작 승인 대상을 유지한다. 완료 시 커서 위치가 바뀌어도 새 대상을 선택하지 않는다.
+	if (Node ? !CanMaintainNodeInteraction(Node) : FindInteractTargetByTrace() != HoldingInteractActor)
 	{
 		CancelLocalHoldInteract(true);
 		return;
 	}
 
 	bAwaitingHoldInteractResult = true;
-	const AInteractionNode* Node = Cast<AInteractionNode>(CompletedActor);
 	ServerInteract(CompletedActor, Node ? Node->GetLocalHoldAttemptId(this) : 0);
 }
 
@@ -422,7 +458,10 @@ void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 			InteractableComponent->EndHoldInteract(this, true);
 		}
 	}
-	if (Node) Node->EndLocalHoldAttempt(this, true);
+	if (Node)
+	{
+		Node->EndLocalHoldAttempt(this, true);
+	}
 
 	if (FocusedInteractable == CanceledActor)
 	{
@@ -447,11 +486,16 @@ void AFirstPersonCharacter::NotifyHoldInteractInvalidated(AActor* TargetActor)
 	}
 }
 
-void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
+void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId,
+	FVector_NetQuantizeNormal NodeAimDirection)
 {
-	if (AInteractionNode* Node = Cast<AInteractionNode>(TargetActor))
+	AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
+	if (Node)
 	{
-		if (!Node->AcceptServerHoldAttempt(this, HoldAttemptId)) return;
+		if (!Node->AcceptServerHoldAttempt(this, HoldAttemptId))
+		{
+			return;
+		}
 	}
 	IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor);
 	UInteractableComponent* InteractableComponent =
@@ -460,7 +504,9 @@ void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* Targe
 	if (!TargetActor
 		|| !CanInteract()
 		|| !GetController()
-		|| !IsInteractTargetByTrace(TargetActor)
+		|| (Node
+			? !ValidateNodeStart(Node, NodeAimDirection)
+			: !IsInteractTargetByTrace(TargetActor))
 		|| !InteractableComponent
 		|| !InteractableComponent->RequiresHoldInteract()
 		|| !InteractableComponent->BeginHoldInteract(this, HoldAttemptId))
@@ -473,11 +519,15 @@ void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* Targe
 	}
 }
 
-void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
+void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId,
+	FVector_NetQuantizeNormal NodeAimDirection)
 {
 	const AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
 	const bool bNodeInteraction = Node != nullptr;
-	if (Node && HoldAttemptId != 0 && !Node->IsServerHoldAttemptCurrent(this, HoldAttemptId)) return;
+	if (Node && HoldAttemptId != 0 && !Node->IsServerHoldAttemptCurrent(this, HoldAttemptId))
+	{
+		return;
+	}
 	if (!TargetActor || !CanInteract())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked Target=%s"), *GetName(), *GetNameSafe(TargetActor));
@@ -494,7 +544,12 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, i
 		return;
 	}
 
-	if (!IsInteractTargetByTrace(TargetActor))
+	// 준비 요청은 몸체 Ray를 검증하고, 홀드 완료는 기존 서버 세션과 유지 조건을 검증한다.
+	const bool bValidTarget = Node
+		? (HoldAttemptId != 0 ? CanMaintainNodeInteraction(Node)
+			: ValidateNodeStart(Node, NodeAimDirection))
+		: IsInteractTargetByTrace(TargetActor);
+	if (!bValidTarget)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract validation failed Requested=%s"), *GetName(), *GetNameSafe(TargetActor));
 		ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
@@ -1022,8 +1077,16 @@ void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 {
 }
 
+void AFirstPersonCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	// 몸체 호버는 입력에 매 프레임 반응한다. 주변 범위 탐색은 기존 타이머에서만 수행한다.
+	UpdateNodeInteractionHover();
+}
+
 void AFirstPersonCharacter::UpdateInteractableFocus()
 {
+	InteractionNodes.RemoveAllSwap([](const TWeakObjectPtr<AInteractionNode>& Node) { return !Node.IsValid(); });
 	const AFirstPersonPlayerController* PlayerController = Cast<AFirstPersonPlayerController>(GetController());
 	if (PlayerController && PlayerController->IsHudHiddenForDeath())
 	{
@@ -1048,6 +1111,28 @@ void AFirstPersonCharacter::UpdateInteractableFocus()
 		GetInteractablesInSphere(OutlineSphereRange, true, CurrentOutlineInteractables);
 	}
 	SyncOutlineInteractables(CurrentOutlineInteractables);
+}
+
+void AFirstPersonCharacter::UpdateNodeInteractionHover()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+	AInteractionNode* NextHovered = CanUseNodeInteraction() && !HoldingInteractActor
+		? Cast<AInteractionNode>(FindInteractTargetByTrace()) : nullptr;
+	if (HoveredInteractionNode.Get() != NextHovered)
+	{
+		if (AInteractionNode* Previous = HoveredInteractionNode.Get())
+		{
+			Previous->GetInteractableComponent()->InteractInfoWidgetDeactivate();
+		}
+		HoveredInteractionNode = NextHovered;
+		if (NextHovered)
+		{
+			NextHovered->GetInteractableComponent()->InteractInfoWidgetActivate(this);
+		}
+	}
 }
 
 void AFirstPersonCharacter::SyncOutlineInteractables(const TArray<AActor*>& CurrentInteractables)
@@ -1105,6 +1190,11 @@ void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteract
 
 void AFirstPersonCharacter::ClearInteractionDetection()
 {
+	if (AInteractionNode* Hovered = HoveredInteractionNode.Get())
+	{
+		Hovered->GetInteractableComponent()->InteractInfoWidgetDeactivate();
+	}
+	HoveredInteractionNode.Reset();
 	for (AActor* Actor : NearbyInteractables)
 	{
 		if (IsValid(Actor))
@@ -1151,6 +1241,32 @@ void AFirstPersonCharacter::GetInteractablesInSphere(
 		? FirstPersonCamera->GetComponentLocation()
 		: GetActorLocation();
 
+	// 일반 Overlap과 독립된 캐시를 사용하므로 NoCollision 몸체도 안내/수집 후보가 된다.
+	for (const TWeakObjectPtr<AInteractionNode>& Entry : InteractionNodes)
+	{
+		AInteractionNode* Node = Entry.Get();
+		if (!Node || Node->IsHidden() || (bOutlineSphere && NearbyInteractables.Contains(Node)))
+		{
+			continue;
+		}
+		UInteractableComponent* Component = Node->GetInteractableComponent();
+		if (!(bOutlineSphere ? Component->CanShowInteractionOutlineWidget()
+			: Component->CanShowInteractionWidgets(GetOwnedGameplayTagsForQuery())))
+		{
+			continue;
+		}
+		for (const TWeakObjectPtr<UPrimitiveComponent>& Body : Node->GetInteractionBodies())
+		{
+			if (Node->IsInteractionBodyVisible(Body.Get())
+				&& Body->Bounds.GetBox().ComputeSquaredDistanceToPoint(SphereCenter) <= FMath::Square(Range)
+				&& HasInteractionLineOfSight(Node, Body.Get()))
+			{
+				OutInteractables.AddUnique(Node);
+				break;
+			}
+		}
+	}
+
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(InteractionSphereOverlap), false, this);
 	QueryParams.AddIgnoredActor(this);
 	QueryParams.AddIgnoredActor(CurrentWeapon);
@@ -1191,7 +1307,7 @@ void AFirstPersonCharacter::GetInteractablesInSphere(
 	for (const FOverlapResult& Overlap : Overlaps)
 	{
 		AActor* HitActor = Overlap.GetActor();
-		if (!IsValid(HitActor) || VisitedActors.Contains(HitActor)
+		if (!IsValid(HitActor) || HitActor->IsA<AInteractionNode>() || VisitedActors.Contains(HitActor)
 			|| (bOutlineSphere && NearbyInteractables.Contains(HitActor)))
 		{
 			continue;
@@ -1249,7 +1365,7 @@ void AFirstPersonCharacter::GetInteractablesInSphere(
 }
 
 bool AFirstPersonCharacter::HasInteractionLineOfSight(
-	AActor* TargetActor, const UPrimitiveComponent* TargetComponent) const
+	const AActor* TargetActor, const UPrimitiveComponent* TargetComponent) const
 {
 	if (!IsValid(TargetActor) || !GetWorld() || !GetController())
 	{
@@ -1273,7 +1389,184 @@ bool AFirstPersonCharacter::HasInteractionLineOfSight(
 		Hit, ViewLocation, TargetLocation, InteractionVisibilityTraceChannel, Params);
 }
 
-AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
+void AFirstPersonCharacter::CacheInteractionNode(AActor* Actor)
+{
+	if (AInteractionNode* Node = Cast<AInteractionNode>(Actor))
+	{
+		InteractionNodes.AddUnique(Node);
+	}
+}
+
+bool AFirstPersonCharacter::CanUseNodeInteraction() const
+{
+	if (!GetController() || !CanInteract()
+		|| !GetOwnedGameplayTagsForQuery().HasTagExact(OutlierGameplayTags::Actor::Role::Partner()))
+	{
+		return false;
+	}
+	if (const AFirstPersonPlayerController* PC = Cast<AFirstPersonPlayerController>(GetController()))
+	{
+		if (PC->IsHudHiddenForDeath() || PC->IsFirstPersonInputMode(FirstPersonInputModeTags::UI()))
+		{
+			return false;
+		}
+	}
+	if (const APartnerCharacter* Partner = Cast<APartnerCharacter>(this))
+	{
+		return Partner->CanAcceptInput()
+			&& !(NodeBlockingHack.IsValid() && NodeBlockingHack->IsHackInteractionActive())
+			&& !(NodeBlockingEMP.IsValid() && NodeBlockingEMP->IsEMPInteractionActive());
+	}
+	return true;
+}
+
+bool AFirstPersonCharacter::BuildNodeInteractionRay(FVector& Start, FVector& Direction) const
+{
+	if (!CanUseNodeInteraction())
+	{
+		return false;
+	}
+	FRotator Rotation;
+	GetController()->GetPlayerViewPoint(Start, Rotation);
+	Direction = Rotation.Vector();
+	const APlayerController* PC = Cast<APlayerController>(GetController());
+	if (PC && PC->IsLocalController() && PC->bShowMouseCursor)
+	{
+		FVector MouseOrigin;
+		if (!PC->DeprojectMousePositionToWorld(MouseOrigin, Direction))
+		{
+			return false;
+		}
+	}
+	// 원점은 클라이언트/서버 모두 자신의 시점을 쓴다. 클라이언트의 임의 위치는 전송하지 않는다.
+	return !Start.ContainsNaN() && !Direction.ContainsNaN() && Direction.Normalize()
+		&& FVector::DotProduct(Rotation.Vector(), Direction)
+			>= FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(NodeMaxAimAngle, 1.0f, 89.0f)));
+}
+
+bool AFirstPersonCharacter::HasNodeInteractionPath(const AInteractionNode* Node,
+	const FVector& Start, const FVector& End) const
+{
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NodeInteractionPath), false, this);
+	Params.AddIgnoredActor(CurrentWeapon);
+	Params.AddIgnoredActor(Node);
+	FHitResult Hit;
+	// UI와 몸체 선택은 분리해도 앞쪽 일반 상호작용/벽의 차폐는 우회하지 않는다.
+	if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, InteractionVisibilityTraceChannel, Params))
+	{
+		return false;
+	}
+	return InteractionTraceChannel == InteractionVisibilityTraceChannel
+		|| !GetWorld()->LineTraceSingleByChannel(Hit, Start, End, InteractionTraceChannel, Params);
+}
+
+AInteractionNode* AFirstPersonCharacter::FindNodeAlongRay(const FVector& Start, const FVector& Direction) const
+{
+	if (!CanUseNodeInteraction() || Start.ContainsNaN() || Direction.ContainsNaN() || !Direction.IsNormalized())
+	{
+		return nullptr;
+	}
+	const FVector End = Start + Direction * FMath::Max(InteractionAvailableRange, 0.0f);
+	AInteractionNode* BestTarget = nullptr;
+	double BestDistance = TNumericLimits<double>::Max();
+	bool bBestPrecise = false;
+	const FGameplayTagContainer InteractorTags = GetOwnedGameplayTagsForQuery();
+	for (const TWeakObjectPtr<AInteractionNode>& Entry : InteractionNodes)
+	{
+		AInteractionNode* Node = Entry.Get();
+		if (!Node || Node->GetWorld() != GetWorld() || Node->IsActorBeingDestroyed()
+			|| !Node->GetInteractableComponent()->CanInteract(InteractorTags))
+		{
+			continue;
+		}
+		for (const TWeakObjectPtr<UPrimitiveComponent>& EntryBody : Node->GetInteractionBodies())
+		{
+			UPrimitiveComponent* Body = EntryBody.Get();
+			if (!Node->IsInteractionBodyVisible(Body)
+				|| Body->Bounds.GetBox().ComputeSquaredDistanceToPoint(Start) > FMath::Square(InteractionAvailableRange))
+			{
+				continue;
+			}
+			ActorBodyTargeting::FBodyHit Hit;
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(NodeInteractionBody), true);
+			if (!ActorBodyTargeting::IntersectBody(*Body, Start, End, Params, Hit))
+			{
+				continue;
+			}
+			if (!HasNodeInteractionPath(Node, Start, Hit.Location) || !HasInteractionLineOfSight(Node, Body))
+			{
+				continue;
+			}
+			const double Distance = FVector::DistSquared(Start, Hit.Location);
+			// 같은 거리에서는 이름순으로 고정해 캐시 순서에 따라 선택이 흔들리지 않게 한다.
+			const int32 TieBreak = Distance == BestDistance && BestTarget
+				? Node->GetPathName().Compare(BestTarget->GetPathName()) : 0;
+			if (ActorBodyTargeting::IsBetterCandidate(Hit.bPrecise, Distance, bBestPrecise, BestDistance, TieBreak))
+			{
+				BestDistance = Distance;
+				BestTarget = Node;
+				bBestPrecise = Hit.bPrecise;
+			}
+		}
+	}
+	return BestTarget;
+}
+
+bool AFirstPersonCharacter::ValidateNodeStart(const AInteractionNode* Node, const FVector& Direction) const
+{
+	if (!IsValid(Node) || !CanUseNodeInteraction() || Direction.ContainsNaN() || !Direction.IsNormalized())
+	{
+		return false;
+	}
+	FVector Start;
+	FRotator Rotation;
+	GetController()->GetPlayerViewPoint(Start, Rotation);
+	const double MinDot = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(NodeMaxAimAngle, 1.0f, 89.0f)));
+	return FVector::DotProduct(Rotation.Vector(), Direction) >= MinDot && FindNodeAlongRay(Start, Direction) == Node;
+}
+
+bool AFirstPersonCharacter::CanMaintainNodeInteraction(const AInteractionNode* Node) const
+{
+	if (!IsValid(Node) || Node->IsActorBeingDestroyed() || Node->GetWorld() != GetWorld()
+		|| !CanUseNodeInteraction() || !Node->GetInteractableComponent()->CanInteract(GetOwnedGameplayTagsForQuery()))
+	{
+		return false;
+	}
+	FVector Start;
+	FRotator Rotation;
+	GetController()->GetPlayerViewPoint(Start, Rotation);
+	for (const TWeakObjectPtr<UPrimitiveComponent>& Entry : Node->GetInteractionBodies())
+	{
+		UPrimitiveComponent* Body = Entry.Get();
+		if (Node->IsInteractionBodyVisible(Body)
+			&& Body->Bounds.GetBox().ComputeSquaredDistanceToPoint(Start) <= FMath::Square(FMath::Max(InteractionAvailableRange, 0.0f))
+			&& HasInteractionLineOfSight(Node, Body))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+AActor* AFirstPersonCharacter::FindInteractTargetByTrace(FVector* OutNodeAimDirection) const
+{
+	if (OutNodeAimDirection)
+	{
+		*OutNodeAimDirection = FVector::ZeroVector;
+	}
+	FVector Start;
+	FVector Direction;
+	AInteractionNode* Node = BuildNodeInteractionRay(Start, Direction) ? FindNodeAlongRay(Start, Direction) : nullptr;
+	if (Node && OutNodeAimDirection)
+	{
+		*OutNodeAimDirection = Direction;
+	}
+	// 노드 Ray 앞의 일반 대상은 HasNodeInteractionPath에서 차단한다.
+	// 노드를 선택하지 못한 경우에만 기존 일반 상호작용의 정면 Trace로 돌아간다.
+	return Node ? Node : FindLegacyInteractTargetByTrace();
+}
+
+AActor* AFirstPersonCharacter::FindLegacyInteractTargetByTrace() const
 {
 	if (!GetWorld() || !GetController())
 	{
@@ -1426,6 +1719,11 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 	}
 
 	AActor* HitActor = Hit.GetActor();
+	// 노드가 큰 탐지 콜리전에 맞았다는 이유만으로 몸체 판정을 우회할 수 없다.
+	if (Cast<AInteractionNode>(HitActor))
+	{
+		return nullptr;
+	}
 	IInteractableInterface* Interactable = Cast<IInteractableInterface>(HitActor);
 	if (!Interactable)
 	{

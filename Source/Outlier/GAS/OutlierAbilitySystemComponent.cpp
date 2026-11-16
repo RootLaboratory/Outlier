@@ -185,6 +185,9 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 {
 	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
 	{
+		SkillCooldownCycles.Reset();
+		PartnerHackRetryCycle = FOutlierSkillCooldownCycle();
+		bDeveloperFastCooldown = false;
 		const FGameplayAttribute Attributes[] = {
 			UOutlierVitalAttributeSet::GetHealthAttribute(), UOutlierVitalAttributeSet::GetMaxHealthAttribute(),
 			UOutlierShieldAttributeSet::GetShieldAttribute(), UOutlierShieldAttributeSet::GetMaxShieldAttribute()
@@ -268,6 +271,7 @@ bool UOutlierAbilitySystemComponent::ApplyDamageToSelf(
 {
 	if (!IsOwnerActorAuthoritative() || DamageAmount <= 0.0f
 		|| OutlierDamage::IsEditorInvulnerable(GetAvatarActor())
+		|| OutlierDamage::IsDeveloperInvincible(GetAvatarActor())
 		|| HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()))
 	{
 		return false;
@@ -544,10 +548,14 @@ FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::CommitTimedCooldown(
 	float DurationSeconds,
 	UObject* SourceObject)
 {
+	const bool bSkillCooldown = IsDeveloperSkillCooldown(CooldownTag)
+		&& (!SourceObject || SourceObject == GetAvatarActor());
+	const float EffectiveDuration = bSkillCooldown
+		? ResolveDeveloperCooldownDuration(CooldownTag, DurationSeconds) : DurationSeconds;
 	if (!IsOwnerActorAuthoritative()
 		|| !EffectClass
 		|| !CooldownTag.IsValid()
-		|| DurationSeconds <= 0.0f
+		|| EffectiveDuration <= 0.0f
 		|| IsTimedCooldownActive(CooldownTag, SourceObject))
 	{
 		return FActiveGameplayEffectHandle();
@@ -561,8 +569,13 @@ FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::CommitTimedCooldown(
 		return FActiveGameplayEffectHandle();
 	}
 
-	SpecHandle.Data->SetDuration(DurationSeconds, true);
-	return ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+	SpecHandle.Data->SetDuration(EffectiveDuration, true);
+	const FActiveGameplayEffectHandle Handle = ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+	if (bSkillCooldown)
+	{
+		TrackSkillCooldown(CooldownTag, Handle, DurationSeconds);
+	}
+	return Handle;
 }
 
 bool UOutlierAbilitySystemComponent::IsTimedCooldownActive(
@@ -1018,7 +1031,7 @@ void UOutlierAbilitySystemComponent::BeginQuantumLeapRecharge()
 		return;
 	}
 	const float Duration = ShooterSuitConfig.QuantumLeap.CooldownSeconds;
-	if (Duration <= 0.0f)
+	if (Duration <= 0.0f && !bDeveloperFastCooldown)
 	{
 		// 0초 설정도 유효하다. 타이머 재귀 없이 부족한 횟수를 즉시 회복한다.
 		QuantumLeapCharges.RecoverySerial += QuantumLeapCharges.MaxCharges - QuantumLeapCharges.CurrentCharges;
@@ -1029,13 +1042,14 @@ void UOutlierAbilitySystemComponent::BeginQuantumLeapRecharge()
 		return;
 	}
 
-	QuantumLeapRechargeHandle = ApplyTimedGameplayEffectToSelf(
-		UOutlierShooterQuantumLeapCooldownGameplayEffect::StaticClass(), Duration, GetAvatarActor());
+	QuantumLeapRechargeHandle = CommitTimedCooldown(
+		UOutlierShooterQuantumLeapCooldownGameplayEffect::StaticClass(),
+		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap(), Duration, GetAvatarActor());
 	if (!ensure(QuantumLeapRechargeHandle.IsValid()))
 	{
 		return;
 	}
-	QuantumLeapCharges.RechargeDuration = Duration;
+	QuantumLeapCharges.RechargeDuration = GetActiveGameplayEffect(QuantumLeapRechargeHandle)->GetDuration();
 	QuantumLeapCharges.RechargeStartServerTime = GetWorld()->GetTimeSeconds();
 	if (FOnActiveGameplayEffectRemoved_Info* Removed = OnGameplayEffectRemoved_InfoDelegate(QuantumLeapRechargeHandle))
 	{
@@ -1268,7 +1282,7 @@ bool UOutlierAbilitySystemComponent::EndActiveShooterWeaponOvercharge(bool bComm
 bool UOutlierAbilitySystemComponent::CommitShooterStealthCooldown()
 {
 	const float Duration = ShooterSuitConfig.Stealth.CooldownSeconds;
-	if (Duration <= 0.0f)
+	if (Duration <= 0.0f && !bDeveloperFastCooldown)
 	{
 		return true;
 	}
@@ -1375,11 +1389,15 @@ void UOutlierAbilitySystemComponent::NotifyShooterStealthKill(
 		const float Remaining = GetShooterStealthCooldownRemaining();
 		if (Remaining > 0.0f)
 		{
-			RemoveActiveEffects(MakeOwningTagQuery(OutlierGameplayTags::Cooldown::Shooter::Stealth()));
-			if (Remaining > 5.0f)
+			const FGameplayTag Tag = OutlierGameplayTags::Cooldown::Shooter::Stealth();
+			for (const FActiveGameplayEffectHandle Handle : GetActiveEffects(MakeOwningTagQuery(Tag)))
 			{
-				CommitTimedCooldown(UOutlierShooterStealthCooldownGameplayEffect::StaticClass(),
-					OutlierGameplayTags::Cooldown::Shooter::Stealth(), Remaining - 5.0f, GetAvatarActor());
+				if (FOutlierSkillCooldownCycle* Cycle = SkillCooldownCycles.Find(Tag))
+				{
+					// 실제 업그레이드 감소는 정상 회차에도 반영해 OFF가 이 보상을 되돌리지 않게 한다.
+					Cycle->NormalDuration = FMath::Max(0.0f, Cycle->NormalDuration - 5.0f);
+				}
+				SetSkillCooldownRemaining(Handle, FMath::Max(0.0f, Remaining - 5.0f));
 			}
 		}
 	}
@@ -1580,20 +1598,21 @@ void UOutlierAbilitySystemComponent::BeginPartnerHackRecharge(float RemainingDur
 		return;
 	}
 	const float Duration = RemainingDuration > 0.0f ? RemainingDuration : PartnerAbilityConfig.HackCooldown;
-	if (Duration <= 0.0f)
+	if (Duration <= 0.0f && !bDeveloperFastCooldown)
 	{
 		PartnerHackCharges.RecoverySerial += PartnerHackCharges.MaxCharges - PartnerHackCharges.CurrentCharges;
 		PartnerHackCharges.CurrentCharges = PartnerHackCharges.MaxCharges;
 		NotifyPartnerHackChargesChanged(true);
 		return;
 	}
-	PartnerHackRechargeHandle = ApplyTimedGameplayEffectToSelf(
-		UOutlierPartnerHackCooldownGameplayEffect::StaticClass(), Duration, GetAvatarActor());
+	PartnerHackRechargeHandle = CommitTimedCooldown(
+		UOutlierPartnerHackCooldownGameplayEffect::StaticClass(),
+		OutlierGameplayTags::Cooldown::Partner::Hacking(), Duration, GetAvatarActor());
 	if (!ensure(PartnerHackRechargeHandle.IsValid()))
 	{
 		return;
 	}
-	PartnerHackCharges.RechargeDuration = Duration;
+	PartnerHackCharges.RechargeDuration = GetActiveGameplayEffect(PartnerHackRechargeHandle)->GetDuration();
 	PartnerHackCharges.RechargeStartServerTime = GetWorld()->GetTimeSeconds();
 	if (FOnActiveGameplayEffectRemoved_Info* Removed = OnGameplayEffectRemoved_InfoDelegate(PartnerHackRechargeHandle))
 	{
@@ -1670,12 +1689,16 @@ bool UOutlierAbilitySystemComponent::CommitPartnerHackRetryDelay()
 	{
 		return true;
 	}
-	const float Duration = PartnerAbilityConfig.HackCooldown * (1.0f - PartnerAbilityConfig.HackCancelCooldownRefundRate);
+	const float NormalDuration = PartnerAbilityConfig.HackCooldown * (1.0f - PartnerAbilityConfig.HackCancelCooldownRefundRate);
+	const float Duration = bDeveloperFastCooldown ? FMath::Min(NormalDuration, 1.0f) : NormalDuration;
 	if (Duration <= 0.0f)
 	{
 		return true;
 	}
 	PartnerHackCharges.bRetryBlocked = true;
+	PartnerHackRetryCycle = FOutlierSkillCooldownCycle();
+	PartnerHackRetryCycle.NormalDuration = NormalDuration;
+	PartnerHackRetryCycle.StartedAt = World->GetTimeSeconds();
 	PartnerHackCharges.RetryStartServerTime = World->GetTimeSeconds();
 	PartnerHackCharges.RetryDuration = Duration;
 	World->GetTimerManager().SetTimer(PartnerHackRetryTimer, this, &ThisClass::FinishPartnerHackRetryDelay, Duration, false);
@@ -1685,6 +1708,7 @@ bool UOutlierAbilitySystemComponent::CommitPartnerHackRetryDelay()
 
 void UOutlierAbilitySystemComponent::FinishPartnerHackRetryDelay()
 {
+	PartnerHackRetryCycle = FOutlierSkillCooldownCycle();
 	PartnerHackCharges.bRetryBlocked = false;
 	PartnerHackCharges.RetryStartServerTime = 0.0f;
 	PartnerHackCharges.RetryDuration = 0.0f;
@@ -1716,6 +1740,8 @@ void UOutlierAbilitySystemComponent::ResetPartnerHackCharges()
 		World->GetTimerManager().ClearTimer(PartnerHackRetryTimer);
 	}
 	PartnerHackCharges = FOutlierPartnerHackChargeState();
+	PartnerHackRetryCycle = FOutlierSkillCooldownCycle();
+	SkillCooldownCycles.Remove(OutlierGameplayTags::Cooldown::Partner::Hacking());
 	bPartnerHackRechargeDeferred = false;
 	SuspendedPartnerHackRechargeRemaining = 0.0f;
 	SuspendedPartnerHackRetryRemaining = 0.0f;
@@ -1774,21 +1800,12 @@ bool UOutlierAbilitySystemComponent::CommitPartnerCooldown(
 	// 업그레이드 델타로 HackCooldown/EMPCooldown 등이 0까지 깎인 경우, Duration 이 0 이 될 수 있다.
 	// 이 경우 걸어줄 GE 가 없을 뿐 "쿨다운 없음" 은 정상적인 성공 상태다.
 	// 여기서 실패로 취급하면 CommitConfiguredCooldown() 의 checkf(bCommitted, ...) 가 크래시한다.
-	if (Duration <= 0.0f)
+	if (Duration <= 0.0f && !bDeveloperFastCooldown)
 	{
 		return true;
 	}
 
-	FGameplayEffectContextHandle Context = MakeEffectContext();
-	Context.AddSourceObject(GetAvatarActor());
-	FGameplayEffectSpecHandle SpecHandle = MakeOutgoingSpec(EffectClass, 1.0f, Context);
-	if (!SpecHandle.IsValid())
-	{
-		return false;
-	}
-
-	SpecHandle.Data->SetDuration(Duration, true);
-	return ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get()).WasSuccessfullyApplied();
+	return CommitTimedCooldown(EffectClass, CooldownTag, Duration, GetAvatarActor()).WasSuccessfullyApplied();
 }
 
 bool UOutlierAbilitySystemComponent::IsPartnerCooldownActive(const FGameplayTag& CooldownTag) const
@@ -1819,6 +1836,7 @@ bool UOutlierAbilitySystemComponent::SuspendPartnerSkillCooldownsForPossession()
 		return false;
 	}
 
+	SuspendDeveloperCooldownCycles();
 	bPartnerSkillCooldownsSuspended = true;
 	// 두 번째 해킹으로 빙의하면 첫 번째 사용분이 충전 중일 수 있다. 제거 전에 남은 시간을 보관한다.
 	SuspendedPartnerHackRechargeRemaining = GetPartnerHackRechargeRemaining();
@@ -1863,6 +1881,8 @@ bool UOutlierAbilitySystemComponent::ResumePartnerSkillCooldownsAfterPossession(
 		return false;
 	}
 
+	ResumeDeveloperCooldownCycles();
+	TGuardValue<bool> ResumingGuard(bResumingSkillCooldowns, true);
 	bPartnerSkillCooldownsSuspended = false;
 	if (SuspendedPartnerHackRetryRemaining > 0.0f && GetWorld())
 	{
@@ -1902,6 +1922,13 @@ void UOutlierAbilitySystemComponent::DiscardSuspendedPartnerSkillCooldowns()
 		return;
 	}
 	bPartnerSkillCooldownsSuspended = false;
+	for (auto It = SkillCooldownCycles.CreateIterator(); It; ++It)
+	{
+		if (It.Value().bSuspended)
+		{
+			It.RemoveCurrent();
+		}
+	}
 	SuspendedPartnerCooldowns.Reset();
 	ResetPartnerHackCharges();
 	RefreshPartnerHackCharges();

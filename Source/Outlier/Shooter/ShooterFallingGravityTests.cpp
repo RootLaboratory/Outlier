@@ -17,11 +17,17 @@ bool FShooterFallingGravityTest::RunTest(const FString& Parameters)
 	(void)Parameters;
 	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
 		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
-	if (!TestNotNull(TEXT("Shooter Blueprint"), ShooterClass)) return false;
+	if (!TestNotNull(TEXT("Shooter Blueprint"), ShooterClass))
+	{
+		return false;
+	}
 	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
 	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
 		MakeUniqueObjectName(nullptr, UWorld::StaticClass()), GetTransientPackage());
-	if (!TestNotNull(TEXT("Gravity test world"), World)) return false;
+	if (!TestNotNull(TEXT("Gravity test world"), World))
+	{
+		return false;
+	}
 	World->AddToRoot();
 	Context.SetCurrentWorld(World);
 	AShooterCharacter* Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass);
@@ -32,6 +38,14 @@ bool FShooterFallingGravityTest::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("Blueprint jump settings: GravityScale=%g JumpZVelocity=%g JumpMaxHoldTime=%g JumpMaxCount=%d"),
 			Movement->GravityScale, Movement->JumpZVelocity, Shooter->JumpMaxHoldTime, Shooter->JumpMaxCount));
 		Movement->SetMovementMode(MOVE_Falling);
+		const FFloatProperty* DefaultMultiplier = FindFProperty<FFloatProperty>(Movement->GetClass(), TEXT("FallingGravityMultiplier"));
+		if (!TestNotNull(TEXT("Configured falling gravity multiplier"), DefaultMultiplier))
+		{
+			return false;
+		}
+		// Blueprint의 저장된 조정값과 native 기본값은 다를 수 있다. 실제 설정에 대한
+		// 적분을 먼저 검증하고, 아래에서 1.5를 포함한 명시적 배율을 별도로 검사한다.
+		const float ConfiguredMultiplier = FMath::Max(1.0f, DefaultMultiplier->GetPropertyValue_InContainer(Movement));
 		const FVector Gravity(0.0, 0.0, -980.0);
 		const FVector Falling(120.0, -30.0, -100.0);
 		const FVector Rising(120.0, -30.0, 400.0);
@@ -39,12 +53,12 @@ bool FShooterFallingGravityTest::RunTest(const FString& Parameters)
 		{
 			return Movement->UCharacterMovementComponent::NewFallVelocity(Initial, Acceleration, Delta);
 		};
-		TestTrue(TEXT("Default descent applies 1.5 times gravity"),
-			Movement->NewFallVelocity(Falling, Gravity, 0.1f).Equals(BaseVelocity(Falling, Gravity * 1.5, 0.1f)));
+		TestTrue(TEXT("Blueprint descent applies its configured gravity multiplier"),
+			Movement->NewFallVelocity(Falling, Gravity, 0.1f).Equals(BaseVelocity(Falling, Gravity * ConfiguredMultiplier, 0.1f)));
 		TestTrue(TEXT("Ascent preserves original jump velocity integration"),
 			Movement->NewFallVelocity(Rising, Gravity, 0.1f).Equals(BaseVelocity(Rising, Gravity, 0.1f)));
 		TestTrue(TEXT("Apex immediately starts stronger descent"),
-			Movement->NewFallVelocity(FVector::ZeroVector, Gravity, 0.1f).Equals(BaseVelocity(FVector::ZeroVector, Gravity * 1.5, 0.1f)));
+			Movement->NewFallVelocity(FVector::ZeroVector, Gravity, 0.1f).Equals(BaseVelocity(FVector::ZeroVector, Gravity * ConfiguredMultiplier, 0.1f)));
 		TestTrue(TEXT("No gravity still means no acceleration"),
 			Movement->NewFallVelocity(Falling, FVector::ZeroVector, 0.1f).Equals(Falling));
 		TestTrue(TEXT("Zero delta does not change velocity"),
@@ -57,7 +71,7 @@ bool FShooterFallingGravityTest::RunTest(const FString& Parameters)
 		if (TestNotNull(TEXT("Editable falling gravity multiplier"), Multiplier))
 		{
 			TestTrue(TEXT("Multiplier is editable in Details"), Multiplier->HasAnyPropertyFlags(CPF_Edit));
-			for (float Value : {1.0f, 2.0f, 0.0f, -1.0f})
+			for (float Value : {1.0f, 1.5f, 2.0f, 0.0f, -1.0f})
 			{
 				Multiplier->SetPropertyValue_InContainer(Movement, Value);
 				TestTrue(FString::Printf(TEXT("Configured multiplier %g is applied with a minimum of one"), Value),
@@ -92,7 +106,10 @@ bool FShooterFallingGravityTest::RunTest(const FString& Parameters)
 					Elapsed += Step;
 					const double Height = Shooter->GetActorLocation().Z - 5000.0;
 					MaxHeight = FMath::Max(MaxHeight, Height);
-					if (Height <= 0.0 && Movement->Velocity.Z < 0.0) break;
+					if (Height <= 0.0 && Movement->Velocity.Z < 0.0)
+					{
+						break;
+					}
 				}
 				return FVector2D(MaxHeight, Elapsed);
 			};

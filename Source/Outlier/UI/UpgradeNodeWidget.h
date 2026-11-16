@@ -4,6 +4,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Containers/Ticker.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
+#include "UI/DeveloperConvenienceTypes.h"
 #include "UObject/PropertyText.h"
 #include "UpgradeNodeWidget.generated.h"
 
@@ -292,6 +293,8 @@ private:
 
 	UFUNCTION()
 	void HandleUpgradeStateChanged();
+	UFUNCTION()
+	void HandleDeveloperConvenienceStateChanged(const FDeveloperConvenienceSnapshot& Snapshot);
 	void HandleNodeCountChanged(int32 NewNodeCount);
 	void HandleApplicationActivationChanged(bool bIsActive);
 	void BindUpgradeContextEvents();
@@ -353,6 +356,7 @@ private:
 	FName PendingNodeRowName = NAME_None;
 	TWeakObjectPtr<AActor> PendingUpgradeOwner;
 	TWeakObjectPtr<AFirstPersonPlayerController> UpgradeController;
+	TWeakObjectPtr<AFirstPersonPlayerController> ConvenienceController;
 	TWeakObjectPtr<UOutlierUpgradeSetData> CachedUpgradeSetData;
 	TArray<TWeakObjectPtr<UWidget>> InteractionVisibilityWidgets;
 	FTSTicker::FDelegateHandle InteractionTickerHandle;
