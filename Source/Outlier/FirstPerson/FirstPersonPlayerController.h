@@ -168,6 +168,15 @@ public:
 	void ServerRequestDeveloperConveniencePreset(FDeveloperConveniencePresetRequest Request);
 	UFUNCTION(Client, Reliable)
 	void ClientDeveloperConveniencePresetResult(FDeveloperConveniencePresetResult Result);
+	UFUNCTION(Client, Reliable)
+	void ClientPreparePresetUpgradeUI(FGuid RequestId, uint32 GameplayGeneration, int32 PairId,
+		TSubclassOf<UUpgradeMachineWidget> WidgetClass);
+	UFUNCTION(Server, Reliable)
+	void ServerPresetUpgradeUIReady(FGuid RequestId, uint32 GameplayGeneration, bool bAvailable);
+	UFUNCTION(Client, Reliable)
+	void ClientOpenPresetUpgradeUI(FGuid RequestId, uint32 GameplayGeneration, const FUILayerPushRequest& Request);
+	UFUNCTION(Client, Reliable)
+	void ClientCancelPresetUpgradeUI(FGuid RequestId);
 	UFUNCTION(BlueprintCallable, Category = "Developer Convenience")
 	FGuid RequestDeveloperConvenienceReturnToTitle(const FDeveloperConvenienceSnapshot& ExpectedState);
 	UPROPERTY(BlueprintAssignable, Category = "Developer Convenience")
@@ -738,6 +747,20 @@ protected:
 	void ClearDeveloperConveniencePresentation();
 	FUILayerHandle DeveloperConvenienceLayer;
 	bool bClientTitleReturnPrepared = false;
+	void TryReportPresetUpgradeUIReady();
+	bool IsPresetUpgradeUIReady() const;
+	void ClearPendingPresetUpgradeUI();
+	FGuid PendingPresetUpgradeRequestId;
+	FGuid LastOpenedPresetUpgradeRequestId;
+	uint32 PendingPresetUpgradeGeneration = 0;
+	int32 PendingPresetUpgradePairId = INDEX_NONE;
+	bool bPresetUpgradeUIReadyReported = false;
+	double PresetUpgradeUIWaitStartedAt = 0.0;
+	FTimerHandle PresetUpgradeUIReadyTimer;
+	TWeakObjectPtr<UOutlierArenaSubsystem> PresetUpgradeArena;
+	TWeakObjectPtr<ULocalPlayerUILayerSubsystem> PresetUpgradeLayers;
+	UPROPERTY(Transient)
+	TSubclassOf<UUpgradeMachineWidget> PendingPresetUpgradeWidgetClass;
 	UPROPERTY(Transient)
 	TObjectPtr<UDeveloperConvenienceWidget> DeveloperConvenienceWidget;
 	FGuid PresentedDeveloperConvenienceSession;

@@ -1072,6 +1072,7 @@ void AFirstPersonPlayerController::ClientPrepareForTitleReturn_Implementation(bo
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
 	ClearDeveloperConveniencePresentation();
+	ClearPendingPresetUpgradeUI();
 	bClientArenaExitPrepared = true;
 	if (auto* Cinematic = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
@@ -2086,6 +2087,7 @@ void AFirstPersonPlayerController::Destroyed()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ClearPendingPresetUpgradeUI();
 	ClearDeveloperHitPresentation();
 	ClearDeveloperConveniencePresentation();
 	ClearPresentationProtection();
@@ -2939,6 +2941,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	}
 
 	// 오래된 리로드 요청은 위에서 거부한다. 유효한 리로드가 시작될 때만 이전 슈트 연출 콜백을 끊는다.
+	ClearPendingPresetUpgradeUI();
 	if (ATuto_PassageTransitionVolume* Passage = LocalPassageTransitionVolume.Get()) Passage->ResetLocalPassageForReload();
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();

@@ -126,6 +126,8 @@ public:
 	TSubclassOf<UUpgradeMachineWidget> PresetUpgradeWidgetClass;
 	EDeveloperConvenienceRequestResult RequestDeveloperConveniencePreset(
 		AFirstPersonPlayerController* Requester, const FDeveloperConveniencePresetRequest& Request);
+	void OnClientPresetUpgradeUIReady(AFirstPersonPlayerController* Controller,
+		const FGuid& RequestId, uint32 GameplayGeneration, bool bAvailable);
 	bool RequestGameOverPendingChoice(
 		AFirstPersonPlayerController* Requester,
 		const FGameOverPendingRequest& Request);
@@ -209,7 +211,15 @@ private:
 	friend class FPresetUpgradeReadinessTest;
 	friend class FDeveloperConvenienceTitleTest;
 	FGuid PendingDeveloperTitleRequestId;
+	void ArmPresetUpgradeUI(int32 PairId, uint32 GameplayGeneration);
+	void ClearPendingPresetUpgradeUI();
+	void TryPreparePresetUpgradeUI();
+	bool IsPresetUpgradeContextCurrent() const;
 	FGuid PendingPresetUpgradeRequestId;
+	int32 PendingPresetUpgradePairId = INDEX_NONE;
+	uint32 PendingPresetUpgradeGeneration = 0;
+	TSet<TWeakObjectPtr<AFirstPersonPlayerController>> PresetUpgradePreparedControllers;
+	TSet<TWeakObjectPtr<AFirstPersonPlayerController>> PresetUpgradeReadyControllers;
 	EDeveloperConvenienceRequestResult ValidateDeveloperConvenienceAction(
 		AFirstPersonPlayerController* Requester, const FGuid& RequestId, const FGuid& MatchId,
 		const FGuid& SessionId, int64 GameplayGeneration) const;

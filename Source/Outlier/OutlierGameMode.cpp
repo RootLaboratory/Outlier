@@ -427,6 +427,7 @@ void AOutlierGameMode::ResetDeveloperConvenienceState()
 		return;
 	}
 	PendingDeveloperTitleRequestId.Invalidate();
+	ClearPendingPresetUpgradeUI();
 	ClearDeveloperConvenienceWorldPause();
 	// 페어 식별자를 지우기 전에 기존 ASC에도 기본 옵션을 반영한다.
 	DeveloperConvenienceState.Options.bFastCooldown = false;
@@ -1462,6 +1463,7 @@ void AOutlierGameMode::BroadcastPairGameplayReadyIfReady()
 	{
 		const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
 		OnPairGameplayReady.Broadcast(Arena->GetGameplayGeneration());
+		TryPreparePresetUpgradeUI();
 	}
 }
 
@@ -2061,6 +2063,7 @@ void AOutlierGameMode::FinishGameOverFlow()
 
 void AOutlierGameMode::FailGameOverTransition()
 {
+	ClearPendingPresetUpgradeUI();
 	if (bArenaRecoveryEnding) return;
 	bArenaRecoveryEnding = true;
 	// Pawn 제거 후 실패나 한쪽 UI 부재는 선택 화면만 복구해도 정상 합의를 할 수 없다. 세션을 종료한다.
@@ -4055,6 +4058,12 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	}
 
 	// 1) 사전 거절은 여기까지다. 확정부터는 동일 세대의 실패 경로만 사용한다.
+	ClearPendingPresetUpgradeUI();
+	// PresetNodeCount는 프리셋 선택 경로만 전달한다. 일반 Continue/재접속은 UI를 예약하지 않는다.
+	if (bApplyPresetLoadout)
+	{
+		ArmPresetUpgradeUI(ShooterPlayerState->GetPairId(), ReloadGeneration);
+	}
 	InvalidateDeveloperConvenienceSession();
 	PendingGameplayGeneration = ReloadGeneration;
 	bArenaReloadInProgress = true;
