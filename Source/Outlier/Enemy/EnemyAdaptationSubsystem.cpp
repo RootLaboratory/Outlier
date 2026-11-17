@@ -1,4 +1,5 @@
 #include "Enemy/EnemyAdaptationSubsystem.h"
+#include "Logging/OutlierLog.h"
 
 #include "Enemy/EnemyAdaptationDefinition.h"
 #include "Enemy/EnemyBase.h"
@@ -106,7 +107,7 @@ bool UEnemyAdaptationSubsystem::RegisterEnemy(AEnemyBase* Enemy)
 
 	ActiveEnemies.Add(EnemyPtr, Registration);
 	SynchronizeEnemyState(Enemy, Registration);
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Registered Enemy=%s Target=%s PoolManaged=%s Generation=%d Lease=%d Stack=%d State=%s ActiveCount=%d"),
@@ -131,7 +132,7 @@ void UEnemyAdaptationSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 		Enemy->ApplyAdaptationState(EEnemyAdaptationState::Normal);
 		if (RemovedCount > 0)
 		{
-			UE_LOG(
+			OUTLIER_LOG(Enemy,
 				LogOutlier,
 				Display,
 				TEXT("[EnemyAdaptation] Unregistered Enemy=%s ActiveCount=%d"),
@@ -334,7 +335,7 @@ void UEnemyAdaptationSubsystem::FinalizeAdaptationUpdate(
 	{
 		ApplyAdaptationBreakToCombatField(OutResult);
 	}
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Stack updated PreviousStack=%d CurrentStack=%d PreviousState=%s CurrentState=%s Category=%s Broken=%s Registered=%d"),
@@ -358,6 +359,7 @@ void UEnemyAdaptationSubsystem::ApplyAdaptationBreakToCombatField(
 	int32 DamagedCount = 0;
 	int32 StunnedCount = 0;
 	int32 KilledCount = 0;
+	const bool bLogBreakStats = OUTLIER_LOG_ACTIVE(Enemy, LogOutlier, Display);
 	for (const TWeakObjectPtr<AEnemyBase>& TargetPtr : Targets)
 	{
 		AEnemyBase* Target = TargetPtr.Get();
@@ -376,12 +378,15 @@ void UEnemyAdaptationSubsystem::ApplyAdaptationBreakToCombatField(
 				Result.BreakDamage,
 				Result.BreakStunSeconds,
 				this);
-		++AppliedCount;
-		DamagedCount += Application.AppliedDamage > 0.0f ? 1 : 0;
-		StunnedCount += Application.bStunApplied ? 1 : 0;
-		KilledCount += Application.bKilled ? 1 : 0;
+		if (bLogBreakStats)
+		{
+			++AppliedCount;
+			DamagedCount += Application.AppliedDamage > 0.0f ? 1 : 0;
+			StunnedCount += Application.bStunApplied ? 1 : 0;
+			KilledCount += Application.bKilled ? 1 : 0;
+		}
 
-		UE_LOG(
+		OUTLIER_LOG(Enemy,
 			LogOutlier,
 			Display,
 			TEXT("[EnemyAdaptation] Break target applied Enemy=%s Damage=%.2f Stun=%.2f Killed=%s"),
@@ -391,7 +396,7 @@ void UEnemyAdaptationSubsystem::ApplyAdaptationBreakToCombatField(
 			Application.bKilled ? TEXT("true") : TEXT("false"));
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Break field applied PreviousStack=%d Targets=%d Applied=%d Damaged=%d Stunned=%d Killed=%d Damage=%.2f Stun=%.2f"),
@@ -416,7 +421,7 @@ void UEnemyAdaptationSubsystem::CollectAdaptationBreakTargets(
 		if (const TCHAR* ExclusionReason =
 			ResolveAdaptationBreakExclusionReason(Enemy, Entry.Value))
 		{
-			UE_LOG(
+			OUTLIER_LOG(Enemy,
 				LogOutlier,
 				Display,
 				TEXT("[EnemyAdaptation] Break target excluded Enemy=%s Reason=%s InCombat=%s Possessed=%s Team=%d Generation=%d Lease=%d"),
@@ -604,7 +609,7 @@ void UEnemyAdaptationSubsystem::HandleArenaShown()
 			ActiveGameplayGeneration = ArenaSubsystem->GetGameplayGeneration();
 		}
 		bAcceptingRegistrations = true;
-		UE_LOG(
+		OUTLIER_LOG(Enemy,
 			LogOutlier,
 			Display,
 			TEXT("[EnemyAdaptation] Arena lifecycle Event=Shown Generation=%u Stack=%d State=%s Registrations=%d Accepting=true"),
@@ -618,11 +623,12 @@ void UEnemyAdaptationSubsystem::HandleArenaShown()
 void UEnemyAdaptationSubsystem::HandleArenaGameplayReloadStarted(uint32 GameplayGeneration)
 {
 	// 새 Gameplay 서브레벨의 등록을 허용하기 전까지 이전 Generation의 지연 이벤트를 버린다.
-	const int32 ClearedRegistrationCount = GetRegisteredEnemyCount();
+	const int32 ClearedRegistrationCount = OUTLIER_LOG_ACTIVE(Enemy, LogOutlier, Display)
+		? GetRegisteredEnemyCount() : 0;
 	bAcceptingRegistrations = false;
 	ActiveGameplayGeneration = GameplayGeneration;
 	ResetActiveEnemies();
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Arena lifecycle Event=ReloadStarted Generation=%u Stack=%d State=%s ClearedRegistrations=%d Accepting=false"),
@@ -637,7 +643,7 @@ void UEnemyAdaptationSubsystem::HandleArenaGameplayGCReady(uint32 GameplayGenera
 	// 이전 세대 Actor EndPlay와 GC가 검증된 뒤 새 Gameplay 서브레벨 Actor의 등록을 허용한다.
 	ActiveGameplayGeneration = GameplayGeneration;
 	bAcceptingRegistrations = true;
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Arena lifecycle Event=GCReady Generation=%u Stack=%d State=%s Registrations=%d Accepting=true"),
@@ -652,7 +658,7 @@ void UEnemyAdaptationSubsystem::HandleArenaGameplayReady(uint32 GameplayGenerati
 	ActiveGameplayGeneration = GameplayGeneration;
 	LoadConfiguredDefinition();
 	bAcceptingRegistrations = true;
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Arena lifecycle Event=GameplayReady Generation=%u Stack=%d State=%s Registrations=%d Accepting=true"),
@@ -665,14 +671,15 @@ void UEnemyAdaptationSubsystem::HandleArenaGameplayReady(uint32 GameplayGenerati
 void UEnemyAdaptationSubsystem::HandleArenaReleased()
 {
 	const int32 PreviousStack = CurrentGunAdaptationStack;
-	const int32 ClearedRegistrationCount = GetRegisteredEnemyCount();
+	const int32 ClearedRegistrationCount = OUTLIER_LOG_ACTIVE(Enemy, LogOutlier, Display)
+		? GetRegisteredEnemyCount() : 0;
 	bAcceptingRegistrations = false;
 	ActiveGameplayGeneration = 0;
 	ResetActiveEnemies();
 	ResetAdaptationState();
 	ActiveDefinition = nullptr;
 	ShieldBreakVFX = nullptr;
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Arena lifecycle Event=Released Generation=0 PreviousStack=%d Stack=0 State=%s ClearedRegistrations=%d Accepting=false"),

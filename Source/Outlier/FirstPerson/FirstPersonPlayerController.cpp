@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "Logging/OutlierLog.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Cinematic/OutlierCinematicSubsystem.h"
 #include "InputKeyEventArgs.h"
@@ -447,7 +448,7 @@ bool AFirstPersonPlayerController::RequestTutorialEvent(FGameplayTag EventTag, c
 	}
 	if (HasAuthority()) ServerRequestTutorialEvent_Implementation(EventTag);
 	else ServerRequestTutorialEvent(EventTag);
-	UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s sent '%s' from %s."), *Source, *EventTag.ToString(), *GetName());
+	OUTLIER_LOG(Core, LogOutlier, Log, TEXT("[EventTrigger] %s sent '%s' from %s."), *Source, *EventTag.ToString(), *GetName());
 	return true;
 #else
 	return false;
@@ -469,7 +470,7 @@ void AFirstPersonPlayerController::ServerRequestTutorialEvent_Implementation(FGa
 	}
 	const bool bAccepted = bKnownEvent && ITuto_EventTriggerInterface::DispatchEventTag(GetWorld(), EventTag,
 		GetPlayerState<AOutlierPlayerState>(), ETuto_EventOperation::Trigger, ETuto_EventRegion::Both, TEXT("EventTool/Console"));
-	UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] Preview '%s' server accepted=%s"), *EventTag.ToString(), bAccepted ? TEXT("O") : TEXT("X"));
+	OUTLIER_LOG(Core, LogOutlier, Log, TEXT("[EventTrigger] Preview '%s' server accepted=%s"), *EventTag.ToString(), bAccepted ? TEXT("O") : TEXT("X"));
 #endif
 }
 
@@ -503,7 +504,7 @@ void AFirstPersonPlayerController::ServerDebugWorldGuide_Implementation(FName Co
 		bAccepted = true;
 	}
 	else return;
-	UE_LOG(LogOutlier, Log, TEXT("[WorldGuideDebug][%s] Command=%s ID=%s Next=%s accepted=%d Active=%s Pending=%d"),
+	OUTLIER_LOG(Core, LogOutlier, Log, TEXT("[WorldGuideDebug][%s] Command=%s ID=%s Next=%s accepted=%d Active=%s Pending=%d"),
 		*GetWorld()->GetName(), *Command.ToString(), *WidgetID.ToString(), *NextWidgetID.ToString(), bAccepted,
 		*Manager->ActiveContext.WidgetID.ToString(), Manager->GetPendingCount());
 #endif
@@ -1929,7 +1930,7 @@ void AFirstPersonPlayerController::ServerDebugTogglePairInvulnerability_Implemen
 	const bool bEnabled = !ShooterState->IsDebugPairInvulnerable();
 	if (!ShooterState->SetDebugPairInvulnerable(bEnabled)) return;
 	ClientMessage(bEnabled ? TEXT("Shooter / Partner Invulnerability ON") : TEXT("Shooter / Partner Invulnerability OFF"));
-	UE_LOG(LogOutlier, Log, TEXT("[DebugInvulnerability] Pair=%d Enabled=%d RequestedBy=%s"),
+	OUTLIER_LOG(Core, LogOutlier, Log, TEXT("[DebugInvulnerability] Pair=%d Enabled=%d RequestedBy=%s"),
 		ShooterState->GetPairId(), bEnabled, *GetName());
 }
 
@@ -1963,7 +1964,7 @@ void AFirstPersonPlayerController::ServerDebugGrantStealthUpgrades_Implementatio
 		State->RestoreCheckpointProgress(State->GetNodeCount(), EOutlierUpgradeRole::Shooter, Nodes);
 	}
 	ClientMessage(FString::Printf(TEXT("Stealth upgrades granted (+%d)"), Added));
-	UE_LOG(LogOutlier, Log, TEXT("[DebugStealthUpgrades] Player=%s Added=%d Total=%d"), *GetNameSafe(State), Added, Nodes.Num());
+	OUTLIER_LOG(Core, LogOutlier, Log, TEXT("[DebugStealthUpgrades] Player=%s Added=%d Total=%d"), *GetNameSafe(State), Added, Nodes.Num());
 }
 
 void AFirstPersonPlayerController::SetupInputComponent()
@@ -2240,7 +2241,7 @@ void AFirstPersonPlayerController::ClientPrepareElevatorArrival_Implementation(
 
 	// 요청 RPC보다 도착층/이동 상태 복제가 늦을 수 있다. 실제 로컬 준비를 확인할 때까지 암전을 유지한다.
 	LastElevatorArrivalWaitDiagnostic.Reset();
-	UE_LOG(LogTemp, Log, TEXT("[ElevatorArrivalRequest] Player=%s Authority=%d Shaft=%s Execution=%s Pawn=%s"),
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("[ElevatorArrivalRequest] Player=%s Authority=%d Shaft=%s Execution=%s Pawn=%s"),
 		*GetName(), HasAuthority(), *GetNameSafe(Shaft), *ExecutionId.ToString(), *GetNameSafe(GetPawn()));
 	GetWorldTimerManager().SetTimer(ElevatorArrivalPollTimer,
 		FTimerDelegate::CreateUObject(this, &AFirstPersonPlayerController::PollElevatorArrivalReady, ExecutionId),
@@ -2278,7 +2279,7 @@ void AFirstPersonPlayerController::PollElevatorArrivalReady(FGuid ExecutionId)
 	GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
 	// Listen의 즉시 ACK가 다음 단계에 재진입할 수 있으므로 전송 전에 완료를 기록한다.
 	bLocalElevatorArrivalReadySent = true;
-	UE_LOG(LogTemp, Log, TEXT("[ElevatorArrivalReadySent] Player=%s Authority=%d Shaft=%s Execution=%s"),
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("[ElevatorArrivalReadySent] Player=%s Authority=%d Shaft=%s Execution=%s"),
 		*GetName(), HasAuthority(), *GetNameSafe(Shaft), *ExecutionId.ToString());
 	if (HasAuthority()) ServerNotifyElevatorArrivalReady_Implementation(Shaft, ExecutionId);
 	else ServerNotifyElevatorArrivalReady(Shaft, ExecutionId);
@@ -2660,14 +2661,14 @@ void AFirstPersonPlayerController::RequestSuitFadeOut(const FGuid& TransitionId,
 	// 테스트도 기존 ID/소유자 검증과 서버 최소 시간을 거친다. 화면이 실제로 가려졌다는 보장은 없다.
 	if (ShouldBypassSuitPresentationForTesting(GetWorld()))
 	{
-		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=FadingOut"), *GetName());
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=FadingOut"), *GetName());
 		NotifySuitFadeOutFinished(TransitionId);
 		return;
 	}
 	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindLocalPostProcessSubsystem(this);
 	if (!PPSubsystem)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingOut"), *GetName());
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingOut"), *GetName());
 		return;
 	}
 	PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
@@ -2682,13 +2683,13 @@ void AFirstPersonPlayerController::RequestSuitPresentationReady(const FGuid& Tra
 	// 테스트에서는 복제/첫 포즈 완료를 기다리지 않는다.
 	if (ShouldBypassSuitPresentationForTesting(GetWorld()))
 	{
-		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=Applying"), *GetName());
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=Applying"), *GetName());
 		NotifySuitPresentationReady(TransitionId);
 		return;
 	}
 	if (!FindLocalPostProcessSubsystem(this))
 	{
-		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=Applying"), *GetName());
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=Applying"), *GetName());
 		return;
 	}
 	// 암전은 FadeOut에서 1로 올린 채 둔다. RPC 도착/BlackHold 경과가 아닌 복제된 외형과 무기 표시를 확인한다.
@@ -2703,14 +2704,14 @@ void AFirstPersonPlayerController::RequestSuitFadeIn(const FGuid& TransitionId, 
 {
 	if (ShouldBypassSuitPresentationForTesting(GetWorld()))
 	{
-		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=FadingIn"), *GetName());
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=FadingIn"), *GetName());
 		NotifySuitFadeInFinished(TransitionId);
 		return;
 	}
 	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindLocalPostProcessSubsystem(this);
 	if (!PPSubsystem)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingIn"), *GetName());
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingIn"), *GetName());
 		return;
 	}
 	PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
@@ -2923,7 +2924,7 @@ void AFirstPersonPlayerController::ApplyServerArenaSpawnLocation(const FVector& 
 {
 	PendingArenaSpawnLocation = InSpawnLocation;
 	ClientArenaReadyStableFrames = 0;
-	UE_LOG(LogTemp, Display, TEXT("[ArenaLevels] Spawn target %s"), *InSpawnLocation.ToString());
+	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaLevels] Spawn target %s"), *InSpawnLocation.ToString());
 }
 
 void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
@@ -2961,7 +2962,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	bClientGameplayLoadAuthorized = false;
 	bClientReloadBootstrapPending = false;
 	PendingArenaReconnectRequestId = 0;
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReload][Client] ReloadRPC PC=%s Gen=%u Spawn=%s LevelsReady=%d"),
 		*GetNameSafe(this), GameplayGeneration, *InSpawnLocation.ToString(),
 		ArenaSubsystem->IsGameplayLevelsReady() ? 1 : 0);
@@ -3032,7 +3033,7 @@ void AFirstPersonPlayerController::HandleArenaGameplayUnloaded(uint32 GameplayGe
 	{
 		ArenaSubsystem->OnArenaGameplayUnloaded.RemoveAll(this);
 	}
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReload][Client] SendUnloadACK PC=%s Gen=%u LocalUnloadAndGCMs=%.1f"),
 		*GetNameSafe(this), GameplayGeneration,
 		ClientGameplayReloadStartedAt > 0.0
@@ -3054,7 +3055,7 @@ void AFirstPersonPlayerController::ClientActivateArenaGameplayLevels_Implementat
 	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaReload][Client] ActivateRPC PC=%s Gen=%u LocalUnloaded=%d ElapsedMs=%.1f"),
 			*GetNameSafe(this), GameplayGeneration,
 			ArenaSubsystem->IsGameplayReloadUnloaded(GameplayGeneration) ? 1 : 0,
@@ -3095,7 +3096,7 @@ void AFirstPersonPlayerController::HandleArenaGameplayReady(uint32 GameplayGener
 {
 	if (GameplayGeneration == PendingGameplayGeneration)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaReload][Client] LevelsReady PC=%s Gen=%u ElapsedMs=%.1f"),
 			*GetNameSafe(this), GameplayGeneration,
 			ClientGameplayReloadStartedAt > 0.0
@@ -3286,7 +3287,7 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 	ClientArenaContentTickerHandle.Reset();
 	if (PendingGameplayGeneration != 0)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaReload][Client] SendReadyACK PC=%s Gen=%u TotalMs=%.1f StableFrames=%d"),
 			*GetNameSafe(this), PendingGameplayGeneration,
 			ClientGameplayReloadStartedAt > 0.0
@@ -3732,7 +3733,7 @@ void AFirstPersonPlayerController::QueueVitalityPresentation(const FOutlierVital
 	OrderedUpdate.Sequence = ++VitalitySequences[Channel];
 	if (Update.Channel == EOutlierVitalityChannel::PartnerHealth)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[PartnerHP][ServerQueue] PC=%s World=%s Source=%s HP=%.2f/%.2f Gen=%u Seq=%u Snapshot=%d Policy=%d"),
 			*GetNameSafe(this), *GetNameSafe(GetWorld()), *GetNameSafe(Update.Source.Get()),
 			Update.Current, Update.Maximum, OrderedUpdate.Generation, OrderedUpdate.Sequence,
@@ -3759,7 +3760,7 @@ void AFirstPersonPlayerController::ClientApplyVitalityPresentation_Implementatio
 	{
 		if (Update.Channel == EOutlierVitalityChannel::PartnerHealth)
 		{
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Core, LogTemp, Display,
 				TEXT("[PartnerHP][ClientRPC] PC=%s World=%s LocalPlayer=%s Source=%s HP=%.2f/%.2f Gen=%u Seq=%u"),
 				*GetNameSafe(this), *GetNameSafe(GetWorld()), *GetNameSafe(GetLocalPlayer()),
 				*GetNameSafe(Update.Source.Get()), Update.Current, Update.Maximum, Update.Generation, Update.Sequence);

@@ -1,4 +1,5 @@
 #include "Network/OutlierArenaSubsystem.h"
+#include "Logging/OutlierLog.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Enemy/Death/OutlierDeathDebrisActor.h"
 
@@ -316,7 +317,7 @@ bool UOutlierArenaSubsystem::ResolvePersistentGameplayLevels()
 			continue;
 		}
 		GameplayStreamingLevels.Add(StreamingLevel);
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Network, LogTemp, Display,
 			TEXT("[ArenaLoad][%s] Registered gameplay sublevel Map=%s Instance=%s"),
 			GetArenaReloadRole(World),
 			*UWorld::RemovePIEPrefix(StreamingLevel->GetWorldAssetPackageName()),
@@ -349,7 +350,7 @@ ULevelStreamingDynamic* UOutlierArenaSubsystem::LoadLevelInstance(
 	if (MusicRequest != 0) LevelMusicPreloadRequests.Add(Level, MusicRequest);
 	Level->SetShouldBeLoaded(true);
 	Level->SetShouldBeVisible(true);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaLoad][%s] Requested instance=%s Map=%s"),
 		GetArenaReloadRole(World), *Level->GetWorldAssetPackageName(),
 		*Map.ToSoftObjectPath().GetLongPackageName());
@@ -603,7 +604,7 @@ void UOutlierArenaSubsystem::RefreshArenaReadyState()
 	if (Arena.bReady && !bArenaShownBroadcast)
 	{
 		bArenaShownBroadcast = true;
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Network, LogTemp, Display,
 			TEXT("[ArenaLoad][%s] Initial content ready Persistent=%s PersistentActors=%d GameplayLevels=%d"),
 			GetArenaReloadRole(GetWorld()), *GetNameSafe(GetArenaLoadedLevel()),
 			CountGameplayActors(GetArenaLoadedLevel()), GameplayStreamingLevels.Num());
@@ -699,7 +700,7 @@ void UOutlierArenaSubsystem::ClearDeathDebris()
 	TSet<TWeakObjectPtr<AOutlierDeathDebrisActor>> Actors = MoveTemp(DeathDebrisActors);
 	if (!Timers.IsEmpty() || !Actors.IsEmpty())
 	{
-		UE_LOG(LogTemp, Display, TEXT("[DeathDebris] Clear Generation=%u Timers=%d Actors=%d"),
+		OUTLIER_LOG(Network, LogTemp, Display, TEXT("[DeathDebris] Clear Generation=%u Timers=%d Actors=%d"),
 			GameplayGeneration, Timers.Num(), Actors.Num());
 	}
 	if (UWorld* World = GetWorld())
@@ -767,7 +768,7 @@ void UOutlierArenaSubsystem::CaptureGameplayReloadActors(FPendingGameplayReload&
 			}
 		}
 	}
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaReload][%s] Gen=%u Begin Levels=%d OldActors=%d Persistent=%s PersistentActors=%d"),
 		GetArenaReloadRole(GetWorld()), Pending.Generation, GameplayStreamingLevels.Num(),
 		Pending.OldActors.Num(), *GetNameSafe(Pending.StableArenaLevel.Get()),
@@ -821,7 +822,7 @@ bool UOutlierArenaSubsystem::ReloadGameplayLevels(uint32 Generation, bool bWaitF
 	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
 	Pending.bUnloadRequested = true;
 	Pending.bCanLoad = !bWaitForClientAcks;
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaReload][%s] Gen=%u UnloadRequested WaitClientAcks=%d"),
 		GetArenaReloadRole(GetWorld()), Generation, bWaitForClientAcks ? 1 : 0);
 	Arena.bReady = false;
@@ -856,7 +857,7 @@ bool UOutlierArenaSubsystem::BeginClientGameplayReload(uint32 Generation)
 	Pending.PhaseStartTime = FPlatformTime::Seconds();
 	Pending.ReloadStartTime = Pending.PhaseStartTime;
 	CaptureGameplayReloadActors(Pending);
-	UE_LOG(LogTemp, Display, TEXT("[ArenaReload][Client] Gen=%u UnloadRequested"), Generation);
+	OUTLIER_LOG(Network, LogTemp, Display, TEXT("[ArenaReload][Client] Gen=%u UnloadRequested"), Generation);
 	Arena.bReady = false;
 	ResetPostProcessForGameplayReload(GetWorld());
 	OnArenaGameplayReloadStarted.Broadcast(Generation);
@@ -874,7 +875,7 @@ void UOutlierArenaSubsystem::AllowGameplayLevelLoad(uint32 Generation)
 {
 	if (PendingGameplayReload.IsSet() && PendingGameplayReload->Generation == Generation)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Network, LogTemp, Display,
 			TEXT("[ArenaReload][%s] Gen=%u LoadAuthorized Phase=%s LocalUnloaded=%d ElapsedMs=%.1f"),
 			GetArenaReloadRole(GetWorld()), Generation,
 			*UEnum::GetValueAsString(PendingGameplayReload->Phase),
@@ -946,7 +947,7 @@ void UOutlierArenaSubsystem::SuspendGameplayVisibilityForConnection(
 		Visibility.bIsVisible = false;
 		Visibility.bSkipCloseOnError = true;
 		Connection->UpdateLevelVisibility(Visibility);
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Network, LogTemp, Display,
 			TEXT("[ArenaReload][%s] SuspendedClientLevel PC=%s Gen=%u Package=%s"),
 			GetArenaReloadRole(GetWorld()), *GetNameSafe(PlayerController),
 			GameplayGeneration, *VisiblePackage.ToString());
@@ -1005,7 +1006,7 @@ void UOutlierArenaSubsystem::SetGameplayReloadPhase(EOutlierGameplayReloadPhase 
 	const bool bWasStalled = Pending.bIsStalled;
 	const EOutlierGameplayReloadPhase PreviousPhase = Pending.Phase;
 	const double Now = FPlatformTime::Seconds();
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaReload][%s] Gen=%u Phase=%s->%s PhaseMs=%.1f TotalMs=%.1f"),
 		GetArenaReloadRole(GetWorld()), Pending.Generation,
 		*UEnum::GetValueAsString(PreviousPhase), *UEnum::GetValueAsString(Phase),
@@ -1291,7 +1292,7 @@ bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
 			});
 			if (Pending.OldActors.IsEmpty())
 			{
-				UE_LOG(LogTemp, Display,
+				OUTLIER_LOG(Network, LogTemp, Display,
 					TEXT("[ArenaReload][%s] Gen=%u OldActorGCComplete ElapsedMs=%.1f"),
 					GetArenaReloadRole(GetWorld()), Pending.Generation,
 					(FPlatformTime::Seconds() - Pending.ReloadStartTime) * 1000.0);
@@ -1312,7 +1313,7 @@ bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
 			&& Pending.bCanLoad)
 		{
 			Pending.LoadRequestTime = FPlatformTime::Seconds();
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Network, LogTemp, Display,
 				TEXT("[ArenaReload][%s] Gen=%u LevelLoadRequested ElapsedMs=%.1f"),
 				GetArenaReloadRole(GetWorld()), Pending.Generation,
 				(Pending.LoadRequestTime - Pending.ReloadStartTime) * 1000.0);
@@ -1343,7 +1344,7 @@ bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
 					*GetNameSafe(Pending.StableArenaLevel.Get()), *GetNameSafe(CurrentArenaLevel));
 			}
 			// LogGameplayLevelState(Pending.Generation, TEXT("AllLevelsShown"));
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Network, LogTemp, Display,
 				TEXT("[ArenaReload][%s] Gen=%u Complete TotalMs=%.1f PersistentActors=%d"),
 				GetArenaReloadRole(GetWorld()), Pending.Generation,
 				(FPlatformTime::Seconds() - Pending.ReloadStartTime) * 1000.0,

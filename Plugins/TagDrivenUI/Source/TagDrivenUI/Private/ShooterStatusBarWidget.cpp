@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "ShooterStatusBarWidget.h"
+#include "TagDrivenUILog.h"
 
 #include "AmmoUI.h"
 #include "AbilitySlotUI.h"
@@ -54,10 +55,10 @@ void UShooterStatusBarWidget::SetCurrentAbilityPresentation(const FGameplayTag& 
 		Layout ? Layout->PositionOffset : FVector2D::ZeroVector);
 
 	// 미리보기와 실제 HUD 인스턴스의 설정 차이를 확인한다. 스킬 선택 시에만 기록한다.
-	if (!IsDesignTime())
+	if (UE_LOG_ACTIVE(LogTagDrivenUITrace, Log) && !IsDesignTime())
 	{
 		const USizeBox* IconBox = CurrentAbilityUI->IconSizeBox;
-		UE_LOG(LogTemp, Log,
+		UE_LOG(LogTagDrivenUITrace, Log,
 			TEXT("[ShooterHUD][AbilityLayout] Widget=%s Class=%s Tag=%s LayoutFound=%d Entries=%d IconSizeBox=%s RequestedScale=%s RequestedOffset=%s AppliedScale=%s AppliedTranslation=%s"),
 			*GetPathName(), *GetNameSafe(GetClass()), *AbilityTag.ToString(),
 			Layout != nullptr, AbilityIconLayouts.Num(), *GetNameSafe(IconBox),
@@ -73,8 +74,8 @@ void UShooterStatusBarWidget::NativeConstruct()
 	Super::NativeConstruct();
 
 	UE_LOG(
-		LogTemp,
-		Warning,
+		LogTagDrivenUITrace,
+		Log,
 		TEXT("[ShooterHUD][StatusBar] Construct Widget=%s Class=%s Ammo=%s Ability=%s Weapon=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(GetClass()),

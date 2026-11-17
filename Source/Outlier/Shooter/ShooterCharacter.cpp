@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShooterCharacter.h"
+#include "Logging/OutlierLog.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Drone/Partner/PartnerShieldRecipientComponent.h"
@@ -423,8 +424,7 @@ void AShooterCharacter::BeginPlay()
 		BaseFirstPersonMeshRotation = FirstPersonMesh->GetRelativeRotation();
 	}
 
-	UE_LOG(
-		LogTemp,
+	UE_LOG(LogTemp,
 		Log,
 		TEXT("%s [FPAnimDiag][FramingBefore] Owner=%s ViewRootRelLoc=%s ViewRootRelRot=%s Mesh=%s Asset=%s Skeleton=%s MeshRelLoc=%s MeshRelRot=%s MeshRelScale=%s"),
 		OutlierNet::GetNetPrefix(this),
@@ -450,8 +450,7 @@ void AShooterCharacter::BeginPlay()
 		}
 	}
 
-	UE_LOG(
-		LogTemp,
+	UE_LOG(LogTemp,
 		Log,
 		TEXT("%s [FPAnimDiag][FramingAfter] Owner=%s ViewRootRelLoc=%s ViewRootRelRot=%s MeshRelLoc=%s MeshRelRot=%s MeshWorldLoc=%s"),
 		OutlierNet::GetNetPrefix(this),
@@ -989,9 +988,9 @@ void AShooterCharacter::HandleBulletReflectionTagChanged(const FGameplayTag Tag,
 void AShooterCharacter::HandleQuantumLeapTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[TeleportDebug] StateChanged Shooter=%s Local=%d NewCount=%d LayerClass=%s"),
 		*GetNameSafe(this),
 		IsLocallyControlled() ? 1 : 0,
@@ -1014,9 +1013,9 @@ void AShooterCharacter::HandleQuantumLeapTagChanged(const FGameplayTag Tag, int3
 
 void AShooterCharacter::PushTeleportLayer()
 {
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[TeleportDebug] PushBegin Shooter=%s LayerClass=%s Controller=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(TeleportLayerWidgetClass),
@@ -1066,9 +1065,9 @@ void AShooterCharacter::PushTeleportLayer()
 		UE_LOG(LogTemp, Error, TEXT("[TeleportDebug] PushFailed UILayer PushWidget returned invalid handle"));
 		return;
 	}
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[TeleportDebug] PushSuccess Layer=%s Handle=%d"),
 		*GetNameSafe(TeleportLayer),
 		TeleportLayerHandle.Id);
@@ -1231,7 +1230,7 @@ void AShooterCharacter::RefreshWeaponOverchargeEmissive(bool bActive)
 	// 과충전은 주무기( 라이플 ) 전용이라 원거리 무기만 연출 대상이다.
 	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(GetCurrentWeapon());
 
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
 		Log,
 		TEXT("%s [%s] OverchargeEmissive Active=%d Weapon=%s Role=%d"),
@@ -2539,7 +2538,7 @@ void AShooterCharacter::ApplyWeaponWallAvoidanceCorrection(const FWeaponValues& 
 		if (Snapshot.Sequence != LastRejectedWallCorrectionSequence)
 		{
 			LastRejectedWallCorrectionSequence = Snapshot.Sequence;
-			UE_LOG(LogTemp, Display, TEXT("[WallShotCorrectionReject] Reason=EquipmentPair Shooter=%s Sequence=%u Revision=%u SnapshotRevision=%u Current=%s SnapshotWeapon=%s Invalidated=%s InvalidatedRevision=%u"),
+			OUTLIER_LOG(Shooter, LogTemp, Display, TEXT("[WallShotCorrectionReject] Reason=EquipmentPair Shooter=%s Sequence=%u Revision=%u SnapshotRevision=%u Current=%s SnapshotWeapon=%s Invalidated=%s InvalidatedRevision=%u"),
 				*GetName(), Snapshot.Sequence, WallShotEquipmentRevision, Snapshot.EquipmentRevision,
 				*GetNameSafe(GetCurrentWeapon()), *GetNameSafe(Snapshot.Weapon.Get()),
 				*GetNameSafe(InvalidatedWallWeapon.Get()), InvalidatedWallWeaponRevision);
@@ -2557,12 +2556,13 @@ void AShooterCharacter::ApplyWeaponWallAvoidanceCorrection(const FWeaponValues& 
 	if (Snapshot.Reconcile(GetWorld(), this, GetCurrentWeapon(), Values, Now, LastWallCorrectionTime,
 		WallPredictionFrames, Corrected))
 	{
-		const float PredictionAlpha = WeaponWallAvoidanceState.GetShotBlendAlpha();
+		const float PredictionAlpha = OUTLIER_LOG_ACTIVE(Shooter, LogTemp, Verbose)
+			? WeaponWallAvoidanceState.GetShotBlendAlpha() : 0.0f;
 		WeaponWallAvoidanceState = Corrected;
 		LastWallCorrectionTime = Snapshot.ServerTime;
 		LastWallCorrectionSequence = Snapshot.Sequence;
 		bHasPendingWallCorrection = false;
-		UE_LOG(LogTemp, Verbose, TEXT("[WallShotCorrection] Shooter=%s Revision=%u Sequence=%u Age=%.3f AlphaError=%.6f ReplayUsesCurrentCollision=1"),
+		OUTLIER_LOG(Shooter, LogTemp, Verbose, TEXT("[WallShotCorrection] Shooter=%s Revision=%u Sequence=%u Age=%.3f AlphaError=%.6f ReplayUsesCurrentCollision=1"),
 			*GetName(), WallShotEquipmentRevision, Snapshot.Sequence, Now - Snapshot.ServerTime,
 			PredictionAlpha - Corrected.GetShotBlendAlpha());
 	}
@@ -2572,7 +2572,7 @@ void AShooterCharacter::ApplyWeaponWallAvoidanceCorrection(const FWeaponValues& 
 		if (Snapshot.Sequence != LastRejectedWallCorrectionSequence)
 		{
 			LastRejectedWallCorrectionSequence = Snapshot.Sequence;
-			UE_LOG(LogTemp, Display, TEXT("[WallShotCorrectionReject] Reason=ReplayWindow Shooter=%s Sequence=%u Revision=%u Now=%.6f ServerTime=%.6f LastAppliedTime=%.6f Frames=%d"),
+			OUTLIER_LOG(Shooter, LogTemp, Display, TEXT("[WallShotCorrectionReject] Reason=ReplayWindow Shooter=%s Sequence=%u Revision=%u Now=%.6f ServerTime=%.6f LastAppliedTime=%.6f Frames=%d"),
 				*GetName(), Snapshot.Sequence, WallShotEquipmentRevision, Now, Snapshot.ServerTime,
 				LastWallCorrectionTime, WallPredictionFrames.Num());
 		}
@@ -3550,7 +3550,7 @@ void AShooterCharacter::HandleFireShotAnimation()
 	UAnimMontage* FirstPersonMontage = GetActionMontage(EShooterMontageAction::Fire, true);
 	UAnimMontage* ThirdPersonMontage = GetActionMontage(EShooterMontageAction::Fire, false);
 
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
 		Log,
 		TEXT("%s %s HandleFireShotAnimation WeaponType=%d FP=%s TP=%s Local=%d Authority=%d"),
@@ -4242,7 +4242,7 @@ void AShooterCharacter::PlayThirdPersonSwitchPhase(EWeaponType WeaponType, FName
 		AnimInstance->Montage_SetNextSection(Section, NAME_None, SwitchMontage);
 	}
 	AnimInstance->Montage_JumpToSection(Section, SwitchMontage);
-	UE_LOG(LogTemp, Log, TEXT("[TPWeaponSwitch] Section=%s WeaponType=%d Montage=%s Position=%.3f"),
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[TPWeaponSwitch] Section=%s WeaponType=%d Montage=%s Position=%.3f"),
 		*Section.ToString(), static_cast<int32>(WeaponType), *GetNameSafe(SwitchMontage),
 		AnimInstance->Montage_GetPosition(SwitchMontage));
 }
@@ -4340,7 +4340,7 @@ void AShooterCharacter::PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, E
 	if (UAnimInstance* FirstPersonAnimInstance = FirstPersonMesh->GetAnimInstance())
 	{
 		const FName SectionName = bUseWeaponSection ? ResolveMontageSectionNameForWeapon(WeaponType) : NAME_None;
-		UE_LOG(
+		OUTLIER_LOG(Shooter,
 			LogTemp,
 			Log,
 			TEXT("%s %s PlayFirstPersonMontageForWeapon Montage=%s Section=%s SectionValid=%d UseSection=%d AnimInstance=%s WeaponType=%d"),
@@ -4412,9 +4412,8 @@ void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, E
 		{
 			const FName SectionName = !SectionOverride.IsNone() ? SectionOverride
 				: (bUseWeaponSection ? ResolveMontageSectionNameForWeapon(WeaponType) : NAME_None);
-			const bool bHasSlot = Montage->IsValidSlot(FName(TEXT("UpperBody")));
 			const bool bSectionValid = SectionName != NAME_None && Montage->IsValidSectionName(SectionName);
-			UE_LOG(
+			OUTLIER_LOG(Shooter,
 				LogTemp,
 				Log,
 				TEXT("%s %s [TPMontage] Request Montage=%s Length=%.3f SlotUpperBody=%d Section=%s SectionValid=%d UseSection=%d AnimInstance=%s Mesh=%s WeaponType=%d"),
@@ -4422,7 +4421,7 @@ void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, E
 				*GetName(),
 				*GetNameSafe(Montage),
 				Montage->GetPlayLength(),
-				bHasSlot ? 1 : 0,
+				Montage->IsValidSlot(FName(TEXT("UpperBody"))) ? 1 : 0,
 				*SectionName.ToString(),
 				bSectionValid ? 1 : 0,
 				bUseWeaponSection ? 1 : 0,
@@ -4437,9 +4436,9 @@ void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, E
 				0.0f,
 				false);
 			RecordWeaponActionMontage(GetMesh(), Montage);
-			UE_LOG(
+			OUTLIER_LOG(Shooter,
 				LogTemp,
-				Warning,
+				Log,
 				TEXT("%s %s [TPMontage] Montage_Play Result=%.3f IsActive=%d Current=%s"),
 				OutlierNet::GetNetPrefix(this),
 				*GetName(),
@@ -4450,9 +4449,9 @@ void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, E
 			if (SectionName != NAME_None && bSectionValid)
 			{
 				ThirdPersonAnimInstance->Montage_JumpToSection(SectionName, Montage);
-				UE_LOG(
+				OUTLIER_LOG(Shooter,
 					LogTemp,
-					Warning,
+					Log,
 					TEXT("%s %s [TPMontage] JumpToSection Section=%s Position=%.3f"),
 					OutlierNet::GetNetPrefix(this),
 					*GetName(),
@@ -4553,7 +4552,7 @@ void AShooterCharacter::PlayEquipPresentation()
 
 	if (ActionLock != EShooterActionLock::Equip) BeginWeaponEquip();
 
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
 		Log,
 		TEXT("%s %s PlayEquipPresentation WeaponType=%d TPSection=%s SectionValidTP=%d FPLock=%.3f TPLock=%.3f Lock=%.3f TP=%s Authority=%d"),
@@ -4678,7 +4677,7 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 			bFirstPersonSwitchConfirmSent = true;
 			FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon;
 			FirstPersonSwitchVisualElapsed = 0.0f;
-			UE_LOG(LogTemp, Log, TEXT("[FPWeaponSwitch] Lowered id=%d old=%s"),
+			OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[FPWeaponSwitch] Lowered id=%d old=%s"),
 				ActiveProceduralSwitchId, *GetNameSafe(WeaponAtSwitchStart.Get()));
 			ServerConfirmProceduralWeaponLowered(ActiveProceduralSwitchId);
 		}
@@ -4695,7 +4694,7 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 			FirstPersonSwitchRaiseStartAlpha = FirstPersonSwitchLowerAlpha;
 			FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::Raising;
 			FirstPersonSwitchVisualElapsed = 0.0f;
-			UE_LOG(LogTemp, Log, TEXT("[FPWeaponSwitch] Raise id=%d new=%s"),
+			OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[FPWeaponSwitch] Raise id=%d new=%s"),
 				ActiveProceduralSwitchId, *GetNameSafe(CurrentWeapon));
 		}
 		else if (FirstPersonSwitchVisualElapsed > 3.5f)
@@ -4906,9 +4905,9 @@ void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(ESh
 {
 	// 소유자의 Slide 연출은 로컬 예측/보정 결과가 담당한다. 서버 승인 RPC로 다시 시작하지 않는다.
 	if (Action == EShooterMontageAction::Slide && IsLocallyControlled()) return;
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("%s %s [TPMontage] Multicast received Action=%d WeaponType=%d ADSAtShot=%d Local=%d Authority=%d"),
 		OutlierNet::GetNetPrefix(this),
 		*GetName(),

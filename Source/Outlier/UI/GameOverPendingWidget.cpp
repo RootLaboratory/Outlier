@@ -1,4 +1,5 @@
 #include "UI/GameOverPendingWidget.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/TextBlock.h"
 #include "Components/WidgetSwitcher.h"
@@ -27,7 +28,7 @@ void UGameOverPendingWidget::InitializePendingRequest(
 	PendingRequest = InRequest;
 	bIsRequester = bInRequester;
 	bResponseSubmitted = false;
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(UI, LogTemp, Log,
 		TEXT("[GameOverPending][Input] Initialize Widget=%s Role=%s Choice=%d Level=%d"),
 		*GetNameSafe(this), bIsRequester ? TEXT("Sender") : TEXT("Receiver"),
 		static_cast<int32>(PendingRequest.Choice), PendingRequest.LevelIndex);
@@ -38,7 +39,7 @@ void UGameOverPendingWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 	RefreshView();
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(UI, LogTemp, Log,
 		TEXT("[GameOverPending][Input] Construct Widget=%s Focusable=%d Switcher=%s ChoiceText=%s LevelText=%s"),
 		*GetNameSafe(this), IsFocusable() ? 1 : 0,
 		*GetNameSafe(PendingSwitcher), *GetNameSafe(ReceiverChoiceText),
@@ -47,19 +48,19 @@ void UGameOverPendingWidget::NativeConstruct()
 
 bool UGameOverPendingWidget::HandleUILayerConfirmed_Implementation()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[GameOverPending][Input] Confirmed Widget=%s"), *GetNameSafe(this));
+	OUTLIER_LOG(UI, LogTemp, Log, TEXT("[GameOverPending][Input] Confirmed Widget=%s"), *GetNameSafe(this));
 	return SubmitResponse(true);
 }
 
 bool UGameOverPendingWidget::HandleUILayerEscape_Implementation()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[GameOverPending][Input] Escape Widget=%s"), *GetNameSafe(this));
+	OUTLIER_LOG(UI, LogTemp, Log, TEXT("[GameOverPending][Input] Escape Widget=%s"), *GetNameSafe(this));
 	return SubmitResponse(false);
 }
 
 bool UGameOverPendingWidget::SubmitResponse(bool bApprove)
 {
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(UI, LogTemp, Log,
 		TEXT("[GameOverPending][Input] Submit Widget=%s Approve=%d Requester=%d AlreadySubmitted=%d Owner=%s"),
 		*GetNameSafe(this), bApprove ? 1 : 0, bIsRequester ? 1 : 0,
 		bResponseSubmitted ? 1 : 0, *GetNameSafe(GetOwningPlayer()));

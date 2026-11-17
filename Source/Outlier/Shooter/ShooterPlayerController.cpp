@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShooterPlayerController.h"
+#include "Logging/OutlierLog.h"
 #include "InputKeyEventArgs.h"
 
 #include "Blueprint/UserWidget.h"
@@ -525,7 +526,7 @@ void AShooterPlayerController::BindMainUI()
 	ShooterUIInstance->AddToViewport();
 	// 새 HUD 등록 시 이전 캐시 대신 현재 PS의 슈트 상태를 적용한다.
 	RefreshShooterSuitHUDFromPlayerState();
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(Shooter, LogTemp, Log,
 		TEXT("[ShooterPC] MainUI added to viewport PC=%s UI=%s MainUIClass=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(ShooterUIInstance),
@@ -536,7 +537,7 @@ void AShooterPlayerController::BindMainUI()
 		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
 			UISubsystem->RegisterMainUI(ShooterUIInstance);
-			UE_LOG(LogTemp, Warning,
+			OUTLIER_LOG(Shooter, LogTemp, Log,
 				TEXT("[ShooterPC] MainUI registered to UISubsystem PC=%s UI=%s"),
 				*GetNameSafe(this),
 				*GetNameSafe(ShooterUIInstance));
@@ -580,7 +581,7 @@ void AShooterPlayerController::BindMainUI()
 		&AShooterPlayerController::HandleAbilitySelected
 	);
 	AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(Shooter, LogTemp, Log,
 		TEXT("[ShooterPC] AbilityUI added PC=%s UI=%s AbilityUIClass=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(AbilityUIInstance),

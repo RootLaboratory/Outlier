@@ -2,6 +2,7 @@
 
 
 #include "Shooter/Anim/AnimNotify_AttachWeapon.h"
+#include "Logging/OutlierLog.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Weapon/WeaponBase.h"
 #include "OutlierNetUtils.h"
@@ -43,9 +44,9 @@ void UAnimNotify_AttachWeapon::Notify(USkeletalMeshComponent* MeshComp, UAnimSeq
 		return;
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Animation,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("%s [AnimNotify_Attach] Mesh=%s Owner=%s Anim=%s Weapon=%s FPHiddenBefore=%d TPHiddenBefore=%d"),
 		OutlierNet::GetNetPrefix(Shooter),
 		*GetNameSafe(MeshComp),
@@ -59,9 +60,9 @@ void UAnimNotify_AttachWeapon::Notify(USkeletalMeshComponent* MeshComp, UAnimSeq
 	Weapon->AttachWeaponMeshesToOwnerMeshes();
 	Weapon->ShowEquippedPresentation();
 
-	UE_LOG(
+	OUTLIER_LOG(Animation,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("%s [AnimNotify_Attach] applied Weapon=%s FPHiddenAfter=%d TPHiddenAfter=%d"),
 		OutlierNet::GetNetPrefix(Shooter),
 		*GetNameSafe(Weapon),

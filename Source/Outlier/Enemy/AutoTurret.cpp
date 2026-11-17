@@ -1,4 +1,5 @@
 #include "Enemy/AutoTurret.h"
+#include "Logging/OutlierLog.h"
 #include "Weapon/LaserWeapon.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "Drone/Partner/PartnerShieldRecipientComponent.h"
@@ -223,12 +224,11 @@ float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
 	const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();
 	const FName HitBoneName = Request.HitResult.BoneName;
-	const FString DamageTagString = Request.DamageTag.ToString();
 	if (IsTurretDiagnosticsEnabled())
 	{
 		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Damage] Received Turret=%s Authority=%d Active=%d Lifecycle=%d Team=%d CanBeDamaged=%d Dead=%d HP=%.2f Damage=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
 			*GetName(), HasAuthority(), IsCombatActive(), static_cast<int32>(TurretLifecycleState), GetGenericTeamId().GetId(), CanBeDamaged(), IsDead(), GetCurrentHealth(),
-			Request.DamageAmount, *GetNameSafe(HitComponent), *HitBoneName.ToString(), *DamageTagString, *GetNameSafe(Request.DamageCauser));
+			Request.DamageAmount, *GetNameSafe(HitComponent), *HitBoneName.ToString(), *Request.DamageTag.ToString(), *GetNameSafe(Request.DamageCauser));
 	}
 
 	if (!IsCombatActive())
@@ -246,7 +246,7 @@ float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 				GetCurrentHealth(),
 				*GetNameSafe(HitComponent),
 				*HitBoneName.ToString(),
-				*DamageTagString,
+				*Request.DamageTag.ToString(),
 				*GetNameSafe(Request.DamageCauser));
 		}
 		return 0.0f;
@@ -270,19 +270,20 @@ float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 					GetCurrentHealth(),
 					*GetNameSafe(HitComponent),
 					*HitBoneName.ToString(),
-					*DamageTagString,
+					*Request.DamageTag.ToString(),
 					*GetNameSafe(Request.DamageCauser));
 			}
 			return 0.0f;
 		}
 	}
 
-	const float HealthBefore = GetCurrentHealth();
+	const float HealthBefore = IsTurretDiagnosticsEnabled() && UE_LOG_ACTIVE(LogOutlier, Display)
+		? GetCurrentHealth() : 0.0f;
 	const float AppliedDamage = Super::ReceiveOutlierDamage(Request);
 	if (IsTurretDiagnosticsEnabled())
 	{
 		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Damage] Result Turret=%s Requested=%.2f Applied=%.2f HP=%.2f->%.2f Authority=%d CanBeDamaged=%d Dead=%d Tag=%s Causer=%s"),
-			*GetName(), Request.DamageAmount, AppliedDamage, HealthBefore, GetCurrentHealth(), HasAuthority(), CanBeDamaged(), IsDead(), *DamageTagString, *GetNameSafe(Request.DamageCauser));
+			*GetName(), Request.DamageAmount, AppliedDamage, HealthBefore, GetCurrentHealth(), HasAuthority(), CanBeDamaged(), IsDead(), *Request.DamageTag.ToString(), *GetNameSafe(Request.DamageCauser));
 	}
 	return AppliedDamage;
 }
@@ -2062,7 +2063,7 @@ void AAutoTurret::FinishHacking(EHackResult Result, const TCHAR* Reason, bool bR
 	}
 	if (IsTurretDiagnosticsEnabled())
 	{
-		UE_LOG(LogOutlier, Display, TEXT("[TurretHacking] End Turret=%s Episode=%u Request=%u Generation=%d Lease=%d Controller=%s Attack=%u State=%d Result=%d Reason=%s"),
+		OUTLIER_LOG(Enemy, LogOutlier, Display, TEXT("[TurretHacking] End Turret=%s Episode=%u Request=%u Generation=%d Lease=%d Controller=%s Attack=%u State=%d Result=%d Reason=%s"),
 			*GetNameSafe(this), EpisodeId, HackingRequestId, HackingGeneration, HackingLease,
 			*GetNameSafe(GetController()), TurretAttackExecution, static_cast<int32>(CombatState),
 			static_cast<int32>(Terminal.Result), Reason);

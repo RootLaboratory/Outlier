@@ -1,4 +1,5 @@
 #include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
+#include "Logging/OutlierLog.h"
 #include "PostProcess/OutlierStencilSubsystem.h"
 
 #include "Components/MeshComponent.h"
@@ -372,7 +373,7 @@ void AOutlierWorldGuideManager::SkipGuidesBefore(FGameplayTag Reached)
 		OnGuideFinished.Broadcast(Context, true);
 	}
 	if (!Passed.IsEmpty())
-		UE_LOG(LogOutlier, Log, TEXT("[WorldGuide] %d earlier guide(s) passed by '%s'."), Passed.Num(), *Reached.ToString());
+		OUTLIER_LOG(World, LogOutlier, Log, TEXT("[WorldGuide] %d earlier guide(s) passed by '%s'."), Passed.Num(), *Reached.ToString());
 }
 
 bool AOutlierWorldGuideManager::NotifyWidgetOverlap(FGameplayTag WidgetID, FGameplayTag NextWidgetID)

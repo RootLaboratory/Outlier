@@ -1,4 +1,5 @@
 #include "UI/GameOverWidget.h"
+#include "Logging/OutlierLog.h"
 #include "UI/GameOverPendingWidget.h"
 #include "UI/GameOverChoiceWidget.h"
 #include "UI/UILayerKeyHintWidget.h"
@@ -84,7 +85,7 @@ bool UGameOverWidget::ShowPendingRequest(
 	SwitcherSlot->SetZOrder(1000);
 	ActivePendingWidget = Widget;
 	Widget->SetUserFocus(GetOwningPlayer());
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(UI, LogTemp, Log,
 		TEXT("[GameOverPending][Input] Show GameOver=%s Pending=%s Role=%s Choice=%d Level=%d Canvas=%s Focusable=%d"),
 		*GetNameSafe(this), *GetNameSafe(Widget), bIsRequester ? TEXT("Sender") : TEXT("Receiver"),
 		static_cast<int32>(Request.Choice), Request.LevelIndex,
@@ -106,7 +107,7 @@ void UGameOverWidget::ClosePendingRequest()
 		return;
 	}
 	ActivePendingWidget->RemoveFromParent();
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(UI, LogTemp, Log,
 		TEXT("[GameOverPending][Input] Close GameOver=%s"), *GetNameSafe(this));
 	ActivePendingWidget = nullptr;
 	if (ChoiceMenu) ChoiceMenu->SetIsEnabled(true);
@@ -118,7 +119,7 @@ void UGameOverWidget::ClosePendingRequest()
 
 bool UGameOverWidget::HandleUILayerConfirmed_Implementation()
 {
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(UI, LogTemp, Log,
 		TEXT("[GameOverPending][Input] GameOverConfirmed Pending=%s"), *GetNameSafe(ActivePendingWidget));
 	if (ActivePendingWidget)
 	{
@@ -142,7 +143,7 @@ bool UGameOverWidget::HandleUILayerConfirmed_Implementation()
 
 bool UGameOverWidget::HandleUILayerEscape_Implementation()
 {
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(UI, LogTemp, Log,
 		TEXT("[GameOverPending][Input] GameOverEscape Pending=%s"), *GetNameSafe(ActivePendingWidget));
 	if (ActivePendingWidget)
 	{
@@ -205,7 +206,7 @@ void UGameOverWidget::NativeOnInitialized()
 	{
 		ChoiceMenu->OnChoiceConfirmed.AddUniqueDynamic(this, &UGameOverWidget::HandleChoiceConfirmed);
 		ChoiceMenu->OnEscapeRequested.AddUniqueDynamic(this, &UGameOverWidget::HandleChoiceEscape);
-		UE_LOG(LogTemp, Log, TEXT("[GameOver] Bound choice widget %s"), *GetNameSafe(ChoiceMenu));
+		OUTLIER_LOG(UI, LogTemp, Log, TEXT("[GameOver] Bound choice widget %s"), *GetNameSafe(ChoiceMenu));
 	}
 	else
 	{
@@ -266,7 +267,7 @@ FReply UGameOverWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, cons
 
 void UGameOverWidget::HandleChoiceConfirmed(EGameOverMenuChoice Choice)
 {
-	UE_LOG(LogTemp, Log, TEXT("[GameOver] Choice confirmed: %d"), static_cast<int32>(Choice));
+	OUTLIER_LOG(UI, LogTemp, Log, TEXT("[GameOver] Choice confirmed: %d"), static_cast<int32>(Choice));
 	switch (Choice)
 	{
 	case EGameOverMenuChoice::Continue: HandleContinueButtonClicked(); break;

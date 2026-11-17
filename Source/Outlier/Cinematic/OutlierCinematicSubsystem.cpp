@@ -1,4 +1,5 @@
 #include "Cinematic/OutlierCinematicSubsystem.h"
+#include "Logging/OutlierLog.h"
 
 #include "Cinematic/OutlierCinematicRegistry.h"
 #include "Cinematic/OutlierCinematicTypes.h"
@@ -508,7 +509,7 @@ bool UOutlierCinematicSubsystem::PlayTitleCinematic()
 	ActivePlayer = Player;
 	Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(Player->GetStartTime().Time, EUpdatePositionMethod::Jump));
 	Player->PlayLooping();
-	UE_LOG(LogTemp, Display, TEXT("[Cinematic] Playing %s Actor=%s"), *Tag.ToString(), *GetNameSafe(Cinematics.FindChecked(Tag).Get()));
+	OUTLIER_LOG(World, LogTemp, Display, TEXT("[Cinematic] Playing %s Actor=%s"), *Tag.ToString(), *GetNameSafe(Cinematics.FindChecked(Tag).Get()));
 	return true;
 }
 

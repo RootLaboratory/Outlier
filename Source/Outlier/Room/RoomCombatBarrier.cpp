@@ -1,4 +1,5 @@
 #include "Room/RoomCombatBarrier.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -263,7 +264,7 @@ void ARoomCombatBarrier::ApplyBlockedState()
 	}
 	BlockingBox->SetCollisionEnabled(bBlocked
 		? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombatBarrier] World=%s Authority=%d NetMode=%d Room=%s AdditionalRooms=%s Blocked=%d Component=%s Collision=%s ActorCollision=%d PawnResponse=%s Location=%s"),
 		*GetNameSafe(GetWorld()), HasAuthority(), static_cast<int32>(GetNetMode()),
 		*RoomTag.ToString(), *AdditionalRoomTags.ToStringSimple(), bBlocked, *BlockingBox->GetPathName(),

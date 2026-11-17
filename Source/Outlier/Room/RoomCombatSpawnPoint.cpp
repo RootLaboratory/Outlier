@@ -1,4 +1,5 @@
 #include "Room/RoomCombatSpawnPoint.h"
+#include "Logging/OutlierLog.h"
 
 #include "Audio/OutlierAudioFeedback.h"
 #include "Components/CapsuleComponent.h"
@@ -111,7 +112,7 @@ void ARoomCombatSpawnPoint::BeginPlay()
 			RoomTag,
 			SpawnPointTags,
 			ActivationGroupTag);
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Room, LogTemp, Display,
 			TEXT("[RoomCombat] SpawnPoint registration. Point=%s Room=%s Tags=%s Group=%s InitiallyActive=%d Registered=%d"),
 			*GetNameSafe(this), *RoomTag.ToString(), *SpawnPointTags.ToString(),
 			*ActivationGroupTag.ToString(), bInitiallyActive, bRegistered);

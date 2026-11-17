@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerCombatComponent.h"
+#include "Logging/OutlierLog.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "GameFramework/Controller.h"
 #include "Weapon/RangedWeaponBase.h"
@@ -22,7 +23,7 @@ void UPartnerCombatComponent::TryStartAttack(bool bRequireFreshPress)
 	{
 		if (LastDebugAttackBlockMask != BlockMask)
 		{
-			UE_LOG(LogPartnerInputDebug, Display,
+			OUTLIER_LOG(Partner, LogPartnerInputDebug, Display,
 				TEXT("Event=Attack.Blocked Partner=%s CanTrack=%d RequireFresh=%d FreshRequired=%d Held=%d"),
 				*GetNameSafe(PartnerCharacter), bCanTrack, bRequireFreshPress, bAttackNeedsFreshPress, bAttackInputHeld);
 		}
@@ -30,7 +31,7 @@ void UPartnerCombatComponent::TryStartAttack(bool bRequireFreshPress)
 		return;
 	}
 	LastDebugAttackBlockMask = 0;
-	UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=Attack.Accepted Partner=%s Authority=%d Epoch=%u"),
+	OUTLIER_LOG(Partner, LogPartnerInputDebug, Display, TEXT("Event=Attack.Accepted Partner=%s Authority=%d Epoch=%u"),
 		*GetNameSafe(PartnerCharacter), PartnerCharacter->HasAuthority(), PartnerCharacter->GetActionInputEpoch());
 
 	SendAttackInput(true);
@@ -64,7 +65,7 @@ void UPartnerCombatComponent::SendAttackInput(bool bHeld)
 
 void UPartnerCombatComponent::ServerSetAttackHeld_Implementation(bool bHeld, uint32 Request, uint32 Epoch)
 {
-	UE_LOG(LogPartnerInputDebug, Display,
+	OUTLIER_LOG(Partner, LogPartnerInputDebug, Display,
 		TEXT("Event=Attack.ServerRequest Partner=%s Held=%d Request=%u Epoch=%u CurrentEpoch=%u ProcessedEpoch=%u ProcessedRequest=%u CanTrack=%d"),
 		*GetNameSafe(PartnerCharacter), bHeld, Request, Epoch,
 		PartnerCharacter ? PartnerCharacter->GetActionInputEpoch() : 0,
@@ -185,7 +186,7 @@ void UPartnerCombatComponent::StopCurrentAttack(bool bPreserveCadence)
 
 void UPartnerCombatComponent::ResetAttackInput()
 {
-	UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=Attack.Reset Partner=%s FreshRequired=%d Held=%d"),
+	OUTLIER_LOG(Partner, LogPartnerInputDebug, Display, TEXT("Event=Attack.Reset Partner=%s FreshRequired=%d Held=%d"),
 		*GetNameSafe(PartnerCharacter), bAttackNeedsFreshPress, bAttackInputHeld);
 	bAttackNeedsFreshPress = true;
 	bAttackStartPending = false;

@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "AbilitySlotUI.h"
+#include "TagDrivenUILog.h"
 
 #include "AbilityIconUI.h"
 #include "InputAction.h"
@@ -269,7 +270,7 @@ void UAbilitySlotUI::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 
 void UAbilitySlotUI::SetCurrentAbility(const FGameplayTag& AbilityTag)
 {
-	UE_LOG(LogTemp, Verbose, TEXT("[AbilitySlot] SetCurrentAbility Widget=%s Tag=%s"),
+	UE_LOG(LogTagDrivenUITrace, Verbose, TEXT("[AbilitySlot] SetCurrentAbility Widget=%s Tag=%s"),
 		*GetNameSafe(this), *AbilityTag.ToString());
 
 	if (!AbilityTag.IsValid())

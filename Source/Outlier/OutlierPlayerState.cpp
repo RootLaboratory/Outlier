@@ -2,6 +2,7 @@
 
 
 #include "OutlierPlayerState.h"
+#include "Logging/OutlierLog.h"
 #include "LocalPlayerUISubSystem.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/GameInstance.h"
@@ -611,7 +612,7 @@ void AOutlierPlayerState::OnRep_PlayerRole()
 
 void AOutlierPlayerState::OnRep_PendingLobbyMatchId()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[PlayerState] OnRep_PendingLobbyMatchId: %d on CLIENT (%s)"),
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("[PlayerState] OnRep_PendingLobbyMatchId: %d on CLIENT (%s)"),
 		PendingLobbyMatchId, *GetPlayerName());
 	HandlePendingLobbyStateChanged();
 }
@@ -753,7 +754,7 @@ void AOutlierPlayerState::FlushActivatedUpgradeNodes(int32 NewNodeCount)
 
 	// NodeCount가 "안 바뀐 것처럼" 보이는 경우가 두 가지다: 요청값이 0으로 내려온 경우와
 	// 이미 같은 값이라 SetNodeCountInternal이 조용히 조기 반환한 경우. 둘을 구분해서 남긴다.
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[PresetNode] Flush PS=%s Pair=%d NodeCount %d -> %d (requested=%d%s) ClearedNodes=%d/%d"),
 		*GetPlayerName(),
 		PairId,

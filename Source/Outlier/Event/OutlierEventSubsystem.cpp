@@ -1,4 +1,5 @@
 #include "Event/OutlierEventSubsystem.h"
+#include "Logging/OutlierLog.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Engine/Engine.h"
@@ -316,7 +317,7 @@ void UOutlierEventSubsystem::NotifyInfoCompleted(EOutlierInfoRegion Region, cons
 		{
 			bStarted = SendTTS(NextTag);
 		}
-		UE_LOG(LogOutlier, Log, TEXT("[Event] %s chain '%s' -> '%s' %s."), RegionName(Region),
+		OUTLIER_LOG(World, LogOutlier, Log, TEXT("[Event] %s chain '%s' -> '%s' %s."), RegionName(Region),
 			*CompletedTag.ToString(), *NextTag.ToString(), bStarted ? TEXT("started") : TEXT("rejected"));
 	}
 }
@@ -579,13 +580,13 @@ bool UOutlierEventSubsystem::SendEvent(FGameplayTag EventTag)
 	bool bHasCanvas = false;
 	if (ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>())
 	{
-		bHasCanvas = UI->GetInfoCanvas() != nullptr;
+		bHasCanvas = OUTLIER_LOG_ACTIVE(World, LogOutlier, Log) && UI->GetInfoCanvas() != nullptr;
 		if (UpperTag.IsValid()) bUpperAccepted = SubmitUpper(UpperTag, EventTag);
 		if (Event.GifTag.IsValid()) bGifAccepted = SubmitGif(Event.GifTag, EventTag);
 	}
 	// '-' 미사용, 'O' 수락, 'X' 거부. 캔버스가 없으면 수락된 UI 요청은 UI 서브시스템에서 대기한다.
 	auto Mark = [](bool bUsed, bool bOk) { return !bUsed ? TEXT("-") : bOk ? TEXT("O") : TEXT("X"); };
-	UE_LOG(LogOutlier, Log, TEXT("[Event] '%s' TTS=%s Upper=%s Gif=%s Canvas=%s WorldGuide=%s"), *EventTag.ToString(),
+	OUTLIER_LOG(World, LogOutlier, Log, TEXT("[Event] '%s' TTS=%s Upper=%s Gif=%s Canvas=%s WorldGuide=%s"), *EventTag.ToString(),
 		Mark(Event.TTSTag.IsValid(), bTTSAccepted), Mark(UpperTag.IsValid(), bUpperAccepted),
 		Mark(Event.GifTag.IsValid(), bGifAccepted), bHasCanvas ? TEXT("O") : TEXT("X"),
 		Event.WorldGuideID.IsValid() ? TEXT("server") : TEXT("-"));

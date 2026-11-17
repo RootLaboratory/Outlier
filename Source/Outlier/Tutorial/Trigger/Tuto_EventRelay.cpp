@@ -1,4 +1,5 @@
 #include "Tutorial/Trigger/Tuto_EventRelay.h"
+#include "Logging/OutlierLog.h"
 
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -112,7 +113,7 @@ void ATuto_EventRelay::DeliverEvent(const FTuto_EventDelivery& Delivery)
 		if (Delivery.Region != ETuto_EventRegion::Gif) bAccepted |= ApplyToRegion(false);
 		if (Delivery.Region != ETuto_EventRegion::Upper) bAccepted |= ApplyToRegion(true);
 	}
-	UE_LOG(LogOutlier, Log, TEXT("[EventRelay] %s operation=%d event='%s' accepted=%s"),
+	OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventRelay] %s operation=%d event='%s' accepted=%s"),
 		*Delivery.Source, static_cast<int32>(Delivery.Operation), *Delivery.EventTag.ToString(), bAccepted ? TEXT("O") : TEXT("X"));
 }
 

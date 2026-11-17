@@ -2,6 +2,7 @@
 
 
 #include "Weapon/RangedWeaponBase.h"
+#include "Logging/OutlierLog.h"
 #include "Interface/WeaponDamageModifierProvider.h"
 #include "Weapon/FirstPickupDiagnostics.h"
 #include "Weapon/WeaponAutoAimCalculation.h"
@@ -311,7 +312,7 @@ void ARangedWeaponBase::FinishReload()
 	UpdateLocalAmmoUI();
 	ForceNetUpdate();
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
+	OUTLIER_LOG(Weapon, LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }
 
 void ARangedWeaponBase::CancelReload()
@@ -665,9 +666,9 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 {
 	if (Cast<APartnerCharacter>(WeaponOwner))
 	{
-		UE_LOG(
+		OUTLIER_LOG(Weapon,
 			LogTemp,
-			Warning,
+			Log,
 			TEXT("[PartnerWeaponVFX][FireShot] Weapon=%s Authority=%d Owner=%s Controller=%s"),
 			*GetNameSafe(this),
 			HasAuthority() ? 1 : 0,
@@ -1670,9 +1671,9 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(const FWeaponShotSnap
 	const bool bPartnerWeapon = Cast<APartnerCharacter>(WeaponOwner) != nullptr;
 	if (bPartnerWeapon)
 	{
-		UE_LOG(
+		OUTLIER_LOG(Weapon,
 			LogTemp,
-			Warning,
+			Log,
 			TEXT("[PartnerWeaponVFX][Multicast] Weapon=%s Owner=%s TraceEnd=%s MuzzleDef=%s TrailDef=%s"),
 			*GetNameSafe(this),
 			*GetNameSafe(WeaponOwner),
@@ -1705,9 +1706,9 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(const FWeaponShotSnap
 		OwnerCharacter->IsPlayerControlled() && OwnerCharacter->IsLocallyControlled();
 	if (bPartnerWeapon)
 	{
-		UE_LOG(
+		OUTLIER_LOG(Weapon,
 			LogTemp,
-			Warning,
+			Log,
 			TEXT("[PartnerWeaponVFX][Presentation] FirstPerson=%d PlayerControlled=%d LocallyControlled=%d"),
 			bUseFirstPersonPresentation ? 1 : 0,
 			OwnerCharacter->IsPlayerControlled() ? 1 : 0,
@@ -1959,9 +1960,9 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(
 						Start,
 						MuzzleRotation,
 						/*bFirstPerson=*/false);
-					UE_LOG(
+					OUTLIER_LOG(Weapon,
 						LogTemp,
-						Warning,
+						Log,
 						TEXT("[PartnerWeaponVFX][TP][Muzzle] Attached spawn requested. Definition=%s Location=%s Rotation=%s"),
 						*GetNameSafe(WeaponMuzzle),
 						*Start.ToString(),
@@ -2022,9 +2023,9 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(
 						Start,
 						MuzzleRotation,
 						/*bFirstPerson=*/true);
-					UE_LOG(
+					OUTLIER_LOG(Weapon,
 						LogTemp,
-						Warning,
+						Log,
 						TEXT("[PartnerWeaponVFX][FP][Muzzle] Attached spawn requested. Definition=%s Location=%s Rotation=%s"),
 						*GetNameSafe(WeaponMuzzle),
 						*Start.ToString(),
@@ -2083,7 +2084,7 @@ void ARangedWeaponBase::ResolveMuzzleTransforms(
 	{
 		if (Cast<APartnerCharacter>(WeaponOwner))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][Resolve] Failed: muzzle component is null. FirstPerson=%d"), bFirstPerson ? 1 : 0);
+			OUTLIER_LOG(Weapon, LogTemp, Log, TEXT("[PartnerWeaponVFX][Resolve] Failed: muzzle component is null. FirstPerson=%d"), bFirstPerson ? 1 : 0);
 		}
 		return;
 	}
@@ -2091,14 +2092,14 @@ void ARangedWeaponBase::ResolveMuzzleTransforms(
 	for (const FName SocketName : SocketNames)
 	{
 		const bool bSocketExists = !SocketName.IsNone() && MuzzleComponent->DoesSocketExist(SocketName);
-		if (Cast<APartnerCharacter>(WeaponOwner))
+		if (OUTLIER_LOG_ACTIVE(Weapon, LogTemp, Log) && Cast<APartnerCharacter>(WeaponOwner))
 		{
 			const FVector SocketLocation = bSocketExists
 				? MuzzleComponent->GetSocketLocation(SocketName)
 				: FVector::ZeroVector;
-			UE_LOG(
+			OUTLIER_LOG(Weapon,
 				LogTemp,
-				Warning,
+				Log,
 				TEXT("[PartnerWeaponVFX][Resolve] FirstPerson=%d Component=%s Socket=%s Exists=%d SocketLocation=%s"),
 				bFirstPerson ? 1 : 0,
 				*GetNameSafe(MuzzleComponent),
@@ -2759,9 +2760,9 @@ void ARangedWeaponBase::StartAttack()
 {
 	if (Cast<APartnerCharacter>(WeaponOwner))
 	{
-		UE_LOG(
+		OUTLIER_LOG(Weapon,
 			LogTemp,
-			Warning,
+			Log,
 			TEXT("[PartnerWeaponVFX][StartAttack] Weapon=%s Authority=%d CanAttack=%d IsAttacking=%d Ammo=%d InfiniteAmmo=%d"),
 			*GetNameSafe(this),
 			HasAuthority() ? 1 : 0,

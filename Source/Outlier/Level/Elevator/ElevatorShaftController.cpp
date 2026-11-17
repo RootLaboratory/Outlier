@@ -1,4 +1,5 @@
 #include "Level/Elevator/ElevatorShaftController.h"
+#include "Logging/OutlierLog.h"
 #include "Level/Elevator/ElevatorShaftSection.h"
 #include "Explosion/ExplosiveProp.h"
 #include "Interaction/InteractableDoor.h"
@@ -1049,15 +1050,18 @@ void AElevatorShaftController::OnRep_Motion()
 	ArrivalBlocker->SetCollisionEnabled(Motion.State == EElevatorShaftState::Completed
 		? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
 	// 상태 적용 직후 두 고정 장벽을 함께 기록해, 별도 RoomCombatBarrier와 구분한다.
-	for (const UBoxComponent* Blocker : { EntranceBlocker.Get(), ArrivalBlocker.Get() })
+	if (OUTLIER_LOG_ACTIVE(World, LogElevatorShaft, Log))
 	{
-		UE_LOG(LogElevatorShaft, Log,
-			TEXT("[ElevatorBlocker] World=%s Authority=%d NetMode=%d State=%s Component=%s Collision=%s ActorCollision=%d PawnResponse=%s Location=%s"),
-			*GetNameSafe(GetWorld()), HasAuthority(), static_cast<int32>(GetNetMode()),
-			*UEnum::GetValueAsString(Motion.State), *Blocker->GetPathName(),
-			*UEnum::GetValueAsString(Blocker->GetCollisionEnabled()), GetActorEnableCollision(),
-			*UEnum::GetValueAsString(Blocker->GetCollisionResponseToChannel(ECC_Pawn)),
-			*Blocker->GetComponentLocation().ToString());
+		for (const UBoxComponent* Blocker : { EntranceBlocker.Get(), ArrivalBlocker.Get() })
+		{
+			OUTLIER_LOG(World, LogElevatorShaft, Log,
+				TEXT("[ElevatorBlocker] World=%s Authority=%d NetMode=%d State=%s Component=%s Collision=%s ActorCollision=%d PawnResponse=%s Location=%s"),
+				*GetNameSafe(GetWorld()), HasAuthority(), static_cast<int32>(GetNetMode()),
+				*UEnum::GetValueAsString(Motion.State), *Blocker->GetPathName(),
+				*UEnum::GetValueAsString(Blocker->GetCollisionEnabled()), GetActorEnableCollision(),
+				*UEnum::GetValueAsString(Blocker->GetCollisionResponseToChannel(ECC_Pawn)),
+				*Blocker->GetComponentLocation().ToString());
+		}
 	}
 	if (PresentationExecutionId != Motion.ExecutionId)
 	{
@@ -1537,7 +1541,7 @@ void AElevatorShaftController::SetControllerAtArrival(bool bArrival)
 		FixedCollision.Key->SetWorldTransform(FixedCollision.Value, false, nullptr, ETeleportType::TeleportPhysics);
 	}
 	LogCollisionPlacement(bArrival ? TEXT("AfterTransportToArrival") : TEXT("AfterTransportToDeparture"));
-	UE_LOG(LogElevatorShaft, Log, TEXT("[ElevatorTransport] World=%s Authority=%d Arrival=%d Location=%s Rotation=%s"),
+	OUTLIER_LOG(World, LogElevatorShaft, Log, TEXT("[ElevatorTransport] World=%s Authority=%d Arrival=%d Location=%s Rotation=%s"),
 		*GetNameSafe(GetWorld()), HasAuthority(), bArrival, *GetActorLocation().ToString(), *GetActorRotation().ToString());
 }
 
@@ -1621,7 +1625,7 @@ void AElevatorShaftController::NotifyClientArrivalReady(AFirstPersonPlayerContro
 			*GetName(), *GetNameSafe(Player), *ExecutionId.ToString(), *GetNameSafe(ShooterController.Get()), *GetNameSafe(PartnerController.Get()));
 		return;
 	}
-	UE_LOG(LogElevatorShaft, Log, TEXT("[ElevatorArrivalAck] Shaft=%s Player=%s Execution=%s ShooterReady=%d PartnerReady=%d"),
+	OUTLIER_LOG(World, LogElevatorShaft, Log, TEXT("[ElevatorArrivalAck] Shaft=%s Player=%s Execution=%s ShooterReady=%d PartnerReady=%d"),
 		*GetName(), *GetNameSafe(Player), *ExecutionId.ToString(), bShooterArrivalReady, bPartnerArrivalReady);
 	if (bShooterArrivalReady && bPartnerArrivalReady) StartArrival();
 }

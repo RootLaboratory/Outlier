@@ -28,7 +28,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogEnemyChargeCollision, Log, All);
 
 namespace
 {
-TAutoConsoleVariable<int32> CVarEnemyChargeDiagnostics(TEXT("outlier.Enemy.ChargeDiagnostics"), 1,
+TAutoConsoleVariable<int32> CVarEnemyChargeDiagnostics(TEXT("outlier.Enemy.ChargeDiagnostics"), 0,
 	TEXT("Log self-destruct charge lifecycle, collision and replication diagnostics. 0 disables diagnostics."));
 TAutoConsoleVariable<float> CVarEnemyChargeDiagnosticInterval(TEXT("outlier.Enemy.ChargeDiagnosticInterval"), 0.25f,
 	TEXT("Charge diagnostic sample interval in seconds (minimum 0.05)."));
@@ -109,7 +109,7 @@ void ASelfDestructDrone::LogChargeDiagnostics(const TCHAR* Event) const
 	const UCharacterMovementComponent* Movement = GetCharacterMovement();
 	const double LocalTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 	const AGameStateBase* Clock = GetWorld() ? GetWorld()->GetGameState() : nullptr;
-	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeDiag] Event=%s Drone=%s NetMode=%d Role=%d Authority=%d Time=%.3f ServerTime=%.3f Generation=%d Lease=%d Revision=%u Pool=%d Active=%d Dead=%d DeathHandling=%d Possessed=%d Location=%s Velocity=%s MeshLocation=%s MeshRelative=%s RepLocation=%s Controller=%s Hidden=%d Replicates=%d RepMovement=%d AlwaysRelevant=%d OwnerRelevancy=%d Dormancy=%d"),
+	UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[ChargeDiag] Event=%s Drone=%s NetMode=%d Role=%d Authority=%d Time=%.3f ServerTime=%.3f Generation=%d Lease=%d Revision=%u Pool=%d Active=%d Dead=%d DeathHandling=%d Possessed=%d Location=%s Velocity=%s MeshLocation=%s MeshRelative=%s RepLocation=%s Controller=%s Hidden=%d Replicates=%d RepMovement=%d AlwaysRelevant=%d OwnerRelevancy=%d Dormancy=%d"),
 		Event, *GetName(), static_cast<int32>(GetNetMode()), static_cast<int32>(GetLocalRole()), HasAuthority(),
 		LocalTime, Clock ? Clock->GetServerWorldTimeSeconds() : LocalTime,
 		GetPoolGameplayGeneration(), GetPoolLeaseSerial(), ChargeState.Revision, static_cast<int32>(GetEnemyPoolState()),
@@ -118,7 +118,7 @@ void ASelfDestructDrone::LogChargeDiagnostics(const TCHAR* Event) const
 		GetMesh() ? *GetMesh()->GetRelativeLocation().ToCompactString() : TEXT("None"),
 		*GetReplicatedMovement().Location.ToCompactString(), *GetNameSafe(GetController()), IsHidden(),
 		GetIsReplicated(), IsReplicatingMovement(), bAlwaysRelevant, bNetUseOwnerRelevancy, static_cast<int32>(NetDormancy));
-	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeCollisionState] Event=%s Drone=%s Revision=%u ActorCollision=%d Capsule=%s Root=%s UpdatedComponent=%s Profile=%s Enabled=%d ObjectType=%d WorldStatic=%d WorldDynamic=%d Pawn=%d PhysicsBody=%d OverlapEvents=%d Radius=%.2f HalfHeight=%.2f Mode=%d MovementActive=%d Smoothing=%d MaxFlySpeed=%.1f Direction=%s ImpactVelocity=%s Elapsed=%.3f Duration=%.3f Exploded=%d"),
+	UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[ChargeCollisionState] Event=%s Drone=%s Revision=%u ActorCollision=%d Capsule=%s Root=%s UpdatedComponent=%s Profile=%s Enabled=%d ObjectType=%d WorldStatic=%d WorldDynamic=%d Pawn=%d PhysicsBody=%d OverlapEvents=%d Radius=%.2f HalfHeight=%.2f Mode=%d MovementActive=%d Smoothing=%d MaxFlySpeed=%.1f Direction=%s ImpactVelocity=%s Elapsed=%.3f Duration=%.3f Exploded=%d"),
 		Event, *GetName(), ChargeState.Revision, GetActorEnableCollision(), *GetNameSafe(Capsule), *GetNameSafe(GetRootComponent()),
 		*GetNameSafe(Movement ? Movement->UpdatedComponent.Get() : nullptr),
 		Capsule ? *Capsule->GetCollisionProfileName().ToString() : TEXT("None"),
@@ -139,7 +139,7 @@ void ASelfDestructDrone::LogChargeDiagnostics(const TCHAR* Event) const
 		FString Ignored;
 		for (const AActor* Actor : Capsule->GetMoveIgnoreActors()) Ignored += GetNameSafe(Actor) + TEXT(" ");
 		for (const UPrimitiveComponent* Component : Capsule->GetMoveIgnoreComponents()) Ignored += GetNameSafe(Component) + TEXT(" ");
-		UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeMoveIgnores] Event=%s Drone=%s Revision=%u Ignored=%s"),
+		UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[ChargeMoveIgnores] Event=%s Drone=%s Revision=%u Ignored=%s"),
 			Event, *GetName(), ChargeState.Revision, *Ignored);
 	}
 }
@@ -170,7 +170,7 @@ void ASelfDestructDrone::SampleChargeDiagnostics()
 	const FVector Location = GetActorLocation();
 	const double Now = GetWorld()->GetTimeSeconds();
 	const double Elapsed = Now - PreviousChargeDiagnosticTime;
-	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeDisplacement] Drone=%s Authority=%d Revision=%u DeltaSeconds=%.3f From=%s To=%s Distance=%.2f ObservedSpeed=%.1f"),
+	UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[ChargeDisplacement] Drone=%s Authority=%d Revision=%u DeltaSeconds=%.3f From=%s To=%s Distance=%.2f ObservedSpeed=%.1f"),
 		*GetName(), HasAuthority(), ChargeState.Revision, Elapsed, *PreviousChargeDiagnosticLocation.ToCompactString(),
 		*Location.ToCompactString(), FVector::Dist(Location, PreviousChargeDiagnosticLocation),
 		Elapsed > UE_DOUBLE_SMALL_NUMBER ? FVector::Dist(Location, PreviousChargeDiagnosticLocation) / Elapsed : 0.0);
@@ -188,7 +188,7 @@ void ASelfDestructDrone::SampleChargeDiagnostics()
 			Params, FCollisionResponseParams(Capsule->GetCollisionResponseToChannels())))
 		{
 			const UPrimitiveComponent* Other = Hit.GetComponent();
-			UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeObservedPathBlocked] Drone=%s Authority=%d Revision=%u Other=%s Component=%s HitTime=%.3f StartPenetrating=%d Depth=%.2f Impact=%s Normal=%s OtherEnabled=%d OtherObjectType=%d CapsuleResponse=%d OtherResponse=%d"),
+			UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[ChargeObservedPathBlocked] Drone=%s Authority=%d Revision=%u Other=%s Component=%s HitTime=%.3f StartPenetrating=%d Depth=%.2f Impact=%s Normal=%s OtherEnabled=%d OtherObjectType=%d CapsuleResponse=%d OtherResponse=%d"),
 				*GetName(), HasAuthority(), ChargeState.Revision, *GetNameSafe(Hit.GetActor()), *GetNameSafe(Other),
 				Hit.Time, Hit.bStartPenetrating, Hit.PenetrationDepth, *Hit.ImpactPoint.ToCompactString(), *Hit.ImpactNormal.ToCompactString(),
 				Other ? static_cast<int32>(Other->GetCollisionEnabled()) : -1, Other ? static_cast<int32>(Other->GetCollisionObjectType()) : -1,
@@ -225,7 +225,7 @@ void ASelfDestructDrone::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (!UE_BUILD_SHIPPING && CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0)
 	{
-		UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeEndPlay] Drone=%s Authority=%d Revision=%u Active=%d Reason=%d"),
+		UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[ChargeEndPlay] Drone=%s Authority=%d Revision=%u Active=%d Reason=%d"),
 			*GetName(), HasAuthority(), ChargeState.Revision, ChargeState.bActive, static_cast<int32>(EndPlayReason));
 	}
 	LogChargeDiagnostics(TEXT("EndPlay"));
@@ -319,7 +319,7 @@ void ASelfDestructDrone::TriggerSelfDestruct()
 		return;
 	}
 	LogChargeDiagnostics(TEXT("DetonateRequested"));
-	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] DetonateRequested Drone=%s Committed=%d Health=%.1f"),
+	UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[Charge] DetonateRequested Drone=%s Committed=%d Health=%.1f"),
 		*GetNameSafe(this), ChargeState.bActive, GetCurrentHealth());
 
 	bTriggeredSelfDestruct = true;
@@ -343,7 +343,7 @@ void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
 		&& (LastChargeHitDiagnosticTime < 0.0 || Now - LastChargeHitDiagnosticTime >= 0.25 || Cast<ACharacter>(Other)))
 	{
 		LastChargeHitDiagnosticTime = Now;
-		UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeHit] Drone=%s Authority=%d Revision=%u MyComp=%s IsCapsule=%d Other=%s OtherComp=%s Character=%d Blocking=%d SelfMoved=%d InitialOverlap=%d HitTime=%.3f Location=%s Normal=%s OtherEnabled=%d OtherObjectType=%d MyResponse=%d OtherResponse=%d Dead=%d DeathHandling=%d"),
+		UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[ChargeHit] Drone=%s Authority=%d Revision=%u MyComp=%s IsCapsule=%d Other=%s OtherComp=%s Character=%d Blocking=%d SelfMoved=%d InitialOverlap=%d HitTime=%.3f Location=%s Normal=%s OtherEnabled=%d OtherObjectType=%d MyResponse=%d OtherResponse=%d Dead=%d DeathHandling=%d"),
 			*GetName(), HasAuthority(), ChargeState.Revision, *GetNameSafe(MyComp), MyComp == GetCapsuleComponent(),
 			*GetNameSafe(Other), *GetNameSafe(OtherComp), Cast<ACharacter>(Other) != nullptr, Hit.bBlockingHit, bSelfMoved,
 			Hit.bStartPenetrating, Hit.Time, *HitLocation.ToCompactString(), *HitNormal.ToCompactString(),
@@ -363,7 +363,7 @@ void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
 	// 2. 돌진 중에는 진영/빙의 여부와 무관하게 캐릭터 접촉으로 폭발한다. Pawn 채널만으로 판단하지 않는다.
 	// 벽 접촉은 물리 이동만 막는다. Commit과 시작 시각은 유지해 기존 StateTree 시간 만료로 폭발한다.
 	if (!Cast<ACharacter>(Other)) return;
-	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] CollisionDetonate Drone=%s Other=%s Component=%s Location=%s"),
+	UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[Charge] CollisionDetonate Drone=%s Other=%s Component=%s Location=%s"),
 		*GetNameSafe(this), *GetNameSafe(Other), *GetNameSafe(OtherComp), *HitLocation.ToCompactString());
 	TriggerSelfDestruct();
 }
@@ -380,7 +380,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestruct(
 	}
 	if (!UE_BUILD_SHIPPING && CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0)
 	{
-		UE_LOG(LogEnemyChargeCollision, Log, TEXT("[ChargeTarget] Drone=%s Target=%s Location=%s TargetLocation=%s"),
+		UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[ChargeTarget] Drone=%s Target=%s Location=%s TargetLocation=%s"),
 			*GetName(), *GetNameSafe(TargetActor), *GetActorLocation().ToCompactString(), *TargetActor->GetActorLocation().ToCompactString());
 	}
 
@@ -467,7 +467,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	}
 	SetActorRotation(FRotator(0.0f, ChargeRotation.Yaw, 0.0f));
 	PublishChargeState(true, TelegraphDuration);
-	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Commit Drone=%s Direction=%s Speed=%.1f DistanceLimited=%d Distance=%.1f Duration=%.2f"),
+	UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[Charge] Commit Drone=%s Direction=%s Speed=%.1f DistanceLimited=%d Distance=%.1f Duration=%.2f"),
 		*GetNameSafe(this), *CommittedChargeDirection.ToCompactString(), ChargeSpeed,
 		bCommittedChargeDistanceLimited, ChargeDistanceLimit, TelegraphDuration);
 	ForceNetUpdate();
@@ -577,7 +577,7 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 	{
 		return;
 	}
-	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Cancel Drone=%s"), *GetNameSafe(this));
+	UE_CLOG(CVarEnemyChargeDiagnostics.GetValueOnGameThread() != 0, LogEnemyChargeCollision, Log, TEXT("[Charge] Cancel Drone=%s"), *GetNameSafe(this));
 	LogChargeDiagnostics(TEXT("CancelRequested"));
 
 	PublishChargeState(false);

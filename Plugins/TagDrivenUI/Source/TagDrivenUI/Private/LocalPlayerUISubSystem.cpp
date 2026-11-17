@@ -1,5 +1,6 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "LocalPlayerUISubSystem.h"
+#include "TagDrivenUILog.h"
 #include "GameFramework/PlayerController.h"
 #include "AbilityIconUI.h"
 #include "MainUIBase.h"
@@ -395,7 +396,7 @@ void ULocalPlayerUISubSystem::ApplyVitalityPresentation(const FOutlierVitalityPr
 	if (Update.Channel == EOutlierVitalityChannel::PartnerHealth)
 	{
 		// Receive 뒤 Accepted가 없으면 아래 세대/순서/Source 검사에서 제외된 업데이트다.
-		UE_LOG(LogTemp, Display,
+		UE_LOG(LogTagDrivenUITrace, Display,
 			TEXT("[PartnerHP][Receive] World=%s Source=%s Valid=%d HP=%.2f/%.2f Gen=%u Seq=%u Snapshot=%d Stream=%d PreviousSource=%s PreviousGen=%u PreviousSeq=%u"),
 			*GetNameSafe(GetWorld()), *GetNameSafe(Update.Source.Get()), IsValid(Update.Source),
 			Update.Current, Update.Maximum, Update.Generation, Update.Sequence, Update.bSnapshot,
@@ -428,7 +429,7 @@ void ULocalPlayerUISubSystem::ApplyVitalityPresentation(const FOutlierVitalityPr
 		: GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP());
 	if (Update.Channel == EOutlierVitalityChannel::PartnerHealth)
 	{
-		UE_LOG(LogTemp, Display,
+		UE_LOG(LogTagDrivenUITrace, Display,
 			TEXT("[PartnerHP][Accepted] World=%s Module=%s Class=%s PartnerHealthUI=%d HP=%.2f/%.2f"),
 			*GetNameSafe(GetWorld()), *GetNameSafe(Module), *GetNameSafe(Module ? Module->GetClass() : nullptr),
 			Cast<UPartnerHealthUI>(Module) != nullptr, Update.Current, Update.Maximum);

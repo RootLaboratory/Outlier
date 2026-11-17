@@ -1,4 +1,5 @@
 #include "Explosion/ExplosionComponent.h"
+#include "Logging/OutlierLog.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Audio/OutlierAudioTypes.h"
@@ -89,9 +90,9 @@ bool UExplosionComponent::DetonateAt(
 				AdaptationDamageCategory,
 				*RuntimeProfile,
 				bAllowFriendlyFire);
-			UE_LOG(
+			OUTLIER_LOG(Weapon,
 				LogOutlier,
-				Warning,
+				Log,
 				TEXT("[ExplosionComponent] Explosion queued. Owner=%s Profile=%s Location=%s"),
 				*GetNameSafe(Owner),
 				*ExplosionProfileRow.RowName.ToString(),
@@ -144,9 +145,9 @@ void UExplosionComponent::NotifyExplosionProcessed(
 	const FVector& ExplosionLocation,
 	const FExplosionProfileRow& Profile)
 {
-	UE_LOG(
+	OUTLIER_LOG(Weapon,
 		LogOutlier,
-		Warning,
+		Log,
 		TEXT("[ExplosionComponent] Explosion processed. Owner=%s Profile=%s Location=%s"),
 		*GetNameSafe(GetOwner()),
 		*Profile.ExplosionId.ToString(),

@@ -1,4 +1,5 @@
 #include "Enemy/TestGeometryCollection.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -167,23 +168,26 @@ void ATestGeometryCollection::ActivateDeathGeometry(const FVector& DeathVelocity
 	}
 
 	USkeletalMeshComponent* CharacterMesh = GetMesh();
-	const FVector SourceMeshBoundsOrigin =
-		CharacterMesh
-			? CharacterMesh->Bounds.Origin
-			: GetActorLocation();
+	if (OUTLIER_LOG_ACTIVE(Enemy, LogTestGeometryCollection, Display))
+	{
+		const FVector SourceMeshBoundsOrigin =
+			CharacterMesh
+				? CharacterMesh->Bounds.Origin
+				: GetActorLocation();
 
-	DeathGeometryCollectionComponent->UpdateBounds();
-	UE_LOG(
-		LogTestGeometryCollection,
-		Display,
-		TEXT("[%s] GC before activation AttachedTo=%s ComponentLocation=%s SourceBounds=%s GCBounds=%s"),
-		*GetName(),
-		DeathGeometryCollectionComponent->GetAttachParent()
-			? *DeathGeometryCollectionComponent->GetAttachParent()->GetName()
-			: TEXT("None"),
-		*DeathGeometryCollectionComponent->GetComponentLocation().ToCompactString(),
-		*SourceMeshBoundsOrigin.ToCompactString(),
-		*DeathGeometryCollectionComponent->Bounds.Origin.ToCompactString());
+		DeathGeometryCollectionComponent->UpdateBounds();
+		OUTLIER_LOG(Enemy,
+			LogTestGeometryCollection,
+			Display,
+			TEXT("[%s] GC before activation AttachedTo=%s ComponentLocation=%s SourceBounds=%s GCBounds=%s"),
+			*GetName(),
+			DeathGeometryCollectionComponent->GetAttachParent()
+				? *DeathGeometryCollectionComponent->GetAttachParent()->GetName()
+				: TEXT("None"),
+			*DeathGeometryCollectionComponent->GetComponentLocation().ToCompactString(),
+			*SourceMeshBoundsOrigin.ToCompactString(),
+			*DeathGeometryCollectionComponent->Bounds.Origin.ToCompactString());
+	}
 
 	// Cache and explicitly restore the authored world transform. This avoids the
 	// collection inheriting a stale skeletal-mesh transform while its physics
@@ -257,7 +261,7 @@ void ATestGeometryCollection::ActivateDeathGeometry(const FVector& DeathVelocity
 		CharacterMesh->SetHiddenInGame(true, false);
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogTestGeometryCollection,
 		Display,
 		TEXT("[%s] Activated GC=%s Transform=%s BoundsOrigin=%s BoundsExtent=%s"),
@@ -322,7 +326,7 @@ void ATestGeometryCollection::ApplyDeathImpulses(const FVector& DeathVelocity)
 		return;
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogTestGeometryCollection,
 		Display,
 		TEXT("[%s] Applying GC impulses Transform=%s BoundsOrigin=%s BoundsExtent=%s"),

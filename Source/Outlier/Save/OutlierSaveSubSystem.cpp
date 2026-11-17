@@ -1,5 +1,6 @@
 
 #include "Save/OutlierSaveSubSystem.h"
+#include "Logging/OutlierLog.h"
 #include "OutlierPlayerState.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -407,7 +408,7 @@ void UOutlierSaveSubSystem::RestoreFiredTutorialEvents(const TSet<FGameplayTag>&
 {
 	// 체크포인트가 이전 기록을 갖고 있어도 이미 나간 이벤트를 되살리지 않도록 합집합만 취한다.
 	CurrentFiredTutorialEvents.Append(FiredEvents);
-	UE_LOG(LogTemp, Log, TEXT("[TutorialEvent] Restore merged %d events -> %d fired"),
+	OUTLIER_LOG(Save, LogTemp, Log, TEXT("[TutorialEvent] Restore merged %d events -> %d fired"),
 		FiredEvents.Num(), CurrentFiredTutorialEvents.Num());
 }
 
@@ -442,7 +443,7 @@ void UOutlierSaveSubSystem::SyncCurrentLoadoutState(const AOutlierPlayerState* S
 			CurrentOwnedWeaponClasses.AddUnique(Slot.WeaponClass);
 		}
 	}
-	UE_LOG(LogTemp, Log, TEXT("[Loadout] Synced current owned weapons Count=%d"), CurrentOwnedWeaponClasses.Num());
+	OUTLIER_LOG(Save, LogTemp, Log, TEXT("[Loadout] Synced current owned weapons Count=%d"), CurrentOwnedWeaponClasses.Num());
 }
 
 bool UOutlierSaveSubSystem::IsCurrentWeaponOwned(TSubclassOf<AWeaponBase> WeaponClass) const

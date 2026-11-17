@@ -1,4 +1,5 @@
 #include "UI/EMPMarkWidget.h"
+#include "Logging/OutlierLog.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
@@ -139,7 +140,7 @@ void UEMPMarkWidget::AlignBillboardFrameToTarget() const
 		return;
 	}
 
-	UE_LOG(LogTemp, Error, TEXT("AlignBillboardFrameToTarget"));
+	OUTLIER_LOG(UI, LogTemp, Log, TEXT("AlignBillboardFrameToTarget"));
 
 	BillboardFrame->SetCollapseAlpha(0.5f);
 	BillboardFrame->SetActorLocation(TargetSceneComponent->GetComponentLocation());

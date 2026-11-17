@@ -1,4 +1,5 @@
 #include "Network/OutlierArenaProcessSubsystem.h"
+#include "Logging/OutlierLog.h"
 
 #include "Common/TcpSocketBuilder.h"
 #include "Containers/Ticker.h"
@@ -149,7 +150,7 @@ bool UOutlierArenaProcessSubsystem::StartControlListener()
 		return false;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaProcess] Control listener ready on 127.0.0.1:%d"),
 		ControlPort);
 	return true;
@@ -197,7 +198,7 @@ bool UOutlierArenaProcessSubsystem::LaunchWorker(int32 SlotId)
 	}
 
 	SlotRegistry.MarkStarting(SlotId, ProcessId);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaProcess] Worker launched Slot=%d PID=%u Address=%s"),
 		SlotId,
 		ProcessId,
@@ -362,7 +363,7 @@ void UOutlierArenaProcessSubsystem::HandleLobbyMessage(
 		Connection.SlotId = Message.SlotId;
 		Runtime.ControlSocket = Connection.Socket;
 		Runtime.bControlConnectedOnce = true;
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Network, LogTemp, Display,
 			TEXT("[ArenaProcess] Worker Starting connected Slot=%d PID=%u"),
 			Message.SlotId,
 			Message.ProcessId);
@@ -378,7 +379,7 @@ void UOutlierArenaProcessSubsystem::HandleLobbyMessage(
 		Runtime.bControlConnectedOnce = true;
 		Runtime.RestartAttempts = 0;
 		Runtime.StateChangedAt = FPlatformTime::Seconds();
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Network, LogTemp, Display,
 			TEXT("[ArenaProcess] Worker Ready Slot=%d PID=%u"),
 			Message.SlotId,
 			Message.ProcessId);
@@ -446,7 +447,7 @@ void UOutlierArenaProcessSubsystem::HandleWorkerStopped(
 
 	if (bExpectedExit)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Network, LogTemp, Display,
 			TEXT("[ArenaProcess] Worker stopped Slot=%d Expected=true RestartAttempt=%d"),
 			SlotId,
 			Runtime.RestartAttempts);
@@ -515,7 +516,7 @@ bool UOutlierArenaProcessSubsystem::TryAllocateReadySlot(
 
 	OutAddress = Slot.Address;
 	OutSlotId = Slot.SlotId;
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaProcess] Slot allocated Slot=%d Match=%s Address=%s"),
 		OutSlotId,
 		*MatchId.ToString(),
@@ -648,7 +649,7 @@ bool UOutlierArenaProcessSubsystem::VerifyWorkerListenPort(UWorld* ArenaWorld) c
 		return false;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaProcess] Worker Slot=%d listening on requested port %d"),
 		WorkerSlotId,
 		ActualPort);
@@ -766,7 +767,7 @@ bool UOutlierArenaProcessSubsystem::ConnectWorkerControl()
 	// 연결에 성공한 순간은 Lobby가 살아 있다는 증거이므로 타임아웃 기준을 갱신한다.
 	LastLobbyContactAt = FPlatformTime::Seconds();
 	LastWorkerHeartbeatSentAt = LastLobbyContactAt;
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[ArenaProcess] Worker control connected Slot=%d State=%s"),
 		WorkerSlotId,
 		bArenaWorldReady ? TEXT("Ready") : TEXT("Starting"));

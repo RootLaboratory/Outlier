@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerCameraManager.h"
+#include "Logging/OutlierLog.h"
 #include "Camera/CameraShakeBase.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/VECDrone.h"
@@ -73,7 +74,7 @@ void AFirstPersonPlayerCameraManager::PlayExplosionCameraShake(
 	LastExplosionShakeStartTime = WorldTime;
 	ActiveExplosionShakeEndTime = WorldTime + ExplosionShakeDurationSeconds;
 
-	UE_LOG(
+	OUTLIER_LOG(Core,
 		LogOutlier,
 		Verbose,
 		TEXT("[CameraShake] Explosion shake started. Controller=%s Scale=%.3f Class=%s"),

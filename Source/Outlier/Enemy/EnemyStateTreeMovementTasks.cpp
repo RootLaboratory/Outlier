@@ -1,4 +1,5 @@
 #include "EnemyStateTreeMovementTasks.h"
+#include "Logging/OutlierLog.h"
 
 #include "AIController.h"
 #include "Components/ActorComponent.h"
@@ -2663,7 +2664,7 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	if (Enemy->IsPoolManaged() && Enemy->HasSharedTargetContact())
 	{
 		const bool bCommitted = Enemy->CommitAlertToCombat();
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Enemy, LogTemp, Display,
 			TEXT("[Reinforcement] Enemy=%s Stage=AlertSharedTargetCommit Generation=%d Lease=%d Committed=%d State=%s"),
 			*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
 			Enemy->GetPoolLeaseSerial(), bCommitted,

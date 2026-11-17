@@ -25,7 +25,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogElevatorCollision, Log, All);
 namespace
 {
 	TAutoConsoleVariable<int32> CVarElevatorPlacementDiagnostics(
-		TEXT("outlier.Elevator.PlacementDiagnostics"), 1,
+		TEXT("outlier.Elevator.PlacementDiagnostics"), 0,
 		TEXT("Log elevator collision placement at transport and state boundaries. 0 disables these snapshots."));
 
 	void AddMovementIgnores(FCollisionQueryParams& Params, const UCapsuleComponent& Capsule)
@@ -69,7 +69,8 @@ namespace
 
 void AElevatorShaftController::LogCollisionPlacement(const TCHAR* Event) const
 {
-	if (UE_BUILD_SHIPPING || CVarElevatorPlacementDiagnostics.GetValueOnGameThread() == 0 || !GetWorld()) return;
+	if (UE_BUILD_SHIPPING || CVarElevatorPlacementDiagnostics.GetValueOnGameThread() == 0
+		|| !UE_LOG_ACTIVE(LogElevatorCollision, Log) || !GetWorld()) return;
 	// 붙여넣은 로그는 긴 줄의 뒷부분이 생략될 수 있다. 기준 좌표와 충돌 값은 짧은 줄로 분리한다.
 	UE_LOG(LogElevatorCollision, Log, TEXT("[ElevatorPlacementReference] Event=%s Execution=%s Authority=%d Controller=%s Offset=%s"),
 		Event, *Motion.ExecutionId.ToString(), HasAuthority(), *GetActorTransform().ToString(), *ControllerSectionOffset.ToString());

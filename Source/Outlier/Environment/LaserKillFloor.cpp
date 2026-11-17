@@ -1,4 +1,5 @@
 #include "Environment/LaserKillFloor.h"
+#include "Logging/OutlierLog.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "GameFramework/Pawn.h"
 
@@ -186,7 +187,7 @@ void ALaserKillFloor::ApplyInstantKillDamage(AActor* TargetActor, const FHitResu
 		PendingActors.Remove(Target);
 		DamagedActorsInVolume.Add(Target);
 		if (TargetActor->IsA<APawn>()) OutlierAudioFeedback::World(this, TEXT("Audio.Context.Object.Laser.Hit"), TEXT("Audio.Type.Interactable"), &DamageRequest.HitResult.ImpactPoint);
-		UE_LOG(
+		OUTLIER_LOG(World,
 			LogOutlier,
 			Verbose,
 			TEXT("[LaserKillFloor] Applied instant damage Target=%s Damage=%.2f Hazard=%s"),

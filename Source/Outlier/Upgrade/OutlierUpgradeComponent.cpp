@@ -1,4 +1,5 @@
 #include "Upgrade/OutlierUpgradeComponent.h"
+#include "Logging/OutlierLog.h"
 
 #include "AbilitySystemGlobals.h"
 #include "GameplayEffect.h"
@@ -807,7 +808,7 @@ void UOutlierUpgradeComponent::ReconcileUpgradeProjection()
 
 	// SKIP 로그만 있고 성공 로그가 없어서, "ASC 준비 후 재적용된다"는 전제가 실제로 성립하는지
 	// 로그로 확인할 수 없었다(리로드 직후 새 폰에서 SKIP이 찍히는데 그 뒤가 안 보였다).
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Ability, LogTemp, Display,
 		TEXT("[Upgrade.Projection] applied Owner=%s Role=%d ActivatedNodes=%d Effects=%d"),
 		*GetNameSafe(GetOwner()),
 		static_cast<int32>(Role),

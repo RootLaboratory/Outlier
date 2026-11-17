@@ -1,4 +1,5 @@
 #include "Drone/Partner/PartnerHackComponent.h"
+#include "Logging/OutlierLog.h"
 #include "Abilities/GameplayAbility.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackableComponent.h"
@@ -147,7 +148,7 @@ void UPartnerHackComponent::TryHack_Implementation()
 	{
 		if (bDebugHack)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryHack blocked Partner=%s World=%d"),
+			OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] TryHack blocked Partner=%s World=%d"),
 				*GetNameSafe(PartnerCharacter),
 				GetWorld() ? 1 : 0);
 		}
@@ -231,7 +232,7 @@ void UPartnerHackComponent::TryHack_Implementation()
 
 	if (bDebugHack)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryHack started Partner=%s Range=%.1f HalfAngle=%.1f LOS=%d Candidates=%d"),
+		OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] TryHack started Partner=%s Range=%.1f HalfAngle=%.1f LOS=%d Candidates=%d"),
 			*GetNameSafe(PartnerCharacter),
 			CachedAbilityData.EffectiveRange,
 			CandidateHalfAngleDegrees,
@@ -383,7 +384,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 	{
 		if (bDebugHack)
 		{
-			UE_LOG(LogTemp, Warning,
+			OUTLIER_LOG(Partner, LogTemp, Log,
 				TEXT("[PartnerHackDebug] Hack failed: stale result Target=%s ActiveTarget=%s"),
 				*GetNameSafe(ResultContext.TargetActor),
 				*GetNameSafe(ActiveHackableComponent->GetOwner()));
@@ -428,7 +429,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 		}
 		if (bDebugHack)
 		{
-			UE_LOG(LogTemp, Warning,
+			OUTLIER_LOG(Partner, LogTemp, Log,
 				TEXT("[PartnerHackDebug] Hack failed: active target is no longer valid"));
 		}
 
@@ -590,7 +591,7 @@ void UPartnerHackComponent::RefreshHackCandidates()
 	{
 		if (bDebugHack)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] Refresh blocked Partner=%s World=%d"),
+			OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] Refresh blocked Partner=%s World=%d"),
 				*GetNameSafe(PartnerCharacter),
 				GetWorld() ? 1 : 0);
 		}
@@ -653,7 +654,7 @@ void UPartnerHackComponent::RefreshHackCandidates()
 	if (bDebugHack && LastDebugCandidateCount != HackCandidateComponents.Num())
 	{
 		LastDebugCandidateCount = HackCandidateComponents.Num();
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] Candidate count changed Count=%d Overlaps=%d"),
+		OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] Candidate count changed Count=%d Overlaps=%d"),
 			HackCandidateComponents.Num(),
 			OverlapResults.Num());
 	}
@@ -1082,7 +1083,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	{
 		if (bDebugHack)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryStartHack failed: no hackable component Target=%s"),
+			OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] TryStartHack failed: no hackable component Target=%s"),
 				*GetNameSafe(TargetActor));
 		}
 		return;
@@ -1095,7 +1096,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	{
 		if (bDebugHack)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryStartHack failed: invalid candidate Target=%s Hackable=%s"),
+			OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] TryStartHack failed: invalid candidate Target=%s Hackable=%s"),
 				*GetNameSafe(TargetActor),
 				*GetNameSafe(HackableComponent));
 		}
@@ -1130,7 +1131,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 
 		if (bDebugHack)
 		{
-			UE_LOG(LogTemp, Warning,
+			OUTLIER_LOG(Partner, LogTemp, Log,
 				TEXT("[PartnerHackDebug] Hack completed without minigame Target=%s Hackable=%s"),
 				*GetNameSafe(TargetActor),
 				*GetNameSafe(HackableComponent));
@@ -1145,7 +1146,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 
 	if (bDebugHack)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryStartHack success Target=%s Hackable=%s Screen=(%.1f, %.1f)"),
+		OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] TryStartHack success Target=%s Hackable=%s Screen=(%.1f, %.1f)"),
 			*GetNameSafe(TargetActor),
 			*GetNameSafe(HackableComponent),
 			ScreenLocation.X,
@@ -1184,7 +1185,7 @@ void UPartnerHackComponent::StopHackCandidateSearch()
 
 	if (bDebugHack)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] Candidate search stopped"));
+		OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] Candidate search stopped"));
 	}
 }
 
@@ -1230,7 +1231,7 @@ UHackableComponent* UPartnerHackComponent::ResolveHackableComponent(AActor* Acto
 	UHackableComponent* HackableComponent = Cast<IHackableInterface>(Actor)->GetHackableComponent();
 	if (bDebugHack && !HackableComponent)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] Interface actor returned null component Actor=%s Class=%s"),
+		OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] Interface actor returned null component Actor=%s Class=%s"),
 			*GetNameSafe(Actor),
 			*GetNameSafe(Actor->GetClass()));
 	}
@@ -1577,7 +1578,7 @@ void UPartnerHackComponent::AddHackCandidate(AActor* Actor, UHackableComponent* 
 
 	if (bDebugHack)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] Candidate added Actor=%s Hackable=%s Screen=(%.1f, %.1f) Tags=%s"),
+		OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] Candidate added Actor=%s Hackable=%s Screen=(%.1f, %.1f) Tags=%s"),
 			*GetNameSafe(Actor),
 			*GetNameSafe(HackableComponent),
 			ScreenLocation.X,
@@ -1616,7 +1617,7 @@ void UPartnerHackComponent::RemoveHackCandidateAt(int32 Index)
 
 	if (bDebugHack)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] Candidate removed Actor=%s Hackable=%s"),
+		OUTLIER_LOG(Partner, LogTemp, Log, TEXT("[PartnerHackDebug] Candidate removed Actor=%s Hackable=%s"),
 			*GetNameSafe(Actor),
 			*GetNameSafe(HackableComponent));
 	}
@@ -1782,7 +1783,7 @@ void UPartnerHackComponent::HandleHackTargetInvalidated(
 
 	if (bDebugHack)
 	{
-		UE_LOG(LogTemp, Warning,
+		OUTLIER_LOG(Partner, LogTemp, Log,
 			TEXT("[PartnerHackDebug] Hack failed: active target ended Target=%s EndPlayReason=%d"),
 			*GetNameSafe(InvalidatedComponent ? InvalidatedComponent->GetOwner() : nullptr),
 			static_cast<int32>(EndPlayReason));

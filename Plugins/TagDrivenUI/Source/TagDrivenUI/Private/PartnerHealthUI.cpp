@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "PartnerHealthUI.h"
+#include "TagDrivenUILog.h"
 #include "GhostProgressBar.h"
 
 #include "Components/ProgressBar.h"
@@ -13,7 +14,7 @@ void UPartnerHealthUI::NativeConstruct()
 	SetProgressBarRatio(CurrentHPRatio, true);
 	if (bDebugHPBarUI)
 	{
-		UE_LOG(LogTemp, Display,
+		UE_LOG(LogTagDrivenUITrace, Display,
 			TEXT("[PartnerHP][Construct] World=%s Widget=%s Class=%s HPBar=%s BarClass=%s HPText=%s"),
 			*GetNameSafe(GetWorld()), *GetNameSafe(this), *GetNameSafe(GetClass()),
 			*GetNameSafe(HPBar.Get()), *GetNameSafe(HPBar ? HPBar->GetClass() : nullptr), *GetNameSafe(HPText.Get()));
@@ -53,7 +54,7 @@ void UPartnerHealthUI::SetHealthState(float InHealth, float InMaxHealth, bool bI
 	SetValueText(CurrentHPValue);
 	if (bDebugHPBarUI)
 	{
-		UE_LOG(LogTemp, Display,
+		UE_LOG(LogTagDrivenUITrace, Display,
 			TEXT("[PartnerHP][WidgetApply] World=%s Widget=%s Input=%.2f/%.2f Ratio=%.3f Immediate=%d Visible=%d HPBar=%s BarPercent=%.3f HPText=%s Text=%s"),
 			*GetNameSafe(GetWorld()), *GetNameSafe(this), InHealth, InMaxHealth, CurrentHPRatio,
 			bHealthUpdateImmediate, IsVisible(), *GetNameSafe(HPBar.Get()), HPBar ? HPBar->GetPercent() : -1.0f,

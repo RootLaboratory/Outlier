@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Shooter/ShooterCombatComponent.h"
+#include "Logging/OutlierLog.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
@@ -126,7 +127,7 @@ void UShooterCombatComponent::TryReload()
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryReload CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("%s %s TryReload CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 
 	if (!ShooterCharacter->HasAuthority())
 	{
@@ -170,7 +171,7 @@ void UShooterCombatComponent::TryReload()
 
 	if (ShooterCharacter->CurrentWeapon && ShooterCharacter->CurrentWeapon->IsAttacking())
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s %s TryReload stopping active attack before reload"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
+		OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("%s %s TryReload stopping active attack before reload"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
 		ShooterCharacter->CurrentWeapon->StopAttack();
 	}
 	bWantsToFire = false;
@@ -706,7 +707,7 @@ void UShooterCombatComponent::TryStartAttack()
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (ShooterCharacter && Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
-		UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Input] Shooter=%s Authority=%d Weapon=%s SuitBlocked=%d Dead=%d ActionLock=%d Reloading=%d CanFire=%d"),
+		OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[MeleeDiag][Input] Shooter=%s Authority=%d Weapon=%s SuitBlocked=%d Dead=%d ActionLock=%d Reloading=%d CanFire=%d"),
 			*GetNameSafe(ShooterCharacter), ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter->CurrentWeapon),
 			ShooterCharacter->IsSuitTransitionBlocked(), ShooterCharacter->IsDead(), static_cast<int32>(ShooterCharacter->GetActionLock()),
 			bIsReloading, CanFireInCurrentState());
@@ -747,7 +748,7 @@ void UShooterCombatComponent::TryStartAttack()
 	}
 	if (bPendingSprintExitFire) return;
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 
 	if (ShouldDelayFireForSprintExit(*ShooterCharacter))
 	{
@@ -834,7 +835,7 @@ void UShooterCombatComponent::TryStopAttack()
 	UpdateFireInput(false);
 	bRequireFireRelease = false;
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 	// Release는 연사만 끝낸다. 이미 수락한 첫 발은 별도 슬롯에서 복귀를 기다린다.
 	if (!bPendingSprintExitFire) bWantsToFire = false;
 	// 입력 해제는 서버에 전달하되 현재 휘두르기는 완료하고 다음 반복만 막는다.
@@ -1132,7 +1133,7 @@ void UShooterCombatComponent::RefreshCombatState()
 		&& !ShooterCharacter->CurrentWeapon->IsAttacking()
 		&& bWantsToFire && !bPendingSprintExitFire)
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s %s RefreshCombatState clearing stale fire intent"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
+		OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("%s %s RefreshCombatState clearing stale fire intent"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
 		bWantsToFire = false;
 	}
 
@@ -1329,7 +1330,7 @@ void UShooterCombatComponent::BeginReloadInternal()
 			ActiveReloadEquipGeneration, true, false);
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
 		Log,
 		TEXT("%s %s BeginReloadInternal WeaponType=%d FPReload=%s TPReload=%s Local=%d Authority=%d"),
@@ -1425,7 +1426,7 @@ void UShooterCombatComponent::FinishReloadInternal()
 		|| ActiveReloadEquipGeneration != ShooterCharacter->GetEquipActionGeneration()
 		|| ShooterCharacter->IsWeaponEquipInputBlocked()) return;
 
-	UE_LOG(LogTemp, Warning, TEXT("Reload End"));
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("Reload End"));
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		if (RangedWeapon->IsReloading())
@@ -1548,7 +1549,7 @@ void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bo
 	const bool bIsReloadMontage =
 		Montage && (Montage == ActiveFirstPersonReloadMontage.Get() ||
 		Montage == ActiveThirdPersonReloadMontage.Get());
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
 		Log,
 		TEXT("%s %s HandleReloadMontageEnded Montage=%s Interrupted=%d IsReloadMontage=%d Reloading=%d ActionLock=%d"),
@@ -1607,7 +1608,7 @@ void UShooterCombatComponent::HandleReloadCommitNotify()
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s HandleReloadCommitNotify"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("%s %s HandleReloadCommitNotify"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
 
 	if (!ShooterCharacter->HasAuthority())
 	{
@@ -1624,7 +1625,7 @@ void UShooterCombatComponent::HandleReloadCommitNotify()
 void UShooterCombatComponent::HandleMeleeHitNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=Hit Shooter=%s Authority=%d Weapon=%s"),
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=Hit Shooter=%s Authority=%d Weapon=%s"),
 		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
@@ -1640,7 +1641,7 @@ void UShooterCombatComponent::HandleMeleeHitNotify()
 void UShooterCombatComponent::HandleMeleeTraceBeginNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceBegin Shooter=%s Authority=%d Weapon=%s"),
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceBegin Shooter=%s Authority=%d Weapon=%s"),
 		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
@@ -1656,7 +1657,7 @@ void UShooterCombatComponent::HandleMeleeTraceBeginNotify()
 void UShooterCombatComponent::HandleMeleeTraceTickNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceTick Shooter=%s Authority=%d Weapon=%s"),
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceTick Shooter=%s Authority=%d Weapon=%s"),
 		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
@@ -1672,7 +1673,7 @@ void UShooterCombatComponent::HandleMeleeTraceTickNotify()
 void UShooterCombatComponent::HandleMeleeTraceEndNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceEnd Shooter=%s Authority=%d Weapon=%s"),
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceEnd Shooter=%s Authority=%d Weapon=%s"),
 		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
@@ -1688,7 +1689,7 @@ void UShooterCombatComponent::HandleMeleeTraceEndNotify()
 void UShooterCombatComponent::HandleMeleeRecoveryEndNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=RecoveryEnd Shooter=%s Authority=%d Weapon=%s"),
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=RecoveryEnd Shooter=%s Authority=%d Weapon=%s"),
 		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{

@@ -1,4 +1,5 @@
 #include "Enemy/VECDroneMovementComponent.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/StateTreeComponent.h"
@@ -13,7 +14,7 @@
 
 namespace
 {
-TAutoConsoleVariable<int32> CVarDroneAimClientDebug(TEXT("outlier.Enemy.AimClientDebug"), 1,
+TAutoConsoleVariable<int32> CVarDroneAimClientDebug(TEXT("outlier.Enemy.AimClientDebug"), 0,
 	TEXT("Client drone aim diagnostics: 0=off, 1=rendered combat gun drones, at most every 0.5s plus phase changes."));
 }
 
@@ -56,6 +57,7 @@ void UVECDroneMovementComponent::EndPlay(const EEndPlayReason::Type EndPlayReaso
 void UVECDroneMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	if (CVarDroneAimClientDebug.GetValueOnGameThread() == 0 || !UE_LOG_ACTIVE(LogTemp, Display)) return;
 	DiagnosticMovementFrame = GFrameCounter;
 	// 이동 기울기까지 적용한 뒤 기록한다. 본 평가가 뒤에 실행되면 완료 콜백에서 같은 프레임을 기록한다.
 	if (DiagnosticBoneFrame == MAX_uint64 || DiagnosticBoneFrame == GFrameCounter
@@ -65,13 +67,14 @@ void UVECDroneMovementComponent::TickComponent(float DeltaTime, ELevelTick TickT
 
 void UVECDroneMovementComponent::OnDiagnosticBonesFinalized()
 {
+	if (CVarDroneAimClientDebug.GetValueOnGameThread() == 0 || !UE_LOG_ACTIVE(LogTemp, Display)) return;
 	DiagnosticBoneFrame = GFrameCounter;
 	if (DiagnosticMovementFrame == GFrameCounter) LogClientAimPresentation();
 }
 
 void UVECDroneMovementComponent::LogClientAimPresentation()
 {
-	if (CVarDroneAimClientDebug.GetValueOnGameThread() == 0) return;
+	if (CVarDroneAimClientDebug.GetValueOnGameThread() == 0 || !UE_LOG_ACTIVE(LogTemp, Display)) return;
 	const AVECDrone* Drone = GetVECDroneOwner();
 	if (!Drone || Drone->GetNetMode() == NM_DedicatedServer || Drone->IsEnemyPossessed() || Drone->IsDead()
 		|| Drone->GetRuntimeStat().Type != EEnemyType::Gun || !Drone->WasRecentlyRendered()
