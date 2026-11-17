@@ -2149,13 +2149,6 @@ void AShooterCharacter::TryOpenSuitMenu()
 		return;
 	}
 
-	if (ULocalPlayer* LP = ShooterController->GetLocalPlayer())
-	{
-		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
-		{
-			PPSubsystem->SetDualKawaseBlurEnabled(true);
-		}
-	}
 	ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Visible);
 	ShooterController->AbilityUIInstance->BeginRelativeSelection();
 }
@@ -2211,14 +2204,6 @@ void AShooterCharacter::TryCloseSuitMenu()
 	else if (!ShooterController || !ShooterController->AbilityUIInstance)
 	{
 		UE_LOG(LogTemp, Error, TEXT("Null: AbilityUIInstance"));
-	}
-
-	if (ULocalPlayer* LP = ShooterController->GetLocalPlayer())
-	{
-		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
-		{
-			PPSubsystem->SetDualKawaseBlurEnabled(false);
-		}
 	}
 
 }
