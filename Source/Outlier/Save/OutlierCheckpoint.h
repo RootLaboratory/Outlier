@@ -44,6 +44,10 @@ protected:
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Checkpoint")
 	bool bInitiallyActive = true;
 
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Checkpoint",
+		meta = (DisplayName = "Require Both Players", ToolTip = "Require both Shooter and Partner in the same pair to pass this checkpoint. When disabled, either player can trigger it. They do not need to overlap simultaneously."))
+	bool bRequireBothPlayers = false;
+
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Checkpoint")
 	FName CheckpointId = NAME_None;
 
@@ -80,6 +84,7 @@ private:
 		const FHitResult& SweepResult);
 	void ProcessTriggerOverlap(AActor* OtherActor, UPrimitiveComponent* OtherComp);
 	AOutlierPlayerState* ResolvePairPlayerState(AActor* Actor) const;
+	bool HasRequiredPlayerPasses() const;
 	bool TryCommit();
 
 	bool bCheckpointIdRegistered = false;

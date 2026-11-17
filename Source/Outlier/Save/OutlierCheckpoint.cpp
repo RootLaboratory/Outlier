@@ -1,4 +1,5 @@
 #include "Save/OutlierCheckpoint.h"
+#include "Engine/GameInstance.h"
 #include "OutlierGameMode.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierSaveSubSystem.h"
@@ -234,19 +235,26 @@ bool AOutlierCheckpoint::RefreshSnapshot(AController* Controller)
 	return true;
 }
 
+bool AOutlierCheckpoint::HasRequiredPlayerPasses() const
+{
+	return bRequireBothPlayers
+		? (bShooterPassed && bPartnerPassed)
+		: (bShooterPassed || bPartnerPassed);
+}
+
 bool AOutlierCheckpoint::CanCaptureSnapshot(AController* Controller, bool bRefreshSnapshot) const
 {
 	const AOutlierPlayerState* Player = Controller ? Controller->GetPlayerState<AOutlierPlayerState>() : nullptr;
 	return HasAuthority() && !IsActorBeingDestroyed() && bCheckpointIdRegistered
 		&& bActivationConditionSatisfied && Player && Player->GetPairId() != INDEX_NONE
-		&& (bRefreshSnapshot || (!bCheckpointCommitted && bShooterPassed && bPartnerPassed
+		&& (bRefreshSnapshot || (!bCheckpointCommitted && HasRequiredPlayerPasses()
 			&& OverlappingPairId == Player->GetPairId()));
 }
 
 bool AOutlierCheckpoint::TryCommit()
 {
 	if (!HasAuthority() || !bActivationConditionSatisfied || bCheckpointCommitted
-		|| !bShooterPassed || !bPartnerPassed)
+		|| !HasRequiredPlayerPasses())
 	{
 		return false;
 	}

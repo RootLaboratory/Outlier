@@ -34,6 +34,7 @@ public:
 	FOnPartnerScanFinished OnScanFinished;
 
 private:
+	friend class FPartnerScanVisualTimingTest;
 	AAutoTurret* FindNearestShieldTurret() const;
 	static constexpr int32 DefaultScanStencilValue = 0;
 	static constexpr float ScanUpdateInterval = 0.03f;
@@ -54,6 +55,11 @@ private:
 	float ScanElapsedTime = 0.0f;
 	float ActiveScanRange = 0.0f;
 	float ActiveScanDuration = 0.0f;
+	float ActiveScanVisualRange = 0.0f;
+	float ActiveScanVisualDuration = 0.0f;
+	bool bScanDetectionFinished = false;
+	bool bScanVisualDissolving = false;
+	bool bScanVisualFinished = false;
 
 	// 스캔 시작 시점의 정찰 해금 상태. 서버가 업그레이드 태그로 정해 Multicast로 넘긴다.
 	bool bScanRevealHackable = false;
@@ -72,6 +78,7 @@ private:
 	void EndScan_Server();
 	void UpdateScan_Client();
 	void EndScan_Client();
+	void EndScanVisual_Client();
 
 	bool CanUseShield() const;
 	void NotifySkillResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result) const;
@@ -83,7 +90,7 @@ private:
 	bool ShouldProcessLocalScanVisual() const;
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration,
+	void MulticastStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration, float InScanVisualRange,
 		bool bInRevealHackable, bool bInRevealNodeFragments);
 
 	UFUNCTION(NetMulticast, Reliable)

@@ -120,6 +120,8 @@ public:
 	void ApplyScanStencil(AActor* Actor, int32 StencilValue, UObject* Source = nullptr);
 	void ClearScanStencil(AActor* Actor, UObject* Source = nullptr);
 	void EndScanPostProcess(UObject* Source = nullptr);
+	// Stop only the material wave; detection/stencil requests can still be active.
+	void EndScanVisualPostProcess();
 	// 상시 PartnerOutline 패스에 Shooter 로컬 타깃의 스텐실만 공급한다.
 	void SetMeleeOutlineTarget(AActor* Target, AShooterCharacter* SourceShooter);
 	void ClearMeleeOutlineTarget(AActor* Target = nullptr);

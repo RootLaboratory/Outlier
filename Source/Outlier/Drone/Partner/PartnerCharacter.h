@@ -294,6 +294,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
 	float ScanDuration = 3.0f;
 
+	// Material-only range. Expansion speed is shared with DT ScanRange / ScanDuration.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Skill|Scan", meta = (ClampMin = "0.0", Units = "cm"))
+	float ScanVisualRange = 1000.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
 	float ScanCooldown = 10.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
