@@ -19,6 +19,7 @@
 #include "Weapon/RangedWeaponBase.h"
 #include "Weapon/WeaponBase.h"
 #include "UObject/UnrealType.h"
+#include "UObject/Package.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierCheckpointActivationOverlapTest,
@@ -73,6 +74,8 @@ bool FOutlierCheckpointActivationOverlapTest::RunTest(const FString& Parameters)
 		CleanupWorld();
 		return false;
 	}
+	// Keep the overlap/save rejection assertions below in the explicit two-player mode.
+	Checkpoint->bRequireBothPlayers = true;
 	PlayerStateProperty->SetObjectPropertyValue_InContainer(Shooter, ShooterPS);
 	PlayerStateProperty->SetObjectPropertyValue_InContainer(Partner, PartnerPS);
 	ShooterPS->SetPairId(1);
