@@ -25,13 +25,13 @@
 namespace
 {
 	TAutoConsoleVariable<int32> CVarDebugInteractionDismiss(
-		TEXT("outlier.UI.DebugInteractionDismiss"), 1,
+		TEXT("outlier.UI.DebugInteractionDismiss"), 0,
 		TEXT("Log interaction widget dismissal and Locked/Outline visibility transitions. 0: off, 1: on."));
 
 	void LogInteractionWidgetState(const UInteractableComponent* Component, const TCHAR* Event,
 		bool bShown, const UUserWidget* Widget, const AFirstPersonCharacter* Interactor = nullptr)
 	{
-		if (!CVarDebugInteractionDismiss.GetValueOnGameThread()) return;
+		if (!CVarDebugInteractionDismiss.GetValueOnGameThread() || !UE_LOG_ACTIVE(LogTemp, Warning)) return;
 		const AFirstPersonPlayerController* Controller = Interactor
 			? Cast<AFirstPersonPlayerController>(Interactor->GetController())
 			: (Widget ? Cast<AFirstPersonPlayerController>(Widget->GetOwningPlayer()) : nullptr);
@@ -746,7 +746,8 @@ void UInteractableComponent::InteractionLockedWidgetActivate(AFirstPersonCharact
 	}
 	if (InteractionLockedHudWidget && InteractionLockedWidget)
 	{
-		const bool bLogTransition = !bLockedShown || !InteractionLockedWidget->IsVisible();
+		const bool bLogTransition = CVarDebugInteractionDismiss.GetValueOnGameThread()
+			&& UE_LOG_ACTIVE(LogTemp, Warning) && (!bLockedShown || !InteractionLockedWidget->IsVisible());
 		InteractionLockedWidget->ShowLockedPrompt();
 		bLockedShown = true;
 		if (bLogTransition)
@@ -757,7 +758,8 @@ void UInteractableComponent::InteractionLockedWidgetActivate(AFirstPersonCharact
 
 void UInteractableComponent::InteractionLockedWidgetDeactivate()
 {
-	const bool bLogTransition = bLockedShown || (InteractionLockedWidget && InteractionLockedWidget->IsVisible());
+	const bool bLogTransition = CVarDebugInteractionDismiss.GetValueOnGameThread()
+		&& UE_LOG_ACTIVE(LogTemp, Warning) && (bLockedShown || (InteractionLockedWidget && InteractionLockedWidget->IsVisible()));
 	if (InteractionLockedHudWidget)
 	{
 		bLockedShown = false;
@@ -798,7 +800,8 @@ void UInteractableComponent::InteractionOutlineWidgetActivate(AFirstPersonCharac
 	}
 	if (InteractionOutlineHudWidget && InteractionOutlineWidget)
 	{
-		const bool bLogTransition = !bOutlineShown || !InteractionOutlineWidget->IsVisible();
+		const bool bLogTransition = CVarDebugInteractionDismiss.GetValueOnGameThread()
+			&& UE_LOG_ACTIVE(LogTemp, Warning) && (!bOutlineShown || !InteractionOutlineWidget->IsVisible());
 		InteractionOutlineWidget->SetLocked(bLocked);
 		bOutlineShown = true;
 		if (bLogTransition)
@@ -809,7 +812,8 @@ void UInteractableComponent::InteractionOutlineWidgetActivate(AFirstPersonCharac
 
 void UInteractableComponent::InteractionOutlineWidgetDeactivate()
 {
-	const bool bLogTransition = bOutlineShown || (InteractionOutlineWidget && InteractionOutlineWidget->IsVisible());
+	const bool bLogTransition = CVarDebugInteractionDismiss.GetValueOnGameThread()
+		&& UE_LOG_ACTIVE(LogTemp, Warning) && (bOutlineShown || (InteractionOutlineWidget && InteractionOutlineWidget->IsVisible()));
 	if (InteractionOutlineHudWidget)
 	{
 		bOutlineShown = false;

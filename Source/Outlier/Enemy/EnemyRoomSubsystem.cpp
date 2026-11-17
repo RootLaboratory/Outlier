@@ -1,4 +1,5 @@
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Logging/OutlierLog.h"
 
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyBase.h"
@@ -852,7 +853,7 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 	{
 		if (Enemy->IsPoolManaged())
 		{
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Enemy, LogTemp, Display,
 				TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncSkipped Generation=%d Lease=%d Room=%s Reason=RoomNotInCombat"),
 				*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
 				Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());
@@ -866,7 +867,7 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 	{
 		if (Enemy->IsPoolManaged())
 		{
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Enemy, LogTemp, Display,
 				TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncSkipped Generation=%d Lease=%d Room=%s Reason=NoTargetLocation"),
 				*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
 				Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());

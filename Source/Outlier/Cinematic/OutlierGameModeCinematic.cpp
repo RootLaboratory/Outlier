@@ -1,4 +1,5 @@
 #include "OutlierGameMode.h"
+#include "Logging/OutlierLog.h"
 
 #include "Cinematic/OutlierCinematicTypes.h"
 #include "Engine/World.h"
@@ -62,7 +63,7 @@ void AOutlierGameMode::HandleCinematicContext(
 
 	case EOutlierCinematicClientEvent::CompleteRequested:
 		if (bInitialIntroFailed || !bInitialIntroStarted || !InitialIntroPreparedPlayers.Contains(PC)) return;
-		UE_LOG(LogTemp, Display, TEXT("[Cinematic] Completing Intro=%s at request of %s"),
+		OUTLIER_LOG(World, LogTemp, Display, TEXT("[Cinematic] Completing Intro=%s at request of %s"),
 			*Context.IntroId.ToString(), *GetNameSafe(PC));
 		// 양쪽 클라이언트의 카메라와 입력이 복원된 후 게임을 시작한다.
 		if (InitialIntroShooter.IsValid()) InitialIntroShooter->ClientCompleteArenaIntro(Context.IntroId);
@@ -125,7 +126,7 @@ void AOutlierGameMode::TryStartInitialIntro()
 	// 시퀀스 재생을 위해 월드 정지를 해제한다. 게임 시작 조건은 bPendingInitialIntro로 계속 제어한다.
 	ClearArenaWorkerWorldPause();
 	GetWorld()->GetWorldSettings()->ForceNetUpdate();
-	UE_LOG(LogTemp, Display, TEXT("[Cinematic] Both clients prepared. Starting Intro=%s"), *InitialIntroId.ToString());
+	OUTLIER_LOG(World, LogTemp, Display, TEXT("[Cinematic] Both clients prepared. Starting Intro=%s"), *InitialIntroId.ToString());
 	InitialIntroShooter->ClientStartArenaIntro(InitialIntroId);
 	InitialIntroPartner->ClientStartArenaIntro(InitialIntroId);
 }
@@ -145,7 +146,7 @@ void AOutlierGameMode::TryFinishInitialIntro()
 	if (!Arena || !Arena->IsArenaContentReady()) return;
 
 	bPendingInitialIntro = false;
-	UE_LOG(LogTemp, Display, TEXT("[Cinematic] Both clients restored. Completing Intro=%s"), *InitialIntroId.ToString());
+	OUTLIER_LOG(World, LogTemp, Display, TEXT("[Cinematic] Both clients restored. Completing Intro=%s"), *InitialIntroId.ToString());
 	if (IsArenaWorkerProcess())
 	{
 		// 기존 지연 시작 처리가 실제로 게임을 시작할 때까지 입력 범위를 유지한다.

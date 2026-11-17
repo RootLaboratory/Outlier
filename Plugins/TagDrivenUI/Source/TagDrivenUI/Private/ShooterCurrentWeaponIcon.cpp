@@ -2,6 +2,7 @@
 
 
 #include "ShooterCurrentWeaponIcon.h"
+#include "TagDrivenUILog.h"
 
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Image.h"
@@ -72,7 +73,7 @@ void UShooterCurrentWeaponIcon::NativeTick(const FGeometry& MyGeometry, float In
 
 void UShooterCurrentWeaponIcon::SetCurrentWeapon(EWidgetWeaponType WeaponType)
 {
-	UE_LOG(LogTemp, Warning,
+	UE_LOG(LogTagDrivenUITrace, Log,
 		TEXT("[ShooterHUD][WeaponWidget] SetCurrentWeapon Widget=%s Type=%s Rifle=%s Pistol=%s Melee=%s"),
 		*GetNameSafe(this),
 		*StaticEnum<EWidgetWeaponType>()->GetNameStringByValue(static_cast<int64>(WeaponType)),

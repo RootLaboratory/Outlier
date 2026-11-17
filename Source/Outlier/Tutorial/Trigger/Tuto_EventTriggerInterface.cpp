@@ -1,4 +1,5 @@
 #include "Tutorial/Trigger/Tuto_EventTriggerInterface.h"
+#include "Logging/OutlierLog.h"
 
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/Engine.h"
@@ -116,7 +117,7 @@ bool ITuto_EventTriggerInterface::DispatchEvent(int32 EventIndex, AOutlierPlayer
 	if (Saves && Saves->HasFiredTutorialEvent(EventTag))
 	{
 		SubmittedEventIndices.Add(EventIndex);
-		UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s skipped '%s': already fired in this game flow."),
+		OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventTrigger] %s skipped '%s': already fired in this game flow."),
 			*Actor->GetName(), *EventTag.ToString());
 		return false;
 	}
@@ -131,7 +132,7 @@ bool ITuto_EventTriggerInterface::DispatchEvent(int32 EventIndex, AOutlierPlayer
 		if (Saves) Saves->UnmarkTutorialEventFired(EventTag);
 	}
 	if (bTrigger)
-		UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s trigger '%s' -> %s (game-flow record %s)"), *Actor->GetName(),
+		OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventTrigger] %s trigger '%s' -> %s (game-flow record %s)"), *Actor->GetName(),
 			*EventTag.ToString(), bAccepted ? TEXT("sent") : TEXT("failed, retryable"), Saves ? TEXT("on") : TEXT("missing"));
 	return bAccepted;
 }

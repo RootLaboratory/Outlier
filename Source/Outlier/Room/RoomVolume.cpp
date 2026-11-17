@@ -2,6 +2,7 @@
 
 
 #include "Room/RoomVolume.h"
+#include "Logging/OutlierLog.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Interface/RoomTagInterface.h"
@@ -72,7 +73,7 @@ void ARoomVolume::RefreshOverlappingRoomAssignments()
 
 		// UpdateOverlaps만 호출하면 이미 캐시된 overlap의 BeginOverlap은 재발행되지 않는다.
 		RoomTagComp->EnterRoom(this);
-		UE_LOG(LogTemp, Log, TEXT("[RoomVolume] Restored overlap assignment Room=%s Actor=%s"),
+		OUTLIER_LOG(Room, LogTemp, Log, TEXT("[RoomVolume] Restored overlap assignment Room=%s Actor=%s"),
 			*RoomTag.ToString(), *GetNameSafe(Actor));
 		OnRoomActorOverlapChanged.Broadcast(Actor, true);
 	}

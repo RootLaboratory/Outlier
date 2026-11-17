@@ -2,6 +2,7 @@
 
 
 #include "FrontendPlayerController.h"
+#include "Logging/OutlierLog.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Cinematic/OutlierCinematicSubsystem.h"
 #include "EnhancedInputComponent.h"
@@ -110,9 +111,9 @@ void AFrontendPlayerController::AcknowledgePossession(APawn* P)
 {
 	Super::AcknowledgePossession(P);
 
-	UE_LOG(
+	OUTLIER_LOG(Core,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[TitleDiag] FrontendPC AcknowledgePossession Pawn=%s TitleWidget=%s KeepTitleLayer=1"),
 		*GetNameSafe(P),
 		*GetNameSafe(TitleWidget));
@@ -163,7 +164,7 @@ void AFrontendPlayerController::TryStartNetworkMvpSmoke()
 		return;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[NetworkMVP] Lobby Smoke driver started Role=%s"),
 		*RoleText);
 	GetWorldTimerManager().SetTimer(
@@ -188,7 +189,7 @@ void AFrontendPlayerController::DriveNetworkMvpSmoke()
 		if (!bNetworkMvpSmokeMatchmakingRequested)
 		{
 			bNetworkMvpSmokeMatchmakingRequested = true;
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Core, LogTemp, Display,
 				TEXT("[NetworkMVP] Requesting Lobby matchmaking"));
 			ServerRequestMatchmaking();
 		}
@@ -200,7 +201,7 @@ void AFrontendPlayerController::DriveNetworkMvpSmoke()
 		if (!bNetworkMvpSmokeRoleRequested)
 		{
 			bNetworkMvpSmokeRoleRequested = true;
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Core, LogTemp, Display,
 				TEXT("[NetworkMVP] Requesting Lobby role %d"),
 				static_cast<int32>(NetworkMvpSmokeRole));
 			RequestSelectLobbyRole(NetworkMvpSmokeRole);
@@ -208,7 +209,7 @@ void AFrontendPlayerController::DriveNetworkMvpSmoke()
 		return;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[NetworkMVP] Lobby role selection confirmed"));
 	GetWorldTimerManager().ClearTimer(NetworkMvpSmokeTimerHandle);
 }

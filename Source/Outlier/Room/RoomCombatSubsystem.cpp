@@ -1,4 +1,5 @@
 #include "Room/RoomCombatSubsystem.h"
+#include "Logging/OutlierLog.h"
 #include "GameFramework/PlayerController.h"
 #include "Audio/OutlierAudioSubsystem.h"
 
@@ -773,7 +774,7 @@ bool URoomCombatSubsystem::FinishCombatWithCleanup(ARoomVolume* RoomVolume, int3
 	// 4. 정리가 끝난 뒤 기존 저장/알림 경로로 확정한다. 테스터는 다음 차수도 건너뛰고 방을 완료한다.
 	Runtime = RoomRuntimes.Find(RoomTag);
 	Runtime->bPhaseCleanupInProgress = false;
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Combat cleanup finished. Room=%s Phase=%d Generation=%d Enemies=%d Turrets=%d FinishRoom=%d"),
+	OUTLIER_LOG(Room, LogTemp, Display, TEXT("[RoomCombat] Combat cleanup finished. Room=%s Phase=%d Generation=%d Enemies=%d Turrets=%d FinishRoom=%d"),
 		*RoomTag.ToString(), PhaseIndex, GameplayGeneration, Enemies.Num(), Turrets.Num(), bFinishRoom);
 	CompleteCurrentPhase(RoomTag, true, bFinishRoom);
 	return true;
@@ -867,7 +868,7 @@ bool URoomCombatSubsystem::StartTriggeredSequenceWithSpawnDelay(
 		|| Context.GameplayGeneration != CurrentContext.GameplayGeneration
 		|| Context.CombatPhaseIndex != CurrentContext.CombatPhaseIndex)
 	{
-		UE_LOG(LogTemp, Verbose, TEXT("[RoomCombat] Trigger rejected. Room=%s Phase=%d Generation=%d"),
+		OUTLIER_LOG(Room, LogTemp, Verbose, TEXT("[RoomCombat] Trigger rejected. Room=%s Phase=%d Generation=%d"),
 			*Context.RoomTag.ToString(), Context.CombatPhaseIndex, Context.GameplayGeneration);
 		return false;
 	}
@@ -876,7 +877,7 @@ bool URoomCombatSubsystem::StartTriggeredSequenceWithSpawnDelay(
 	if (Runtime && Runtime->bPhaseDelayPending)
 	{
 		// 문맥 조회는 미리 허용하지만, 조기 성공 요청을 예약하거나 나중에 자동 재생하지 않는다.
-		UE_LOG(LogTemp, Verbose, TEXT("[RoomCombat] Trigger rejected: phase delay pending. Room=%s Phase=%d Remaining=%.3f"),
+		OUTLIER_LOG(Room, LogTemp, Verbose, TEXT("[RoomCombat] Trigger rejected: phase delay pending. Room=%s Phase=%d Remaining=%.3f"),
 			*Context.RoomTag.ToString(), Context.CombatPhaseIndex, GetPhaseDelayRemainingSeconds(Context.RoomTag));
 		return false;
 	}
@@ -974,7 +975,7 @@ bool URoomCombatSubsystem::StartTriggeredSequenceWithSpawnDelay(
 		{
 			const bool bRoomSynced = EnemyRooms->NotifyRoomCombat(
 				CurrentContext.RoomTag, TargetLocation, nullptr, TargetSource);
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Room, LogTemp, Display,
 				TEXT("[Reinforcement] Enemy=None Stage=RoomCombatSync Room=%s Generation=%d Ready=%d PlayerInRoom=%d Target=%s"),
 				*CurrentContext.RoomTag.ToString(), CurrentContext.GameplayGeneration,
 				bRoomSynced, bFoundPlayer, *TargetLocation.ToCompactString());
@@ -1378,7 +1379,7 @@ void URoomCombatSubsystem::FinishBarrierClosure(FGameplayTag RoomTag, bool bSafe
 		TObjectPtr<UPlayerRelocationQuery> Candidate;
 		if (BarrierClosureCandidateQueries.RemoveAndCopyValue(CandidateId, Candidate) && Candidate) Candidate->Cancel();
 	}
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombatBarrier] Safety preparation %s Room=%s Generation=%d Players=%d"),
+	OUTLIER_LOG(Room, LogTemp, Display, TEXT("[RoomCombatBarrier] Safety preparation %s Room=%s Generation=%d Players=%d"),
 		bSafe ? TEXT("ready") : TEXT("deferred"), *RoomTag.ToString(), Work.Generation, Work.Players.Num());
 	if (Work.Completion) Work.Completion(bSafe);
 	// 트리거 요청자는 비동기 준비 중 false를 받고 readiness를 기다린다.
@@ -1485,7 +1486,7 @@ void URoomCombatSubsystem::BroadcastCombatEvent(
 			ClearForcedJoinProtectionsForRoom(RoomTag);
 		}
 	}
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Event=%d Room=%s Phase=%d Generation=%d"),
+	OUTLIER_LOG(Room, LogTemp, Display, TEXT("[RoomCombat] Event=%d Room=%s Phase=%d Generation=%d"),
 		static_cast<int32>(Event), *RoomTag.ToString(), PhaseIndex, Generation);
 	PublishCombatMusicState(Event != ERoomCombatEvent::Cancelled);
 	OnCombatEvent.Broadcast(RoomTag, Event, PhaseIndex, Generation);
@@ -1522,7 +1523,7 @@ bool URoomCombatSubsystem::RegisterRoom(
 		if (World && World->GetNetMode() != NM_Client && IsValid(RoomVolume) && RoomTag.IsValid()
 			&& CombatDefinition && !Definition)
 		{
-			UE_LOG(LogTemp, Verbose,
+			OUTLIER_LOG(Room, LogTemp, Verbose,
 				TEXT("[RoomCombat] Room has no integrated combat entry. Room=%s Actor=%s"),
 				*RoomTag.ToString(), *GetNameSafe(RoomVolume));
 		}
@@ -1706,7 +1707,7 @@ bool URoomCombatSubsystem::HasReadyExternalTriggerRoster(
 		|| !FirstWave || !FirstWave->IsSpawnFromObjects()
 		|| Phase->ExpectedStartSpawnPointCount <= 0)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Room, LogTemp, Display,
 			TEXT("[RoomCombat] External start not ready. Room=%s RequestedVolume=%s RegisteredVolume=%s State=%d ActiveRoom=%s Phase=%d Policy=%d FirstWaveSpawnFromObjects=%d ExpectedPoints=%d"),
 			*RoomTag.ToString(), *GetNameSafe(RoomVolume),
 			Runtime ? *GetNameSafe(Runtime->RoomVolume.Get()) : TEXT("None"),
@@ -1745,7 +1746,7 @@ bool URoomCombatSubsystem::HasReadyExternalTriggerRoster(
 	}
 	if (ReadyCount < Phase->ExpectedStartSpawnPointCount)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Room, LogTemp, Display,
 			TEXT("[RoomCombat] External start roster waiting. Room=%s Ready=%d Expected=%d Registered=%d InactiveOrUnloaded=%d TagMismatch=%d RequiredTag=%s"),
 			*RoomTag.ToString(), ReadyCount, Phase->ExpectedStartSpawnPointCount,
 			RegisteredCount, InactiveCount, TagMismatchCount,
@@ -2100,7 +2101,7 @@ bool URoomCombatSubsystem::RegisterWaveTurret(
 	Runtime.CombatPhaseIndex = CombatPhaseIndex;
 	Runtime.WaveIndex = WaveIndex;
 	RegisteredWaveTurretRooms.Add(TurretPtr, RoomTag);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombat] Wave turret registered. Turret=%s Room=%s Phase=%d Wave=%d Registered=%d Expected=%d"),
 		*GetNameSafe(Turret),
 		*RoomTag.ToString(),
@@ -2154,7 +2155,7 @@ void URoomCombatSubsystem::UnregisterWaveTurret(AAutoTurret* Turret)
 		// 같은 Wave의 교체 Actor가 등록될 때 다시 전개를 요청한다.
 		Runtime->PendingWaveTurretActivations.Remove(TurretPtr);
 	}
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombat] Wave turret unregistered. Turret=%s Room=%s"),
 		*GetNameSafe(Turret), *RegisteredRoomTag.ToString());
 }
@@ -2200,7 +2201,7 @@ bool URoomCombatSubsystem::NotifyWaveTurretDeploymentFinished(
 
 	Runtime->PendingWaveTurretActivations.Remove(TurretPtr);
 	Runtime->PendingActivationCount = FMath::Max(Runtime->PendingActivationCount - 1, 0);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombat] Wave turret activated. Turret=%s Room=%s Phase=%d Wave=%d Generation=%d Serial=%d PendingActivation=%d Alive=%d"),
 		*GetNameSafe(Turret),
 		*RegisteredRoomTag->ToString(),
@@ -2598,7 +2599,7 @@ bool URoomCombatSubsystem::FindJoinDestination(
 	{
 		if (!OutRejectionSummary) return;
 		++Rejections[static_cast<int32>(Reason)];
-		UE_LOG(LogTemp, Verbose,
+		OUTLIER_LOG(Room, LogTemp, Verbose,
 			TEXT("[RoomCombat] Join candidate rejected. Method=%s Room=%s Player=%s Reason=%s Location=%s"),
 			bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"),
 			*Room->GetRoomTag().ToString(), *GetNameSafe(MovingPlayer), JoinRejectionName(Reason), *Candidate.ToString());
@@ -2811,7 +2812,7 @@ bool URoomCombatSubsystem::TryPlaceReconnectingPlayer(
 				Context = Current;
 				Context.DestinationRoomTag = DestinationTag;
 				Context.DestinationRoomRegistrationId = DestinationRegistration;
-				UE_LOG(LogTemp, Display,
+				OUTLIER_LOG(Room, LogTemp, Display,
 					TEXT("[RoomCombat] Reconnect joined. Room=%s Player=%s Method=%s Generation=%d"),
 					*DestinationTag.ToString(), *GetNameSafe(Player),
 					bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"), Context.GameplayGeneration);
@@ -3018,7 +3019,7 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 	// 발각시킨 Actor가 누구인지는 사용하지 않는다. 두 명 모두 밖이면 Enemy도 Battle로 넘기지 않는다.
 	if (!bShooterInside && !bPartnerInside)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Room, LogTemp, Display,
 			TEXT("[RoomCombat] Detection deferred: no player inside. Room=%s ShooterRoom=%s ShooterLocation=%s PartnerRoom=%s PartnerLocation=%s"),
 			*RoomTag.ToString(), *Shooter->GetCurrentRoomTag().ToString(), *Shooter->GetActorLocation().ToString(),
 			*Partner->GetCurrentRoomTag().ToString(), *Partner->GetActorLocation().ToString());
@@ -3156,7 +3157,7 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 		CancelInitialDetectionPreparation(Context);
 		return false;
 	}
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Players joined. Room=%s Anchor=%s Moved=%s Generation=%d"),
+	OUTLIER_LOG(Room, LogTemp, Display, TEXT("[RoomCombat] Players joined. Room=%s Anchor=%s Moved=%s Generation=%d"),
 		*RoomTag.ToString(), *GetNameSafe(Anchor), *GetNameSafe(MovingPlayer), Context.GameplayGeneration);
 	return true;
 }
@@ -3274,7 +3275,7 @@ void URoomCombatSubsystem::CompleteInitialDetectionJoinQuery(FGuid Id, bool bFal
 	const FInitialDetectionJoin Join = *Stored;
 	auto Fail = [this, Id, Join, bFallback, Status = Result.Status](bool bAllowFallback)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Room, LogTemp, Display,
 			TEXT("[RoomCombat] Join attempt rejected. Room=%s DestinationRoom=%s Method=%s QueryStatus=%d Moving=%s CurrentRoom=%s"),
 			*Join.Preparation.RoomTag.ToString(), *Join.DestinationRoomTag.ToString(),
 			bFallback ? TEXT("Fallback") : TEXT("EQS"), static_cast<int32>(Status), *GetNameSafe(Join.MovingPlayer.Get()),
@@ -3519,7 +3520,7 @@ bool URoomCombatSubsystem::BeginInitialDetectionPreparation(
 		Runtime->bPreparationOwnsReservation = !IsRoomCombatReserved(RoomTag);
 		Runtime->bPreparationExitBlockWasActive = Runtime->bExitBlockActive;
 		ReserveCombatRoom(RoomTag);
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Room, LogTemp, Display,
 			TEXT("[RoomCombat] Initial detection preparing. Room=%s Player=%s Generation=%d"),
 			*RoomTag.ToString(), *GetNameSafe(AnchorPlayer), Runtime->GameplayGeneration);
 	}
@@ -3590,7 +3591,7 @@ bool URoomCombatSubsystem::CancelInitialDetectionPreparation(
 	}
 	Runtime.bPreparationOwnsReservation = false;
 	// 주기 Timer를 만들지 않는다. 대기 시간 이후 새 유효 감지가 와야 다시 준비한다.
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Initial detection cancelled. Room=%s RetryAfter=%.2f Generation=%d"),
+	OUTLIER_LOG(Room, LogTemp, Display, TEXT("[RoomCombat] Initial detection cancelled. Room=%s RetryAfter=%.2f Generation=%d"),
 		*Context.RoomTag.ToString(), Runtime.NextPreparationAllowedTimeSeconds, Context.GameplayGeneration);
 	if (bWasExitBlocked && !Runtime.bExitBlockActive)
 	{
@@ -3651,7 +3652,7 @@ bool URoomCombatSubsystem::CompleteInitialDetectionPreparation(
 				if (UEnemyRoomSubsystem* Rooms = WeakThis->GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 					Rooms->NotifyRoomCombat(Context.RoomTag, Context.AnchorPlayer->GetActorLocation(), nullptr, Context.AnchorPlayer.Get());
 		})) return false;
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombat] Initial detection ready. Room=%s Player=%s Generation=%d"),
 		*Context.RoomTag.ToString(), *GetNameSafe(Context.AnchorPlayer.Get()),
 		Context.GameplayGeneration);
@@ -3820,7 +3821,7 @@ void URoomCombatSubsystem::QueueWaveTurretActivations(
 		return;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombat] Wave turret activation queued. Room=%s Phase=%d Wave=%d Expected=%d Registered=%d"),
 		*RoomTag.ToString(),
 		Runtime.CurrentCombatPhaseIndex,
@@ -3862,7 +3863,7 @@ void URoomCombatSubsystem::TryStartPendingWaveTurretActivations(
 		Runtime.PendingWaveTurretActivations.Add(TurretPtr);
 		if (Turret->BeginRoomWaveDeployment(Runtime.GameplayGeneration))
 		{
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Room, LogTemp, Display,
 				TEXT("[RoomCombat] Wave turret deployment started. Turret=%s Room=%s Phase=%d Wave=%d Generation=%d Serial=%d PendingActivation=%d Alive=%d"),
 				*GetNameSafe(Turret),
 				*RoomTag.ToString(),
@@ -3962,7 +3963,7 @@ void URoomCombatSubsystem::QueueWaveSpawnRequests(
 	// 소환 지연이 있으면 On/Loop가 먼저 들리고, 지연이 없으면 첫 Act와 겹친다.
 	RefreshSpawnPointWorkStates(RoomTag, true);
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[Reinforcement] Enemy=None Stage=WaveQueued Room=%s Phase=%d Wave=%d Generation=%d Requests=%d SpawnPoints=%d RequiredSpawnPointTag=%s"),
 		*RoomTag.ToString(),
 		Runtime.CurrentCombatPhaseIndex,
@@ -4121,7 +4122,7 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 			continue;
 		}
 
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Room, LogTemp, Display,
 			TEXT("[Reinforcement] Enemy=%s Stage=SpawnRegistered Generation=%d Lease=%d Room=%s Phase=%d Wave=%d SpawnPoint=%s Location=%s Remaining=%d"),
 			*GetNameSafe(Enemy), Request.GameplayGeneration, Enemy->GetPoolLeaseSerial(),
 			*RoomTag.ToString(),
@@ -4282,7 +4283,7 @@ void URoomCombatSubsystem::FinalizeCurrentWaveSpawn(
 
 	CompactAliveEnemies(Runtime);
 	Runtime.WaveBaselineEnemyCount = Runtime.TrackedAliveEnemies.Num();
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[Reinforcement] Enemy=None Stage=WaveCompleted Room=%s Phase=%d Wave=%d Baseline=%d"),
 		*RoomTag.ToString(),
 		Runtime.CurrentCombatPhaseIndex,
@@ -4349,7 +4350,7 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 
 	const int32 PhaseIndex = Runtime.CurrentCombatPhaseIndex;
 	const int32 NextWaveIndex = Runtime.CurrentWaveIndex + 1;
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[Reinforcement] Enemy=None Stage=WaveTriggered Room=%s Phase=%d CurrentWave=%d NextWave=%d Alive=%d Baseline=%d Ratio=%.3f Required=%.3f"),
 		*RoomTag.ToString(),
 		Runtime.CurrentCombatPhaseIndex,
@@ -4396,7 +4397,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	++MovementRoomRevision;
 	RoomStartHolds.Reset();
 	bRestoredAutomaticStartAllowed = false;
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombat] Runtime reset started. Rooms=%d Enemies=%d WaveTurrets=%d PendingSpawns=%d ActiveRoom=%s"),
 		RoomRuntimes.Num(), RegisteredEnemies.Num(), RegisteredWaveTurretRooms.Num(),
 		PendingSpawnRequests.Num(), *ActiveCombatRoomTag.ToString());
@@ -4502,7 +4503,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 		BroadcastCombatEvent(Sequence.RoomTag, ERoomCombatEvent::Cancelled,
 			Sequence.PhaseIndex, Sequence.Generation, Sequence.RegistrationId, Sequence.ExecutionId);
 	}
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombat] Runtime reset completed. Rooms=%d Enemies=%d WaveTurrets=%d PendingSpawns=%d"),
 		RoomRuntimes.Num(), RegisteredEnemies.Num(), RegisteredWaveTurretRooms.Num(),
 		PendingSpawnRequests.Num());
@@ -4750,7 +4751,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		return;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Room, LogTemp, Display,
 		TEXT("[RoomCombat] Phase completed. RoomTag=%s Phase=%d CancelledRemainingWaves=%d NextPhase=%d State=%d"),
 		*RoomTag.ToString(),
 		CompletedPhaseIndex,
@@ -4796,7 +4797,7 @@ void URoomCombatSubsystem::BeginPhaseDelay(FGameplayTag RoomTag, FRoomCombatRunt
 				CompletePhaseDelay(RoomTag, RegistrationId, Generation, PhaseIndex);
 			}), Phase->DelayBeforeStartSeconds, false);
 	}
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Phase delay started. Room=%s Phase=%d Generation=%d Seconds=%.3f"),
+	OUTLIER_LOG(Room, LogTemp, Display, TEXT("[RoomCombat] Phase delay started. Room=%s Phase=%d Generation=%d Seconds=%.3f"),
 		*RoomTag.ToString(), PhaseIndex, Generation, Phase->DelayBeforeStartSeconds);
 }
 
@@ -4835,7 +4836,7 @@ void URoomCombatSubsystem::CompletePhaseDelay(
 	// 3. 대기를 해제한 뒤 자동 차수는 시작하고, 외부 차수는 새 트리거를 기다린다.
 	Runtime->bPhaseDelayPending = false;
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->PhaseDelayTimer);
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Phase delay finished. Room=%s Phase=%d Generation=%d"),
+	OUTLIER_LOG(Room, LogTemp, Display, TEXT("[RoomCombat] Phase delay finished. Room=%s Phase=%d Generation=%d"),
 		*RoomTag.ToString(), PhaseIndex, Generation);
 	if (Phase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic)
 	{

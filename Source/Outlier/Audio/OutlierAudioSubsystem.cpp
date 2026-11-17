@@ -1,4 +1,5 @@
 ﻿#include "Audio/OutlierAudioSubsystem.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/AudioComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -489,6 +490,7 @@ void UOutlierAudioSubsystem::HandleBankMetadataLoaded(TArray<FPrimaryAssetId> Ba
 	}
 
 	int32 EagerBankCount = 0;
+	const bool bLogDiscovery = OUTLIER_LOG_ACTIVE(Audio, LogOutlier, Log);
 	for (const FPrimaryAssetId& BankId : BankIds)
 	{
 		const FSoftObjectPath BankPath = AssetManager->GetPrimaryAssetPath(BankId);
@@ -526,12 +528,12 @@ void UOutlierAudioSubsystem::HandleBankMetadataLoaded(TArray<FPrimaryAssetId> Ba
 
 		if (Bank->bLoadImmediately)
 		{
-			++EagerBankCount;
+			if (bLogDiscovery) ++EagerBankCount;
 			LoadBankContent(Bank->TypeTag);
 		}
 	}
 
-	UE_LOG(LogOutlier, Log,
+	OUTLIER_LOG(Audio, LogOutlier, Log,
 		TEXT("[Audio] Discovered %d Audio Banks (%d eager)."),
 		DiscoveredBanksByType.Num(),
 		EagerBankCount);
@@ -802,6 +804,7 @@ void UOutlierAudioSubsystem::GetSurfaceContextCandidates(FGameplayTag Context, E
 	if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
 	{
 		// 후보 조회 기록이며 실제 재생 성공을 뜻하지 않는다. 시각 효과에서도 같은 조회를 사용한다.
+		if (!UE_LOG_ACTIVE(LogOutlier, Log)) return;
 		const FPhysicalSurfaceName* SurfaceName = UPhysicsSettings::Get()->PhysicalSurfaces.FindByPredicate(
 			[Surface](const FPhysicalSurfaceName& Entry) { return Entry.Type == Surface; });
 		UE_LOG(LogOutlier, Log, TEXT("[AudioTags][SurfaceCandidates] World='%s' NetMode=%d Context='%s' Surface='%s'(%d) Mapped=%d Candidates='%s'"),
@@ -1336,7 +1339,7 @@ bool UOutlierAudioSubsystem::PlayAudio(
 				UE_LOG(LogOutlier, Log, TEXT("[AudioTags][Waiting] Type='%s' Reason='BankContentLoading'"), *Request.EventTag.ToString());
 			}
 			PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
-			UE_LOG(LogOutlier, Verbose, TEXT("[Audio] Queued Type='%s' Context='%s' while Bank content loads."),
+			OUTLIER_LOG(Audio, LogOutlier, Verbose, TEXT("[Audio] Queued Type='%s' Context='%s' while Bank content loads."),
 				*Request.EventTag.ToString(), *Request.ContextTags.ToString());
 			LoadBankContent(Request.EventTag);
 			return true;
@@ -2077,7 +2080,7 @@ bool UOutlierAudioSubsystem::RouteRelevant(
 
 	if (DeliveryCount == 0)
 	{
-		UE_LOG(LogOutlier, Verbose,
+		OUTLIER_LOG(Audio, LogOutlier, Verbose,
 			TEXT("[Audio] Relevant Type '%s' had no player recipients."),
 			*ResolvedPlay.EventTag.ToString());
 	}

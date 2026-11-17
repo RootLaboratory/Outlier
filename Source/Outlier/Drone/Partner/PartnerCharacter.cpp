@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Logging/OutlierLog.h"
 
 #include "Curves/CurveFloat.h"
 #include "TimerManager.h"
@@ -211,7 +212,7 @@ DEFINE_LOG_CATEGORY(LogPartnerInputDebug);
 
 void APartnerCharacter::LogActionInputState(const TCHAR* Event) const
 {
-	UE_LOG(LogPartnerInputDebug, Display,
+	OUTLIER_LOG(Partner, LogPartnerInputDebug, Display,
 		TEXT("Event=%s Partner=%s World=%s NetMode=%d Role=%d Local=%d Controller=%s Input=%s InputPtr=%p Settings=%s Subsystem=%s BoostKeys=%d AttackKeys=%d FreshBoost=%d HeldBoost=%d Epoch=%u"),
 		Event, *GetNameSafe(this), *GetNameSafe(GetWorld()), static_cast<int32>(GetNetMode()),
 		static_cast<int32>(GetLocalRole()), IsLocallyControlled(), *GetNameSafe(GetController()),
@@ -300,7 +301,8 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	{
 		return 0.0f;
 	}
-	const float HealthBefore = OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
+	const float HealthBefore = OUTLIER_LOG_ACTIVE(Partner, LogTemp, Display)
+		? OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute()) : 0.0f;
 	bool bApplied = false;
 	{
 		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 환경 즉사와 슈트 전 사격은 Reboot 대신 GameOver로 이어진다.
@@ -311,7 +313,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 			Request.DamageCauser,
 			Request.DamageTag);
 	}
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Partner, LogTemp, Display,
 		TEXT("[PartnerHP][Damage] Actor=%s World=%s Amount=%.2f Applied=%d HP=%.2f->%.2f"),
 		*GetNameSafe(this), *GetNameSafe(GetWorld()), Request.DamageAmount, bApplied,
 		HealthBefore, OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute()));
@@ -945,9 +947,9 @@ void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 
 void APartnerCharacter::TryStartAttack()
 {
-	UE_LOG(
+	OUTLIER_LOG(Partner,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[PartnerWeaponVFX][AttackInput] Character=%s Authority=%d CurrentWeapon=%s"),
 		*GetNameSafe(this),
 		HasAuthority() ? 1 : 0,
@@ -1224,7 +1226,7 @@ void APartnerCharacter::Hacking(AActor* TargetActor)
 		return;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("Hack Target : %s"), *GetNameSafe(TargetActor));
+	OUTLIER_LOG(Partner, LogTemp, Log, TEXT("Hack Target : %s"), *GetNameSafe(TargetActor));
 
 	// 해킹 로직
 }
@@ -1236,7 +1238,7 @@ void APartnerCharacter::Scan()
 		return;
 	}
 	NotifyStandbyActivity();
-	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
+	OUTLIER_LOG(Partner, LogTemp, Log, TEXT("Scan Valid"));
 
 	TryActivatePartnerSkill(OutlierGameplayTags::Ability::Partner::Scan());
 }
@@ -1249,7 +1251,7 @@ void APartnerCharacter::Shield()
 	}
 	NotifyStandbyActivity();
 
-	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
+	OUTLIER_LOG(Partner, LogTemp, Log, TEXT("Shield Valid"));
 
 	TryActivatePartnerSkill(OutlierGameplayTags::Ability::Partner::Shield());
 }
@@ -1357,7 +1359,7 @@ void APartnerCharacter::ToggleAccelerate()
 	{
 		if (LastDebugBoostBlockMask != BlockMask)
 		{
-			UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=Boost.Blocked Partner=%s CanTrack=%d FreshRequired=%d Held=%d"),
+			OUTLIER_LOG(Partner, LogPartnerInputDebug, Display, TEXT("Event=Boost.Blocked Partner=%s CanTrack=%d FreshRequired=%d Held=%d"),
 				*GetNameSafe(this), bCanTrack, bAccelerateNeedsFreshPress, bAccelerateInputHeld);
 			LogActionInputState(TEXT("Boost.Blocked.State"));
 		}
@@ -1440,7 +1442,7 @@ void APartnerCharacter::OnRep_AccelerateInputEpoch()
 
 void APartnerCharacter::NotifyActionKeyPressed(FKey Key)
 {
-	UE_LOG(LogPartnerInputDebug, Display,
+	OUTLIER_LOG(Partner, LogPartnerInputDebug, Display,
 		TEXT("Event=PhysicalPress Partner=%s Key=%s BoostMatch=%d AttackMatch=%d BoostKeys=%d AttackKeys=%d"),
 		*GetNameSafe(this), *Key.ToString(), AccelerateInputKeys.Contains(Key), AttackInputKeys.Contains(Key),
 		AccelerateInputKeys.Num(), AttackInputKeys.Num());
@@ -1529,11 +1531,11 @@ void APartnerCharacter::HandleAccelerateMappingsRebuilt()
 	LogActionInputState(TEXT("MappingsRebuilt.Queried"));
 	for (const FKey& Key : AccelerateInputKeys)
 	{
-		UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=MappedKey Partner=%s Action=Boost Key=%s"), *GetNameSafe(this), *Key.ToString());
+		OUTLIER_LOG(Partner, LogPartnerInputDebug, Display, TEXT("Event=MappedKey Partner=%s Action=Boost Key=%s"), *GetNameSafe(this), *Key.ToString());
 	}
 	for (const FKey& Key : AttackInputKeys)
 	{
-		UE_LOG(LogPartnerInputDebug, Display, TEXT("Event=MappedKey Partner=%s Action=Attack Key=%s"), *GetNameSafe(this), *Key.ToString());
+		OUTLIER_LOG(Partner, LogPartnerInputDebug, Display, TEXT("Event=MappedKey Partner=%s Action=Attack Key=%s"), *GetNameSafe(this), *Key.ToString());
 	}
 	// UI는 Toggle의 Release만으로 꺼지지 않는다. 매핑 전환에서 의도까지 명시적으로 폐기한다.
 	if (AccelerateInputKeys.IsEmpty() || Subsystem->GetInputMode().HasTag(FirstPersonInputModeTags::UI()))
@@ -2054,7 +2056,7 @@ void APartnerCharacter::CleanupBoostVFXComponents()
 
 void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate, uint32 Request, uint32 Epoch)
 {
-	UE_LOG(LogPartnerInputDebug, Display,
+	OUTLIER_LOG(Partner, LogPartnerInputDebug, Display,
 		TEXT("Event=Boost.ServerRequest Partner=%s Boost=%d Request=%u Epoch=%u CurrentEpoch=%u ProcessedRequest=%u CanTrack=%d CanAccept=%d"),
 		*GetNameSafe(this), bNewAccelerate, Request, Epoch, AccelerateInputEpoch,
 		ProcessedAccelerateInputRequest, CanTrackActionInputIntent(), CanAcceptInput());

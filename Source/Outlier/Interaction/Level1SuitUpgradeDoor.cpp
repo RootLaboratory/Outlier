@@ -1,4 +1,5 @@
 #include "Interaction/Level1SuitUpgradeDoor.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -169,7 +170,7 @@ void ALevel1SuitUpgradeDoor::OnPlayerStateChanged(AOutlierPlayerState* PlayerSta
 
 void ALevel1SuitUpgradeDoor::OnUICompleted(AOutlierPlayerState* PlayerState, uint32 CompletedGeneration)
 {
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Interaction, LogTemp, Display,
 		TEXT("[Level1Door] UI completed signal. Door=%s PlayerState=%s CompletedGeneration=%u CurrentGeneration=%u Sealed=%d CloseFinished=%d"),
 		*GetNameSafe(this), *GetNameSafe(PlayerState), CompletedGeneration,
 		GameplayGeneration, bEntrySealed, bCloseFinished);
@@ -192,7 +193,7 @@ void ALevel1SuitUpgradeDoor::OnRoomOverlapChanged(AActor* Actor, bool bEntered)
 		{
 			OverlappingPlayers.Remove(Player);
 		}
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Interaction, LogTemp, Display,
 			TEXT("[Level1Door] Room overlap. Door=%s Room=%s Actor=%s Entered=%d Generation=%u Ready=%d Sealed=%d"),
 			*GetNameSafe(this), IsValid(TargetRoomVolume)
 				? *TargetRoomVolume->GetRoomTag().ToString() : TEXT("None"),
@@ -265,7 +266,7 @@ void ALevel1SuitUpgradeDoor::OnRoomStartReadinessChanged(FGameplayTag ChangedRoo
 {
 	if (IsValid(CombatRoomVolume) && ChangedRoomTag == CombatRoomVolume->GetRoomTag())
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Interaction, LogTemp, Display,
 			TEXT("[Level1Door] Room readiness changed. Door=%s Room=%s OpenFinished=%d CombatStarted=%d Generation=%u"),
 			*GetNameSafe(this), *ChangedRoomTag.ToString(), bOpenFinished,
 			bCombatStartSucceeded, GameplayGeneration);
@@ -372,7 +373,7 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 		bOpenFinished = true;
 		bUpgradeSaveCommitted = true;
 		bCombatStartSucceeded = bEncounterCleared || bSavedCombatStarted;
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Interaction, LogTemp, Display,
 			TEXT("[Level1Door] Progress restored. Door=%s Room=%s Generation=%u Open=%d EncounterCleared=%d"),
 			*GetNameSafe(this), *RoomTag.ToString(), GameplayGeneration,
 			bRestoredOpen, bEncounterCleared);
@@ -536,7 +537,7 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 	}
 	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
 	bEntrySealed = true;
-	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Entry sealed. Door=%s Room=%s Generation=%u"),
+	OUTLIER_LOG(Interaction, LogTemp, Display, TEXT("[Level1Door] Entry sealed. Door=%s Room=%s Generation=%u"),
 		*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 }
 
@@ -581,6 +582,7 @@ bool ALevel1SuitUpgradeDoor::AbortEntryIfPairOutside()
 void ALevel1SuitUpgradeDoor::LogEntryStatus(
 	const TCHAR* Reason, const AOutlierPlayerState* Shooter, const AOutlierPlayerState* Partner)
 {
+	if (!OUTLIER_LOG_ACTIVE(Interaction, LogTemp, Display)) return;
 	const auto DescribePlayer = [this](const AOutlierPlayerState* PlayerState, const AActor* Character)
 	{
 		const URoomTagComponent* Room = Character
@@ -601,7 +603,7 @@ void ALevel1SuitUpgradeDoor::LogEntryStatus(
 		return;
 	}
 	LastEntryStatus = Status;
-	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Entry check. Door=%s Room=%s Generation=%u %s"),
+	OUTLIER_LOG(Interaction, LogTemp, Display, TEXT("[Level1Door] Entry check. Door=%s Room=%s Generation=%u %s"),
 		*GetNameSafe(this), IsValid(TargetRoomVolume)
 			? *TargetRoomVolume->GetRoomTag().ToString() : TEXT("None"), GameplayGeneration, *Status);
 }
@@ -678,7 +680,7 @@ void ALevel1SuitUpgradeDoor::EvaluateReopen()
 	}
 	bReopenRequested = true;
 	SetDoorOpen(true);
-	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Reopening. Door=%s Room=%s Generation=%u"),
+	OUTLIER_LOG(Interaction, LogTemp, Display, TEXT("[Level1Door] Reopening. Door=%s Room=%s Generation=%u"),
 		*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 }
 
@@ -731,7 +733,7 @@ bool ALevel1SuitUpgradeDoor::TryStartCombat()
 		return false;
 	}
 	bCombatStartSucceeded = true;
-	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Combat started. Door=%s Room=%s Generation=%u"),
+	OUTLIER_LOG(Interaction, LogTemp, Display, TEXT("[Level1Door] Combat started. Door=%s Room=%s Generation=%u"),
 		*GetNameSafe(this), *RoomTag.ToString(), GameplayGeneration);
 	return true;
 }
@@ -768,7 +770,7 @@ void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, b
 		}
 		// 1단계: 닫힘 확정 후 선행 전투를 정리하고, 양쪽 UI 완료/저장 경계를 확인한다.
 		bCloseFinished = true;
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Interaction, LogTemp, Display,
 			TEXT("[Level1Door] Door closed. Door=%s Room=%s Generation=%u"),
 			*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 		EvaluateReopen();
@@ -777,7 +779,7 @@ void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, b
 	{
 		// 문 열림이 끝나면 차단막을 즉시 활성화하고 적 소환만 지연한다.
 		bOpenFinished = true;
-		UE_LOG(LogTemp, Display, TEXT("[Level1Door] Door opened. Door=%s Room=%s Generation=%u"),
+		OUTLIER_LOG(Interaction, LogTemp, Display, TEXT("[Level1Door] Door opened. Door=%s Room=%s Generation=%u"),
 			*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 		OnLevel1DoorOpened.Broadcast(this, GameplayGeneration);
 		TryStartCombat();

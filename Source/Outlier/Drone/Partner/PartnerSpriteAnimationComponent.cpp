@@ -1,4 +1,5 @@
 #include "Drone/Partner/PartnerSpriteAnimationComponent.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/SkeletalMeshComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -61,7 +62,7 @@ void UPartnerSpriteAnimationComponent::BeginPlay()
 		return;
 	}
 	SpriteMaterialIndex = MaterialIndex;
-	UE_LOG(LogPartnerEmotion, Log,
+	OUTLIER_LOG(Partner, LogPartnerEmotion, Log,
 		TEXT("[PartnerEmotion] Init Owner=%s NetMode=%d Emotion=%s Mesh=%s Slot=%s Index=%d MID=%s Parameter=%s"),
 		*GetNameSafe(GetOwner()), static_cast<int32>(GetNetMode()),
 		*UEnum::GetValueAsString(CurrentEmotion), *GetNameSafe(Mesh),
@@ -163,7 +164,7 @@ void UPartnerSpriteAnimationComponent::SetEmotionAuthority(EPartnerEmotion InPar
 		return;
 	}
 
-	UE_LOG(LogPartnerEmotion, Log,
+	OUTLIER_LOG(Partner, LogPartnerEmotion, Log,
 		TEXT("[PartnerEmotion] Authority Owner=%s NetMode=%d Previous=%s Current=%s FromBlink=%d"),
 		*GetNameSafe(Owner), static_cast<int32>(GetNetMode()),
 		*UEnum::GetValueAsString(CurrentEmotion), *UEnum::GetValueAsString(InPartnerEmotion), bFromBlink ? 1 : 0);
@@ -263,7 +264,7 @@ void UPartnerSpriteAnimationComponent::FinishBlink()
 
 void UPartnerSpriteAnimationComponent::OnRep_CurrentEmotion()
 {
-	UE_LOG(LogPartnerEmotion, Log,
+	OUTLIER_LOG(Partner, LogPartnerEmotion, Log,
 		TEXT("[PartnerEmotion] OnRep Owner=%s NetMode=%d Current=%s Displayed=%s"),
 		*GetNameSafe(GetOwner()), static_cast<int32>(GetNetMode()),
 		*UEnum::GetValueAsString(CurrentEmotion), *UEnum::GetValueAsString(DisplayedEmotion));
@@ -353,19 +354,22 @@ bool UPartnerSpriteAnimationComponent::ApplyEmotionTexture(EPartnerEmotion Emoti
 	UPartnerFaceBlueprintLibrary::ApplyFaceSprite(
 		SpriteMID, *Data, TextureParameterName, GetWorld()->GetTimeSeconds());
 
-	// 적용 대상이 다른 머티리얼로 교체됐는지 표정 변경 시에만 확인한다.
-	const APartnerCharacter* Partner = Cast<APartnerCharacter>(GetOwner());
-	const USkeletalMeshComponent* Mesh = Partner ? Partner->GetMesh() : nullptr;
-	const int32 MaterialIndex = SpriteMaterialIndex;
-	const UMaterialInterface* SlotMaterial = Mesh && MaterialIndex != INDEX_NONE
-		? Mesh->GetMaterial(MaterialIndex) : nullptr;
-	UE_LOG(LogPartnerEmotion, Log,
-		TEXT("[PartnerEmotion] Apply Owner=%s NetMode=%d Current=%s Applied=%s Texture=%s Rows=%d Columns=%d Parameter=%s Mesh=%s Slot=%s MID=%s SlotMaterial=%s MIDMatchesSlot=%d"),
-		*GetNameSafe(GetOwner()), static_cast<int32>(GetNetMode()),
-		*UEnum::GetValueAsString(CurrentEmotion), *UEnum::GetValueAsString(Emotion),
-		*GetNameSafe(Data->Texture.Get()), Data->Rows, Data->Columns, *TextureParameterName.ToString(),
-		*GetNameSafe(Mesh), *MaterialSlotName.ToString(), *GetNameSafe(SpriteMID),
-		*GetNameSafe(SlotMaterial), SlotMaterial == SpriteMID.Get() ? 1 : 0);
+	if (OUTLIER_LOG_ACTIVE(Partner, LogPartnerEmotion, Log))
+	{
+		// 적용 대상이 다른 머티리얼로 교체됐는지 표정 변경 시에만 확인한다.
+		const APartnerCharacter* Partner = Cast<APartnerCharacter>(GetOwner());
+		const USkeletalMeshComponent* Mesh = Partner ? Partner->GetMesh() : nullptr;
+		const int32 MaterialIndex = SpriteMaterialIndex;
+		const UMaterialInterface* SlotMaterial = Mesh && MaterialIndex != INDEX_NONE
+			? Mesh->GetMaterial(MaterialIndex) : nullptr;
+		OUTLIER_LOG(Partner, LogPartnerEmotion, Log,
+			TEXT("[PartnerEmotion] Apply Owner=%s NetMode=%d Current=%s Applied=%s Texture=%s Rows=%d Columns=%d Parameter=%s Mesh=%s Slot=%s MID=%s SlotMaterial=%s MIDMatchesSlot=%d"),
+			*GetNameSafe(GetOwner()), static_cast<int32>(GetNetMode()),
+			*UEnum::GetValueAsString(CurrentEmotion), *UEnum::GetValueAsString(Emotion),
+			*GetNameSafe(Data->Texture.Get()), Data->Rows, Data->Columns, *TextureParameterName.ToString(),
+			*GetNameSafe(Mesh), *MaterialSlotName.ToString(), *GetNameSafe(SpriteMID),
+			*GetNameSafe(SlotMaterial), SlotMaterial == SpriteMID.Get() ? 1 : 0);
+	}
 	DisplayedEmotion = Emotion;
 	return true;
 }

@@ -1,4 +1,5 @@
 #include "UI/GameOverChoiceWidget.h"
+#include "Logging/OutlierLog.h"
 #include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/Button.h"
@@ -276,7 +277,7 @@ void UGameOverChoiceWidget::ApplySelection()
 
 void UGameOverChoiceWidget::ConfirmChoice(EGameOverMenuChoice Choice)
 {
-	UE_LOG(LogTemp, Log, TEXT("[GameOverChoice] Confirm %d on %s"),
+	OUTLIER_LOG(UI, LogTemp, Log, TEXT("[GameOverChoice] Confirm %d on %s"),
 		static_cast<int32>(Choice), *GetNameSafe(this));
 	OnChoiceConfirmed.Broadcast(Choice);
 }

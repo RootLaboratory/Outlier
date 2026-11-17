@@ -1,4 +1,5 @@
 #include "OutlierGameMode.h"
+#include "Logging/OutlierLog.h"
 #include "OutlierGameInstance.h"
 #include "Network/OutlierGenerationNetworkProbe.h"
 #include "Outlier.h"
@@ -866,7 +867,7 @@ void AOutlierGameMode::FinishCheckpointRestartVote(
 			{
 				if (bArenaReloadInProgress)
 				{
-					UE_LOG(LogTemp, Log,
+					OUTLIER_LOG(Core, LogTemp, Log,
 						TEXT("[Checkpoint.RestartVote] Approved; checkpoint reload started"));
 				}
 				return;
@@ -883,7 +884,7 @@ void AOutlierGameMode::FinishCheckpointRestartVote(
 	CheckpointRestartVote.Reset();
 	CheckpointRestartVoteLayerOwner.Reset();
 
-	UE_LOG(LogTemp, Log,
+	OUTLIER_LOG(Core, LogTemp, Log,
 		TEXT("[Checkpoint.RestartVote] Finished Result=%d"),
 		static_cast<int32>(Result));
 }
@@ -964,11 +965,12 @@ bool AOutlierGameMode::StartCheckpointRestart(
 				GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
 			{
 				const int32 StackBeforeRestore =
-					EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack();
+					OUTLIER_LOG_ACTIVE(Core, LogOutlier, Display)
+						? EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack() : 0;
 				if (EnemyAdaptationSubsystem->SetGunAdaptationStack(
 					Snapshot.GunAdaptationStack))
 				{
-					UE_LOG(
+					OUTLIER_LOG(Core,
 						LogOutlier,
 						Display,
 						TEXT("[Checkpoint] Enemy adaptation restored Checkpoint=%s PreviousStack=%d RestoredStack=%d"),
@@ -1025,7 +1027,7 @@ void AOutlierGameMode::FinishCheckpointRestart()
 	CheckpointRestartVote.Reset();
 	CheckpointRestartVoteLayerOwner.Reset();
 	ClearSettingsWorldPause();
-	UE_LOG(LogTemp, Log, TEXT("[Checkpoint.Restart] Reload completed; gameplay resumed"));
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("[Checkpoint.Restart] Reload completed; gameplay resumed"));
 }
 
 void AOutlierGameMode::CancelCheckpointRestartVoteForDisconnect(
@@ -1173,7 +1175,7 @@ void AOutlierGameMode::PauseArenaWorkerWorld()
 
 	World->GetWorldSettings()->SetPauserPlayerState(PauseOwner);
 
-	UE_LOG(LogTemp, Display, TEXT("[ArenaWorker] Arena world paused until both clients are ready"));
+	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaWorker] Arena world paused until both clients are ready"));
 }
 
 void AOutlierGameMode::ClearArenaWorkerWorldPause()
@@ -1380,7 +1382,7 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 	const URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
 	if (!bEncounterCleared && Combat && Combat->IsCombatPhaseCheckpointDeferred(RoomTag, GameplayGeneration))
 	{
-		UE_LOG(LogTemp, Verbose, TEXT("[Checkpoint] Elevator phase save deferred Room=%s NextPhase=%d"),
+		OUTLIER_LOG(Core, LogTemp, Verbose, TEXT("[Checkpoint] Elevator phase save deferred Room=%s NextPhase=%d"),
 			*RoomTag.ToString(), NextPhaseIndex);
 		return true;
 	}
@@ -1683,7 +1685,7 @@ void AOutlierGameMode::OnClientGameOverReady(
 	}
 	if (GameOverWorldPause.NotifyReady(Controller, RoundId, GetWorld()))
 	{
-		UE_LOG(LogTemp, Display, TEXT("[GameOver] Both UIs ready; world paused Round=%s"),
+		OUTLIER_LOG(Core, LogTemp, Display, TEXT("[GameOver] Both UIs ready; world paused Round=%s"),
 			*RoundId.ToString());
 	}
 	if (GameOverWorldPause.GetRoundId() == RoundId && GameOverWorldPause.HasReadyUI()
@@ -1854,13 +1856,13 @@ bool AOutlierGameMode::RespondGameOverPending(
 	if (!State || State->Responder.Get() != Responder || !State->Requester.IsValid()
 		|| !State->Request.MatchesProposal(RoundId, ProposalId))
 	{
-		UE_LOG(LogTemp, Warning,
+		OUTLIER_LOG(Core, LogTemp, Log,
 			TEXT("[GameOverPending][Input] ServerRejectResponse Responder=%s Pair=%d Pending=%d"),
 			*GetNameSafe(Responder), ResponderPS ? ResponderPS->GetPairId() : INDEX_NONE,
 			State ? 1 : 0);
 		return false;
 	}
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(Core, LogTemp, Log,
 		TEXT("[GameOverPending][Input] ServerResolve Responder=%s Pair=%d Approve=%d Choice=%d Level=%d"),
 		*GetNameSafe(Responder), ResponderPS->GetPairId(), bApprove ? 1 : 0,
 		static_cast<int32>(State->Request.Choice), State->Request.LevelIndex);
@@ -2161,7 +2163,7 @@ int32 AOutlierGameMode::ResolvePresetNodeCount(FName StageId) const
 	static const FString ContextString(TEXT("ResolvePresetNodeCount"));
 	if (const FPresetNodeProvideRow* Row = NodeProvideTable->FindRow<FPresetNodeProvideRow>(StageId, ContextString))
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[PresetNode] Stage=%s Count=%d"),
 			*StageId.ToString(), Row->Count);
 		return Row->Count;
@@ -2515,7 +2517,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 
 	if (bShooterAlreadyCorrect && bPartnerAlreadyCorrect)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[GameMode] Controllers already match their roles; skipping SwapPlayerControllers"));
 	}
 
@@ -2653,7 +2655,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 			if (OutlierASC)
 			{
 				const bool bApplied = OutlierASC->ApplyDamageImmuneStateToSelf().IsValid();
-				UE_LOG(LogTemp, Display, TEXT("[DirectPairTest] Start invulnerability: Character=%s Applied=%d"),
+				OUTLIER_LOG(Core, LogTemp, Display, TEXT("[DirectPairTest] Start invulnerability: Character=%s Applied=%d"),
 					*GetNameSafe(OutlierASC->GetAvatarActor()), bApplied ? 1 : 0);
 			}
 		}
@@ -2706,7 +2708,7 @@ bool AOutlierGameMode::CompleteArenaMatch()
 		ProcessSubsystem->NotifyWorkerReleasing(ArenaWorkerAdmission.MatchId);
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReturn] Match completed. Returning players to %s"),
 		*LobbyAddress);
 
@@ -2853,7 +2855,7 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(
 			return true;
 		}
 
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaReturn] Explicit leave requested; releasing Worker Match=%s Player=%s"),
 			*ArenaWorkerAdmission.MatchId.ToString(),
 			*GetNameSafe(Requester));
@@ -2896,7 +2898,7 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(
 			}
 		}
 	}
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReturn] Explicit leave requested; returning session to Title Player=%s NetMode=%d"),
 		*GetNameSafe(Requester),
 		static_cast<int32>(NetMode));
@@ -3043,7 +3045,7 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 	{
 		if (!ReadyGameplayPossessPlayers.Contains(PC)) MarkArenaReloadProgress();
 		ReadyGameplayPossessPlayers.Add(PC);
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaReload][Server] HoldPossessUntilServerReady PC=%s Gen=%u"),
 			*GetNameSafe(PC), GameplayGeneration);
 		TryCompleteArenaPossessions();
@@ -3076,7 +3078,7 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 	TryStartInitialSaveRestore();
 	if (bArenaReloadInProgress)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaReload][Server] PossessedRemote PC=%s Pawn=%s Gen=%u TotalMs=%.1f"),
 			*GetNameSafe(PC), *GetNameSafe(Pawn), GameplayGeneration,
 			(FPlatformTime::Seconds() - ArenaReloadStartedAt) * 1000.0);
@@ -3104,7 +3106,7 @@ void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint
 	}
 	if (ReadyGameplayUnloadPlayers.Contains(PC))
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaReload][Server] DuplicateUnloadACK PC=%s Gen=%u"),
 			*GetNameSafe(PC), GameplayGeneration);
 		return;
@@ -3121,7 +3123,7 @@ void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint
 	}
 	ReadyGameplayUnloadPlayers.Add(PC);
 	MarkArenaReloadProgress();
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReload][Server] UnloadACK PC=%s Gen=%u ACK=%d/%d ServerUnloaded=%d TotalMs=%.1f"),
 		*GetNameSafe(PC), GameplayGeneration, ReadyGameplayUnloadPlayers.Num(),
 		PendingGameplayUnloadPlayers.Num(),
@@ -3133,7 +3135,7 @@ void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint
 		return;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaLevels] All remote clients unloaded Generation=%u; loading configured gameplay levels"),
 		GameplayGeneration);
 
@@ -3144,7 +3146,7 @@ void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint
 			Cast<AFirstPersonPlayerController>(Player.Get()))
 		{
 			// ClientLoadAuthorizedAt.Add(FirstPersonController, FPlatformTime::Seconds());
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Core, LogTemp, Display,
 				TEXT("[ArenaReload][Server] ActivateClientLevels PC=%s Gen=%u TotalMs=%.1f"),
 				*GetNameSafe(FirstPersonController), GameplayGeneration,
 				(FPlatformTime::Seconds() - ArenaReloadStartedAt) * 1000.0);
@@ -3276,7 +3278,7 @@ APlayerController* AOutlierGameMode::SpawnPlayerController(
 
 			if (RoleControllerClass)
 			{
-				UE_LOG(LogTemp, Display,
+				OUTLIER_LOG(Core, LogTemp, Display,
 					TEXT("[ArenaWorker] Spawning role controller at login Role=%d Class=%s"),
 					static_cast<int32>(Request.Role),
 					*RoleControllerClass->GetName());
@@ -3448,7 +3450,7 @@ FString AOutlierGameMode::InitNewPlayer(
 		ArenaWorkerPartnerController = NewPlayerController;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaWorker] Admitted Match=%s Player=%s Role=%s"),
 		*Request.MatchId.ToString(),
 		*Request.PlayerId.ToString(),
@@ -3658,7 +3660,7 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		PendingGameplayUnloadPlayers.Remove(ExitingPlayer);
 		ReadyGameplayUnloadPlayers.Remove(ExitingPlayer);
 		ReadyGameplayPossessPlayers.Remove(ExitingPlayer);
-		UE_LOG(LogTemp, Display, TEXT("[ListenReconnect] Guest disconnected. PawnPreserved=%d"),
+		OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ListenReconnect] Guest disconnected. PawnPreserved=%d"),
 			bListenGuestDisconnected);
 	}
 
@@ -4290,7 +4292,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	ReadyGameplayPossessPlayers.Reset();
 	// ClientUnloadRequestedAt.Reset();
 	// ClientLoadAuthorizedAt.Reset();
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReload][Server] Gen=%u Begin Mode=%s ShooterPC=%s PartnerPC=%s"),
 		ReloadGeneration, GetNetMode() == NM_ListenServer ? TEXT("Listen") : TEXT("Worker"),
 		*GetNameSafe(ShooterController), *GetNameSafe(PartnerController));
@@ -4312,7 +4314,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 				ArenaSubsystem->SuspendGameplayVisibilityForConnection(FPC);
 				PendingGameplayUnloadPlayers.Add(PC);
 				// ClientUnloadRequestedAt.Add(PC, FPlatformTime::Seconds());
-				UE_LOG(LogTemp, Display,
+				OUTLIER_LOG(Core, LogTemp, Display,
 					TEXT("[ArenaReload][Server] Gen=%u ClientUnloadRPC PC=%s Spawn=%s"),
 					ReloadGeneration, *GetNameSafe(PC), *ShooterSpawn.GetLocation().ToString());
 				FPC->ClientArenaGameplayReload(ReloadGeneration, ShooterSpawn.GetLocation());
@@ -4334,7 +4336,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 				ArenaSubsystem->SuspendGameplayVisibilityForConnection(FPC);
 				PendingGameplayUnloadPlayers.Add(PC);
 				// ClientUnloadRequestedAt.Add(PC, FPlatformTime::Seconds());
-				UE_LOG(LogTemp, Display,
+				OUTLIER_LOG(Core, LogTemp, Display,
 					TEXT("[ArenaReload][Server] Gen=%u ClientUnloadRPC PC=%s Spawn=%s"),
 					ReloadGeneration, *GetNameSafe(PC), *PartnerSpawn.GetLocation().ToString());
 				FPC->ClientArenaGameplayReload(ReloadGeneration, PartnerSpawn.GetLocation());
@@ -4466,7 +4468,7 @@ void AOutlierGameMode::TryStartArenaWorkerPair()
 		bArenaWorkerPairStarted = true;
 		ArenaWorkerAdmission.bPairStarted = true;
 
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaWorker] Preparing assigned pair Match=%s"),
 			*ArenaWorkerAdmission.MatchId.ToString());
 		StartMatchedPair(
@@ -4498,7 +4500,7 @@ void AOutlierGameMode::TryStartArenaWorkerPair()
 	bArenaWorkerPairStarted = true;
 	ArenaWorkerPlayers.Reset();
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaWorker] Starting direct-connect pair"));
 	StartMatchedPair(
 		ShooterController,
@@ -4577,7 +4579,7 @@ void AOutlierGameMode::StartArenaWorkerGameplay()
 		}
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("[ArenaWorker] Both clients are ready. Gameplay started"));
+	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaWorker] Both clients are ready. Gameplay started"));
 	BroadcastPairGameplayReadyIfReady();
 }
 
@@ -4593,7 +4595,7 @@ void AOutlierGameMode::RequestArenaWorkerExit()
 
 	bArenaWorkerExitRequested = true;
 	GetWorldTimerManager().ClearTimer(ArenaWorkerExitTimerHandle);
-	UE_LOG(LogTemp, Display, TEXT("[ArenaReturn] Arena Worker exit requested"));
+	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaReturn] Arena Worker exit requested"));
 	RequestEngineExit(TEXT("Outlier Arena Worker lifecycle completed"));
 }
 
@@ -4690,7 +4692,7 @@ void AOutlierGameMode::TryResumeListenGuestAfterReconnect(APlayerController* Rec
 				GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration());
 		}
 	}
-	UE_LOG(LogTemp, Display, TEXT("[ListenReconnect] Guest accepted; waiting for Room streaming ACK"));
+	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ListenReconnect] Guest accepted; waiting for Room streaming ACK"));
 }
 
 void AOutlierGameMode::ClearListenReconnectPawn()
@@ -5032,7 +5034,7 @@ void AOutlierGameMode::TryResumeArenaWorkerAfterReconnect(APlayerController* Rec
 				Cast<AFirstPersonPlayerController>(PlayerController))
 			{
 				// ClientUnloadRequestedAt.Add(PlayerController, FPlatformTime::Seconds());
-				UE_LOG(LogTemp, Display,
+				OUTLIER_LOG(Core, LogTemp, Display,
 					TEXT("[ArenaReload][Server] ReconnectUnloadRPC PC=%s Gen=%u"),
 					*GetNameSafe(PlayerController), PendingGameplayGeneration);
 				FirstPersonController->ClientArenaGameplayReload(
@@ -5104,7 +5106,7 @@ void AOutlierGameMode::TryResumeArenaWorkerAfterReconnect(APlayerController* Rec
 
 	for (const FGuid& PlayerId : ArenaWorkerDisconnectedPlayerIds)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaWorker] Player reconnected Match=%s Player=%s"),
 			*ArenaWorkerAdmission.MatchId.ToString(),
 			*PlayerId.ToString());
@@ -5133,7 +5135,7 @@ void AOutlierGameMode::TryScheduleArenaWorkerAutoComplete()
 	}
 
 	AutoCompleteSeconds = FMath::Max(AutoCompleteSeconds, 0.1f);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[NetworkMVP] Arena Match auto-complete scheduled in %.1f seconds"),
 		AutoCompleteSeconds);
 	GetWorldTimerManager().SetTimer(
@@ -5541,10 +5543,10 @@ void AOutlierGameMode::CompleteServerArenaReload()
 		if (!IsGameplayReloadInProgress(Generation)) return;
 		bClearPresetGuidesAfterReload = false;
 		GetWorldTimerManager().ClearTimer(PresetGuideCleanupTimerHandle);
-		UE_LOG(LogTemp, Log, TEXT("[PresetGuide] Cleared active/pending guides Gen=%u Manager=%s"),
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[PresetGuide] Cleared active/pending guides Gen=%u Manager=%s"),
 			Generation, *GetNameSafe(Guides));
 	}
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReload][Server] Gen=%u ServerLevelsReady=%d TotalMs=%.1f RemotePending=%d LocalPending=%d"),
 		PendingGameplayGeneration,
 		ArenaSubsystem && ArenaSubsystem->IsGameplayLevelsReady() ? 1 : 0,
@@ -5588,7 +5590,7 @@ void AOutlierGameMode::TryCompleteArenaPossessions()
 				FPC->ArmDeathTransitionReleaseOnPossess();
 			}
 			PC->Possess(Pawn);
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Core, LogTemp, Display,
 				TEXT("[ArenaReload][Server] PossessedLocal PC=%s Pawn=%s Gen=%u"),
 				*GetNameSafe(PC), *GetNameSafe(Pawn), PendingGameplayGeneration);
 		}
@@ -5622,7 +5624,7 @@ void AOutlierGameMode::TryFinishArenaReload()
 	}
 
 	GetWorldTimerManager().ClearTimer(ArenaWorkerReloadFailureTimerHandle);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReload][Server] Gen=%u PairReloadComplete TotalMs=%.1f"),
 		PendingGameplayGeneration,
 		ArenaReloadStartedAt > 0.0
@@ -5967,7 +5969,7 @@ void AOutlierGameMode::ResolveFallbackSpawnTransforms(
 	// 1순위: 이 아레나 소속의 일반 PlayerStart (APresetPlayerStart는 제외된다)
 	if (ResolveArenaSpawnTransforms(OutShooterSpawn, OutPartnerSpawn))
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[SpawnFallback] Using arena PlayerStart Shooter=%s"),
 			*OutShooterSpawn.GetLocation().ToString());
 		return;

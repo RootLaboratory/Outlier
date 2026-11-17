@@ -2,6 +2,7 @@
 
 
 #include "PostProcess/OutlierPostProcessVolume.h"
+#include "Logging/OutlierLog.h"
 
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Containers/StaticArray.h"
@@ -476,9 +477,9 @@ void AOutlierPostProcessVolume::SetMagneticMaterialParameters(
 		return;
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(World,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[MagneticLens] 3/3 파라미터 세팅. MID=%s Origin=%s Radius=%.1f StartTime=%.2f EndTime=%.2f"),
 		*GetNameSafe(MagneticMID),
 		*Origin.ToCompactString(),

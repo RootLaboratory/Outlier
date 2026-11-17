@@ -2,6 +2,7 @@
 
 
 #include "PartnerCamUI.h"
+#include "TagDrivenUILog.h"
 
 #include "Components/Image.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -47,7 +48,7 @@ void UPartnerCamUI::Activate()
 	EnsureMaterialInitialized();
 	Super::Activate();
 
-	UE_LOG(LogTemp, Error, TEXT("Called"));
+	UE_LOG(LogTagDrivenUITrace, Log, TEXT("Called"));
 
 	if (PopupRetainerBox)
 	{

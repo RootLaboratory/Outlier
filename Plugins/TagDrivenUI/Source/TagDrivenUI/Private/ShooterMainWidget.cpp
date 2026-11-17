@@ -1,4 +1,5 @@
 #include "ShooterMainWidget.h"
+#include "TagDrivenUILog.h"
 
 #include "AmmoUI.h"
 #include "CrossHairBase.h"
@@ -30,7 +31,7 @@ void UShooterMainWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	UE_LOG(LogTemp, Warning, TEXT("[ShooterHUD][Main] NativeConstruct Widget=%s Class=%s"),
+	UE_LOG(LogTagDrivenUITrace, Log, TEXT("[ShooterHUD][Main] NativeConstruct Widget=%s Class=%s"),
 		*GetNameSafe(this), *GetNameSafe(GetClass()));
 
 	CacheStatusBarWidgets();
@@ -65,7 +66,7 @@ void UShooterMainWidget::CacheStatusBarWidgets()
 	CurrentAbilityUI = ShooterStatusBarHUD->GetCurrentAbilityUI();
 	CurrentWeaponUI = ShooterStatusBarHUD->GetCurrentWeaponUI();
 
-	UE_LOG(LogTemp, Log,
+	UE_LOG(LogTagDrivenUITrace, Log,
 		TEXT("[ShooterHUD][Binding] Main=%s StatusBar=%s Ammo=%s Ability=%s Weapon=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(ShooterStatusBarHUD),
@@ -80,7 +81,7 @@ void UShooterMainWidget::ModuleInit()
 
 	Modules.Empty();
 	Modules.Reserve(7);
-	UE_LOG(LogTemp, Warning,
+	UE_LOG(LogTagDrivenUITrace, Log,
 		TEXT("[ShooterHUD][Module] Register Ammo=%s Ability=%s Weapon=%s"),
 		*GetNameSafe(AmmoUI), *GetNameSafe(CurrentAbilityUI), *GetNameSafe(CurrentWeaponUI));
 
@@ -170,7 +171,7 @@ void UShooterMainWidget::SetCrosshairSuitAcquired(bool bAcquired)
 void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 {
 	UEventDrivenUI* RegisteredWeaponModule = GetModule(TagDrivenUITags::Shooter::CurrentWeapon());
-	UE_LOG(LogTemp, Warning,
+	UE_LOG(LogTagDrivenUITrace, Log,
 		TEXT("[ShooterHUD][WeaponEvent] Requested Type=%s RegisteredModule=%s DirectPointer=%s"),
 		*StaticEnum<EWidgetWeaponType>()->GetNameStringByValue(static_cast<int64>(Type)),
 		*GetNameSafe(RegisteredWeaponModule),

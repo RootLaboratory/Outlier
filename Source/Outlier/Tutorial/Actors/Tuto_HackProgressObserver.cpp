@@ -1,4 +1,5 @@
 #include "Tutorial/Actors/Tuto_HackProgressObserver.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/BillboardComponent.h"
 #include "Engine/World.h"
@@ -30,7 +31,7 @@ void ATuto_HackProgressObserver::BeginPlay()
 	if (!HasAuthority() || !World || World->GetNetMode() == NM_Client) return;
 	if (AreAllSlotsFired())
 	{
-		UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s: every slot already fired in this game flow; destroyed on BeginPlay."), *GetName());
+		OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventTrigger] %s: every slot already fired in this game flow; destroyed on BeginPlay."), *GetName());
 		Destroy();
 		return;
 	}
@@ -49,7 +50,7 @@ void ATuto_HackProgressObserver::BeginPlay()
 		ObservedSources.Add(Source);
 	}
 	// 복원된 완료 Source는 여기서 세기만 한다. 수신 Pair를 정할 플레이어가 없으므로 다음 완료 때 도달한 slot이 함께 나간다.
-	UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s observing %d sources (%d already completed)."),
+	OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventTrigger] %s observing %d sources (%d already completed)."),
 		*GetName(), ObservedSources.Num(), GetCompletedSourceCount());
 }
 
@@ -96,7 +97,7 @@ bool ATuto_HackProgressObserver::AreAllSlotsFired() const
 void ATuto_HackProgressObserver::HandleSourceCompleted(AActor* Source, AOutlierPlayerState* SourcePlayerState)
 {
 	const int32 Completed = GetCompletedSourceCount();
-	UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s: '%s' completed (%d/%d)."),
+	OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventTrigger] %s: '%s' completed (%d/%d)."),
 		*GetName(), *GetNameSafe(Source), Completed, ObservedSources.Num());
 	for (int32 Slot = 0; Slot < CountTriggers.Num(); ++Slot)
 		if (GetEventTag(Slot).IsValid() && !IsSlotFired(Slot) && Completed >= GetRequiredCount(Slot))

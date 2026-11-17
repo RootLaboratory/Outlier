@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonCharacter.h"
+#include "Logging/OutlierLog.h"
 #include "Animation/AnimInstance.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Camera/CameraComponent.h"
@@ -196,7 +197,7 @@ void AFirstPersonCharacter::BeginPlay()
 		true
 	);
 
-	UE_LOG(
+	OUTLIER_LOG(Core,
 		LogTemp,
 		Log,
 		TEXT("%s %s FPBeginPlay FirstPersonMesh=%s MeshAnimClass=%s MeshAnimInstance=%s"),
@@ -362,7 +363,7 @@ void AFirstPersonCharacter::TryInteract()
 	AActor* TargetActor = FindInteractTargetByTrace(&NodeAimDirection);
 	if (!TargetActor)
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss"), OutlierNet::GetNetPrefix(this), *GetName());
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("%s %s TryInteract miss"), OutlierNet::GetNetPrefix(this), *GetName());
 
 		CancelLocalHoldInteract(true);
 
@@ -619,7 +620,7 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, i
 			InteractableComponent->CommitInteraction(this);
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerInteract success Target=%s"), *GetName(), *GetNameSafe(TargetActor));
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[Server] %s ServerInteract success Target=%s"), *GetName(), *GetNameSafe(TargetActor));
 		ClientOnInteractSucceeded(TargetActor, FlowResult, HoldAttemptId); //InteractObject UI Update;
 	}
 	else
@@ -744,7 +745,7 @@ FGameplayTag AFirstPersonCharacter::GetDefaultRoomTag() const
 
 void AFirstPersonCharacter::OnRep_CurrentWeapon()
 {
-	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));
 	CurrentWeaponType = CurrentWeapon ? CurrentWeapon->GetWeaponType() : EWeaponType::Unarmed;
 	LastReplicatedWeapon = CurrentWeapon;
 	OnWeaponChanged.Broadcast(CurrentWeaponType);
@@ -756,14 +757,14 @@ void AFirstPersonCharacter::OnRep_CurrentWeapon()
 
 void AFirstPersonCharacter::TryStartAttack()
 {
-	UE_LOG(LogTemp, Log, TEXT("FirstPerson"));
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("FirstPerson"));
 	if (!CurrentWeapon)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s %s TryStartAttack blocked: no weapon equipped"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack Weapon=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("%s %s TryStartAttack Weapon=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StartAttack();
 }
 
@@ -775,7 +776,7 @@ void AFirstPersonCharacter::TryStopAttack()
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack Weapon=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("%s %s TryStopAttack Weapon=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StopAttack();
 }
 
@@ -784,7 +785,7 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 	OutlierFirstPickup::FScope Scope(TEXT("EquipLifecycleAndDelegates"), Weapon);
 	if (CurrentWeapon == Weapon)
 	{
-		UE_LOG(
+		OUTLIER_LOG(Core,
 			LogTemp,
 			Log,
 			TEXT("%s %s EquipWeapon skipped: already equipped %s"),
@@ -795,7 +796,7 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 		return;
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Core,
 		LogTemp,
 		Log,
 		TEXT("%s %s EquipWeapon Previous=%s New=%s"),
@@ -830,7 +831,7 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 
 	
 }
@@ -893,7 +894,7 @@ bool AFirstPersonCharacter::AcquirePresentationProtection(UObject* ProtectionOwn
 	{
 		PresentationEnemyRooms->SetPresentationTargetProtected(this, true);
 	}
-	UE_LOG(LogTemp, Log, TEXT("[PresentationProtection] Acquire Pawn=%s Owner=%s Execution=%s Generation=%u Count=%d"),
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("[PresentationProtection] Acquire Pawn=%s Owner=%s Execution=%s Generation=%u Count=%d"),
 		*GetName(), *GetNameSafe(ProtectionOwner), *ExecutionId.ToString(), Generation, PresentationProtectionOwners.Num());
 	// 타깃 정리 delegate가 연출을 취소할 수도 있으므로 호출자에게 현재 소유권을 다시 확인해 준다.
 	const FPresentationProtectionOwner* Acquired = PresentationProtectionOwners.Find(ExecutionId);
@@ -907,7 +908,7 @@ void AFirstPersonCharacter::ReleasePresentationProtection(UObject* ProtectionOwn
 	if (!Existing || Existing->Owner.Get() != ProtectionOwner) return;
 	const uint32 Generation = Existing->Generation;
 	PresentationProtectionOwners.Remove(ExecutionId);
-	UE_LOG(LogTemp, Log, TEXT("[PresentationProtection] Release Pawn=%s Owner=%s Execution=%s Generation=%u Count=%d"),
+	OUTLIER_LOG(Core, LogTemp, Log, TEXT("[PresentationProtection] Release Pawn=%s Owner=%s Execution=%s Generation=%u Count=%d"),
 		*GetName(), *GetNameSafe(ProtectionOwner), *ExecutionId.ToString(), Generation, PresentationProtectionOwners.Num());
 	// 한 소유자가 여러 연출을 진행할 수 있으므로 마지막 실행을 놓을 때만 구독을 푼다.
 	bool bOwnerStillActive = false;
@@ -940,7 +941,7 @@ void AFirstPersonCharacter::ClearPresentationProtection(uint32 Generation)
 {
 	const bool bWasProtected = IsPresentationProtected();
 	if (bWasProtected)
-		UE_LOG(LogTemp, Log, TEXT("[PresentationProtection] Clear Pawn=%s Generation=%u Count=%d"),
+		OUTLIER_LOG(Core, LogTemp, Log, TEXT("[PresentationProtection] Clear Pawn=%s Generation=%u Count=%d"),
 			*GetName(), Generation, PresentationProtectionOwners.Num());
 	for (const auto& Entry : PresentationProtectionOwners)
 	{

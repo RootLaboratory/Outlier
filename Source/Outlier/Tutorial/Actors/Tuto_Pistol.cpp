@@ -1,4 +1,5 @@
 #include "Tutorial/Actors/Tuto_Pistol.h"
+#include "Logging/OutlierLog.h"
 
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Outlier.h"
@@ -25,7 +26,7 @@ void ATuto_Pistol::BeginPlay()
 	const TSubclassOf<AWeaponBase> Granted = GetGrantedWeaponClass();
 	if (Saves && Granted && Saves->IsCurrentWeaponOwned(Granted))
 	{
-		UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s removed on BeginPlay: '%s' is already owned."),
+		OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventTrigger] %s removed on BeginPlay: '%s' is already owned."),
 			*GetName(), *GetNameSafe(Granted.Get()));
 		Destroy();
 	}

@@ -1,4 +1,5 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
+#include "Logging/OutlierLog.h"
 
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
@@ -2032,7 +2033,7 @@ void UOutlierAbilitySystemComponent::HandleVitalityPresentationAttribute(const F
 	AActor* Source = GetAvatarActor() ? GetAvatarActor() : GetOwner();
 	if (bHealth && Source && Source->IsA<APartnerCharacter>())
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Ability, LogTemp, Display,
 			TEXT("[PartnerHP][Attribute] Actor=%s World=%s Attribute=%s Old=%.2f New=%.2f Depth=%d"),
 			*GetNameSafe(Source), *GetNameSafe(GetWorld()), *Data.Attribute.GetName(),
 			Data.OldValue, Data.NewValue, VitalityPresentationDepth);

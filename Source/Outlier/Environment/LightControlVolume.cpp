@@ -1,4 +1,5 @@
 #include "Environment/LightControlVolume.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/BrushComponent.h"
 #include "Components/LightComponent.h"
@@ -131,7 +132,7 @@ TArray<ULightComponent*> ALightControlVolume::GetCachedLights() const
 void ALightControlVolume::CacheLights()
 {
 	CollectLights(CachedLights);
-	UE_LOG(LogOutlier, Log, TEXT("[%s] Cached %d light(s)."), *GetName(), CachedLights.Num());
+	OUTLIER_LOG(World, LogOutlier, Log, TEXT("[%s] Cached %d light(s)."), *GetName(), CachedLights.Num());
 }
 
 void ALightControlVolume::RestoreOriginalLights()
@@ -214,7 +215,7 @@ void ALightControlVolume::PreviewApplyLights()
 		PreBeginPIEHandle = FEditorDelegates::PreBeginPIE.AddWeakLambda(this, [this](bool) { PreviewResetLights(); });
 	}
 	ApplyTargetToLights(PreviewLights);
-	UE_LOG(LogOutlier, Log, TEXT("[%s] Preview applied to %d light(s)."), *GetName(), PreviewLights.Num());
+	OUTLIER_LOG(World, LogOutlier, Log, TEXT("[%s] Preview applied to %d light(s)."), *GetName(), PreviewLights.Num());
 }
 
 void ALightControlVolume::PreviewResetLights()

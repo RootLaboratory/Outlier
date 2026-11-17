@@ -2,6 +2,7 @@
 
 
 #include "AnimNotify_ReloadCommit.h"
+#include "Logging/OutlierLog.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "OutlierNetUtils.h"
@@ -21,7 +22,7 @@ void UAnimNotify_ReloadCommit::Notify(USkeletalMeshComponent* MeshComp, UAnimSeq
 		return;
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Animation,
 		LogTemp,
 		Log,
 		TEXT("%s %s AnimNotify_ReloadCommit Mesh=%s Animation=%s"),

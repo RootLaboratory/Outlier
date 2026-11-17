@@ -2,6 +2,7 @@
 
 
 #include "OutlierGameInstance.h"
+#include "Logging/OutlierLog.h"
 #include "OutlierArenaSettings.h"
 #include "OutlierGameMode.h"
 #include "AbilitySystemGlobals.h"
@@ -212,7 +213,7 @@ void UOutlierGameInstance::NotifyListenReconnectToken(const FGuid& Token)
 	// Listen은 별도 Arena 월드가 아닌 스트리밍 인스턴스이므로 맵 이름 대신
 	// 새 서버 Controller의 이 RPC 수신을 재접속 성공 신호로 사용한다.
 	CompleteArenaReconnectAttempt();
-	UE_LOG(LogTemp, Display, TEXT("[ListenReconnect] Guest reconnect route is ready"));
+	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ListenReconnect] Guest reconnect route is ready"));
 }
 
 void UOutlierGameInstance::PrepareForExplicitLeave()
@@ -631,7 +632,7 @@ bool UOutlierGameInstance::HandleArenaReconnectTick(float DeltaTime)
 		return true;
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("[%s] Retrying connection"),
+	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[%s] Retrying connection"),
 		bWorkerReconnect ? TEXT("ArenaReconnect") : TEXT("ListenReconnect"));
 	bArenaReconnectTravelInFlight = true;
 	ArenaReconnectPreviousNetDriver = World->GetNetDriver();
@@ -662,7 +663,7 @@ void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
 			ArenaWorkerReadyStableFrames = 0;
 			ArenaWorkerBootstrapTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 				FTickerDelegate::CreateUObject(this, &UOutlierGameInstance::HandleArenaWorkerBootstrapTick));
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Core, LogTemp, Display,
 				TEXT("[ArenaWorker] Waiting for configured gameplay sublevels before Ready"));
 		}
 		return;
@@ -676,7 +677,7 @@ void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
 	// ServerDefaultMap으로 시작할 수 있으므로 Arena 할당 전에 최초 한 번만 설정된 맵으로 이동.
 	bArenaWorkerTravelRequested = true;
 	const FString ArenaPackageName = Settings->GetArenaPackageName();
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaWorker] Traveling to configured arena map %s"),
 		*ArenaPackageName);
 	LoadedWorld->ServerTravel(ArenaPackageName, true);
@@ -716,11 +717,11 @@ bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
 	ArenaWorkerBootstrapTickerHandle.Reset();
 	// 월드가 틱하는 동안 설정된 서브레벨의 표시를 끝낸 뒤 Pause한다.
 	ArenaGameMode->PauseArenaWorkerWorld();
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaWorker] Gameplay sublevels stable for %d frames; notifying Worker Ready"),
 		RequiredReadyStableFrames);
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaWorker] Ready on persistent arena map %s"),
 		Settings ? *Settings->GetArenaPackageName() : TEXT("None"));
 	if (UOutlierArenaProcessSubsystem* ProcessSubsystem =
@@ -769,7 +770,7 @@ bool UOutlierGameInstance::TravelToLobby(UWorld* World)
 		return false;
 	}
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Core, LogTemp, Display,
 		TEXT("[ArenaReturn] Traveling to Lobby %s"),
 		*LobbyAddress);
 	bArenaRecoveryExitRequested = true;

@@ -2,6 +2,7 @@
 
 
 #include "Network/OutlierMatchmakingSubsystem.h"
+#include "Logging/OutlierLog.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Network/OutlierArenaProcessSubsystem.h"
 #include "OutlierGameMode.h"
@@ -52,11 +53,11 @@ void UOutlierMatchmakingSubsystem::EnqueueForPairThenRolePick(AController* Contr
 {
 	if (!Controller)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Matchmaking] EnqueueForPairThenRolePick: Controller is NULL"));
+		OUTLIER_LOG(Network, LogTemp, Log, TEXT("[Matchmaking] EnqueueForPairThenRolePick: Controller is NULL"));
 		return;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] EnqueueForPairThenRolePick: %s added. WaitingPlayers before: %d"),
+	OUTLIER_LOG(Network, LogTemp, Log, TEXT("[Matchmaking] EnqueueForPairThenRolePick: %s added. WaitingPlayers before: %d"),
 		*Controller->GetName(), WaitingPlayers.Num());
 
 	Cancel(Controller);
@@ -72,7 +73,7 @@ void UOutlierMatchmakingSubsystem::EnqueueForPairThenRolePick(AController* Contr
 
 	WaitingPlayers.Add(Request);
 
-	UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] WaitingPlayers after enqueue: %d"), WaitingPlayers.Num());
+	OUTLIER_LOG(Network, LogTemp, Log, TEXT("[Matchmaking] WaitingPlayers after enqueue: %d"), WaitingPlayers.Num());
 
 	TryCreateMatch();
 }
@@ -580,7 +581,7 @@ void UOutlierMatchmakingSubsystem::TryCreateMatch()
 
 void UOutlierMatchmakingSubsystem::TryCreatePairThenRolePickMatch()
 {
-	UE_LOG(LogTemp, Verbose, TEXT("[Matchmaking] TryCreatePairThenRolePickMatch: WaitingPlayers=%d"), WaitingPlayers.Num());
+	OUTLIER_LOG(Network, LogTemp, Verbose, TEXT("[Matchmaking] TryCreatePairThenRolePickMatch: WaitingPlayers=%d"), WaitingPlayers.Num());
 
 	while (WaitingPlayers.Num() >= 2)
 	{
@@ -663,7 +664,7 @@ bool UOutlierMatchmakingSubsystem::CreatePendingRolePickMatch(
 
 	PendingRolePickMatches.Add(PendingMatch);
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Network, LogTemp, Display,
 		TEXT("[Matchmaking] Pending role pick created Id=%d Source=%s First=%s Second=%s"),
 		PendingMatch.PendingMatchId,
 		Source == EOutlierPendingMatchSource::PremadeParty
@@ -778,7 +779,7 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 		return false;
 	}
 
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(Network, LogTemp, Log,
 		TEXT("[Matchmaking] Assignment Match=%s Shooter=%s Partner=%s"),
 		*Assignment.MatchId.ToString(),
 		*Assignment.Shooter.PlayerId.ToString(),
@@ -814,7 +815,7 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 					ArenaSlotId,
 					SaveContext)))
 		{
-			UE_LOG(LogTemp, Verbose,
+			OUTLIER_LOG(Network, LogTemp, Verbose,
 				TEXT("[Matchmaking] Waiting for a Ready Arena Slot"));
 			return false;
 		}
@@ -869,7 +870,7 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 			Owner->ClientReceiveSaveCredentials(SaveContext.SaveId, NewResumeKey);
 		}
 
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Network, LogTemp, Display,
 			TEXT("[Matchmaking] Handoff Match=%s Slot=%d Address=%s"),
 			*Assignment.MatchId.ToString(),
 			ArenaSlotId,

@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TagDrivenUI.h"
+#include "TagDrivenUILog.h"
+
+DEFINE_LOG_CATEGORY(LogTagDrivenUITrace);
 
 
 #define LOCTEXT_NAMESPACE "FTagDrivenUIModule"

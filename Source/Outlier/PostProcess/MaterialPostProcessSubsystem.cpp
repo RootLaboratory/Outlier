@@ -2,6 +2,7 @@
 
 
 #include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "Logging/OutlierLog.h"
 #include "PostProcess/OutlierStencilSubsystem.h"
 
 #include "PostProcess/OutlierPostProcessVolume.h"
@@ -226,7 +227,7 @@ void UMaterialPostProcessSubsystem::ResetAllPostProcess(bool bRestoreAlwaysOnPos
 			ApplyAlwaysOnPostProcess();
 		}
 	}
-	UE_LOG(LogTemp, Log, TEXT("[PostProcessReset][Material] Volume=%s RestoreAlwaysOn=%d"),
+	OUTLIER_LOG(World, LogTemp, Log, TEXT("[PostProcessReset][Material] Volume=%s RestoreAlwaysOn=%d"),
 		*GetNameSafe(BoundPostProcessVolume), bRestoreAlwaysOnPostProcess);
 }
 
@@ -780,9 +781,9 @@ void UMaterialPostProcessSubsystem::StartMagneticPostProcess(FVector Origin, flo
 
 	const float StartTime = World->GetTimeSeconds();
 
-	UE_LOG(
+	OUTLIER_LOG(World,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[MagneticLens] 2/3 서브시스템 통과. Volume=%s HasMagneticMaterial=%s Origin=%s Radius=%.1f StartTime=%.2f EndTime=%.2f"),
 		*GetNameSafe(BoundPostProcessVolume),
 		BoundPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic)

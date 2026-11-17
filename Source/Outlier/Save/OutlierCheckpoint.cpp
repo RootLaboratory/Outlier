@@ -1,4 +1,5 @@
 #include "Save/OutlierCheckpoint.h"
+#include "Logging/OutlierLog.h"
 #include "Engine/GameInstance.h"
 #include "OutlierGameMode.h"
 #include "OutlierPlayerState.h"
@@ -53,7 +54,7 @@ void AOutlierCheckpoint::BeginPlay()
 			bCheckpointIdRegistered = SaveSubsystem->RegisterCheckpointId(CheckpointId, this);
 			bCheckpointCommitted = SaveSubsystem->HasCommittedCheckpoint(CheckpointId);
 		}
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Save, LogTemp, Display,
 			TEXT("[Checkpoint] Ready Id=%s Active=%d Registered=%d Committed=%d Actor=%s"),
 			*CheckpointId.ToString(), bActivationConditionSatisfied ? 1 : 0,
 			bCheckpointIdRegistered ? 1 : 0, bCheckpointCommitted ? 1 : 0,
@@ -110,7 +111,7 @@ bool AOutlierCheckpoint::SetActivationConditionSatisfied(
 	bPartnerPassed = false;
 	CommitController.Reset();
 	ForceNetUpdate();
-	UE_LOG(LogTemp, Display, TEXT("[Checkpoint] Activation Id=%s Active=%d Actor=%s"),
+	OUTLIER_LOG(Save, LogTemp, Display, TEXT("[Checkpoint] Activation Id=%s Active=%d Actor=%s"),
 		*CheckpointId.ToString(), bActivationConditionSatisfied ? 1 : 0, *GetNameSafe(this));
 	if (bActivationConditionSatisfied)
 	{
@@ -174,7 +175,7 @@ void AOutlierCheckpoint::ProcessTriggerOverlap(AActor* OtherActor, UPrimitiveCom
 		return;
 	}
 	AOutlierPlayerState* PlayerState = ResolvePairPlayerState(OtherActor);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Save, LogTemp, Display,
 		TEXT("[Checkpoint] Enter Id=%s Actor=%s Pawn=%s Pair=%d Active=%d Registered=%d Committed=%d ShooterPassed=%d PartnerPassed=%d"),
 		*CheckpointId.ToString(), *GetNameSafe(this), *GetNameSafe(OtherActor),
 		PlayerState ? PlayerState->GetPairId() : INDEX_NONE,
@@ -182,7 +183,7 @@ void AOutlierCheckpoint::ProcessTriggerOverlap(AActor* OtherActor, UPrimitiveCom
 		bCheckpointCommitted ? 1 : 0, bShooterPassed ? 1 : 0, bPartnerPassed ? 1 : 0);
 	if (!bActivationConditionSatisfied || bCheckpointCommitted)
 	{
-		UE_LOG(LogTemp, Display, TEXT("[Checkpoint] Entry ignored Id=%s Reason=%s"),
+		OUTLIER_LOG(Save, LogTemp, Display, TEXT("[Checkpoint] Entry ignored Id=%s Reason=%s"),
 			*CheckpointId.ToString(), bCheckpointCommitted ? TEXT("AlreadyCommitted") : TEXT("Inactive"));
 		return;
 	}
@@ -209,7 +210,7 @@ void AOutlierCheckpoint::ProcessTriggerOverlap(AActor* OtherActor, UPrimitiveCom
 			CommitController = Cast<AController>(PlayerState->GetOwner());
 		}
 	}
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Save, LogTemp, Display,
 		TEXT("[Checkpoint] Pass Id=%s Pair=%d ShooterPassed=%d PartnerPassed=%d"),
 		*CheckpointId.ToString(), OverlappingPairId,
 		bShooterPassed ? 1 : 0, bPartnerPassed ? 1 : 0);
@@ -280,7 +281,7 @@ bool AOutlierCheckpoint::TryCommit()
 	// GameMode가 디스크 기록을 마친 뒤에만 확정하고, 문 같은 관찰자에게 성공을 통지한다.
 	bCheckpointCommitted = true;
 	ForceNetUpdate();
-	UE_LOG(LogTemp, Display, TEXT("[Checkpoint] Committed Id=%s Pair=%d"),
+	OUTLIER_LOG(Save, LogTemp, Display, TEXT("[Checkpoint] Committed Id=%s Pair=%d"),
 		*CheckpointId.ToString(), OverlappingPairId);
 	OnCheckpointCommitted.Broadcast(this);
 	return true;

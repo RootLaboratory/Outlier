@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Shooter/ShooterInventoryComponent.h"
+#include "Logging/OutlierLog.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterCombatComponent.h"
 #include "Weapon/RangedWeaponBase.h"
@@ -170,7 +171,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
 		Log,
 		TEXT("%s HandleEquipWeapon Enter Weapon=%s Shooter=%s Authority=%d SlotNum=%d"),
@@ -193,7 +194,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 
 	if (!Weapon->CanBePickedUpBy(ShooterCharacter))
 	{
-		UE_LOG(
+		OUTLIER_LOG(Shooter,
 			LogTemp,
 			Log,
 			TEXT("%s HandleEquipWeapon blocked unavailable Weapon=%s"),
@@ -206,7 +207,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 	const EWeaponSlot Slot = GetSlotForWeaponType(Weapon->GetWeaponType());
 	const int32 SlotIndex = static_cast<int32>(Slot);
 
-	UE_LOG(
+	OUTLIER_LOG(Shooter,
 		LogTemp,
 		Log,
 		TEXT("%s HandleEquipWeapon Slot WeaponType=%d Slot=%d Valid=%d"),
@@ -226,7 +227,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 		&& ExistingWeapon->GetClass() == ShooterCharacter->DefaultMeleeWeaponClass.Get())
 	{
 		// 드롭과 장착 부수 효과 전에 거부한다. Interact가 방금 만든 사본만 정리하고 원본은 남긴다.
-		UE_LOG(LogTemp, Log, TEXT("[DefaultMelee] Replacement blocked Shooter=%s Weapon=%s"),
+		OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("[DefaultMelee] Replacement blocked Shooter=%s Weapon=%s"),
 			*GetNameSafe(ShooterCharacter), *GetNameSafe(Weapon));
 		return;
 	}
@@ -349,7 +350,7 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		PendingSwitchSlot = Slot;
 		bHasPendingWeaponSwitch = true;
 		PendingSwitchId = ShooterCharacter->BeginProceduralWeaponSwitch();
-		UE_LOG(LogTemp, Log, TEXT("%s [FPWeaponSwitch] Lower old=%s target=%s slot=%d"),
+		OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("%s [FPWeaponSwitch] Lower old=%s target=%s slot=%d"),
 			OutlierNet::GetNetPrefix(ShooterCharacter), *GetNameSafe(ShooterCharacter->CurrentWeapon),
 			*GetNameSafe(TargetWeapon), static_cast<int32>(Slot));
 		const float LowerDuration = FMath::IsFinite(ShooterCharacter->GetFirstPersonSwitchLowerDuration())
@@ -397,7 +398,7 @@ void UShooterInventoryComponent::FinishPendingWeaponSwitch(int32 SwitchId)
 	GetWorld()->GetTimerManager().ClearTimer(PendingSwitchTimerHandle);
 	PendingSwitchWeapon.Reset();
 	bHasPendingWeaponSwitch = false;
-	UE_LOG(LogTemp, Log, TEXT("%s [FPWeaponSwitch] Swap target=%s slot=%d"),
+	OUTLIER_LOG(Shooter, LogTemp, Log, TEXT("%s [FPWeaponSwitch] Swap target=%s slot=%d"),
 		OutlierNet::GetNetPrefix(ShooterCharacter), *GetNameSafe(TargetWeapon), static_cast<int32>(TargetSlot));
 	const EWeaponType PreviousWeaponType = ShooterCharacter->GetWeaponType();
 	ApplyWeaponToSlot(TargetWeapon, TargetSlot, /*bPlayEquipPresentation=*/false);

@@ -2,6 +2,7 @@
 
 
 #include "HPBarUI.h"
+#include "TagDrivenUILog.h"
 #include "GhostProgressBar.h"
 
 #include "Components/ProgressBar.h"
@@ -16,7 +17,7 @@ void UHPBarUI::NativeConstruct()
 	if (bDebugHPBarUI)
 	{
 		UE_LOG(
-			LogTemp,
+			LogTagDrivenUITrace,
 			Log,
 			TEXT("[HPBarUI] NativeConstruct Widget=%s HPBar=%s ShieldBar=%s PartnerShieldBar=%s Material=%s ColorParam=%s InitialRatios=(HP=%.3f Shield=%.3f PartnerShield=%.3f)"),
 			*GetNameSafe(this),
@@ -42,7 +43,7 @@ void UHPBarUI::NativeConstruct()
 	if (bDebugHPBarUI)
 	{
 		UE_LOG(
-			LogTemp,
+			LogTagDrivenUITrace,
 			Log,
 			TEXT("[HPBarUI] NativeConstruct complete Widget=%s StoredProgressBarMID=%s"),
 			*GetNameSafe(this),
@@ -71,7 +72,7 @@ void UHPBarUI::ShieldChanged_Implementation(float InShieldRatio)
 	CurrentShieldRatio = FMath::Clamp(InShieldRatio, 0.0f, 1.0f);
 	if (bDebugHPBarUI)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[HPBarUI] ShieldChanged Raw=%.3f Clamped=%.3f Bar=%s"), InShieldRatio, CurrentShieldRatio, *GetNameSafe(ShieldBar));
+		UE_LOG(LogTagDrivenUITrace, Log, TEXT("[HPBarUI] ShieldChanged Raw=%.3f Clamped=%.3f Bar=%s"), InShieldRatio, CurrentShieldRatio, *GetNameSafe(ShieldBar));
 	}
 	SetProgressBarRatio(ShieldBar, CurrentShieldRatio, bShieldUpdateImmediate);
 }
@@ -81,7 +82,7 @@ void UHPBarUI::HealthChanged_Implementation(float InHealthRatio)
 	CurrentHPRatio = FMath::Clamp(InHealthRatio, 0.0f, 1.0f);
 	if (bDebugHPBarUI)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[HPBarUI] HealthChanged Raw=%.3f Clamped=%.3f Bar=%s"), InHealthRatio, CurrentHPRatio, *GetNameSafe(HPBar));
+		UE_LOG(LogTagDrivenUITrace, Log, TEXT("[HPBarUI] HealthChanged Raw=%.3f Clamped=%.3f Bar=%s"), InHealthRatio, CurrentHPRatio, *GetNameSafe(HPBar));
 	}
 	SetProgressBarRatio(HPBar, CurrentHPRatio, bHealthUpdateImmediate);
 }
@@ -91,7 +92,7 @@ void UHPBarUI::PartnerShieldChanged_Implementation(float InPartnerShieldRatio)
 	CurrentPartnerShieldRatio = FMath::Clamp(InPartnerShieldRatio, 0.0f, 1.0f);
 	if (bDebugHPBarUI)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[HPBarUI] PartnerShieldChanged Raw=%.3f Clamped=%.3f Bar=%s"), InPartnerShieldRatio, CurrentPartnerShieldRatio, *GetNameSafe(PartnerShieldBar));
+		UE_LOG(LogTagDrivenUITrace, Log, TEXT("[HPBarUI] PartnerShieldChanged Raw=%.3f Clamped=%.3f Bar=%s"), InPartnerShieldRatio, CurrentPartnerShieldRatio, *GetNameSafe(PartnerShieldBar));
 	}
 	SetProgressBarRatio(PartnerShieldBar, CurrentPartnerShieldRatio);
 }
@@ -152,9 +153,6 @@ void UHPBarUI::InitializeProgressBarMaterial(
 		return;
 	}
 
-	const FProgressBarStyle BeforeStyle = ProgressBar->GetWidgetStyle();
-	const UObject* BeforeFillResource = BeforeStyle.FillImage.GetResourceObject();
-
 	if (!ProgressBarFillMaterial)
 	{
 		const FLinearColor LinearBarColor = FLinearColor::FromSRGBColor(BarColor);
@@ -168,7 +166,7 @@ void UHPBarUI::InitializeProgressBarMaterial(
 				*GetNameSafe(ProgressBar),
 				*BarColor.ToString(),
 				*LinearBarColor.ToString(),
-				*GetNameSafe(BeforeFillResource)
+				*GetNameSafe(ProgressBar->GetWidgetStyle().FillImage.GetResourceObject())
 			);
 		}
 		ProgressBar->SetFillColorAndOpacity(LinearBarColor);
@@ -189,6 +187,8 @@ void UHPBarUI::InitializeProgressBarMaterial(
 	OutMID->SetVectorParameterValue(FillColorParameterName, LinearBarColor);
 
 	FProgressBarStyle WidgetStyle = ProgressBar->GetWidgetStyle();
+	const UObject* BeforeFillResource = bDebugHPBarUI && UE_LOG_ACTIVE(LogTagDrivenUITrace, Log)
+		? WidgetStyle.FillImage.GetResourceObject() : nullptr;
 	FSlateBrush FillBrush = WidgetStyle.FillImage;
 	FillBrush.SetResourceObject(OutMID);
 	WidgetStyle.SetFillImage(FillBrush);
@@ -197,10 +197,8 @@ void UHPBarUI::InitializeProgressBarMaterial(
 
 	if (bDebugHPBarUI)
 	{
-		const FProgressBarStyle AfterStyle = ProgressBar->GetWidgetStyle();
-		const UObject* AfterFillResource = AfterStyle.FillImage.GetResourceObject();
 		UE_LOG(
-			LogTemp,
+			LogTagDrivenUITrace,
 			Log,
 			TEXT("[HPBarUI] InitMaterial success: %s Bar=%s Material=%s MID=%s SourceColor=%s LinearColor=%s BeforeFillResource=%s AfterFillResource=%s FillColorAndOpacity=%s"),
 			DebugName,
@@ -210,7 +208,7 @@ void UHPBarUI::InitializeProgressBarMaterial(
 			*BarColor.ToString(),
 			*LinearBarColor.ToString(),
 			*GetNameSafe(BeforeFillResource),
-			*GetNameSafe(AfterFillResource),
+			*GetNameSafe(ProgressBar->GetWidgetStyle().FillImage.GetResourceObject()),
 			*ProgressBar->GetFillColorAndOpacity().ToString()
 		);
 	}
@@ -241,7 +239,7 @@ void UHPBarUI::SetProgressBarRatio(UProgressBar* ProgressBar, float InRatio, boo
 
 	if (bDebugHPBarUI)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[HPBarUI] SetRatio Bar=%s Raw=%.3f Clamped=%.3f ActualPercent=%.3f"), *GetNameSafe(ProgressBar), InRatio, ClampedRatio, ProgressBar->GetPercent());
+		UE_LOG(LogTagDrivenUITrace, Log, TEXT("[HPBarUI] SetRatio Bar=%s Raw=%.3f Clamped=%.3f ActualPercent=%.3f"), *GetNameSafe(ProgressBar), InRatio, ClampedRatio, ProgressBar->GetPercent());
 	}
 }
 

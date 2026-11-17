@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "PartnerRightHudWidget.h"
+#include "TagDrivenUILog.h"
 
 #include "AbilitySlotUI.h"
 #include "InputAction.h"
@@ -19,7 +20,7 @@ void UPartnerRightHudWidget::NativeConstruct()
 	// 생성 전에 받은 상태(기본 해제)를 그대로 반영한다.
 	ApplyGrayout();
 
-	UE_LOG(LogTemp, Log,
+	UE_LOG(LogTagDrivenUITrace, Log,
 		TEXT("[PartnerHUD][Right] Construct Widget=%s Shield=%s Hacking=%s Scan=%s EMP=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(ShieldAbilitySlot),

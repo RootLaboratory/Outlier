@@ -1,4 +1,5 @@
 #include "Enemy/EnemyBase.h"
+#include "Logging/OutlierLog.h"
 
 #include "Event/OutlierEventSubsystem.h"
 #include "Audio/OutlierAudioFeedback.h"
@@ -659,7 +660,7 @@ bool AEnemyBase::BeginPoolLease(
 	SetPoolState(EEnemyPoolState::SpawnPresentation);
 	ForceNetUpdate();
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Enemy, LogTemp, Display,
 		TEXT("[Reinforcement] Enemy=%s Stage=Lease Generation=%d Lease=%d Room=%s Phase=%d Wave=%d"),
 		*GetNameSafe(this),
 		PoolGameplayGeneration,
@@ -768,7 +769,7 @@ void AEnemyBase::CompletePoolSpawnPresentation(
 
 	// 서버가 현재 대여의 연출 완료를 승인한 뒤에만 충돌/피해/StateTree를 활성화한다.
 	SetPoolState(EEnemyPoolState::CombatActive);
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Enemy, LogTemp, Display,
 		TEXT("[Reinforcement] Enemy=%s Stage=PresentationCompleted Generation=%d Lease=%d Room=%s Controller=%s StateTree=%s"),
 		*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
 		*GetDefaultRoomTag().ToString(), *GetNameSafe(GetController()),
@@ -841,7 +842,7 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 	// 생존 상태의 전투 이탈도 원래 위치에 파편을 남긴다. 사망 경로의 요청은 중복하지 않는다.
 	if (PoolState == EEnemyPoolState::CombatActive && !bDeathCleanupPerformed)
 	{
-		UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] PoolReturn Enemy=%s Collection=%s Generation=%d Lease=%d"),
+		OUTLIER_LOG(Enemy, LogOutlier, Display, TEXT("[DeathDebris] PoolReturn Enemy=%s Collection=%s Generation=%d Lease=%d"),
 			*GetName(), *GetNameSafe(DeathDebrisCollection), GameplayGeneration, LeaseSerial);
 		if (DeathDebrisCollection)
 		{
@@ -1020,7 +1021,7 @@ void AEnemyBase::ApplyAdaptationState(EEnemyAdaptationState NewState)
 		RefreshAdaptationShieldPresentation();
 		OnAdaptationStateChanged(PreviousState, AdaptationState);
 	}
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Presentation applied Enemy=%s PreviousState=%s CurrentState=%s PoolState=%s Generation=%d Lease=%d"),
@@ -1077,7 +1078,7 @@ void AEnemyBase::OnRep_AdaptationState(EEnemyAdaptationState PreviousState)
 {
 	RefreshAdaptationShieldPresentation();
 	OnAdaptationStateChanged(PreviousState, AdaptationState);
-	UE_LOG(
+	OUTLIER_LOG(Enemy,
 		LogOutlier,
 		Display,
 		TEXT("[EnemyAdaptation] Presentation replicated Enemy=%s PreviousState=%s CurrentState=%s PoolState=%s Generation=%d Lease=%d"),
@@ -1164,7 +1165,7 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 			{
 				StateTreeComponent->StartLogic();
 			}
-			UE_LOG(LogTemp, Display,
+			OUTLIER_LOG(Enemy, LogTemp, Display,
 				TEXT("[Reinforcement] Enemy=%s Stage=AIStartRequested Generation=%d Lease=%d Controller=%s CombatState=%s Shared=%d StateTree=%s"),
 				*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
 				*GetNameSafe(GetController()), *UEnum::GetValueAsString(CombatState),
@@ -1205,6 +1206,8 @@ void AEnemyBase::LogReinforcementStateTreeSnapshot()
 		return;
 	}
 
+	if (!OUTLIER_LOG_ACTIVE(Enemy, LogTemp, Display)) return;
+
 	const AEnemyAIController* EnemyController = Cast<AEnemyAIController>(GetController());
 	const FString ActiveStates = StateTreeComponent
 		? FString::JoinBy(StateTreeComponent->GetActiveStateNames(), TEXT(" > "),
@@ -1227,7 +1230,7 @@ void AEnemyBase::LogReinforcementStateTreeSnapshot()
 	const FString Snapshot = FString::Printf(
 		TEXT("%s LKP=%s"), *StateKey,
 		*LastKnownPlayerLocation.ToCompactString());
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Enemy, LogTemp, Display,
 		TEXT("[Reinforcement] Enemy=%s Stage=StateTreeSnapshot Generation=%d Lease=%d Phase=%d Wave=%d %s"),
 		*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
 		PoolCombatPhaseIndex, PoolWaveIndex, *Snapshot);
@@ -1475,9 +1478,9 @@ void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 	static const FName CombatEnteredEventName(TEXT("Enemy.Event.Combat.Entered"));
 	const bool bReinforcementCombatEvent = IsPoolManaged()
 		&& Tag.GetTagName() == CombatEnteredEventName;
-	const bool bPossessionDiagnosticEvent = Tag.ToString().StartsWith(
+	const bool bPossessionDiagnosticEvent = IsPossessedAttackDiagnosticsEnabled() && Tag.ToString().StartsWith(
 		TEXT("Enemy.Event.Possession"));
-	const bool bAttackDiagnosticEvent = Tag.ToString().StartsWith(
+	const bool bAttackDiagnosticEvent = IsPossessedAttackDiagnosticsEnabled() && Tag.ToString().StartsWith(
 		TEXT("Enemy.Event.Attack"));
 	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent
 		|| StateTreeComponent->GetStateTreeRunStatus() != EStateTreeRunStatus::Running
@@ -1511,7 +1514,7 @@ void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 	StateTreeComponent->SendStateTreeEvent(Tag);
 	if (bReinforcementCombatEvent)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Enemy, LogTemp, Display,
 			TEXT("[Reinforcement] Enemy=%s Stage=CombatEventSent Generation=%d Lease=%d StateTree=%s Controller=%s"),
 			*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
 			*UEnum::GetValueAsString(StateTreeComponent->GetStateTreeRunStatus()),
@@ -5545,7 +5548,7 @@ bool AEnemyBase::TrySelectReturnHomeDestination(FVector& OutDestination)
 			bReturnHomeRecoveryExhausted = true;
 			bReturnHomeGuarding = true;
 			++ReturnHomeRequestSerial;
-			UE_LOG(LogOutlier, Display, TEXT("[ReturnHome] SafeWait Enemy=%s Requests=%d RecoverySeconds=%.2f Generation=%d Lease=%d"),
+			OUTLIER_LOG(Enemy, LogOutlier, Display, TEXT("[ReturnHome] SafeWait Enemy=%s Requests=%d RecoverySeconds=%.2f Generation=%d Lease=%d"),
 				*GetName(), ReturnHomeRequests, ReturnHomeRecoveryElapsed + Waiting, ReturnHomeGeneration, ReturnHomeLease);
 		}
 		return false;
@@ -5614,7 +5617,7 @@ bool AEnemyBase::TrySelectReturnHomeDestination(FVector& OutDestination)
 			bReturnHomeGuarding = true;
 			bReturnHomeRecoveryExhausted = true;
 			ReturnHomeWaitingSince = -1.0;
-			UE_LOG(LogOutlier, Display, TEXT("[ReturnHome] Guard Reason=NoSafeFallback Enemy=%s Requests=%d CandidateChecks=%d"),
+			OUTLIER_LOG(Enemy, LogOutlier, Display, TEXT("[ReturnHome] Guard Reason=NoSafeFallback Enemy=%s Requests=%d CandidateChecks=%d"),
 				*GetName(), ReturnHomeRequests, ReturnHomeCandidateChecks);
 			return false;
 		}
@@ -5865,13 +5868,14 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		if (const UEnemyAdaptationSubsystem* AdaptationSubsystem =
 			GetEnemyAdaptationSubsystem())
 		{
-			AdaptationStackBeforeDamage =
-				AdaptationSubsystem->GetCurrentGunAdaptationStack();
+			AdaptationStackBeforeDamage = OUTLIER_LOG_ACTIVE(Enemy, LogOutlier, Display)
+				? AdaptationSubsystem->GetCurrentGunAdaptationStack() : 0;
 			AdaptationMultiplier = AdaptationSubsystem->GetCurrentGunDamageMultiplier();
 		}
 	}
 
-	const float PreviousHealth = GetCurrentHealth();
+	const float PreviousHealth = bAdaptationGunDamage && OUTLIER_LOG_ACTIVE(Enemy, LogOutlier, Display)
+		? GetCurrentHealth() : 0.0f;
 	const bool bDeveloperInvincible = OutlierDamage::IsDeveloperInvincible(this);
 	if (bDeveloperInvincible && Request.bHasDamageOrigin)
 	{
@@ -5922,7 +5926,7 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	const float AppliedDamage = bDamageApplied ? FinalDamage : 0.0f;
 	if (bAdaptationGunDamage)
 	{
-		UE_LOG(
+		OUTLIER_LOG(Enemy,
 			LogOutlier,
 			Display,
 			TEXT("[EnemyAdaptation] Gun damage applied Enemy=%s Stack=%d RawDamage=%.2f HitMultiplier=%.3f AdaptationMultiplier=%.3f FinalDamage=%.2f Applied=%s HP=%.2f->%.2f"),
@@ -6005,9 +6009,9 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	}
 	if (bCoreWeakPointHit)
 	{
-		UE_LOG(
+		OUTLIER_LOG(Enemy,
 			LogOutlier,
-			Warning,
+			Log,
 			TEXT("[EnemyWeakPoint] Type=Core Actor=%s Component=%s RawDamage=%.2f Multiplier=%.2f AppliedDamage=%.2f HP=%.2f->%.2f"),
 			*GetNameSafe(this),
 			*GetNameSafe(CoreHitboxComponent),
@@ -8585,7 +8589,7 @@ void AEnemyBase::RemoveRoomTargetObserver()
 void AEnemyBase::HandleDeath()
 {
 	ResetReturnHomeRecovery();
-	UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Death Enemy=%s Collection=%s Generation=%d Lease=%d"),
+	OUTLIER_LOG(Enemy, LogOutlier, Display, TEXT("[DeathDebris] Death Enemy=%s Collection=%s Generation=%d Lease=%d"),
 		*GetName(), *GetNameSafe(DeathDebrisCollection), GetCombatGameplayGeneration(), PoolLeaseSerial);
 	// 파편 컬렉션이 지정된 적만 연출을 탄다. 없으면 기존 사망 동작 그대로다.
 	// Super 가 아래에서 SetLifeSpan 으로 파괴를 예약하므로 그 전에 브로드캐스트해야
@@ -8650,7 +8654,7 @@ void AEnemyBase::MulticastPlayDeathDebris_Implementation(
 	UOutlierArenaSubsystem* Arena = GetWorld() ? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
 	if (!Arena || !Arena->IsDeathDebrisGenerationCurrent(GameplayGeneration))
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[DeathDebris] Reject stale request Enemy=%s Generation=%u Current=%u"),
+		OUTLIER_LOG(Enemy, LogOutlier, Verbose, TEXT("[DeathDebris] Reject stale request Enemy=%s Generation=%u Current=%u"),
 			*GetName(), GameplayGeneration, Arena ? Arena->GetGameplayGeneration() : 0);
 		return;
 	}
@@ -8689,12 +8693,12 @@ void AEnemyBase::MulticastPlayDeathDebris_Implementation(
 		{
 			Source->HideSourceMeshes();
 		}
-		UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Spawn Source=%s Generation=%u Lease=%d Success=%d Collection=%s Location=%s"),
+		OUTLIER_LOG(Enemy, LogOutlier, Display, TEXT("[DeathDebris] Spawn Source=%s Generation=%u Lease=%d Success=%d Collection=%s Location=%s"),
 			*GetNameSafe(Source), GameplayGeneration, LeaseSerial, Debris != nullptr,
 			*GetNameSafe(Collection.Get()), *SourceTransform.GetLocation().ToCompactString());
 	};
 	const float Delay = FMath::Max(DeathDebrisDelay, 0.0f);
-	UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Requested Enemy=%s PoolState=%s Generation=%d Lease=%d Delay=%.3f Collection=%s Location=%s"),
+	OUTLIER_LOG(Enemy, LogOutlier, Display, TEXT("[DeathDebris] Requested Enemy=%s PoolState=%s Generation=%d Lease=%d Delay=%.3f Collection=%s Location=%s"),
 		*GetName(), *UEnum::GetValueAsString(PoolState), int32(GameplayGeneration), LeaseSerial, Delay,
 		*GetNameSafe(DeathDebrisCollection), *SourceTransform.GetLocation().ToCompactString());
 	if (Delay > KINDA_SMALL_NUMBER)

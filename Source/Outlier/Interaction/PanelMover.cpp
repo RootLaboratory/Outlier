@@ -1,4 +1,5 @@
 #include "Interaction/PanelMover.h"
+#include "Logging/OutlierLog.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/CapsuleComponent.h"
@@ -644,7 +645,7 @@ void APanelMover::PublishMotion(bool bMoving, bool bNewPaused)
 	++ReplicatedMotion.Revision;
 	if (bStateChanged)
 	{
-		UE_LOG(LogTemp, Display,
+		OUTLIER_LOG(Interaction, LogTemp, Display,
 			TEXT("[PanelMover] Panel=%s Revision=%u Moving=%d Paused=%d Location=%s Elapsed=%.3f Reason=%s"),
 			*GetPathName(), ReplicatedMotion.Revision, bMoving, bPaused,
 			*GetActorLocation().ToCompactString(), MoveElapsed,

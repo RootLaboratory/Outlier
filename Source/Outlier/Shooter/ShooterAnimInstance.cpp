@@ -2,6 +2,7 @@
 
 
 #include "Shooter/ShooterAnimInstance.h"
+#include "Logging/OutlierLog.h"
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -58,7 +59,7 @@ void UShooterAnimInstance::NativeInitializeAnimation()
 
 	if (USkeletalMeshComponent* OwningMesh = GetOwningComponent())
 	{
-		UE_LOG(
+		OUTLIER_LOG(Animation,
 			LogTemp,
 			Log,
 			TEXT("%s [TPAnim] Init AnimClass=%s Mesh=%s Owner=%s WeaponType=%d"),

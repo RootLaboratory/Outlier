@@ -1,4 +1,5 @@
 #include "Tutorial/Actors/Tuto_CombatObserver.h"
+#include "Logging/OutlierLog.h"
 
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Components/BillboardComponent.h"
@@ -149,7 +150,7 @@ void ATuto_CombatObserver::BeginPlay()
 	// 체크포인트 이후 리로드로 다시 생성됐지만 맡은 이벤트가 모두 이미 나갔으면 더 관찰할 것이 없다.
 	if (AreAllSlotsFired())
 	{
-		UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s: every slot already fired in this game flow; destroyed on BeginPlay."), *GetName());
+		OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventTrigger] %s: every slot already fired in this game flow; destroyed on BeginPlay."), *GetName());
 		Destroy();
 		return;
 	}
@@ -398,7 +399,7 @@ AOutlierPlayerState* ATuto_CombatObserver::FindPlayerInRoom() const
 	// 이 PS는 수신 Pair를 정할 뿐이고 Arena 워커에는 한 Pair만 있으므로, Pair가 정해진 아무 플레이어로 대체한다.
 	if (AnyPaired)
 	{
-		UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s found no player inside room '%s'; using paired player %s."),
+		OUTLIER_LOG(World, LogOutlier, Log, TEXT("[EventTrigger] %s found no player inside room '%s'; using paired player %s."),
 			*GetName(), *RoomTag.ToString(), *GetNameSafe(AnyPaired));
 		return AnyPaired;
 	}

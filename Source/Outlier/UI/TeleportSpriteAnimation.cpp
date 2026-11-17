@@ -1,4 +1,5 @@
 #include "UI/TeleportSpriteAnimation.h"
+#include "Logging/OutlierLog.h"
 
 #include "Components/Image.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -24,9 +25,9 @@ void UTeleportSpriteAnimation::NativeConstruct()
 		TeleportTexture->SetBrushFromMaterial(AnimationMaterial);
 		AnimationMaterialInstance = TeleportTexture->GetDynamicMaterial();
 
-	UE_LOG(
+	OUTLIER_LOG(UI,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[TeleportSprite] Construct Widget=%s Image=%s Material=%s MID=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(TeleportTexture),
@@ -60,9 +61,9 @@ void UTeleportSpriteAnimation::NativeTick(const FGeometry& MyGeometry, float InD
 	if (!bHasLoggedPlaybackTick)
 	{
 		bHasLoggedPlaybackTick = true;
-		UE_LOG(
+		OUTLIER_LOG(UI,
 			LogTemp,
-			Warning,
+			Log,
 			TEXT("[TeleportSprite] First update Widget=%s Time=%.3f EffectiveMultiplier=%.3f"),
 			*GetNameSafe(this),
 			AnimationPhase,
@@ -83,9 +84,9 @@ void UTeleportSpriteAnimation::StartTeleportAnimation(float InLayerTimeMultiplie
 		AnimationMaterialInstance->SetScalarParameterValue(SpeedParameterName, EffectiveTimeMultiplier);
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(UI,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[TeleportSprite] Start Widget=%s LayerMultiplier=%.3f EffectiveMultiplier=%.3f MID=%s"),
 		*GetNameSafe(this),
 		InLayerTimeMultiplier,

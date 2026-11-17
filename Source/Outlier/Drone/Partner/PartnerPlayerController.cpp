@@ -1,4 +1,5 @@
 #include "Drone/Partner/PartnerPlayerController.h"
+#include "Logging/OutlierLog.h"
 #include "InputKeyEventArgs.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
@@ -521,7 +522,7 @@ void APartnerPlayerController::HandleHackPossessionTransitionFinished()
 		return;
 	}
 
-	UE_LOG(LogTemp, Warning,
+	OUTLIER_LOG(Partner, LogTemp, Log,
 		TEXT("[PartnerPossession] Transition finished Target=%s"),
 		*GetNameSafe(CompletedTarget));
 

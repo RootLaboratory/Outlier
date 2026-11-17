@@ -1,4 +1,5 @@
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "Logging/OutlierLog.h"
 
 #include "Enemy/AutoTurret.h"
 #include "Components/CapsuleComponent.h"
@@ -166,7 +167,7 @@ AEnemyBase* UEnemyPoolSubsystem::CreatePoolEnemy(FEnemyPoolBucket& Bucket)
 	}
 	Bucket.IdleEnemies.Add(Enemy);
 
-	UE_LOG(LogTemp, Display,
+	OUTLIER_LOG(Enemy, LogTemp, Display,
 		TEXT("[EnemyPool] Created Enemy=%s Class=%s Total=%d Max=%d"),
 		*GetNameSafe(Enemy),
 		*GetNameSafe(Bucket.EnemyClass),

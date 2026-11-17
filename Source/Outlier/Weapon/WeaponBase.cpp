@@ -2,6 +2,7 @@
 
 
 #include "Weapon/WeaponBase.h"
+#include "Logging/OutlierLog.h"
 #include "Outlier.h"
 #include "CollisionQueryParams.h"
 #include "Drone/Partner/PartnerShieldSphere.h"
@@ -280,7 +281,7 @@ void AWeaponBase::RefreshProceduralPresentation()
 		const bool bSuit = Shooter->GetAppliedPresentation() == EShooterPresentation::Suit;
 		if (!(bSuit ? SuitProceduralValues : PreSuitProceduralValues))
 		{
-			UE_LOG(LogTemp, Log, TEXT("[Procedural] Weapon=%s State=%s uses common fallback=%s"),
+			OUTLIER_LOG(Weapon, LogTemp, Log, TEXT("[Procedural] Weapon=%s State=%s uses common fallback=%s"),
 				*GetName(), bSuit ? TEXT("Suit") : TEXT("PreSuit"), *GetNameSafe(FirstPersonProceduralValues));
 		}
 	}
@@ -725,7 +726,7 @@ void AWeaponBase::StartAttack()
 	}
 
 	bIsAttacking = true;
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(WeaponOwner));
+	OUTLIER_LOG(Weapon, LogTemp, Log, TEXT("%s [%s] StartAttack Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(WeaponOwner));
 }
 
 void AWeaponBase::StopAttack()
@@ -788,7 +789,7 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 		ShadowWeaponMesh->SetCastHiddenShadow(false);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
+	OUTLIER_LOG(Weapon, LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
 	ForceNetUpdate();
 }
 
@@ -836,9 +837,9 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 					PartnerAttachRules);
 			}
 
-			UE_LOG(
+			OUTLIER_LOG(Weapon,
 				LogTemp,
-				Warning,
+				Log,
 				TEXT("[PartnerWeaponAttach][FP] Weapon=%s Mesh=%s StableRoot=%s ReferenceMesh=%s Socket=%s Exists=%d"),
 				*GetNameSafe(Weapon),
 				*GetNameSafe(Weapon->GetFirstPersonWeaponMesh()),
@@ -855,9 +856,9 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 				PartnerAttachRules,
 				ThirdPersonSocketName);
 
-			UE_LOG(
+			OUTLIER_LOG(Weapon,
 				LogTemp,
-				Warning,
+				Log,
 				TEXT("[PartnerWeaponAttach][TP] Weapon=%s Mesh=%s Parent=%s Socket=%s Exists=%d"),
 				*GetNameSafe(Weapon),
 				*GetNameSafe(Weapon->GetThirdPersonWeaponMesh()),
@@ -887,60 +888,66 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 
 	if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
 	{
-		const bool bHasFirstPersonSocket = FirstPersonParent->DoesSocketExist(FirstPersonSocketName);
 		Weapon->GetFirstPersonWeaponMesh()->AttachToComponent(
 			FirstPersonParent,
 			WeaponAttachRules,
 			FirstPersonSocketName
 		);
 
-		const FTransform FirstPersonSocketTransform =
-			FirstPersonParent->GetSocketTransform(FirstPersonSocketName, RTS_Component);
-		const FTransform FirstPersonWeaponRelativeTransform =
-			Weapon->GetFirstPersonWeaponMesh()->GetRelativeTransform();
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[WeaponAttach][FP] Weapon=%s Type=%d Parent=%s Socket=%s Exists=%d SocketLoc=%s SocketRot=%s WeaponRelLoc=%s WeaponRelRot=%s"),
-			*GetNameSafe(Weapon),
-			static_cast<int32>(EquippedWeaponType),
-			*GetNameSafe(FirstPersonParent),
-			*FirstPersonSocketName.ToString(),
-			bHasFirstPersonSocket ? 1 : 0,
-			*FirstPersonSocketTransform.GetLocation().ToCompactString(),
-			*FirstPersonSocketTransform.Rotator().ToCompactString(),
-			*FirstPersonWeaponRelativeTransform.GetLocation().ToCompactString(),
-			*FirstPersonWeaponRelativeTransform.Rotator().ToCompactString()
-		);
+		if (OUTLIER_LOG_ACTIVE(Weapon, LogTemp, Log))
+		{
+			const bool bHasFirstPersonSocket = FirstPersonParent->DoesSocketExist(FirstPersonSocketName);
+			const FTransform FirstPersonSocketTransform =
+				FirstPersonParent->GetSocketTransform(FirstPersonSocketName, RTS_Component);
+			const FTransform FirstPersonWeaponRelativeTransform =
+				Weapon->GetFirstPersonWeaponMesh()->GetRelativeTransform();
+			OUTLIER_LOG(Weapon,
+				LogTemp,
+				Log,
+				TEXT("[WeaponAttach][FP] Weapon=%s Type=%d Parent=%s Socket=%s Exists=%d SocketLoc=%s SocketRot=%s WeaponRelLoc=%s WeaponRelRot=%s"),
+				*GetNameSafe(Weapon),
+				static_cast<int32>(EquippedWeaponType),
+				*GetNameSafe(FirstPersonParent),
+				*FirstPersonSocketName.ToString(),
+				bHasFirstPersonSocket ? 1 : 0,
+				*FirstPersonSocketTransform.GetLocation().ToCompactString(),
+				*FirstPersonSocketTransform.Rotator().ToCompactString(),
+				*FirstPersonWeaponRelativeTransform.GetLocation().ToCompactString(),
+				*FirstPersonWeaponRelativeTransform.Rotator().ToCompactString()
+			);
+		}
 	}
 
 	if (USkeletalMeshComponent* ThirdPersonParent = Shooter->GetMesh())
 	{
-		const bool bHasThirdPersonSocket = ThirdPersonParent->DoesSocketExist(ThirdPersonSocketName);
 		Weapon->GetThirdPersonWeaponMesh()->AttachToComponent(
 			ThirdPersonParent,
 			WeaponAttachRules,
 			ThirdPersonSocketName
 		);
 
-		const FTransform ThirdPersonSocketTransform =
-			ThirdPersonParent->GetSocketTransform(ThirdPersonSocketName, RTS_Component);
-		const FTransform ThirdPersonWeaponRelativeTransform =
-			Weapon->GetThirdPersonWeaponMesh()->GetRelativeTransform();
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[WeaponAttach][TP] Weapon=%s Type=%d Parent=%s Socket=%s Exists=%d SocketLoc=%s SocketRot=%s WeaponRelLoc=%s WeaponRelRot=%s"),
-			*GetNameSafe(Weapon),
-			static_cast<int32>(EquippedWeaponType),
-			*GetNameSafe(ThirdPersonParent),
-			*ThirdPersonSocketName.ToString(),
-			bHasThirdPersonSocket ? 1 : 0,
-			*ThirdPersonSocketTransform.GetLocation().ToCompactString(),
-			*ThirdPersonSocketTransform.Rotator().ToCompactString(),
-			*ThirdPersonWeaponRelativeTransform.GetLocation().ToCompactString(),
-			*ThirdPersonWeaponRelativeTransform.Rotator().ToCompactString()
-		);
+		if (OUTLIER_LOG_ACTIVE(Weapon, LogTemp, Log))
+		{
+			const bool bHasThirdPersonSocket = ThirdPersonParent->DoesSocketExist(ThirdPersonSocketName);
+			const FTransform ThirdPersonSocketTransform =
+				ThirdPersonParent->GetSocketTransform(ThirdPersonSocketName, RTS_Component);
+			const FTransform ThirdPersonWeaponRelativeTransform =
+				Weapon->GetThirdPersonWeaponMesh()->GetRelativeTransform();
+			OUTLIER_LOG(Weapon,
+				LogTemp,
+				Log,
+				TEXT("[WeaponAttach][TP] Weapon=%s Type=%d Parent=%s Socket=%s Exists=%d SocketLoc=%s SocketRot=%s WeaponRelLoc=%s WeaponRelRot=%s"),
+				*GetNameSafe(Weapon),
+				static_cast<int32>(EquippedWeaponType),
+				*GetNameSafe(ThirdPersonParent),
+				*ThirdPersonSocketName.ToString(),
+				bHasThirdPersonSocket ? 1 : 0,
+				*ThirdPersonSocketTransform.GetLocation().ToCompactString(),
+				*ThirdPersonSocketTransform.Rotator().ToCompactString(),
+				*ThirdPersonWeaponRelativeTransform.GetLocation().ToCompactString(),
+				*ThirdPersonWeaponRelativeTransform.Rotator().ToCompactString()
+			);
+		}
 	}
 
 	if (USkeletalMeshComponent* ShadowParent = Shooter->GetShadowMesh())
@@ -953,9 +960,9 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 		Weapon->RefreshShadowWeaponPresentation();
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Weapon,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[WeaponAttach] FP Socket=%s TP Socket=%s FPParent=%s TPParent=%s"),
 		*FirstPersonSocketName.ToString(),
 		*ThirdPersonSocketName.ToString(),
@@ -972,9 +979,9 @@ void AWeaponBase::AttachWeaponMeshesToOwnerMeshes()
 		return;
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(Weapon,
 		LogTemp,
-		Warning,
+		Log,
 		TEXT("[WeaponAttach] Weapon=%s Owner=%s FP=%s TP=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(CharacterOwner),
@@ -1004,7 +1011,7 @@ void AWeaponBase::OnUnequipped()
 	// 늦게(혹은 안) 도착하면 그 클라에서는 무기가 손에 든 상태로 남는다.
 	ForceNetUpdate();
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), OutlierNet::GetNetPrefix(this), *GetName());
+	OUTLIER_LOG(Weapon, LogTemp, Log, TEXT("%s [%s] OnUnequipped"), OutlierNet::GetNetPrefix(this), *GetName());
 }
 
 void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy)
@@ -1048,7 +1055,7 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 	SetPickupPresentation();
 	SetOwner(nullptr);
 
-	UE_LOG(
+	OUTLIER_LOG(Weapon,
 		LogTemp,
 		Log,
 		TEXT("%s [%s] OnDropped BlockedInteractor=%s Until=%.2f"),
@@ -1070,7 +1077,7 @@ bool AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 
 	if (!CanBePickedUpBy(Interactor))
 	{
-		UE_LOG(
+		OUTLIER_LOG(Weapon,
 			LogTemp,
 			Log,
 			TEXT("%s [%s] Interact blocked Owner=%s Equipped=%d Interactor=%s"),
@@ -1082,7 +1089,7 @@ bool AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 		return false;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
+	OUTLIER_LOG(Weapon, LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 
 	// 이 액터를 그대로 넘기지 않는다. 배치 액터의 ULevel 소속은 런타임에 옮길 수 없어
 	// Gameplay 서브레벨 리로드 때 장착한 무기까지 사라질 수 있다.
