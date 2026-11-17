@@ -136,7 +136,8 @@ struct OUTLIER_API FWeaponValues
 	float ThirdPersonRecoilRecoverySpeed = 18.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ThirdPerson|WallOffset")
-	FVector ThirdPersonWallWeaponHandLoc = FVector(-18.0f, 0.0f, -4.0f);
+	// Hip 밀착 포즈의 손 위치 여유(cm, Component Space). +Y는 전방, 0은 보정 없음.
+	FVector ThirdPersonWallWeaponHandLoc = FVector::ZeroVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ThirdPerson|WallOffset")
 	FRotator ThirdPersonWallWeaponHandRot = FRotator(-10.0f, 0.0f, 0.0f);
