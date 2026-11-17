@@ -758,30 +758,20 @@ void UShooterAnimInstance::UpdateThirdPersonWallOffset(float DeltaSeconds, AWeap
 	ThirdPersonWallVeryCloseAlpha = InterpWall(ThirdPersonWallVeryCloseAlpha, TargetWallVeryCloseAlpha);
 	ThirdPersonWallHardStopAlpha = InterpWall(ThirdPersonWallHardStopAlpha, TargetWallHardStopAlpha);
 
-	// ── 8. 손 당김 출력 ──────────────────────────────────────────────────
-	// 회피 포즈가 이미 벽을 처리 중이면 기본 당김은 억제한다.
-	// 근접 단계는 최후의 뚫림 방지로 항상 살아 있다
+	// ── 8. 손 회전 출력 ──────────────────────────────────────────────────
+	// 회피 포즈가 이미 벽을 처리 중이면 기본 회전 보정은 억제한다.
 	const float PoseSuppress = 1.0f - FMath::Clamp(
 		FMath::Max(ThirdPersonWallAvoidUpPoseAlpha, ThirdPersonWallAvoidDownPoseAlpha) * ThirdPersonWallPoseSuppressScale,
 		0.0f,
 		1.0f
 	);
-	// 단계별 당김을 1인칭 뷰모델처럼 합산해서, 벽이 가까워질수록 총 당김
-	// 예산이 늘어나게 한다 (한 단계 크기로 캡되지 않도록)
 	const float BaseWallAlpha =
 		FMath::Max(ThirdPersonWallOffsetAlpha, ThirdPersonWallMuzzleBlockAlpha) * PoseSuppress;
 	const float WallMultiplier = FMath::Max(WeaponValues ? WeaponValues->ThirdPersonWallOffsetMultiplier : 1.0f, 0.0f);
 	const FVector WallWeaponHandLoc = WeaponValues ? WeaponValues->ThirdPersonWallWeaponHandLoc : ThirdPersonWallWeaponHandLoc;
 	const FRotator WallWeaponHandRot = WeaponValues ? WeaponValues->ThirdPersonWallWeaponHandRot : ThirdPersonWallWeaponHandRot;
-	// 튜닝값 해석: X = 조준 축 뒤 방향 당김(음수), Z = 아래. 당김이 무기 축과
-	// 어긋난 옆방향으로 가면 곧바로 "팔 늘어남"으로 보이므로, 수평화한 조준
-	// 방향으로 월드에서 만들고 조준이 벽을 정면으로 볼수록 세게(평행/반대면 0,
-	// 포즈만 남음) 페이드한 뒤 ModifyBone용 컴포넌트 공간으로 변환한다
-	const FVector PullSum =
-		(WallWeaponHandLoc * BaseWallAlpha +
-		 ThirdPersonWallVeryCloseHandLoc * ThirdPersonWallVeryCloseAlpha +
-		 ThirdPersonWallHardStopHandLoc * ThirdPersonWallHardStopAlpha) * WallMultiplier;
-	ThirdPersonWallOffsetLoc = FVector::ZeroVector;
+	// 위치는 아래에서 밀착 포즈의 여유만 보정한다. 단계별 추가 당김을
+	// 합산하면 이미 접힌 팔을 몸 안으로 다시 밀게 된다.
 	float WallFacingAlpha = 0.0f;
 	if (CachedShooterCharacter)
 	{
@@ -792,12 +782,6 @@ void UShooterAnimInstance::UpdateThirdPersonWallOffset(float DeltaSeconds, AWeap
 			WallFacingAlpha = ThirdPersonWallPullDirWorld.IsNearlyZero()
 				? 1.0f
 				: FMath::Clamp(-(FlatAim | ThirdPersonWallPullDirWorld), 0.0f, 1.0f);
-			const FVector WorldPull =
-				(FlatAim * PullSum.X + FVector(0.0f, 0.0f, PullSum.Z)) * WallFacingAlpha;
-			if (const USkeletalMeshComponent* OwnerComp = GetOwningComponent())
-			{
-				ThirdPersonWallOffsetLoc = OwnerComp->GetComponentTransform().InverseTransformVector(WorldPull);
-			}
 		}
 	}
 	ThirdPersonWallOffsetRot = ScaleRotator(
@@ -811,6 +795,9 @@ void UShooterAnimInstance::UpdateThirdPersonWallOffset(float DeltaSeconds, AWeap
 	const float WallPoseADSBlend = FMath::Clamp(ThirdPersonADSAlpha, 0.0f, 1.0f);
 	ThirdPersonWallTightAlpha = ThirdPersonWallHardStopAlpha * (1.0f - WallPoseADSBlend);
 	ThirdPersonWallTightADSAlpha = ThirdPersonWallHardStopAlpha * WallPoseADSBlend;
+	// DA의 cm 값을 Component Space 그대로 사용한다 (+Y = 캐릭터 전방).
+	// 0이면 위치 보정 없음. ADS/비밀착에서는 기존 Hip 보정처럼 해제한다.
+	ThirdPersonWallOffsetLoc = WallWeaponHandLoc * ThirdPersonWallTightAlpha;
 	ThirdPersonWallAvoidUpHipPoseAlpha = ThirdPersonWallAvoidUpPoseAlpha * (1.0f - WallPoseADSBlend);
 	ThirdPersonWallAvoidUpADSPoseAlpha = ThirdPersonWallAvoidUpPoseAlpha * WallPoseADSBlend;
 	ThirdPersonWallAvoidDownHipPoseAlpha = ThirdPersonWallAvoidDownPoseAlpha * (1.0f - WallPoseADSBlend);
