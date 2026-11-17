@@ -411,10 +411,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Wall Offset", meta = (ClampMin = "0.0"))
 	float ThirdPersonWallBlendOutSpeed = 10.0f;
 
-	// 기본 손 당김 튜닝값 (WeaponValues가 있으면 그쪽 값이 우선).
-	// X = 조준 반대 방향 당김(음수), Z = 아래 방향. Y는 사용 안 함
+	// Hip 밀착 손 위치 여유(cm, Component Space). WeaponValues가 우선.
+	// +Y는 캐릭터 전방이며 (0,0,0)은 위치 보정 없음.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Wall Offset")
-	FVector ThirdPersonWallWeaponHandLoc = FVector(-18.0f, 0.0f, -4.0f);
+	FVector ThirdPersonWallWeaponHandLoc = FVector::ZeroVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Wall Offset")
 	FRotator ThirdPersonWallWeaponHandRot = FRotator(-10.0f, 0.0f, 0.0f);
