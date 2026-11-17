@@ -44,7 +44,7 @@ protected:
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Checkpoint")
 	bool bInitiallyActive = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Checkpoint",
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Checkpoint",
 		meta = (DisplayName = "Require Both Players", ToolTip = "Require both Shooter and Partner in the same pair to pass this checkpoint. When disabled, either player can trigger it. They do not need to overlap simultaneously."))
 	bool bRequireBothPlayers = false;
 
