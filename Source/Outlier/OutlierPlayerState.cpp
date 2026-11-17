@@ -15,6 +15,8 @@
 #include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 
 namespace
 {
@@ -850,6 +852,22 @@ void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 
 	// 리슨 호스트는 자기 값 변경에 OnRep 이 오지 않으므로 여기서 직접 투영한다.
 	OnRep_AcquiredSuit();
+	// 슈터 자신의 획득 전환에서만 변경한다. Partner 플래그 갱신으로 재충전하지 않는다.
+	if (AShooterCharacter* Shooter = GetShooterCharacter(); Shooter && Shooter->GetPlayerState() == this)
+	{
+		if (UOutlierAbilitySystemComponent* ASC = Shooter->GetOutlierAbilitySystemComponent())
+		{
+			ASC->BeginVitalityPresentation(EOutlierVitalityUpdatePolicy::Immediate);
+			ASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(),
+				Acquire ? Shooter->GetMaxShield() : 0.0f);
+			if (!Acquire)
+			{
+				ASC->ApplyPartnerShieldDeltaToSelf(-Shooter->GetCurPartnerShield(), -Shooter->GetMaxPartnerShield(),
+					EOutlierVitalityUpdatePolicy::Immediate);
+			}
+			ASC->EndVitalityPresentation();
+		}
+	}
 	ForceNetUpdate();
 }
 

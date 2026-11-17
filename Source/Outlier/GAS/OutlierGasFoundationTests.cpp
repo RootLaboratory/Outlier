@@ -39,6 +39,7 @@
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterHealthComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "UObject/UnrealType.h"
 
@@ -925,14 +926,23 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Pre-suit fixture restores health before first shot"), AbilitySystem->RestoreHealthToMax());
 	TestEqual(TEXT("One non-lethal pre-suit shot is accepted"),
 		ApplyDamageRequest(Partner, 1.0f, RangedDamage, nullptr, Partner), 1.0f);
-	TestEqual(TEXT("Pre-suit GameOver does not require Partner health depletion"),
+	TestEqual(TEXT("Non-lethal pre-suit shot reduces Partner health"),
 		Partner->GetVitalAttributeSet()->GetHealth(), 99.0f);
-	TestTrue(TEXT("One pre-suit shot enters the existing paired Shooter death path"), Shooter->IsDead());
+	TestFalse(TEXT("Non-lethal pre-suit shot does not kill its Shooter"), Shooter->IsDead());
 	TestFalse(TEXT("Pre-suit shot does not start Reboot"), VitalityComponent->IsRebooting());
+	TestEqual(TEXT("Repeated pre-suit shots accumulate ordinary damage"),
+		ApplyDamageRequest(Partner, 49.0f, RangedDamage, nullptr, Partner), 49.0f);
+	TestEqual(TEXT("Second pre-suit shot leaves remaining HP"), Partner->GetVitalAttributeSet()->GetHealth(), 50.0f);
+	TestFalse(TEXT("Second non-lethal shot still keeps its Shooter alive"), Shooter->IsDead());
+	TestEqual(TEXT("Final pre-suit shot exhausts remaining HP"),
+		ApplyDamageRequest(Partner, 50.0f, RangedDamage, nullptr, Partner), 50.0f);
+	TestEqual(TEXT("Pre-suit lethal shot leaves zero HP"), Partner->GetVitalAttributeSet()->GetHealth(), 0.0f);
+	TestTrue(TEXT("Only depleted pre-suit HP enters paired death"), Shooter->IsDead());
+	TestFalse(TEXT("Pre-suit HP depletion does not start Reboot"), VitalityComponent->IsRebooting());
 	TestEqual(TEXT("Repeated pre-suit shot is rejected after paired death"),
 		ApplyDamageRequest(Partner, 1.0f, RangedDamage, nullptr, Partner), 0.0f);
 	TestEqual(TEXT("Repeated pre-suit shot does not apply more Partner damage"),
-		Partner->GetVitalAttributeSet()->GetHealth(), 99.0f);
+		Partner->GetVitalAttributeSet()->GetHealth(), 0.0f);
 	TestEqual(TEXT("Repeated pre-suit shot does not duplicate the Shooter Dead effect"),
 		ShooterASC->GetGameplayTagCount(OutlierGameplayTags::State::Dead()), 1);
 
@@ -941,6 +951,7 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 	DeadTags.AddTag(OutlierGameplayTags::State::Dead());
 	ShooterASC->RemoveActiveEffectsWithGrantedTags(DeadTags);
 	TestFalse(TEXT("Lethal-shot fixture clears the preceding Shooter death"), Shooter->IsDead());
+	TestTrue(TEXT("Lethal-shot fixture restores Partner HP"), AbilitySystem->RestoreHealthToMax());
 	TestEqual(TEXT("Lethal pre-suit shot is accepted"),
 		ApplyDamageRequest(Partner, 200.0f, RangedDamage, nullptr, Partner), 200.0f);
 	TestEqual(TEXT("Lethal pre-suit shot exhausts Partner health"), Partner->GetVitalAttributeSet()->GetHealth(), 0.0f);
@@ -952,8 +963,8 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 	MeleeDamage.DamageTag = OutlierGameplayTags::Damage::Melee();
 	TestEqual(TEXT("Later non-ranged lethal damage still applies"),
 		ApplyDamageRequest(Partner, 100.0f, MeleeDamage, nullptr, Partner), 100.0f);
-	TestTrue(TEXT("Shot-scoped suppression does not leak into later Reboot"), VitalityComponent->IsRebooting());
-	TestFalse(TEXT("Non-ranged lethal damage does not use pre-suit GameOver"), Shooter->IsDead());
+	TestFalse(TEXT("Pre-suit melee HP depletion also suppresses Reboot"), VitalityComponent->IsRebooting());
+	TestTrue(TEXT("Pre-suit melee HP depletion enters paired GameOver"), Shooter->IsDead());
 
 	Controller->UnPossess();
 	Controller->Destroy(true);
@@ -1561,6 +1572,9 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 	if (TestTrue(TEXT("Restoration produces presentation data"), !PresentationUpdates.IsEmpty()))
 		TestEqual(TEXT("Restoration uses immediate presentation"), PresentationUpdates.Last().Policy, EOutlierVitalityUpdatePolicy::Immediate);
 
+	AOutlierPlayerState* AcquiredSuitState = World->SpawnActor<AOutlierPlayerState>();
+	Shooter->SetPlayerState(AcquiredSuitState);
+	AcquiredSuitState->SetAcquiredSuit(true);
 	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 100.0f);
 	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 100.0f);
 	PresentationUpdates.Reset();
@@ -1961,21 +1975,70 @@ bool FOutlierGasShooterDamageFlowTest::RunTest(const FString& Parameters)
 	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
 	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
 	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 5.0f);
-	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 5.0f);
-	TestTrue(
-		TEXT("Partner shield grant applies through a GameplayEffect"),
-		AbilitySystem->ApplyPartnerShieldDeltaToSelf(20.0f, 20.0f));
-	TestTrue(
-		TEXT("Shield recovery GameplayEffect applies"),
-		AbilitySystem->ApplyShieldRecoveryToSelf(20.0f));
+	TestEqual(TEXT("Shooter starts without base shield before suit"), Shooter->GetCurShield(), 0.0f);
+	TestEqual(TEXT("Shooter starts without Partner shield before suit"), Shooter->GetCurPartnerShield(), 0.0f);
+
+	AOutlierPlayerState* SuitState = World->SpawnActor<AOutlierPlayerState>();
+	Shooter->SetPlayerState(SuitState);
+	SuitState->SetShooterCharacter(Shooter);
+	SuitState->SetAcquiredSuit(false);
+	UShooterHealthComponent* Recovery = Shooter->FindComponentByClass<UShooterHealthComponent>();
+	Recovery->DelayShieldRecovery(0.0f);
+	static_cast<UActorComponent*>(Recovery)->TickComponent(2.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Natural recovery does not create pre-suit shield"), Shooter->GetCurShield(), 0.0f);
+	FActorSpawnParameters EnemySpawn;
+	EnemySpawn.bDeferConstruction = true;
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(AEnemyBase::StaticClass(), FTransform::Identity, EnemySpawn);
+	FOutlierDamageRequest EnemyDamage;
+	EnemyDamage.DamageTag = OutlierGameplayTags::Damage::Ranged();
+	EnemyDamage.DamageCauser = Enemy;
+	EnemyDamage.DamageAmount = 30.0f;
+	TestTrue(TEXT("Pre-suit regression uses an Enemy damage source"), OutlierDamage::IsFromEnemy(EnemyDamage));
+	TestEqual(TEXT("Pre-suit Enemy hit keeps its raw damage"), OutlierDamage::Apply(Shooter, EnemyDamage), 30.0f);
+	TestEqual(TEXT("Pre-suit Enemy hit directly reduces HP"), Shooter->GetCurHealth(), 70.0f);
+	TestEqual(TEXT("HP-only hit records no shield absorption"), Shooter->GetVitalAttributeSet()->GetLastShieldDamage(), 0.0f);
+	TestFalse(TEXT("Pre-suit non-lethal Enemy hit does not kill"), Shooter->IsDead());
+	TestEqual(TEXT("Pre-suit hit keeps Partner shield at zero"), Shooter->GetCurPartnerShield(), 0.0f);
+	TestEqual(TEXT("Pre-suit hit keeps base shield at zero"), Shooter->GetCurShield(), 0.0f);
+	TestTrue(TEXT("Direct GAS damage uses the same ordinary damage flow"),
+		AbilitySystem->ApplyDamageToSelf(10.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Explosion()));
+	TestEqual(TEXT("Pre-suit damage accumulates on HP"), Shooter->GetCurHealth(), 60.0f);
+	TestEqual(TEXT("Direct GAS hit leaves Partner shield at zero"), Shooter->GetCurPartnerShield(), 0.0f);
+	TestEqual(TEXT("Direct GAS hit leaves base shield at zero"), Shooter->GetCurShield(), 0.0f);
+	const FActiveGameplayEffectHandle Immunity = AbilitySystem->ApplyDamageImmuneStateToSelf();
+	TestEqual(TEXT("Pre-suit immunity rejects Enemy damage"), OutlierDamage::Apply(Shooter, EnemyDamage), 0.0f);
+	TestEqual(TEXT("Rejected pre-suit damage preserves HP"), Shooter->GetCurHealth(), 60.0f);
+	AbilitySystem->RemoveActiveEffectFromSelf(Immunity);
+	SuitState->SetAcquiredSuit(true);
+	TestEqual(TEXT("Acquiring suit fills the current maximum shield"), Shooter->GetCurShield(), Shooter->GetMaxShield());
+	TestEqual(TEXT("Acquiring suit does not change HP"), Shooter->GetCurHealth(), 60.0f);
+	AbilitySystem->ApplyShieldDeltaToSelf(-2.0f);
+	SuitState->SetAcquiredSuit(true);
+	TestEqual(TEXT("Repeated acquired state does not refill damaged shield"), Shooter->GetCurShield(), 3.0f);
+	AOutlierPlayerState* PartnerSuitState = World->SpawnActor<AOutlierPlayerState>();
+	PartnerSuitState->SetShooterCharacter(Shooter);
+	PartnerSuitState->SetAcquiredSuit(true);
+	TestEqual(TEXT("Partner suit flag does not refill Shooter shield twice"), Shooter->GetCurShield(), 3.0f);
+	TestTrue(TEXT("Post-suit shield recovery GameplayEffect applies"), AbilitySystem->ApplyShieldRecoveryToSelf(20.0f));
 	TestEqual(TEXT("Shield recovery cannot exceed MaxShield"), Shooter->GetCurShield(), 5.0f);
-	TestTrue(
-		TEXT("Partner shield decay GameplayEffect applies"),
+	TestTrue(TEXT("Partner shield grant applies through a GameplayEffect"),
+		AbilitySystem->ApplyPartnerShieldDeltaToSelf(20.0f, 20.0f));
+	TestTrue(TEXT("Partner shield decay GameplayEffect applies"),
 		AbilitySystem->ApplyPartnerShieldDeltaToSelf(-25.0f, 0.0f));
 	TestEqual(TEXT("Partner shield cannot decay below zero"), Shooter->GetCurPartnerShield(), 0.0f);
-	TestTrue(
-		TEXT("Partner shield can be restored after the underflow clamp"),
+	TestTrue(TEXT("Partner shield can be restored after the underflow clamp"),
 		AbilitySystem->ApplyPartnerShieldDeltaToSelf(20.0f, 0.0f));
+	TestTrue(TEXT("Damage-flow fixture restores HP for post-suit damage"), AbilitySystem->RestoreHealthToMax());
+	TestTrue(TEXT("Partner-only shield hit applies"),
+		AbilitySystem->ApplyDamageToSelf(20.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
+	TestEqual(TEXT("Depleted Partner shield still records its absorption"), Shooter->GetVitalAttributeSet()->GetLastShieldDamage(), 20.0f);
+	TestEqual(TEXT("Partner-only shield hit does not damage HP"), Shooter->GetVitalAttributeSet()->GetLastHealthDamage(), 0.0f);
+	TestTrue(TEXT("Final base shield hit applies"),
+		AbilitySystem->ApplyDamageToSelf(5.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
+	TestEqual(TEXT("Base shield reaches zero"), Shooter->GetCurShield(), 0.0f);
+	TestEqual(TEXT("Depleted base shield still records its absorption"), Shooter->GetVitalAttributeSet()->GetLastShieldDamage(), 5.0f);
+	AbilitySystem->ApplyShieldRecoveryToSelf(5.0f);
+	AbilitySystem->ApplyPartnerShieldDeltaToSelf(20.0f, 0.0f);
 
 	TestTrue(
 		TEXT("Damage GameplayEffect applies on authority"),
@@ -1983,14 +2046,37 @@ bool FOutlierGasShooterDamageFlowTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Partner shield absorbs first"), Shooter->GetCurPartnerShield(), 0.0f);
 	TestEqual(TEXT("Personal shield absorbs second"), Shooter->GetCurShield(), 0.0f);
 	TestEqual(TEXT("Remaining damage reaches health"), Shooter->GetCurHealth(), 95.0f);
+	TestEqual(TEXT("Mixed hit records both shield pools"), Shooter->GetVitalAttributeSet()->GetLastShieldDamage(), 25.0f);
 
 	TestTrue(
 		TEXT("Lethal damage GameplayEffect applies"),
 		AbilitySystem->ApplyDamageToSelf(95.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Explosion()));
 	TestEqual(TEXT("Lethal damage clamps health to zero"), Shooter->GetCurHealth(), 0.0f);
+	TestEqual(TEXT("Following HP-only hit clears previous shield absorption"), Shooter->GetVitalAttributeSet()->GetLastShieldDamage(), 0.0f);
 	TestTrue(
 		TEXT("Health depletion grants the authoritative dead tag"),
 		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
+
+	FGameplayTagContainer DeadTags;
+	DeadTags.AddTag(OutlierGameplayTags::State::Dead());
+	AbilitySystem->RemoveActiveEffectsWithGrantedTags(DeadTags);
+	AbilitySystem->RestoreHealthToMax();
+	SuitState->SetAcquiredSuit(false);
+	EnemyDamage.DamageAmount = 100.0f;
+	TestEqual(TEXT("Lethal pre-suit Enemy hit uses raw damage"), OutlierDamage::Apply(Shooter, EnemyDamage), 100.0f);
+	TestEqual(TEXT("Pre-suit HP depletion reaches zero"), Shooter->GetCurHealth(), 0.0f);
+	TestTrue(TEXT("Pre-suit HP depletion grants death"), Shooter->IsDead());
+	TestEqual(TEXT("Lethal pre-suit hit leaves base shield at zero"), Shooter->GetCurShield(), 0.0f);
+	TestEqual(TEXT("Lethal pre-suit hit leaves Partner shield at zero"), Shooter->GetCurPartnerShield(), 0.0f);
+
+	AbilitySystem->RemoveActiveEffectsWithGrantedTags(DeadTags);
+	AbilitySystem->RestoreHealthToMax();
+	TestTrue(TEXT("Explicit environmental instant kill still applies before suit"),
+		AbilitySystem->ApplyDamageToSelf(1.0f, nullptr, Shooter, OutlierDamage::InstantKillTag()));
+	TestEqual(TEXT("Environmental instant kill depletes HP"), Shooter->GetCurHealth(), 0.0f);
+	TestEqual(TEXT("Environmental instant kill depletes base shield"), Shooter->GetCurShield(), 0.0f);
+	TestEqual(TEXT("Environmental instant kill depletes Partner shield"), Shooter->GetCurPartnerShield(), 0.0f);
+	Enemy->Destroy(true);
 
 	Shooter->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);

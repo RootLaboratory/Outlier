@@ -5,6 +5,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Actor.h"
 #include "Outlier.h"
+#include "Logging/OutlierLog.h"
 #include "Team/OutlierTeamIds.h"
 #include "NativeGameplayTags.h"
 #include "Engine/World.h"
@@ -124,9 +125,10 @@ float OutlierDamage::Apply(AActor* TargetActor, const FOutlierDamageRequest& Req
 		return Receiver->ReceiveOutlierDamage(Request);
 	}
 
-	UE_LOG(
+	OUTLIER_LOG(
+		Weapon,
 		LogOutlier,
-		Warning,
+		Log,
 		TEXT("[Damage] Rejected damage for actor without IOutlierDamageReceiver. Target=%s Damage=%.2f Tag=%s"),
 		*GetNameSafe(TargetActor),
 		Request.DamageAmount,

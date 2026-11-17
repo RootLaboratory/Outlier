@@ -295,8 +295,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	const TWeakObjectPtr<AShooterCharacter> ShooterAtHit = CachedShooterCharacter.Get();
 	const bool bTriggerPairGameOver = ShooterAtHit.IsValid()
 		&& (Request.DamageTag == OutlierDamage::InstantKillTag()
-			|| (PartnerState && !PartnerState->IsPairSuitAcquired()
-				&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Ranged())));
+			|| (PartnerState && !PartnerState->IsPairSuitAcquired()));
 	if (bTriggerPairGameOver && ShooterAtHit->IsDead())
 	{
 		return 0.0f;
@@ -305,7 +304,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		? OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute()) : 0.0f;
 	bool bApplied = false;
 	{
-		// 치명 피해의 체력 콜백은 GAS 적용 안에서 즉시 호출된다. 환경 즉사와 슈트 전 사격은 Reboot 대신 GameOver로 이어진다.
+		// 슈트 전 HP 소진과 환경 즉사는 Reboot 대신 GameOver로 이어진다. 비치명 피해는 HP만 감소한다.
 		TGuardValue<bool> RebootGuard(PartnerVitalityComponent->bSuppressRebootForDamage, bTriggerPairGameOver);
 		bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
 			Request.DamageAmount,
@@ -336,10 +335,11 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.02.State.Hit"));
 		// Partner 는 실드 없이 Health 로 바로 들어가지만, 같은 AttributeSet 기록을 그대로 쓴다.
 		const UOutlierVitalAttributeSet* VitalSet = OutlierAbilitySystemComponent->GetSet<UOutlierVitalAttributeSet>();
-		ClientShowDamageFeedback(Request.DamageOrigin, VitalSet ? VitalSet->GetLastHealthDamage() : 0.0f);
+		ClientShowDamageFeedback(Request.DamageOrigin, VitalSet ? VitalSet->GetLastHealthDamage() : 0.0f,
+			VitalSet ? VitalSet->GetLastShieldDamage() : 0.0f);
 	}
 
-	if (bApplied && bTriggerPairGameOver && ShooterAtHit.IsValid()
+	if (bApplied && bTriggerPairGameOver && GetVitalAttributeSet()->GetHealth() <= 0.0f && ShooterAtHit.IsValid()
 		&& CachedShooterCharacter == ShooterAtHit.Get())
 	{
 		// 피해 콜백 중 교체된 페어에는 사망을 전달하지 않고, 피격 당시 Shooter의 기존 경로만 사용한다.

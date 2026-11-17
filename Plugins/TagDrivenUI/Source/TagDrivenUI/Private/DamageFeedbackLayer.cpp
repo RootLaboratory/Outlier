@@ -163,7 +163,7 @@ void UDamageFeedbackLayer::ApplyShieldUVScale()
 	ShieldMaskRetainer->RequestRender();
 }
 
-void UDamageFeedbackLayer::ShowDamageFeedback(AActor* InCharacter, const FVector& InDamageOrigin, const float HealthDamage)
+void UDamageFeedbackLayer::ShowDamageFeedback(AActor* InCharacter, const FVector& InDamageOrigin, const float HealthDamage, const float ShieldDamage)
 {
 	if (!IsValid(InCharacter))
 	{
@@ -180,7 +180,7 @@ void UDamageFeedbackLayer::ShowDamageFeedback(AActor* InCharacter, const FVector
 	{
 		bShown |= ShowFromPool(RedPool, InCharacter, InDamageOrigin);
 	}
-	if (bShowShieldFeedback)
+	if (bShowShieldFeedback && ShieldDamage > 0.0f)
 	{
 		bShown |= ShowFromPool(ShieldPool, InCharacter, InDamageOrigin);
 	}

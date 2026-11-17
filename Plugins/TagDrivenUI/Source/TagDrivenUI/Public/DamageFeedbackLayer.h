@@ -28,7 +28,7 @@ class TAGDRIVENUI_API UDamageFeedbackLayer : public UUserWidget
 public:
 	// HealthDamage: 실드를 넘어 Health 에 실제로 들어간 피해량. 0 이면 방향 인디케이터만 띄운다.
 	UFUNCTION(BlueprintCallable, Category = "Damage Feedback")
-	void ShowDamageFeedback(AActor* InCharacter, const FVector& InDamageOrigin, float HealthDamage = 0.0f);
+	void ShowDamageFeedback(AActor* InCharacter, const FVector& InDamageOrigin, float HealthDamage = 0.0f, float ShieldDamage = 0.0f);
 
 	UFUNCTION(BlueprintCallable, Category = "Damage Feedback")
 	void ClearDamageFeedback();

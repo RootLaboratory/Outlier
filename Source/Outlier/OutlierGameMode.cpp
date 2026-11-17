@@ -586,7 +586,8 @@ EDeveloperConvenienceRequestResult AOutlierGameMode::RequestDeveloperConvenience
 	const float MissingShield = ShooterASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetMaxShieldAttribute())
 		- ShooterASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetShieldAttribute());
 	// 기본 실드만 채운다. Partner 추가 실드의 수치·최대치·효과 수명에는 접근하지 않는다.
-	if (MissingShield > 0.0f && !ShooterASC->ApplyShieldDeltaToSelf(MissingShield, EOutlierVitalityUpdatePolicy::Immediate))
+	if (Shooter->HasAcquiredSuit() && MissingShield > 0.0f
+		&& !ShooterASC->ApplyShieldDeltaToSelf(MissingShield, EOutlierVitalityUpdatePolicy::Immediate))
 	{
 		return EDeveloperConvenienceRequestResult::TargetUnavailable;
 	}
@@ -2437,6 +2438,10 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		ShooterSpawn,
 		PawnSpawnParams
 	);
+	if (Shooter)
+	{
+		Shooter->ArmReloadShieldFillOnPossess();
+	}
 
 	APartnerCharacter* Partner = GetWorld()->SpawnActor<APartnerCharacter>(
 		PartnerClass,
@@ -3914,6 +3919,7 @@ bool AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	}
 
 	// 체크포인트 리스폰 지점의 바닥은 Arena 지형 레벨에 유지된다.
+	NewShooter->ArmReloadShieldFillOnPossess();
 
 	if (AController* ShooterController = GetControllerFromPlayerState(ShooterPlayerState))
 	{

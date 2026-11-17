@@ -38,6 +38,8 @@ public:
 	// 서버 전용. 마지막 IncomingDamage 처리에서 실드를 거친 뒤 Health 에 실제로 들어간 피해량.
 	// IncomingDamage 실행마다 0 으로 초기화되므로, 호출자는 ApplyDamageToSelf 성공 직후 읽는다. 복제하지 않는다.
 	float GetLastHealthDamage() const { return LastHealthDamage; }
+	// 같은 피해 처리에서 PartnerShield와 기본 Shield가 흡수한 합. 잔여 실드와 독립적이다.
+	float GetLastShieldDamage() const { return LastShieldDamage; }
 
 protected:
 	UFUNCTION()
@@ -48,4 +50,5 @@ protected:
 
 private:
 	float LastHealthDamage = 0.0f;
+	float LastShieldDamage = 0.0f;
 };

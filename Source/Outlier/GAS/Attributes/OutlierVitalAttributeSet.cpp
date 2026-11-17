@@ -23,6 +23,7 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 	}
 
 	LastHealthDamage = 0.0f;
+	LastShieldDamage = 0.0f;
 	const float Damage = FMath::Max(GetIncomingDamage(), 0.0f);
 	SetIncomingDamage(0.0f);
 	if (Damage <= 0.0f)
@@ -51,6 +52,7 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 			: FMath::Min(ShieldSet->GetPartnerShield(), RemainingDamage);
 		if (PartnerAbsorption > 0.0f)
 		{
+			LastShieldDamage += PartnerAbsorption;
 			AbilitySystem->SetNumericAttributeBase(
 				UOutlierShieldAttributeSet::GetPartnerShieldAttribute(),
 				ShieldSet->GetPartnerShield() - PartnerAbsorption);
@@ -61,6 +63,7 @@ void UOutlierVitalAttributeSet::PostGameplayEffectExecute(
 			: FMath::Min(ShieldSet->GetShield(), RemainingDamage);
 		if (ShieldAbsorption > 0.0f)
 		{
+			LastShieldDamage += ShieldAbsorption;
 			AbilitySystem->SetNumericAttributeBase(
 				UOutlierShieldAttributeSet::GetShieldAttribute(),
 				ShieldSet->GetShield() - ShieldAbsorption);

@@ -783,7 +783,7 @@ void UOutlierUpgradeComponent::ReconcileUpgradeProjection()
 		// ASC 가 아직 초기화되지 않음( AbilityActorInfo 없음 ).
 		// MakeEffectContext / ApplyGameplayEffect 등이 ensure 실패 후 크래시하므로 스킵한다.
 		// 활성화 상태는 PlayerState 에 남으므로 ASC 준비 후 리컨사일에서 재적용된다.
-		UE_LOG(LogTemp, Warning, TEXT("[Upgrade.Projection] SKIP: ASC 미준비 Owner=%s ASC=%s"),
+		OUTLIER_LOG(Ability, LogTemp, Log, TEXT("[Upgrade.Projection] SKIP: ASC 미준비 Owner=%s ASC=%s"),
 			*GetNameSafe(GetOwner()), ASC ? TEXT("valid(no ActorInfo)") : TEXT("null"));
 		return;
 	}
