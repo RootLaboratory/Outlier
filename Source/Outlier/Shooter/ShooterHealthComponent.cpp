@@ -113,7 +113,7 @@ void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	}
 
 	// 과충전 중에는 자연 회복을 막고, 종료 시 별도 회복 지연을 다시 시작한다.
-	if (ShooterCharacter->IsWeaponOvercharged()
+	if (!ShooterCharacter->HasAcquiredSuit() || ShooterCharacter->IsWeaponOvercharged()
 		|| ShooterCharacter->bSuitDisabledByPartnerBoundary ||
 		ShooterCharacter->GetCurShield() >= ShooterCharacter->GetMaxShield())
 	{

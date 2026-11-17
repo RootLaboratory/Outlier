@@ -16,6 +16,7 @@
 #include "Misc/ScopeExit.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterHealthComponent.h"
+#include "OutlierPlayerState.h"
 #endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -174,6 +175,9 @@ bool FOutlierShooterRecoilAndReflectionProjectionTest::RunTest(const FString& Pa
 	}
 	UOutlierAbilitySystemComponent* ASC = Shooter->GetOutlierAbilitySystemComponent();
 	ASC->InitializeForPawn(Shooter);
+	AOutlierPlayerState* SuitState = World->SpawnActor<AOutlierPlayerState>();
+	Shooter->SetPlayerState(SuitState);
+	SuitState->SetAcquiredSuit(true);
 	FOutlierShooterSuitConfig BaseConfig;
 	BaseConfig.BulletReflection.DurationSeconds = 4.0f;
 	TestTrue(TEXT("Base suit config is accepted"), ASC->ConfigureShooterSuitAbilities(BaseConfig));

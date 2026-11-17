@@ -708,7 +708,8 @@ void AFirstPersonCharacter::ClientOnHoldInteractFailed_Implementation(AActor* Ta
 
 void AFirstPersonCharacter::ClientShowDamageFeedback_Implementation(
 	FVector_NetQuantize DamageOrigin,
-	float HealthDamage)
+	float HealthDamage,
+	float ShieldDamage)
 {
 	if (!IsLocallyControlled())
 	{
@@ -724,7 +725,7 @@ void AFirstPersonCharacter::ClientShowDamageFeedback_Implementation(
 
 	if (ULocalPlayerUISubSystem* UISubSystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
 	{
-		UISubSystem->OnDamageFeedback(this, FVector(DamageOrigin), HealthDamage);
+		UISubSystem->OnDamageFeedback(this, FVector(DamageOrigin), HealthDamage, ShieldDamage);
 	}
 }
 

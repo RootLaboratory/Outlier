@@ -485,7 +485,7 @@ void AShooterPlayerController::BindMainUI()
 {
 	if (!IsLocalController())
 	{
-		UE_LOG(LogTemp, Warning,
+		OUTLIER_LOG(UI, LogTemp, Log,
 			TEXT("[ShooterPC] BindMainUI skipped: not local PC=%s Auth=%d"),
 			*GetNameSafe(this),
 			HasAuthority() ? 1 : 0);
@@ -496,7 +496,7 @@ void AShooterPlayerController::BindMainUI()
 	if (ShooterUIInstance)
 	{
 		RefreshShooterSuitUI();
-		UE_LOG(LogTemp, Warning,
+		OUTLIER_LOG(UI, LogTemp, Log,
 			TEXT("[ShooterPC] BindMainUI skipped: already exists PC=%s UI=%s"),
 			*GetNameSafe(this),
 			*GetNameSafe(ShooterUIInstance));

@@ -2,6 +2,7 @@
 
 
 #include "DynamicCrossHair.h"
+#include "TagDrivenUILog.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Character.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
@@ -105,7 +106,7 @@ void UDynamicCrossHair::SpawnAttackSign(EAttackSign InAttackSign)
 {
 	if (InAttackSign == EAttackSign::None)
 	{
-		UE_LOG(LogDynamicCrossHair, Log, TEXT("[AttackSign] Stop requested Widget=%s"), *GetName());
+		UE_LOG(LogTagDrivenUITrace, Log, TEXT("[AttackSign] Stop requested Widget=%s"), *GetName());
 		StopAttackSign();
 		BP_SpawnAttackSign(InAttackSign);
 		return;
@@ -113,7 +114,7 @@ void UDynamicCrossHair::SpawnAttackSign(EAttackSign InAttackSign)
 
 	if (CanReuseAttackSignMIDs(InAttackSign))
 	{
-		UE_LOG(LogDynamicCrossHair, Log,
+		UE_LOG(LogTagDrivenUITrace, Log,
 			TEXT("[AttackSign] Reuse cached MIDs Widget=%s Type=%s"),
 			*GetName(),
 			*GetAttackSignName(InAttackSign));
@@ -121,7 +122,7 @@ void UDynamicCrossHair::SpawnAttackSign(EAttackSign InAttackSign)
 	else
 	{
 		UMaterialInterface* AttackSignInstance = ResolveAttackSignMaterial(InAttackSign);
-		UE_LOG(LogDynamicCrossHair, Log,
+		UE_LOG(LogTagDrivenUITrace, Log,
 			TEXT("[AttackSign] Apply material Widget=%s Type=%s Material=%s"),
 			*GetName(),
 			*GetAttackSignName(InAttackSign),
@@ -414,7 +415,7 @@ void UDynamicCrossHair::UpdateAttackSign(float InDeltaTime)
 
 	if (NormalizedTime >= 1.f)
 	{
-		UE_LOG(LogDynamicCrossHair, Log,
+		UE_LOG(LogTagDrivenUITrace, Log,
 			TEXT("[AttackSign] Completed Widget=%s Type=%s Duration=%.3f Time=1.000"),
 			*GetName(),
 			*GetAttackSignName(CachedAttackSignType),

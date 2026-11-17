@@ -424,7 +424,7 @@ void AShooterCharacter::BeginPlay()
 		BaseFirstPersonMeshRotation = FirstPersonMesh->GetRelativeRotation();
 	}
 
-	UE_LOG(LogTemp,
+	OUTLIER_LOG(Animation, LogTemp,
 		Log,
 		TEXT("%s [FPAnimDiag][FramingBefore] Owner=%s ViewRootRelLoc=%s ViewRootRelRot=%s Mesh=%s Asset=%s Skeleton=%s MeshRelLoc=%s MeshRelRot=%s MeshRelScale=%s"),
 		OutlierNet::GetNetPrefix(this),
@@ -450,7 +450,7 @@ void AShooterCharacter::BeginPlay()
 		}
 	}
 
-	UE_LOG(LogTemp,
+	OUTLIER_LOG(Animation, LogTemp,
 		Log,
 		TEXT("%s [FPAnimDiag][FramingAfter] Owner=%s ViewRootRelLoc=%s ViewRootRelRot=%s MeshRelLoc=%s MeshRelRot=%s MeshWorldLoc=%s"),
 		OutlierNet::GetNetPrefix(this),
@@ -591,7 +591,7 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 		&& GetPlayerState<AOutlierPlayerState>() && OutlierAbilitySystemComponent)
 	{
 		bPendingReloadShieldFill = false;
-		const float MissingShield = FMath::Max(GetMaxShield() - GetCurShield(), 0.0f);
+		const float MissingShield = HasAcquiredSuit() ? FMath::Max(GetMaxShield() - GetCurShield(), 0.0f) : 0.0f;
 		if (MissingShield > 0.0f
 			&& !OutlierAbilitySystemComponent->ApplyShieldRecoveryToSelf(MissingShield))
 		{
@@ -747,7 +747,7 @@ void AShooterCharacter::InitializeGasVitality()
 		FMath::Max(MaxShield, 0.0f));
 	OutlierAbilitySystemComponent->SetNumericAttributeBase(
 		UOutlierShieldAttributeSet::GetShieldAttribute(),
-		FMath::Max(MaxShield, 0.0f));
+		HasAcquiredSuit() ? FMath::Max(MaxShield, 0.0f) : 0.0f);
 	OutlierAbilitySystemComponent->SetNumericAttributeBase(
 		UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(),
 		0.0f);
@@ -3387,16 +3387,7 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		}
 		return 0.0f;
 	}
-	float DamageAmount = Request.DamageAmount;
-	const AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>();
-	if (PS && !PS->GetAcquiredSuit() && OutlierDamage::IsFromEnemy(Request))
-	{
-		// Keep the existing GAS immunity/death path while exhausting both shield pools.
-		DamageAmount = FMath::Max(DamageAmount,
-			FMath::Max(GetCurHealth(), 0.0f)
-			+ FMath::Max(GetCurShield(), 0.0f)
-			+ FMath::Max(GetCurPartnerShield(), 0.0f) + 1.0f);
-	}
+	const float DamageAmount = Request.DamageAmount;
 
 	const bool bApplied = ApplyDamageInternal(
 		DamageAmount,
@@ -3414,7 +3405,8 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		const UOutlierVitalAttributeSet* VitalSet = OutlierAbilitySystemComponent
 			? OutlierAbilitySystemComponent->GetSet<UOutlierVitalAttributeSet>()
 			: nullptr;
-		ClientShowDamageFeedback(Request.DamageOrigin, VitalSet ? VitalSet->GetLastHealthDamage() : 0.0f);
+		ClientShowDamageFeedback(Request.DamageOrigin, VitalSet ? VitalSet->GetLastHealthDamage() : 0.0f,
+			VitalSet ? VitalSet->GetLastShieldDamage() : 0.0f);
 	}
 
 	return bApplied ? DamageAmount : 0.0f;

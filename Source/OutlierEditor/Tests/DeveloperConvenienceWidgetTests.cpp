@@ -11,6 +11,8 @@
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/UILayerGameplayTags.h"
 #include "DamageFeedbackLayer.h"
+#include "DamageFeedbackIndicator.h"
+#include "UObject/UnrealType.h"
 #include "MainUIBase.h"
 
 TFunction<void()> UDeveloperConvenienceTestWidget::OnInitialize;
@@ -186,6 +188,42 @@ bool FDeveloperConvenienceHitPresentationTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("Zero-health-damage hit shows directional feedback"), FirstWidget->GetVisibility(), ESlateVisibility::HitTestInvisible);
 	TestFalse(TEXT("Feedback does not enable the cursor"), Controller->bShowMouseCursor);
 	TestFalse(TEXT("Feedback does not block movement"), Controller->IsMoveInputIgnored());
+	// 실제 WBP 풀을 사용해 실드 옵션이 켜져 있어도 이번 피해의 흡수량이 있어야 표시되는지 확인한다.
+	FBoolProperty* ShowRed = FindFProperty<FBoolProperty>(FirstWidget->GetClass(), TEXT("bShowRedFeedback"));
+	FBoolProperty* ShowShield = FindFProperty<FBoolProperty>(FirstWidget->GetClass(), TEXT("bShowShieldFeedback"));
+	FArrayProperty* ShieldPool = FindFProperty<FArrayProperty>(FirstWidget->GetClass(), TEXT("ShieldPool"));
+	if (!TestNotNull(TEXT("Red feedback option exists"), ShowRed)
+		|| !TestNotNull(TEXT("Shield feedback option exists"), ShowShield)
+		|| !TestNotNull(TEXT("Shield feedback pool exists"), ShieldPool)) return false;
+	const bool OriginalRed = ShowRed->GetPropertyValue_InContainer(FirstWidget);
+	const bool OriginalShield = ShowShield->GetPropertyValue_InContainer(FirstWidget);
+	auto ActiveShieldCount = [FirstWidget, ShieldPool]()
+	{
+		FScriptArrayHelper Pool(ShieldPool, ShieldPool->ContainerPtrToValuePtr<void>(FirstWidget));
+		FObjectPropertyBase* Item = CastFieldChecked<FObjectPropertyBase>(ShieldPool->Inner);
+		int32 Count = 0;
+		for (int32 Index = 0; Index < Pool.Num(); ++Index)
+		{
+			const auto* Indicator = Cast<UDamageFeedbackIndicator>(Item->GetObjectPropertyValue(Pool.GetRawPtr(Index)));
+			if (Indicator && Indicator->IsFeedbackActive()) ++Count;
+		}
+		return Count;
+	};
+	ShowRed->SetPropertyValue_InContainer(FirstWidget, false);
+	ShowShield->SetPropertyValue_InContainer(FirstWidget, true);
+	FirstWidget->ClearDamageFeedback();
+	FirstWidget->ShowDamageFeedback(FirstPawn, FVector(100, 0, 0), 25.0f, 0.0f);
+	TestEqual(TEXT("HP-only hit never activates shield feedback"), ActiveShieldCount(), 0);
+	FirstWidget->ShowDamageFeedback(FirstPawn, FVector(100, 0, 0), 0.0f, 5.0f);
+	TestEqual(TEXT("Shield-only hit activates shield feedback"), ActiveShieldCount(), 1);
+	FirstWidget->ClearDamageFeedback();
+	FirstWidget->ShowDamageFeedback(FirstPawn, FVector(100, 0, 0), 25.0f, 5.0f);
+	TestEqual(TEXT("Mixed HP and shield hit activates shield feedback"), ActiveShieldCount(), 1);
+	FirstWidget->ClearDamageFeedback();
+	FirstWidget->ShowDamageFeedback(FirstPawn, FVector(100, 0, 0), 0.0f, 0.0f);
+	TestEqual(TEXT("Zero-damage hit never activates shield feedback"), ActiveShieldCount(), 0);
+	ShowRed->SetPropertyValue_InContainer(FirstWidget, OriginalRed);
+	ShowShield->SetPropertyValue_InContainer(FirstWidget, OriginalShield);
 	Controller->ClientShowDeveloperConvenienceHit_Implementation(FirstPawn, FVector(0.0f, 100.0f, 0.0f));
 	TestEqual(TEXT("Repeated hits reuse the widget and pool"), Controller->DeveloperHitWidget.Get(), FirstWidget);
 	APawn* NextPawn = World->SpawnActor<APawn>();

@@ -1119,7 +1119,7 @@ void APartnerPlayerController::BindMainUI()
 {
 	if (!IsLocalController())
 	{
-		UE_LOG(LogTemp, Warning,
+		OUTLIER_LOG(UI, LogTemp, Log,
 			TEXT("[PartnerPC] BindMainUI skipped: not local PC=%s Auth=%d"),
 			*GetNameSafe(this),
 			HasAuthority() ? 1 : 0);
@@ -1130,7 +1130,7 @@ void APartnerPlayerController::BindMainUI()
 	{
 		BindPlayerStateDelegates();
 		RefreshPartnerSuitUI();
-		UE_LOG(LogTemp, Warning,
+		OUTLIER_LOG(UI, LogTemp, Log,
 			TEXT("[PartnerPC] BindMainUI skipped: already exists PC=%s UI=%s"),
 			*GetNameSafe(this),
 			*GetNameSafe(ShooterUIInstance));
