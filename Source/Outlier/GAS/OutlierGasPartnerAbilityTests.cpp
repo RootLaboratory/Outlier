@@ -509,7 +509,21 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 		AbilitySystem->UpdatePartnerAbilityConfig(RuntimeConfig));
 	TestTrue(TEXT("EMP starts through its granted native AbilitySpec"), AbilitySystem->TryActivatePartnerAbility(EMPAbility));
 	TestTrue(TEXT("EMP commits cooldown when target selection starts"), AbilitySystem->IsPartnerCooldownActive(EMPCooldown));
-	EMPComponent->ServerCompleteEMP(TArray<AActor*>{EMPEnemy});
+	AEnemyBase* SecondEMPEnemy = Fixture.World->SpawnActor<AEnemyBase>();
+	if (!TestNotNull(TEXT("Second EMP target Enemy is spawned"), SecondEMPEnemy))
+	{
+		return false;
+	}
+	SecondEMPEnemy->SetActorLocation(Fixture.Partner->GetActorLocation() + FVector(200.0f, 0.0f, 0.0f));
+	const TArray<AActor*> DisplayedTargets{EMPEnemy, SecondEMPEnemy};
+	EMPComponent->TryMarkEMPTarget(EMPEnemy, {});
+	TestTrue(TEXT("The first click leaves manual EMP active"), IsAbilityWithTagActive(*AbilitySystem, EMPAbility));
+	EMPComponent->TryMarkEMPTarget(EMPEnemy, DisplayedTargets);
+	TestTrue(TEXT("An unmarked displayed target prevents immediate completion"), IsAbilityWithTagActive(*AbilitySystem, EMPAbility));
+	EMPComponent->TryMarkEMPTarget(SecondEMPEnemy, DisplayedTargets);
+	TestFalse(TEXT("The final click immediately ends manual EMP"), IsAbilityWithTagActive(*AbilitySystem, EMPAbility));
+	TestTrue(TEXT("The final click stuns the last marked target"),
+		SecondEMPEnemy->GetOutlierAbilitySystemComponent()->HasMatchingGameplayTag(OutlierGameplayTags::State::Stunned()));
 	TestTrue(
 		TEXT("Partner EMP grants Stunned through the target Enemy ASC"),
 		EMPEnemy->GetOutlierAbilitySystemComponent()->HasMatchingGameplayTag(
@@ -531,6 +545,7 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Repeated EMP activation does not refresh its cooldown"), IsNearlyEqualDuration(AbilitySystem->GetPartnerCooldownRemaining(EMPCooldown), EMPRemainingAfterStart));
 	AbilitySystem->CancelActivePartnerAbilities();
 	EMPEnemy->Destroy(true);
+	SecondEMPEnemy->Destroy(true);
 
 	const FGameplayTag ShieldAbility = OutlierGameplayTags::Ability::Partner::Shield();
 	const FGameplayTag ShieldCooldown = OutlierGameplayTags::Cooldown::Partner::Shield();

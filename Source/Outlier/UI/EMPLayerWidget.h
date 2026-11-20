@@ -25,6 +25,7 @@ public:
 	void RemoveCandidate(AActor* TargetActor, UEMPableComponent* EMPableComponent);
 	void ClearMarkers();
 	void SelectAutomaticCandidate(AActor* TargetActor);
+	TArray<AActor*> RecordManualSelection(AActor* TargetActor);
 
 protected:
 	virtual void NativeConstruct() override;
@@ -103,6 +104,7 @@ private:
 
 	UPROPERTY()
 	TMap<TObjectPtr<AActor>, TObjectPtr<UEMPMarkWidget>> MarkWidgets;
+	TSet<TWeakObjectPtr<AActor>> ManuallySelectedActors;
 
 	float MarkingDuration = 3.0f;
 	float ElapsedTime = 0.0f;

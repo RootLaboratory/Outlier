@@ -55,6 +55,7 @@ void UEMPLayerWidget::ClearMarkers()
 	}
 
 	MarkWidgets.Reset();
+	ManuallySelectedActors.Reset();
 
 	if (MarkerCanvas)
 	{
@@ -327,6 +328,27 @@ void UEMPLayerWidget::SelectAutomaticCandidate(AActor* TargetActor)
 	{
 		if (*Mark) (*Mark)->PlayAutomaticSelection();
 	}
+}
+
+TArray<AActor*> UEMPLayerWidget::RecordManualSelection(AActor* TargetActor)
+{
+	ManuallySelectedActors.Add(TargetActor);
+	TArray<AActor*> DisplayedTargets;
+	for (const auto& [Actor, Mark] : MarkWidgets)
+	{
+		if (!IsValid(Actor.Get()) || !Mark || !Mark->IsVisible())
+		{
+			continue;
+		}
+
+		if (!ManuallySelectedActors.Contains(Actor.Get()))
+		{
+			return {};
+		}
+
+		DisplayedTargets.Add(Actor.Get());
+	}
+	return DisplayedTargets;
 }
 
 void UEMPLayerWidget::RemoveCandidate(AActor* TargetActor, UEMPableComponent* EMPableComponent)

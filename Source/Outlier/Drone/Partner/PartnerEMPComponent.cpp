@@ -419,7 +419,20 @@ void UPartnerEMPComponent::RefocusEMPInput()
 	}
 }
 
-void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
+void UPartnerEMPComponent::MarkDisplayedEMPTarget(AActor* TargetActor)
+{
+	if (bAutoTargetActive || !bEMPCandidateSearchActive || !EMPLayerWidget)
+	{
+		return;
+	}
+
+	const TArray<AActor*> CompletedDisplayedTargets = EMPLayerWidget->RecordManualSelection(TargetActor);
+	TryMarkEMPTarget(TargetActor, CompletedDisplayedTargets);
+	RefocusEMPInput();
+}
+
+void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(
+	AActor* TargetActor, const TArray<AActor*>& CompletedDisplayedTargets)
 {
 	if (bAutoTargetActive) return;
 	if (!TargetActor || !PartnerCharacter || !PartnerCharacter->CanAcceptInput())
@@ -449,6 +462,15 @@ void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
 	}
 
 	MarkedActors.AddUnique(TargetActor);
+	if (CompletedDisplayedTargets.Contains(TargetActor)
+		&& !CompletedDisplayedTargets.ContainsByPredicate([this](AActor* DisplayedTarget)
+		{
+			return !MarkedActors.Contains(DisplayedTarget);
+		}))
+	{
+		const TArray<AActor*> ConfirmedActors = MarkedActors;
+		CompleteEMPOnServer(ConfirmedActors);
+	}
 }
 
 bool UPartnerEMPComponent::NotifyEMPConfirmed()
