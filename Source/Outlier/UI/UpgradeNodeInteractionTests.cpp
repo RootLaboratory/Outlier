@@ -2,6 +2,7 @@
 
 #include "UI/UpgradeNodeWidget.h"
 #include "UI/UpgradeDescWidget.h"
+#include "UI/UpgradeNodeGroupWidget.h"
 
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
@@ -1081,6 +1082,64 @@ bool FUpgradeUnlockMissingMaterialTest::RunTest(const FString& Parameters)
 	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
 	TestFalse(TEXT("Missing material never leaves an unlock wait"), Node->IsUnlockPresentationPlaying());
 	TestTrue(TEXT("Missing material keeps the authoritative active appearance"), Access::ActivatedAppearance(Node));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeFirstSkillPurchasePresentationTest, "Outlier.UI.Upgrade.Unlock.FirstSkillPurchase",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeFirstSkillPurchasePresentationTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UpgradeNodeInteractionTests::FTestWorld Context;
+	UClass* GroupClass = LoadClass<UUpgradeNodeGroupWidget>(nullptr, TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_ShooterNodeGroup.WBP_ShooterNodeGroup_C"));
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Purchase world"), Context.World) || !TestNotNull(TEXT("Shooter upgrade group"), GroupClass)
+		|| !TestNotNull(TEXT("Shooter pawn class"), ShooterClass)) return false;
+	Context.World->InitializeActorsForPlay(FURL());
+	auto* Controller = Context.World->SpawnActor<AFirstPersonPlayerController>();
+	auto* State = Context.World->SpawnActor<AOutlierPlayerState>();
+	auto* Shooter = Context.World->SpawnActor<AShooterCharacter>(ShooterClass);
+	auto* Group = CreateWidget<UUpgradeNodeGroupWidget>(Context.World, GroupClass);
+	if (!TestNotNull(TEXT("Controller"), Controller) || !TestNotNull(TEXT("PlayerState"), State)
+		|| !TestNotNull(TEXT("Shooter"), Shooter) || !TestNotNull(TEXT("Upgrade widget"), Group)) return false;
+	Access::SetPlayerState(Controller, State);
+	State->SetOwner(Controller);
+	State->SetPairId(1);
+	State->SetPlayerRole(EOutlierPlayerRole::Shooter);
+	State->SetShooterCharacter(Shooter);
+	Shooter->SetPlayerState(State);
+	TestTrue(TEXT("Currency for the three first purchases"), State->AddNode(100));
+	const TSharedRef<SWidget> SlateWidget = Group->TakeWidget();
+	UOutlierUpgradeComponent* Component = Shooter->GetUpgradeComponent();
+	if (!TestNotNull(TEXT("Shooter upgrade component"), Component) || !TestNotNull(TEXT("Shooter upgrade data"), Group->GetUpgradeSetData())) return false;
+	// The fixture has no BeginPlay. Let the group install the authored set and initialize the row cache.
+	Component->SetUpgradeSetData(nullptr);
+	Group->InjectUpgradeContext(Shooter, nullptr, Component, State);
+
+	for (FName WidgetName : { FName(TEXT("Reflection_001")), FName(TEXT("Stealth_001")), FName(TEXT("Overcharge_001")) })
+	{
+		const FString Label = WidgetName.ToString();
+		auto* Node = Cast<UUpgradeNodeWidget>(Group->GetWidgetFromName(WidgetName));
+		if (!TestNotNull(Label, Node)) continue;
+		if (!TestTrue(Label + TEXT(" starts unpurchased"), Node->GetNodeState() == EOutlierUpgradeNodeState::Unlocked)) continue;
+		Access::Submit(Node, Controller);
+		if (!TestTrue(Label + TEXT(" purchase reaches authoritative activation"),
+			Node->GetNodeState() == EOutlierUpgradeNodeState::Activated && Component->IsNodeActivated(Node->GetNodeRowName()))) continue;
+		if (!TestTrue(Label + TEXT(" starts playback on purchase"), Node->IsUnlockPresentationPlaying())) continue;
+		TestEqual(Label + TEXT(" starts at the closed frame"), Access::UnlockFrame(Node), 0.0f);
+		const bool bStillPlaying = Access::AdvanceUnlock(Node, 2.0f / 60.0f);
+		TestTrue(FString::Printf(TEXT("%s is still playing after two frames (authored duration %.3fs)"),
+			*Label, Node->UnlockDuration), bStillPlaying);
+		if (!bStillPlaying) continue;
+		TestTrue(Label + TEXT(" advances the lock sprite"), Access::UnlockFrame(Node) > 0.0f);
+		TestFalse(Label + TEXT(" defers activated appearance"), Access::ActivatedAppearance(Node));
+		TestTrue(Label + TEXT(" is still playing just before 0.4 seconds"), Access::AdvanceUnlock(Node, 0.399f - 2.0f / 60.0f));
+		TestEqual(Label + TEXT(" displays the final sprite frame before completion"), Access::UnlockFrame(Node), 18.0f);
+		TestFalse(Label + TEXT(" still defers activated appearance on the final frame"), Access::ActivatedAppearance(Node));
+		TestFalse(Label + TEXT(" finishes just after 0.4 seconds"), Access::AdvanceUnlock(Node, 0.002f));
+		TestTrue(Label + TEXT(" shows activated appearance after playback"), Access::ActivatedAppearance(Node));
+	}
 	return true;
 }
 
