@@ -301,7 +301,8 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	UObject* RequestOwner,
 	EUILayerFocusTarget FocusTarget,
 	bool bShowCursor,
-	bool bReceivesInput)
+	bool bReceivesInput,
+	bool bCenterCursorOnFirstInput)
 {
 	if (IsEndingPresentationActive() && Widget != EndingWidget.Get() && Widget != EndingHint.Get()) return {};
 	if (!LayerTag.IsValid() || !InputModeTag.IsValid() || !IsValid(Widget))
@@ -344,6 +345,7 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	Entry.FocusTarget = FocusTarget;
 	Entry.bShowCursor = bShowCursor;
 	Entry.bReceivesInput = bReceivesInput;
+	Entry.bCenterCursorOnFirstInput = bCenterCursorOnFirstInput;
 
 	if (auto* Audio = GetWorld()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()) Audio->BindMenuButtons(Widget);
 	RefreshTopLayerInput();
@@ -1049,8 +1051,26 @@ void ULocalPlayerUILayerSubsystem::ApplyLayerInput(const FUILayerEntry& Layer)
 
 	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 	InputMode.SetHideCursorDuringCapture(false);
+	const FUILayerHandle Handle = Layer.Handle;
+	const bool bShowCursor = Layer.bShowCursor;
+	const bool bCenterCursorOnFirstInput = Layer.bCenterCursorOnFirstInput;
 	PlayerController->SetInputMode(InputMode);
-	PlayerController->bShowMouseCursor = Layer.bShowCursor;
+	PlayerController->bShowMouseCursor = bShowCursor;
+	if (bShowCursor && bCenterCursorOnFirstInput && CachedTopLayerHandle == Handle)
+	{
+		if (FUILayerEntry* ActiveLayer = FindLayer(Handle); ActiveLayer && ActiveLayer->bCenterCursorOnFirstInput)
+		{
+			int32 Width = 0;
+			int32 Height = 0;
+			PlayerController->GetViewportSize(Width, Height);
+			if (Width > 0 && Height > 0)
+			{
+				// 최초 입력 적용에서만 이동한다. 상위 메뉴를 닫거나 포커스를 다시 잡아도 위치는 유지된다.
+				ActiveLayer->bCenterCursorOnFirstInput = false;
+				PlayerController->SetMouseLocation(Width / 2, Height / 2);
+			}
+		}
+	}
 }
 
 void ULocalPlayerUILayerSubsystem::ApplyDefaultInput()

@@ -1377,7 +1377,9 @@ void UPartnerHackComponent::EnsureCandidateLayerWidget()
 			FirstPersonInputModeTags::Hack(),
 			this,
 			EUILayerFocusTarget::Widget,
-			true);
+			true,
+			true,
+			/*bCenterCursorOnFirstInput=*/true);
 	}
 
 	if (!HackCandidateLayerHandle.IsValid())
