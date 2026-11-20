@@ -349,7 +349,7 @@ bool FAutoTurretHackingTest::RunTest(const FString& Parameters)
 			FPartnerHackAbilityData Data;
 			Data.EffectiveRange = 3000.f;
 			Hack->CacheAbilityData(Data);
-			Hack->OnHackFinished.AddLambda([&](EHackResult Finished, bool)
+			Hack->OnHackFinished.AddLambda([&](EHackResult Finished, EPartnerHackTargetType)
 			{
 				++CompletionCount;
 				TerminalResult = Finished;
@@ -651,7 +651,7 @@ bool FAutoTurretHackingTest::RunTest(const FString& Parameters)
 		PartnerHack->CacheAbilityData(HackData);
 		TargetComponent->HackTags.RemoveTag(HackGameplayTags::MiniGame::None());
 		TargetComponent->HackTags.AddTag(HackGameplayTags::MiniGame::ClickCircle());
-		PartnerHack->OnHackFinished.AddLambda([&](EHackResult FinishedResult, bool)
+		PartnerHack->OnHackFinished.AddLambda([&](EHackResult FinishedResult, EPartnerHackTargetType)
 		{
 			++CompletionCount;
 			TerminalResult = FinishedResult;
@@ -799,10 +799,11 @@ bool FAutoTurretHackingTest::RunTest(const FString& Parameters)
 			FPartnerHackAbilityData HackData;
 			HackData.EffectiveRange = 3000.f;
 			PartnerHack->CacheAbilityData(HackData);
-			PartnerHack->OnHackFinished.AddLambda([&](EHackResult FinishedResult, bool)
+			PartnerHack->OnHackFinished.AddLambda([&](EHackResult FinishedResult, EPartnerHackTargetType TargetType)
 			{
 				++CompletionCount;
 				TerminalResult = FinishedResult;
+				TestTrue(TEXT("Deferred completion retains the turret target type"), TargetType == EPartnerHackTargetType::RetryableObject);
 			});
 			// 조준 UI/홀드 시간만 fixture로 대체하고, 실제 서버 None 분기는 그대로 실행한다.
 			PartnerHack->bHackCandidateSearchActive = true;

@@ -467,10 +467,10 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Expired retry clears the HUD duration"), AbilitySystem->GetPartnerHackChargeState().RetryDuration, 0.0f);
 	HackComponent->TryHack();
 	TestTrue(TEXT("A direct search request routes through the ability after retry expires"), IsAbilityWithTagActive(*AbilitySystem, HackAbility));
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, false);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, EPartnerHackTargetType::Possession);
 	HackComponent->CancelForReboot();
 	TestEqual(TEXT("Failed Hack consumes the single charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, false);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, EPartnerHackTargetType::Possession);
 	TestEqual(TEXT("A repeated result does not consume another charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
 	HackComponent->TryHack();
 	TestFalse(TEXT("A direct search RPC cannot bypass empty charges"), HackComponent->IsHackInteractionActive());
@@ -483,7 +483,7 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 	AbilitySystem->RemoveActiveEffects(
 		FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(FGameplayTagContainer(HackCooldown)));
 	TestTrue(TEXT("Hack can restart after the failure cooldown is cleared"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, false);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, EPartnerHackTargetType::Other);
 	HackComponent->CancelForReboot();
 	TestTrue(TEXT("Normal confirmed Hack success commits cooldown"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
 	TestEqual(TEXT("Normal confirmed Hack success consumes the single charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
@@ -574,7 +574,7 @@ bool FOutlierGasPartnerPossessionCooldownSessionTest::RunTest(const FString& Par
 	TestTrue(TEXT("Possession Hack starts without pre-committing cooldown"), AbilitySystem->TryActivatePartnerAbility(OutlierGameplayTags::Ability::Partner::Hacking()));
 	TestTrue(TEXT("An existing EMP cooldown is active before possession"), AbilitySystem->CommitPartnerCooldown(EMPCooldown, 17.0f));
 	TestTrue(TEXT("Successful possession commit starts one cooldown session"), Fixture.Controller->BeginCommittedPartnerAbilityCooldownSession(Fixture.Partner));
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, true);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, EPartnerHackTargetType::Possession);
 	HackComponent->CancelForReboot();
 	TestFalse(TEXT("Possession Hack has no cooldown while committed"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
 	TestFalse(TEXT("Duplicate possession commit cannot replace the snapshot"), Fixture.Controller->BeginCommittedPartnerAbilityCooldownSession(Fixture.Partner));
@@ -628,6 +628,16 @@ bool FOutlierGasPartnerHackChargesTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("Hacking initially has one charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
 	TestEqual(TEXT("Hacking initially has capacity one"), AbilitySystem->GetPartnerHackChargeState().MaxCharges, 1);
+	TestTrue(TEXT("Single-charge object hack activates"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, EPartnerHackTargetType::RetryableObject);
+	HackComponent->CancelForReboot();
+	TestEqual(TEXT("Object failure preserves the only charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestFalse(TEXT("Object failure starts no recharge"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	TestFalse(TEXT("Object failure starts no retry delay"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
+	TestTrue(TEXT("Object failure permits immediate activation"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, EPartnerHackTargetType::RetryableObject);
+	HackComponent->CancelForReboot();
+
 	AbilitySystem->AddLooseGameplayTag(DoubleChargeTag);
 	AbilitySystem->RefreshPartnerHackCharges();
 	TestEqual(TEXT("Double Charge increases maximum capacity to two"), AbilitySystem->GetPartnerHackChargeState().MaxCharges, 2);
@@ -635,17 +645,26 @@ bool FOutlierGasPartnerHackChargesTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("The first charged hack activates"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
 	TestEqual(TEXT("Searching without a result does not consume a charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 2);
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, false);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, EPartnerHackTargetType::Other);
 	HackComponent->CancelForReboot();
 	TestEqual(TEXT("The first use leaves one charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, false);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, EPartnerHackTargetType::Other);
 	TestEqual(TEXT("A duplicate completed failure cannot consume the remaining charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
 	TestTrue(TEXT("A remaining charge is usable while recovery runs"), AbilitySystem->CanUsePartnerHackCharge());
 	const float FirstRechargeStart = AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime;
 	const uint32 RecoveryBeforeUse = AbilitySystem->GetPartnerHackChargeState().RecoverySerial;
 	Fixture.Tick(0.2f);
+	const float FirstRechargeDuration = AbilitySystem->GetPartnerHackChargeState().RechargeDuration;
+	TestTrue(TEXT("Object hack activates during an existing recharge"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, EPartnerHackTargetType::RetryableObject);
+	HackComponent->CancelForReboot();
+	TestEqual(TEXT("Object failure leaves the second charge available"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Object failure preserves the prior recharge start"), AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime, FirstRechargeStart);
+	TestEqual(TEXT("Object failure preserves the prior recharge duration"), AbilitySystem->GetPartnerHackChargeState().RechargeDuration, FirstRechargeDuration);
+	TestEqual(TEXT("Object failure emits no recovery event"), AbilitySystem->GetPartnerHackChargeState().RecoverySerial, RecoveryBeforeUse);
+	TestFalse(TEXT("Object failure adds no retry delay during recharge"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
 	TestTrue(TEXT("The remaining charge activates through the ability gate during recharge"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, false);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, EPartnerHackTargetType::Other);
 	HackComponent->CancelForReboot();
 	TestEqual(TEXT("Two results exhaust both charges"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
 	TestEqual(TEXT("The second result preserves the first recharge clock"), AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime, FirstRechargeStart);

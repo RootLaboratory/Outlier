@@ -83,7 +83,7 @@ void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 	else if (GetOwner() && GetOwner()->HasAuthority() && bHackCandidateSearchActive)
 	{
-		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+		OnHackFinished.Broadcast(EHackResult::Cancelled, EPartnerHackTargetType::Other);
 	}
 
 	ResetLocalHackHoldProgress();
@@ -221,7 +221,7 @@ void UPartnerHackComponent::TryHack_Implementation()
 		bHackCandidateSearchActive = false;
 		ClientStopCandidateSearch();
 		DefaultWidgetControl(bHackCandidateSearchActive);
-		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+		OnHackFinished.Broadcast(EHackResult::Cancelled, EPartnerHackTargetType::Other);
 	}
 	else
 	{
@@ -271,7 +271,7 @@ void UPartnerHackComponent::CancelForReboot()
 		DefaultWidgetControl(false);
 		if (bWasSearching)
 		{
-			OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+			OnHackFinished.Broadcast(EHackResult::Cancelled, EPartnerHackTargetType::Other);
 		}
 	}
 
@@ -402,7 +402,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 			ClientAbortHackForInvalidTarget();
 			DefaultWidgetControl(false);
 		}
-		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+		OnHackFinished.Broadcast(EHackResult::Cancelled, EPartnerHackTargetType::Other);
 		return;
 	}
 
@@ -441,7 +441,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 			ClientAbortHackForInvalidTarget();
 			DefaultWidgetControl(false);
 		}
-		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+		OnHackFinished.Broadcast(EHackResult::Cancelled, EPartnerHackTargetType::Other);
 		return;
 	}
 
@@ -490,8 +490,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 	}
 	if (!IsCompletedLifetimeCurrent() || ActiveHackableComponent != CompletedHackableComponent
 		|| ActiveHackRequestId != ResultContext.RequestId) return;
-	const bool bPossessionTarget = CompletedHackableComponent->SuccessEffectTags.HasTagExact(
-		HackGameplayTags::Effect::Possess());
+	const EPartnerHackTargetType TargetType = ActiveHackTargetType;
 	ActiveHackRequestId = 0;
 	ClearActiveHackableComponent();
 
@@ -529,7 +528,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 
 	CompletedHackableComponent->CompleteHack(MutableResultContext);
 	if (!IsCompletedLifetimeCurrent()) return;
-	OnHackFinished.Broadcast(MutableResultContext.Result, bPossessionTarget);
+	OnHackFinished.Broadcast(MutableResultContext.Result, TargetType);
 }
 
 void UPartnerHackComponent::FinishDeferredHack(const FHackResultContext& ResultContext, bool bNotifyClient)
@@ -547,8 +546,7 @@ void UPartnerHackComponent::FinishDeferredHack(const FHackResultContext& ResultC
 		CompleteActiveHack(CancelledContext, bNotifyClient);
 		return;
 	}
-	const bool bPossessionTarget = ActiveHackableComponent->SuccessEffectTags.HasTagExact(
-		HackGameplayTags::Effect::Possess());
+	const EPartnerHackTargetType TargetType = ActiveHackTargetType;
 	// 대상은 이미 효과를 확정했다. 재진입 전에 완료 권한을 소모하고 UI/어빌리티만 끝낸다.
 	bHackCompletionPending = false;
 	ActiveHackRequestId = 0;
@@ -558,7 +556,7 @@ void UPartnerHackComponent::FinishDeferredHack(const FHackResultContext& ResultC
 		ClientStopHackMiniGame();
 		DefaultWidgetControl(false);
 	}
-	OnHackFinished.Broadcast(ResultContext.Result, bPossessionTarget);
+	OnHackFinished.Broadcast(ResultContext.Result, TargetType);
 }
 
 void UPartnerHackComponent::DefaultWidgetControl_Implementation(bool InFlag)
@@ -1106,7 +1104,19 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	DeactivateUnselectedCandidates(HackableComponent);
 	bHackCandidateSearchActive = false;
 	SetActiveHackableComponent(HackableComponent);
-	if (++NextHackRequestId == 0) ++NextHackRequestId;
+	// 대상 콜백이 태그를 바꾸거나 완료를 지연할 수 있으므로 승인 시점의 유형을 보관한다.
+	if (HackableComponent->SuccessEffectTags.HasTagExact(HackGameplayTags::Effect::Possess()))
+	{
+		ActiveHackTargetType = EPartnerHackTargetType::Possession;
+	}
+	else if (HackableComponent->HackTags.HasTagExact(HackGameplayTags::Target::NonPossessable()))
+	{
+		ActiveHackTargetType = EPartnerHackTargetType::RetryableObject;
+	}
+	if (++NextHackRequestId == 0)
+	{
+		++NextHackRequestId;
+	}
 	ActiveHackRequestId = NextHackRequestId;
 	Context.RequestId = ActiveHackRequestId;
 
@@ -1705,6 +1715,7 @@ void UPartnerHackComponent::ClearActiveHackableComponent()
 	}
 
 	ActiveHackableComponent = nullptr;
+	ActiveHackTargetType = EPartnerHackTargetType::Other;
 	ActivePoolHackEnemy.Reset();
 	ActiveHackGeneration = ActiveHackLease = 0;
 }

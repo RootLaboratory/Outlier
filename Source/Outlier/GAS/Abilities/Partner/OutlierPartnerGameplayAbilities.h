@@ -10,6 +10,7 @@ class APartnerPlayerController;
 class UOutlierAbilitySystemComponent;
 class UPartnerEMPComponent;
 class UPartnerHackComponent;
+enum class EPartnerHackTargetType : uint8;
 class UPartnerSupportComponent;
 
 UCLASS(Abstract)
@@ -103,7 +104,7 @@ protected:
 		bool bWasCancelled) override;
 
 private:
-	void HandleHackFinished(EHackResult Result, bool bPossessionTarget);
+	void HandleHackFinished(EHackResult Result, EPartnerHackTargetType TargetType);
 	TWeakObjectPtr<UPartnerHackComponent> ActiveHackComponent;
 	TWeakObjectPtr<APartnerPlayerController> HackController;
 	FDelegateHandle HackFinishedHandle;
