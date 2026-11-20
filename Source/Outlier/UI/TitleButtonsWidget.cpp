@@ -49,9 +49,7 @@ void UTitleButtonsWidget::NativeConstruct()
 
 bool UTitleButtonsWidget::HandleUILayerEscape_Implementation()
 {
-	// Escape는 Exit 버튼을 누른 것과 같다.
-	SelectAction(ETitleButtonAction::Exit);
-	ConfirmAction(ETitleButtonAction::Exit);
+	// 기본 타이틀 레이어가 닫히지 않도록 Escape를 처리한다.
 	return true;
 }
 
