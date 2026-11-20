@@ -1178,6 +1178,8 @@ void APartnerPlayerController::BindMainUI()
 			LP->GetSubsystem<ULocalPlayerUILayerSubsystem>())
 		{
 			LayerSubsystem->RegisterMainUI(ShooterUIInstance);
+			// 먼저 도착한 Shooter 위치도 HUD 등록이 끝나면 바로 표시한다.
+			RefreshPairMarkerPresentation();
 		}
 	}
 	RefreshPartnerSuitUI();

@@ -14,6 +14,7 @@
 #include "UI/UILayerTypes.h"
 #include "UI/GameOverPendingTypes.h"
 #include "UI/DeveloperConvenienceTypes.h"
+#include "UI/PairPositionMarkerTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
@@ -28,6 +29,8 @@ class UInGameSettingWidget;
 class UDeveloperConvenienceWidget;
 class UUpgradeMachineWidget;
 class ULocalPlayerUILayerSubsystem;
+class UPairPositionMarkerWidget;
+class UTargetPointHudWidget;
 class UDamageFeedbackLayer;
 class UCameraShakeBase;
 class UOutlierUpgradeSetData;
@@ -571,7 +574,69 @@ protected:
 	virtual void RequestSuitFadeIn(const FGuid& TransitionId, float Duration);
 	virtual void RequestSuitTransitionCleanup(const FGuid& TransitionId);
 
+	void RefreshPairMarkerPresentation();
+
 private:
+	friend class FPairPositionMarkerLifecycleTest;
+	friend class FPairPositionMarkerDamageTest;
+	virtual void UpdateCameraManager(float DeltaSeconds) override;
+	void BindPairMarkerSources(AOutlierPlayerState* State);
+	void ClearPairMarkerSources();
+	void BindPairMarkerPeer(AOutlierPlayerState* Peer);
+	void HandlePairMarkerLinksChanged(AOutlierPlayerState* State);
+	void HandlePairMarkerReload(uint32 GameplayGeneration);
+	void HandlePairMarkerReady(uint32 GameplayGeneration);
+	UFUNCTION()
+	void HandlePairMarkerTargetDestroyed(AActor* Actor);
+	void RefreshPairMarkerTarget();
+	void SamplePairMarkerPosition();
+	void SetPairMarkerTarget(AFirstPersonCharacter* Target, const AOutlierPlayerState* Peer);
+	void BindPairMarkerDamageSource(APawn* Target);
+	void HandlePairMarkerDamageApplied();
+	UFUNCTION(Client, Reliable)
+	void ClientShowPairMarkerHit(const FPairPositionMarkerHit& Hit);
+	void UpdatePairMarkerDamageAvailability(bool bAvailable);
+	bool QueuePairMarkerHit(const FPairPositionMarkerHit& Hit, double ServerTime, double Duration);
+	void ApplyPendingPairMarkerHit();
+	UFUNCTION()
+	void OnRep_PairMarkerState();
+	void UpdatePairMarkerPlacement();
+	void ReleasePairMarkerHud();
+	bool CanPresentPairMarker() const;
+	bool ResolvePairMarkerPosition(FVector& OutPosition) const;
+	bool IsPairMarkerTargetVisible() const;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PairMarkerState)
+	FPairPositionMarkerSnapshot PairMarkerSnapshot;
+	UPROPERTY(ReplicatedUsing = OnRep_PairMarkerState)
+	FPairPositionMarkerTarget PairMarkerTarget;
+	UPROPERTY(Transient)
+	TObjectPtr<UTargetPointHudWidget> PairMarkerHud;
+	UPROPERTY(Transient)
+	TObjectPtr<UPairPositionMarkerWidget> PairMarkerWidget;
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Pair Marker")
+	TSubclassOf<UPairPositionMarkerWidget> PairMarkerWidgetClass;
+	TWeakObjectPtr<AOutlierPlayerState> PairMarkerPlayerState;
+	TWeakObjectPtr<AOutlierPlayerState> PairMarkerPeer;
+	TWeakObjectPtr<const AOutlierPlayerState> PairMarkerTargetPeer;
+	TWeakObjectPtr<UOutlierAbilitySystemComponent> PairMarkerDamageSource;
+	TWeakObjectPtr<UOutlierArenaSubsystem> PairMarkerArena;
+	TWeakObjectPtr<ULocalPlayerUILayerSubsystem> PairMarkerLayers;
+	FDelegateHandle PairMarkerCharactersHandle;
+	FDelegateHandle PairMarkerRoleHandle;
+	FDelegateHandle PairMarkerPeerCharactersHandle;
+	FDelegateHandle PairMarkerPeerRoleHandle;
+	FDelegateHandle PairMarkerReloadHandle;
+	FDelegateHandle PairMarkerReadyHandle;
+	FDelegateHandle PairMarkerDamageHandle;
+	FTimerHandle PairMarkerSampleTimer;
+	bool bPairMarkerReloading = false;
+	bool bPairMarkerDamageHudAvailable = false;
+	uint32 PairMarkerHitSequence = 0;
+	uint32 LastPairMarkerHitSequence = 0;
+	uint32 PresentedPairMarkerGeneration = 0;
+	double PairMarkerDamageAcceptAfter = 0.0;
+	FPairPositionMarkerHit PendingPairMarkerHit;
 	// 두 역할의 Controller가 같은 서버 연출 스트림을 사용한다. Pawn 빙의와 원래 Partner HP는 별개다.
 	void RefreshVitalitySources(AOutlierPlayerState* ChangedPlayerState);
 	void ClearVitalitySources();

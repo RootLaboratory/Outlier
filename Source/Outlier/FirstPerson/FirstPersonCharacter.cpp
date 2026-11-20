@@ -10,6 +10,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/SkeletalMesh.h"
 #include "FirstPersonInputConfig.h"
 #include "Interface/InteractableInterface.h"
 #include "Interaction/InteractableComponent.h"
@@ -87,10 +88,34 @@ AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectIni
 
 	GetCapsuleComponent()->SetCapsuleSize(34.0f, 96.0f);
 
+	PairMarkerAnchor = CreateDefaultSubobject<USceneComponent>(TEXT("PairMarkerAnchor"));
+	PairMarkerAnchor->SetupAttachment(GetCapsuleComponent());
+	PairMarkerAnchor->SetRelativeLocation(FVector(0.0, 0.0, 116.0));
+	PairMarkerAnchor->bEditableWhenInherited = true;
+
 	// configure character movement
 	// 공중 자동 제동은 적용하지 않는다. Slide 점프의 초과 속도 감속은 전용 커브가 담당한다.
 	GetCharacterMovement()->BrakingDecelerationFalling = 0.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+}
+
+FVector AFirstPersonCharacter::GetPairMarkerAnchorLocation() const
+{
+	if (bUseAutomaticPairMarkerAnchor)
+	{
+		const USkeletalMeshComponent* BodyMesh = GetMesh();
+		if (const USkeletalMesh* BodyAsset = BodyMesh ? BodyMesh->GetSkeletalMeshAsset() : nullptr)
+		{
+			// 서버와 클라이언트가 애니메이션 본 갱신 여부에 관계없이 같은 메시 기준을 사용한다.
+			const FBoxSphereBounds BodyBounds = BodyAsset->GetImportedBounds().TransformBy(BodyMesh->GetComponentTransform());
+			if (BodyBounds.BoxExtent.Z > UE_KINDA_SMALL_NUMBER)
+			{
+				constexpr double ClearanceAboveBody = 8.0;
+				return BodyBounds.Origin + FVector(0.0, 0.0, BodyBounds.BoxExtent.Z + ClearanceAboveBody);
+			}
+		}
+	}
+	return PairMarkerAnchor->GetComponentLocation();
 }
 
 FGenericTeamId AFirstPersonCharacter::GetGenericTeamId() const

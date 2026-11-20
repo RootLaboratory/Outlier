@@ -112,6 +112,7 @@ public:
 	FOnPairGameplayReady OnPairGameplayReady;
 	bool IsRestoringClearedEncounter(FGameplayTag RoomTag) const;
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
+	AOutlierPlayerState* FindPairedPlayerState(const AOutlierPlayerState& State) const;
 
 	UFUNCTION()
 	void HandlePlayerDeath(AShooterCharacter* Character);

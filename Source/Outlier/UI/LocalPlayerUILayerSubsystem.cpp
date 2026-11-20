@@ -122,6 +122,11 @@ void ULocalPlayerUILayerSubsystem::UnregisterMainUI(UMainUIBase* MainUI)
 	RegisteredMainUI.Reset();
 }
 
+bool ULocalPlayerUILayerSubsystem::IsMainUIRegistered(const UMainUIBase* MainUI) const
+{
+	return MainUI && RegisteredMainUI.Get() == MainUI;
+}
+
 bool ULocalPlayerUILayerSubsystem::EnsureLayerRoot()
 {
 	APlayerController* PlayerController = GetLocalPlayerController();

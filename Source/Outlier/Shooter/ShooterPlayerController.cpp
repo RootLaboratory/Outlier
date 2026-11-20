@@ -548,6 +548,7 @@ void AShooterPlayerController::BindMainUI()
 			LP->GetSubsystem<ULocalPlayerUILayerSubsystem>())
 		{
 			LayerSubsystem->RegisterMainUI(ShooterUIInstance);
+			RefreshPairMarkerPresentation();
 		}
 	}
 

@@ -5736,6 +5736,19 @@ FString AOutlierGameMode::GetPlayerSaveId(AController* Controller) const
 	return Controller->GetName();
 }
 
+AOutlierPlayerState* AOutlierGameMode::FindPairedPlayerState(const AOutlierPlayerState& State) const
+{
+	if (State.IsShooterPlayer())
+	{
+		return FindPairPlayerState(State.GetPairId(), EOutlierPlayerRole::Partner);
+	}
+	if (State.IsPartnerPlayer())
+	{
+		return FindPairPlayerState(State.GetPairId(), EOutlierPlayerRole::Shooter);
+	}
+	return nullptr;
+}
+
 AOutlierPlayerState* AOutlierGameMode::FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const
 {
 	if (PairId == INDEX_NONE || !GameState)

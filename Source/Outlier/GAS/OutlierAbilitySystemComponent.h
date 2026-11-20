@@ -98,6 +98,7 @@ struct FOutlierPartnerHackChargeState
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierPartnerHackChargesChanged, bool /* bRecovered */);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierVitalityPresentationChanged, const FOutlierVitalityPresentationUpdate&);
+DECLARE_MULTICAST_DELEGATE(FOutlierDamageApplied);
 
 UCLASS(ClassGroup = GAS)
 class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponent
@@ -110,6 +111,8 @@ public:
 	FOutlierSkillCooldownTimeChanged OnSkillCooldownTimeChanged;
 	virtual void OnGameplayEffectDurationChange(FActiveGameplayEffect& ActiveEffect) override;
 	FOutlierVitalityPresentationChanged OnVitalityPresentationChanged;
+	// 서버의 IncomingDamage가 실제로 체력이나 실드를 소비한 경우에만 발행한다.
+	FOutlierDamageApplied OnDamageApplied;
 	void GetVitalityPresentationSnapshot(TArray<FOutlierVitalityPresentationUpdate>& OutUpdates) const;
 	// GE 한 번에 여러 속성이 바뀌어도 최종값과 원인을 한 쌍으로 확정한다.
 	void BeginVitalityPresentation(EOutlierVitalityUpdatePolicy Policy);

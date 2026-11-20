@@ -73,6 +73,8 @@ void AFirstPersonPlayerController::GetLifetimeReplicatedProps(TArray<FLifetimePr
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME_CONDITION(AFirstPersonPlayerController, DeveloperConvenienceState, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AFirstPersonPlayerController, PairMarkerSnapshot, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AFirstPersonPlayerController, PairMarkerTarget, COND_OwnerOnly);
 }
 
 void AFirstPersonPlayerController::SetDeveloperConvenienceStateFromServer(
@@ -1723,12 +1725,14 @@ void AFirstPersonPlayerController::AddCameraBlackoutReason(ECameraBlackoutReason
 	}
 	CameraBlackoutReasons |= static_cast<uint8>(Reason);
 	ApplyCameraBlackout();
+	RefreshPairMarkerPresentation();
 }
 
 void AFirstPersonPlayerController::RemoveCameraBlackoutReason(ECameraBlackoutReason Reason)
 {
 	CameraBlackoutReasons &= ~static_cast<uint8>(Reason);
 	ApplyCameraBlackout();
+	RefreshPairMarkerPresentation();
 }
 
 void AFirstPersonPlayerController::ApplyCameraBlackout()
@@ -2095,6 +2099,7 @@ void AFirstPersonPlayerController::Destroyed()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ClearPairMarkerSources();
 	EndPresetTransition(PresetTransitionRequestId);
 	ClearPendingPresetUpgradeUI();
 	ClearDeveloperHitPresentation();
@@ -2829,6 +2834,7 @@ void AFirstPersonPlayerController::BindPostProcessSubSystem()
 
 void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 {
+	BindPairMarkerSources(GetPlayerState<AOutlierPlayerState>());
 	if (ULocalPlayer* LocalPlayer = GetLocalPlayer(); LocalPlayer && LocalPlayer->PlayerController == this)
 	{
 		if (ULocalPlayerSettingsSubsystem* Settings = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>())
@@ -3609,6 +3615,7 @@ void AFirstPersonPlayerController::RefreshHudVisibility()
 	}
 	const bool bWasCollapsed = MainWidgetCollapseState.bCollapsed;
 	MainWidgetCollapseState.Apply(ShooterUIInstance, ShouldShowMainWidget());
+	RefreshPairMarkerPresentation();
 	if (bWasCollapsed != MainWidgetCollapseState.bCollapsed && GetLocalPlayer())
 	{
 		// 사망/Partner 빙의로 HUD 루트만 접혀도, 닫기/복귀 시점에 과거 잔상을 버린다.
@@ -3776,6 +3783,7 @@ void AFirstPersonPlayerController::ClientApplyVitalityPresentation_Implementatio
 void AFirstPersonPlayerController::ReceivedPlayer()
 {
 	Super::ReceivedPlayer();
+	BindPairMarkerSources(GetPlayerState<AOutlierPlayerState>());
 	// Listen 전환에서는 최초 서버 Snapshot보다 LocalPlayer 연결이 늦을 수 있다.
 	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
 	{

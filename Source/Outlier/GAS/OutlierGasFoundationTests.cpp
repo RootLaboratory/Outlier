@@ -1544,7 +1544,10 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 	TArray<FOutlierVitalityPresentationUpdate> PresentationUpdates;
 	const FDelegateHandle PresentationHandle = AbilitySystem->OnVitalityPresentationChanged.AddLambda(
 		[&PresentationUpdates](const FOutlierVitalityPresentationUpdate& Update) { PresentationUpdates.Add(Update); });
+	int32 DamageSignals = 0;
+	const FDelegateHandle DamageHandle = AbilitySystem->OnDamageApplied.AddLambda([&DamageSignals]() { ++DamageSignals; });
 	TestTrue(TEXT("Initialize vitality GameplayEffect applies"), AbilitySystem->InitializeVitalityToSelf(175.0f));
+	TestEqual(TEXT("Initializing vitality is not a damage signal"), DamageSignals, 0);
 	TestEqual(TEXT("Vitality initialization publishes one final health update"), PresentationUpdates.Num(), 1);
 	if (!PresentationUpdates.IsEmpty())
 	{
@@ -1563,12 +1566,14 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 		TEXT("Damage can reduce initialized health"),
 		AbilitySystem->ApplyDamageToSelf(40.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
 	TestEqual(TEXT("Damage changed Health before restore"), Shooter->GetVitalAttributeSet()->GetHealth(), 135.0f);
+	TestEqual(TEXT("Health damage emits one damage signal"), DamageSignals, 1);
 	if (TestTrue(TEXT("Damage produces presentation data"), !PresentationUpdates.IsEmpty()))
 		TestEqual(TEXT("Ordinary damage remains animated"), PresentationUpdates.Last().Policy, EOutlierVitalityUpdatePolicy::Animated);
 
 
 	TestTrue(TEXT("Restore Health to Max GameplayEffect applies"), AbilitySystem->RestoreHealthToMax());
 	TestEqual(TEXT("Restore sets Health back to MaxHealth"), Shooter->GetVitalAttributeSet()->GetHealth(), 175.0f);
+	TestEqual(TEXT("Restoring health is not a damage signal"), DamageSignals, 1);
 	if (TestTrue(TEXT("Restoration produces presentation data"), !PresentationUpdates.IsEmpty()))
 		TestEqual(TEXT("Restoration uses immediate presentation"), PresentationUpdates.Last().Policy, EOutlierVitalityUpdatePolicy::Immediate);
 
@@ -1579,7 +1584,9 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 100.0f);
 	PresentationUpdates.Reset();
 	AbilitySystem->ApplyShieldDeltaToSelf(-10.0f, EOutlierVitalityUpdatePolicy::Immediate);
+	TestEqual(TEXT("Non-damage shield consumption emits no signal"), DamageSignals, 1);
 	AbilitySystem->ApplyDamageToSelf(5.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon());
+	TestEqual(TEXT("Damage absorbed by the base shield emits a signal"), DamageSignals, 2);
 	TestEqual(TEXT("Consumption and damage keep separate updates within one frame"), PresentationUpdates.Num(), 2);
 	if (PresentationUpdates.Num() == 2)
 	{
@@ -1590,6 +1597,13 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 	}
 	AbilitySystem->OnVitalityPresentationChanged.Remove(PresentationHandle);
 	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 0.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 20.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 20.0f);
+	AbilitySystem->ApplyDamageToSelf(5.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon());
+	TestEqual(TEXT("Damage absorbed by the Partner shield emits a signal"), DamageSignals, 3);
+	TestEqual(TEXT("The Partner shield absorbed the full hit"), Shooter->GetVitalAttributeSet()->GetHealth(), 175.0f);
+	AbilitySystem->ApplyPartnerShieldDeltaToSelf(-15.0f, -20.0f, EOutlierVitalityUpdatePolicy::Immediate);
+	TestEqual(TEXT("Clearing the Partner shield emits no damage signal"), DamageSignals, 3);
 
 
 	const FActiveGameplayEffectHandle RebootHandle = AbilitySystem->ApplyRebootStateToSelf(2.5f);
@@ -1618,7 +1632,9 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 		TEXT("Damage is rejected while damage immunity is active"),
 		AbilitySystem->ApplyDamageToSelf(10.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
 	TestEqual(TEXT("Rejected damage leaves Health unchanged"), Shooter->GetVitalAttributeSet()->GetHealth(), 175.0f);
+	TestEqual(TEXT("Immunity emits no damage signal"), DamageSignals, 3);
 	TestTrue(TEXT("Damage-immune effect can be removed by handle"), AbilitySystem->RemoveActiveEffectFromSelf(ImmuneHandle));
+	AbilitySystem->OnDamageApplied.Remove(DamageHandle);
 
 	Shooter->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);

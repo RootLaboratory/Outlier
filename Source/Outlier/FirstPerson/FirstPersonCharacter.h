@@ -68,6 +68,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USceneComponent* FirstPersonViewModelRoot;
 
+	/** 동료 마커를 3인칭 메시 상단에 자동으로 배치한다. */
+	UPROPERTY(EditDefaultsOnly, Category = "Pair Marker")
+	bool bUseAutomaticPairMarkerAnchor = true;
+
+	/** 자동 배치를 끄거나 메시가 없을 때 사용하는 동료 마커 기준점. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components)
+	TObjectPtr<USceneComponent> PairMarkerAnchor;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	URoomTagComponent* RoomTagComponent;
 
@@ -224,6 +232,8 @@ public:
 	USceneComponent* GetFirstPersonCameraRoot() const { return FirstPersonCameraRoot; }
 
 	USceneComponent* GetFirstPersonViewModelRoot() const { return FirstPersonViewModelRoot; }
+
+	FVector GetPairMarkerAnchorLocation() const;
 
 	virtual void EquipWeapon(AWeaponBase* Weapon);
 

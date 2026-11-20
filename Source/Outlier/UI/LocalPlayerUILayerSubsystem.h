@@ -42,6 +42,7 @@ public:
 
 	void RegisterMainUI(UMainUIBase* MainUI);
 	void UnregisterMainUI(UMainUIBase* MainUI);
+	bool IsMainUIRegistered(const UMainUIBase* MainUI) const;
 
 	bool EnsureLayerRoot();
 	void DestroyLayerRoot();
