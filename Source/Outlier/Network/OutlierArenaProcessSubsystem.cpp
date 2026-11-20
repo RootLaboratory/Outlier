@@ -16,6 +16,7 @@
 #include "OutlierArenaSettings.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
@@ -66,7 +67,12 @@ void UOutlierArenaProcessSubsystem::Initialize(FSubsystemCollectionBase& Collect
 		LastWorkerHeartbeatSentAt = CurrentTime;
 		ConnectWorkerControl();
 	}
-	else if (!StartLobbyManager())
+	else if (Settings->bUseArenaControlChannel)
+	{
+		// GameInstance 서브시스템은 Lobby가 게임 포트를 바인딩하기 전에 초기화된다.
+		FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UOutlierArenaProcessSubsystem::HandleLobbyMapLoaded);
+	}
+	else
 	{
 		return;
 	}
@@ -79,6 +85,7 @@ void UOutlierArenaProcessSubsystem::Initialize(FSubsystemCollectionBase& Collect
 void UOutlierArenaProcessSubsystem::Deinitialize()
 {
 	bShuttingDown = true;
+	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 	if (TickerHandle.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
@@ -108,30 +115,69 @@ void UOutlierArenaProcessSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
-bool UOutlierArenaProcessSubsystem::StartLobbyManager()
+void UOutlierArenaProcessSubsystem::HandleLobbyMapLoaded(UWorld* LobbyWorld)
+{
+	if (!LobbyWorld || LobbyWorld->GetGameInstance() != GetGameInstance()
+		|| LobbyWorld->GetNetMode() != NM_DedicatedServer)
+	{
+		return;
+	}
+
+	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
+	UNetDriver* NetDriver = LobbyWorld->GetNetDriver();
+	const TSharedPtr<const FInternetAddr> LocalAddress = NetDriver ? NetDriver->GetLocalAddr() : nullptr;
+	if (!LocalAddress || LocalAddress->GetPort() <= 0)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ArenaProcess] Lobby game port unavailable; no Arena Workers started"));
+		return;
+	}
+
+	StartLobbyManager(LocalAddress->GetPort());
+}
+
+void UOutlierArenaProcessSubsystem::StartLobbyManager(int32 LobbyPort)
 {
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
-	if (!Settings || !Settings->bUseProcessManager || !Settings->bUseArenaControlChannel)
+	const int32 BasePort = Settings->ArenaBasePort;
+	if (BasePort < 1 || BasePort > MAX_uint16 || ControlPort < 1 || ControlPort > MAX_uint16)
 	{
-		return false;
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaProcess] Invalid ArenaBasePort=%d or ArenaControlPort=%d; ports must be in 1..65535"),
+			BasePort, ControlPort);
+		return;
 	}
 
 	SlotRegistry.Initialize(
 		Settings->ResolveArenaWorkerHost(),
-		Settings->ArenaBasePort,
+		BasePort,
 		Settings->StaticArenaSlots);
-	WorkerRuntimes.SetNum(SlotRegistry.Num());
+	const int32 Count = SlotRegistry.Num();
+	const int32 LastPort = BasePort + Count - 1;
+	UE_LOG(LogTemp, Display, TEXT("[ArenaProcess] RequestedCount=%d AppliedCount=%d GamePorts=%d..%d%s"),
+		Settings->StaticArenaSlots, Count, BasePort, LastPort,
+		Settings->StaticArenaSlots == Count ? TEXT("") : TEXT(" (count clamped to 1..16)"));
+	if (LastPort > MAX_uint16)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ArenaProcess] Arena game port range %d..%d exceeds 65535"), BasePort, LastPort);
+		return;
+	}
+	if (LobbyPort >= BasePort && LobbyPort <= LastPort)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ArenaProcess] Arena game port range %d..%d overlaps Lobby game port %d"),
+			BasePort, LastPort, LobbyPort);
+		return;
+	}
 	if (!StartControlListener())
 	{
-		return false;
+		return;
 	}
 
+	WorkerRuntimes.SetNum(Count);
 	bLobbyManagerActive = true;
-	for (int32 SlotId = 0; SlotId < SlotRegistry.Num(); ++SlotId)
+	for (int32 SlotId = 0; SlotId < Count; ++SlotId)
 	{
 		LaunchWorker(SlotId);
 	}
-	return true;
 }
 
 bool UOutlierArenaProcessSubsystem::StartControlListener()
@@ -140,7 +186,7 @@ bool UOutlierArenaProcessSubsystem::StartControlListener()
 		.AsReusable()
 		.BoundToAddress(FIPv4Address::InternalLoopback)
 		.BoundToPort(ControlPort)
-		.Listening(8)
+		.Listening(FMath::Max(8, SlotRegistry.Num()))
 		.AsNonBlocking();
 	if (!ListenerSocket)
 	{
@@ -168,8 +214,7 @@ bool UOutlierArenaProcessSubsystem::LaunchWorker(int32 SlotId)
 	FWorkerRuntime& Runtime = WorkerRuntimes[SlotId];
 	Runtime.bControlConnectedOnce = false;
 	const FString Executable = ResolveWorkerExecutable();
-	const int32 WorkerPort = Settings->ArenaBasePort + SlotId;
-	const FString Arguments = BuildWorkerArguments(SlotId, WorkerPort);
+	const FString Arguments = BuildWorkerArguments(SlotId, Slot->Port);
 	uint32 ProcessId = 0;
 	Runtime.ProcessHandle = FPlatformProcess::CreateProc(
 		*Executable,
@@ -936,6 +981,9 @@ FString UOutlierArenaProcessSubsystem::BuildWorkerArguments(
 		WorkerPort,
 		SlotId,
 		ControlPort);
+
+	// 포트가 이미 사용 중이면 해당 Slot만 기동에 실패하도록 할당된 포트만 시도한다.
+	Arguments += TEXT(" -ini:Engine:[/Script/OnlineSubsystemUtils.IpNetDriver]:MaxPortCountToTry=0");
 
 	// 자식 프로세스에도 실제 Lobby 복귀 주소를 전달한다.
 	Arguments += FString::Printf(TEXT(" -LobbyAddress=\"%s\""),

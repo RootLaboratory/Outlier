@@ -79,7 +79,9 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process")
 	FString ArenaWorkerHost = TEXT("127.0.0.1");
 
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (ClampMin = "1", ClampMax = "16"))
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (
+		DisplayName = "Arena Count", ClampMin = "1", ClampMax = "16",
+		ToolTip = "Dedicated Lobby 시작 시 실행할 Arena Worker 수입니다. 변경 사항을 적용하려면 Dedicated Lobby를 재시작하세요."))
 	int32 StaticArenaSlots = 4;
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (ClampMin = "1", ClampMax = "65535"))

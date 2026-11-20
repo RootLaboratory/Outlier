@@ -71,6 +71,7 @@ namespace OutlierArenaControl
 struct FOutlierArenaSlotRecord
 {
 	int32 SlotId = INDEX_NONE;
+	int32 Port = 0;
 	FString Address;
 	EOutlierArenaSlotState State = EOutlierArenaSlotState::Failed;
 	uint32 ProcessId = 0;
