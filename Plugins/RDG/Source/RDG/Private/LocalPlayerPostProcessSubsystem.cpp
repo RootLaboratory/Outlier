@@ -178,10 +178,12 @@ void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTr
 	bADSBlurAiming = false;
 	ADSBlurElapsedTime = 0.0f;
 	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
+	HackPossessionPlayRate = 1.0f;
 	HackTransitionZoomBlurElapsedTime = 0.0f;
 	HackTransitionBlackoutElapsedTime = 0.0f;
 	bHackTransitionCoveredBroadcastSent = false;
 	SplitPrismPhase = ESplitPrismPhase::Idle;
+	SplitPrismPlayRate = 1.0f;
 	SplitPrismElapsedTime = 0.0f;
 	SplitPrismSettleElapsedTime = 0.0f;
 	SplitPrismSubjectDistance = -1.0f;
@@ -1162,8 +1164,9 @@ namespace SplitPrismAnimation
 	}
 }
 
-void ULocalPlayerPostProcessSubsystem::StartSplitPrism()
+void ULocalPlayerPostProcessSubsystem::StartSplitPrism(bool bUseHackPossessionPlayRate)
 {
+	SplitPrismPlayRate = bUseHackPossessionPlayRate ? HackPossessionPlayRate : 1.0f;
 	SplitPrismPhase = ESplitPrismPhase::Focusing;
 	SplitPrismElapsedTime = 0.0f;
 	SplitPrismSettleElapsedTime = 0.0f;
@@ -1315,7 +1318,7 @@ void ULocalPlayerPostProcessSubsystem::UpdateSplitPrism(float DeltaTime)
 			TraceSplitPrismSubjectDistance();
 		}
 
-		SplitPrismElapsedTime += DeltaTime;
+		SplitPrismElapsedTime += DeltaTime * SplitPrismPlayRate;
 		if (SplitPrismElapsedTime >= SplitPrismSettings.FocusDuration)
 		{
 			EnterSplitPrismPhaseAfterFocus();
@@ -1323,7 +1326,7 @@ void ULocalPlayerPostProcessSubsystem::UpdateSplitPrism(float DeltaTime)
 		break;
 
 	case ESplitPrismPhase::Settling:
-		SplitPrismSettleElapsedTime += DeltaTime;
+		SplitPrismSettleElapsedTime += DeltaTime * SplitPrismPlayRate;
 		if (SplitPrismSettleElapsedTime >= SplitPrismSettings.DepthSettleDuration)
 		{
 			SplitPrismPhase = ESplitPrismPhase::Idle;
@@ -1471,13 +1474,15 @@ void ULocalPlayerPostProcessSubsystem::ApplyScreenBlackoutAlpha(float Alpha)
 	TickFrame();
 }
 
-void ULocalPlayerPostProcessSubsystem::StartHackPossessionTransition()
+void ULocalPlayerPostProcessSubsystem::StartHackPossessionTransition(float PlayRate)
 {
 	if (HackPossessionTransitionPhase != EHackPossessionTransitionPhase::Idle)
 	{
 		return;
 	}
 
+	const bool bValidPlayRate = FMath::IsFinite(PlayRate) && PlayRate >= 0.25f && PlayRate <= 4.0f;
+	HackPossessionPlayRate = bValidPlayRate ? PlayRate : 1.0f;
 	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::PixelSorting;
 	HackTransitionZoomBlurElapsedTime = 0.0f;
 	HackTransitionBlackoutElapsedTime = 0.0f;
@@ -1533,6 +1538,7 @@ bool ULocalPlayerPostProcessSubsystem::StartHackPossessionReveal()
 void ULocalPlayerPostProcessSubsystem::CancelHackPossessionTransition()
 {
 	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
+	HackPossessionPlayRate = 1.0f;
 	HackTransitionZoomBlurElapsedTime = 0.0f;
 	HackTransitionBlackoutElapsedTime = 0.0f;
 	bHackTransitionCoveredBroadcastSent = false;
@@ -1569,8 +1575,11 @@ void ULocalPlayerPostProcessSubsystem::UpdatePixelSorting(float DeltaTime)
 	const float Minimum = static_cast<float>(FMath::Clamp(Parameters.MinThreshold, 0, 255));
 	const float ThresholdRange = 255.0f - Minimum;
 	const float Speed = FMath::Max(0.0f, Parameters.Scale);
+	const bool bHackPixelSorting = HackPossessionTransitionPhase == EHackPossessionTransitionPhase::PixelSorting
+		|| HackPossessionTransitionPhase == EHackPossessionTransitionPhase::BlurToBlack;
+	const float PlaybackDelta = bHackPixelSorting ? DeltaTime * HackPossessionPlayRate : DeltaTime;
 	const float ProgressStep = ThresholdRange > KINDA_SMALL_NUMBER
-		? DeltaTime * Speed / ThresholdRange
+		? PlaybackDelta * Speed / ThresholdRange
 		: 1.0f;
 	const float NextProgress = FMath::Clamp(Parameters.Progress + ProgressStep, 0.0f, 1.0f);
 	if (FMath::IsNearlyEqual(NextProgress, Parameters.Progress))
@@ -1634,8 +1643,9 @@ void ULocalPlayerPostProcessSubsystem::UpdateHackPossessionTransition(float Delt
 	if (HackPossessionTransitionPhase == EHackPossessionTransitionPhase::BlurToBlack)
 	{
 		FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
+		const float PlaybackDelta = DeltaTime * HackPossessionPlayRate;
 		const float ZoomBlurFadeInTimeScale = FMath::Clamp(ZoomBlur.ZoomBlurFadeInTimeScale, 0.05f, 10.0f);
-		HackTransitionZoomBlurElapsedTime += DeltaTime * ZoomBlurFadeInTimeScale;
+		HackTransitionZoomBlurElapsedTime += PlaybackDelta * ZoomBlurFadeInTimeScale;
 		const float ZoomBlurDuration = FMath::Max(HackTransitionZoomBlurDuration, KINDA_SMALL_NUMBER);
 		const float LinearProgress = FMath::Clamp(
 			HackTransitionZoomBlurElapsedTime / ZoomBlurDuration,
@@ -1650,7 +1660,7 @@ void ULocalPlayerPostProcessSubsystem::UpdateHackPossessionTransition(float Delt
 		if (NextProgress >= BlackoutStartProgress)
 		{
 			const float BlackoutTimeScale = FMath::Clamp(ZoomBlur.BlackoutFadeInTimeScale, 0.05f, 10.0f);
-			HackTransitionBlackoutElapsedTime += DeltaTime * BlackoutTimeScale;
+			HackTransitionBlackoutElapsedTime += PlaybackDelta * BlackoutTimeScale;
 			const float BlackoutDuration = FMath::Max(HackTransitionBlackoutDuration, KINDA_SMALL_NUMBER);
 			const float LinearBlackoutAlpha = FMath::Clamp(
 				HackTransitionBlackoutElapsedTime / BlackoutDuration,
@@ -1700,10 +1710,11 @@ void ULocalPlayerPostProcessSubsystem::UpdateHackPossessionTransition(float Delt
 	}
 
 	FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
+	const float PlaybackDelta = DeltaTime * HackPossessionPlayRate;
 	const float ZoomBlurFadeOutTimeScale = FMath::Clamp(ZoomBlur.ZoomBlurFadeOutTimeScale, 0.05f, 10.0f);
 	const float BlackoutTimeScale = FMath::Clamp(ZoomBlur.BlackoutFadeOutTimeScale, 0.05f, 10.0f);
-	HackTransitionZoomBlurElapsedTime += DeltaTime * ZoomBlurFadeOutTimeScale;
-	HackTransitionBlackoutElapsedTime += DeltaTime * BlackoutTimeScale;
+	HackTransitionZoomBlurElapsedTime += PlaybackDelta * ZoomBlurFadeOutTimeScale;
+	HackTransitionBlackoutElapsedTime += PlaybackDelta * BlackoutTimeScale;
 
 	const float ZoomBlurDuration = FMath::Max(HackTransitionZoomBlurDuration, KINDA_SMALL_NUMBER);
 	const float BlackoutDuration = FMath::Max(HackTransitionBlackoutDuration, KINDA_SMALL_NUMBER);
@@ -1746,6 +1757,7 @@ void ULocalPlayerPostProcessSubsystem::UpdateHackPossessionTransition(float Delt
 	PostProcessParameters.ZoomBlur.Progress = 0.0f;
 	PostProcessParameters.ZoomBlur.Strength = 0.0f;
 	PostProcessParameters.ZoomBlur.StartOffset = 0.0f;
+	// 화면 복귀 완료 콜백에서 이어지는 Split Prism도 이번 빙의의 배속을 사용한다.
 	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
 	HackTransitionZoomBlurElapsedTime = 0.0f;
 	HackTransitionBlackoutElapsedTime = 0.0f;

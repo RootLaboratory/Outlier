@@ -181,7 +181,7 @@ public:
 
 	// Split Prism(Slate 갈라짐 + 씬 PP 블러 + 깊이 잔차). 진행 중이면 처음부터 다시 시작한다.
 	// FocusDuration 뒤: 깊이 잔차가 꺼져 있으면 바로 끝, A(Settle)는 잔차를 줄이고 끝, B(Persist)는 Stop까지 유지.
-	void StartSplitPrism();
+	void StartSplitPrism(bool bUseHackPossessionPlayRate = false);
 	void StopSplitPrism();
 	bool IsSplitPrismActive() const { return SplitPrismPhase != ESplitPrismPhase::Idle; }
 	ESplitPrismPhase GetSplitPrismPhase() const { return SplitPrismPhase; }
@@ -194,7 +194,7 @@ public:
 	const FSplitPrismSettings& GetSplitPrismSettings() const { return SplitPrismSettings; }
 	void SetSplitPrismSettings(const FSplitPrismSettings& InSettings);
 
-	void StartHackPossessionTransition();
+	void StartHackPossessionTransition(float PlayRate);
 	bool StartHackPossessionReveal();
 	void CancelHackPossessionTransition();
 	bool IsHackPossessionTransitionActive() const;
@@ -309,6 +309,7 @@ private:
 	float ADSBlurSocketDistance = 11.0f;
 
 	EHackPossessionTransitionPhase HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
+	float HackPossessionPlayRate = 1.0f;
 	float HackTransitionZoomBlurElapsedTime = 0.0f;
 	float HackTransitionBlackoutElapsedTime = 0.0f;
 	float HackTransitionZoomBlurDuration = 0.35f;
@@ -328,6 +329,7 @@ private:
 
 	FSplitPrismSettings SplitPrismSettings;
 	ESplitPrismPhase SplitPrismPhase = ESplitPrismPhase::Idle;
+	float SplitPrismPlayRate = 1.0f;
 	// Focusing 경과 시간.
 	float SplitPrismElapsedTime = 0.0f;
 	// Settling 경과 시간.

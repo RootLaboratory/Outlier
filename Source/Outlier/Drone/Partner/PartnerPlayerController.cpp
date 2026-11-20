@@ -257,7 +257,7 @@ void APartnerPlayerController::HandlePartnerHackPossessionTransition()
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
 			LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
-			PPSubsystem->StartHackPossessionTransition();
+			PPSubsystem->StartHackPossessionTransition(HackPossessionPresentationPlayRate);
 			return;
 		}
 	}
@@ -603,7 +603,7 @@ void APartnerPlayerController::SetPartnerPossessionState(
 			if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
 				LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 			{
-				PPSubsystem->StartSplitPrism();
+				PPSubsystem->StartSplitPrism(/*bUseHackPossessionPlayRate=*/true);
 			}
 		}
 		break;

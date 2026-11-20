@@ -56,6 +56,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Partner|Player")
 	FName PartnerPawnTag = FName("Partner");
 
+	UPROPERTY(EditDefaultsOnly, Category = "Partner|EnemyPossession",
+		meta = (ClampMin = "0.25", ClampMax = "4.0", UIMin = "0.25", UIMax = "4.0"))
+	float HackPossessionPresentationPlayRate = 1.0f;
+
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
