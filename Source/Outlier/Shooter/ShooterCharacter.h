@@ -605,18 +605,45 @@ protected:
 	FEquipFireRequest LocalEquipFire;
 	FEquipFireRequest ServerEquipFire;
 	TWeakObjectPtr<AWeaponBase> ServerEquipFireWeapon;
-	uint32 EquipFireInputSequence = 0;
+	uint32 EquipInputSequence = 0;
 	uint32 LastEquipFirePress = 0;
 	uint32 LastEquipFireRelease = 0;
 	uint32 InvalidatedEquipFireRequests = 0;
 	bool bAttackButtonHeld = false;
 
-	uint32 IssueEquipFireInputSequence();
-	float GetEquipFireRequestLifetime() const;
+	struct FEquipAimRequest
+	{
+		uint32 Request = 0;
+		uint32 Generation = 0;
+		double Deadline = 0.0;
+		TWeakObjectPtr<AWeaponBase> Weapon;
+		bool bCompleted = false;
+	};
+
+	FEquipAimRequest LocalEquipAim;
+	FEquipAimRequest ServerEquipAim;
+	uint32 PendingEquipAimRequest = 0;
+	double PendingEquipAimDeadline = 0.0;
+	uint32 LastEquipAimPress = 0;
+	uint32 InvalidatedEquipAimRequests = 0;
+	bool bAimButtonHeld = false;
+	bool bFreshAimKeyPress = false;
+
+	uint32 IssueEquipInputSequence();
+	float GetEquipInputRequestLifetime() const;
 	bool TryResolveLocalEquipFire();
 	void CancelServerEquipFire();
 	void ResetEquipFireInput();
+	uint32 BeginEquipInputRequest();
+	bool TryBufferEquipAimPress();
+	void ReleaseEquipAimInput();
+	void ResetLocalEquipAimInput();
+	void TryResolveLocalEquipAim();
+	bool AcceptBufferedEquipAimInput();
+	void CancelServerEquipAim();
 	virtual uint32 BeginWeaponPickupInput(AWeaponBase* Pickup) override;
+	virtual void ServerInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId,
+		FVector_NetQuantizeNormal NodeAimDirection, uint32 WeaponPickupRequest) override;
 	virtual void HandleAttackInputReleased() override;
 	bool bPreparingWeaponEquip = false;
 	bool bAwaitingServerEquipCompletion = false;
@@ -634,6 +661,7 @@ protected:
 	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> ActionInputSubsystem;
 	TWeakObjectPtr<ULocalPlayerSettingsSubsystem> SprintSettingsSubsystem;
 	TArray<FKey> SprintInputKeys;
+	TArray<FKey> AimInputKeys;
 	void BindActionInputReset();
 	void UnbindSprintSettings();
 	void HandleSprintSettingsContextChanged(EOutlierPlayerRole SettingsRole);
@@ -922,6 +950,7 @@ public:
 	bool IsWeaponSwitchInProgress() const;
 	void ResetActionInput();
 	void NotifySprintKeyPressed(FKey Key);
+	void NotifyAimKeyEvent(FKey Key, bool bPressed);
 	bool IsSliding() const;
 	bool AllowsMeleeAttackWhileSliding() const { return bAllowMeleeAttackWhileSliding; }
 	bool IsSprinting() const;
@@ -1178,6 +1207,11 @@ protected:
 
 	UFUNCTION(Client, Reliable)
 	void ClientAcceptEquipFire(uint32 Generation, uint32 Request, float Lifetime);
+
+	UFUNCTION(Client, Reliable)
+	void ClientAcceptEquipAim(uint32 Generation, uint32 Request, float Lifetime, AWeaponBase* TargetWeapon);
+	UFUNCTION(Client, Reliable)
+	void ClientRejectEquipAim(uint32 Request);
 
 	UFUNCTION(Server, Reliable)
 	void ServerResolveEquipFire(AWeaponBase* Weapon, uint32 Generation, uint32 Request, uint32 Press, bool bHeld);

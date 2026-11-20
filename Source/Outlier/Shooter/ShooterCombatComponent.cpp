@@ -359,8 +359,11 @@ void UShooterCombatComponent::PrepareForWeaponEquip()
 void UShooterCombatComponent::HandleAimPressed()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
-		|| bRequireAimRelease)
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
+	{
+		return;
+	}
+	if (ShooterCharacter->TryBufferEquipAimPress() || bRequireAimRelease)
 	{
 		return;
 	}
@@ -461,6 +464,7 @@ void UShooterCombatComponent::HandleAimReleased()
 		return;
 	}
 	bRequireAimRelease = false;
+	ShooterCharacter->ReleaseEquipAimInput();
 
 	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement());
 	const uint32 InputSequence = Movement->RecordActionInput(false);
@@ -504,6 +508,13 @@ void UShooterCombatComponent::ApplyAimInput(bool bNewWantsToAim)
 	ShooterCharacter->RefreshMovementState();
 	RestoreAimIfRequested();
 	RefreshCombatState();
+}
+
+void UShooterCombatComponent::ApplyBufferedEquipAim()
+{
+	// 교체 전 홀드의 Release가 이전 세대에서 폐기됐어도 검증된 새 Press는 적용한다.
+	bRequireAimRelease = false;
+	ApplyAimInput(true);
 }
 
 bool UShooterCombatComponent::ShouldDelayFireForSprintExit(const AShooterCharacter& ShooterCharacter) const

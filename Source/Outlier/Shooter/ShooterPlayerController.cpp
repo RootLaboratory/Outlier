@@ -35,7 +35,18 @@ bool AShooterPlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// Enhanced Input의 컨텍스트 복구로 생긴 Started와 실제 키 재입력을 구분한다.
 	if (Params.Event == IE_Pressed)
 	{
-		if (auto* Shooter = Cast<AShooterCharacter>(GetPawn())) Shooter->NotifySprintKeyPressed(Params.Key);
+		if (auto* Shooter = Cast<AShooterCharacter>(GetPawn()))
+		{
+			Shooter->NotifySprintKeyPressed(Params.Key);
+			Shooter->NotifyAimKeyEvent(Params.Key, true);
+		}
+	}
+	else if (Params.Event == IE_Released)
+	{
+		if (auto* Shooter = Cast<AShooterCharacter>(GetPawn()))
+		{
+			Shooter->NotifyAimKeyEvent(Params.Key, false);
+		}
 	}
 	return Super::InputKey(Params);
 }

@@ -178,7 +178,9 @@ public:
 	float GetCurrentSlideSpeed() const { return CurrentSlideSpeed; }
 	FVector GetSlideDirection() const { return SlideDirection; }
 	bool QueueMovementInput(EShooterMovementInput Input);
-	uint32 RecordActionInput(bool bAim);
+	// 타깃은 Switch ID 대신 현재 Equip 세대에 연결된 서버 장착 요청으로 검증한다.
+	static constexpr int32 BufferedEquipAimInput = -1;
+	uint32 RecordActionInput(bool bAim, bool bBufferedEquipAim = false);
 	uint32 RecordFireInput(bool bFire, bool bForce = false);
 	void CancelActionInput(bool bCancelSprint, bool bCancelAim);
 	bool ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId = 0, bool bHoldSprint = false, bool bFire = false, uint32 EquipGeneration = 0);

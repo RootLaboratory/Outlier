@@ -320,13 +320,12 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot, uint32 FireR
 
 	const int32 WeaponIndex = static_cast<int32>(Slot);
 
-	if (FireRequest == 0 && ShooterCharacter->IsLocallyControlled() && ShooterCharacter->CurrentWeapon)
-	{
-		FireRequest = ShooterCharacter->IssueEquipFireInputSequence();
-	}
-
 	if (!ShooterCharacter->HasAuthority())
 	{
+		if (FireRequest == 0 && ShooterCharacter->IsLocallyControlled() && ShooterCharacter->CurrentWeapon)
+		{
+			FireRequest = ShooterCharacter->BeginEquipInputRequest();
+		}
 		ShooterCharacter->ServerSelectWeaponByIndex(WeaponIndex, FireRequest);
 		return;
 	}
@@ -342,6 +341,10 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot, uint32 FireR
 		return;
 	}
 
+	if (FireRequest == 0 && ShooterCharacter->IsLocallyControlled() && ShooterCharacter->CurrentWeapon)
+	{
+		FireRequest = ShooterCharacter->BeginEquipInputRequest();
+	}
 	// 빈 슬롯/동일 무기 입력은 행동을 유지한다. 실제 교체가 확정된 뒤 취소 경계를 연다.
 	ShooterCharacter->BeginWeaponEquip(FireRequest, TargetWeapon);
 	if (Slot != EWeaponSlot::Primary)
@@ -432,6 +435,7 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 	{
 		// 실패/timeout은 정상 완료 복구와 구분한다. 잠금을 풀기 전에 예약을 버린다.
 		ShooterCharacter->CancelServerEquipFire();
+		ShooterCharacter->CancelServerEquipAim();
 		ShooterCharacter->FailedProceduralSwitchId = PendingSwitchId;
 		ShooterCharacter->StopAimInternal();
 		if (ShooterCharacter->HasAuthority() && !ShooterCharacter->IsDead() &&

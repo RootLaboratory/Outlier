@@ -5,7 +5,9 @@
 #include "Shooter/ShooterCombatComponent.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Shooter/ShooterMovementComponent.h"
+#include "Weapon/MeleeWeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "EnhancedInputSubsystems.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
@@ -129,10 +131,20 @@ bool FShooterEquipLifecycleTest::RunTest(const FString& Parameters)
 	Controller->Possess(Shooter);
 	Controller->Player = NewObject<ULocalPlayer>(GEngine);
 	Controller->SetAsLocalPlayerController();
+	// 직접 주입했던 원격 입력 순번을 다음 로컬 소유자의 물리 입력과 섞지 않는다.
+	Movement->ResetSlideForLifecycle();
+	Movement->SetMovementMode(MOVE_Walking);
 	for (bool bServerFirst : {false, true})
 	{
 		ARangedWeaponBase* Pickup = World->SpawnActor<ARangedWeaponBase>(PistolClass, Spawn);
-		Inventory->HandleEquipWeapon(Pickup);
+		const uint32 AimRequest = Shooter->BeginWeaponPickupInput(Pickup);
+		if (bServerFirst)
+		{
+			Shooter->HandleAimPressed();
+			TestFalse(TEXT("Aim before acceptance waits for the requested pickup"), Combat->IsAiming());
+		}
+		Inventory->HandleEquipWeapon(Pickup, AimRequest);
+		TestEqual(TEXT("Pickup accepts the pending local Aim request"), Shooter->LocalEquipAim.Request, AimRequest);
 		const uint32 ActiveGeneration = Shooter->GetEquipActionGeneration();
 		Shooter->ClientFinishWeaponEquip_Implementation(ActiveGeneration - 1);
 		TestTrue(TEXT("Stale completion cannot release the current owning-client barrier"), Shooter->IsWeaponEquipInputBlocked());
@@ -147,10 +159,128 @@ bool FShooterEquipLifecycleTest::RunTest(const FString& Parameters)
 		if (!bServerFirst)
 		{
 			TestTrue(TEXT("Local Raise completion still waits for the server"), Shooter->IsWeaponEquipInputBlocked());
+			Shooter->HandleAimPressed();
+			TestFalse(TEXT("Aim can be queued while waiting for server completion"), Combat->IsAiming());
+			Shooter->ResetActionInput();
+			TestEqual(TEXT("Focus reset discards the buffered press"), Shooter->LastEquipAimPress, 0u);
+			Shooter->HandleAimPressed();
 			TickTimers(0.0f);
 			TickTimers(3.0f);
 		}
 		TestFalse(TEXT("Both completion boundaries release actions in either order"), Shooter->IsWeaponEquipInputBlocked());
+		TestTrue(TEXT("Both completion orders consume a held Aim"), Combat->IsAiming());
+		const uint32 ConsumedAim = Movement->GetActionInputRequest();
+		Shooter->ClientFinishWeaponEquip_Implementation(ActiveGeneration);
+		TestEqual(TEXT("Duplicate completion cannot issue a second Aim"), Movement->GetActionInputRequest(), ConsumedAim);
+		Shooter->HandleAimReleased();
+		Movement->ApplyMovementInput();
+		TestFalse(TEXT("Normal Release ends buffered ADS"), Combat->IsAiming());
+	}
+
+	UClass* HammerClass = LoadClass<AMeleeWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Hammer.BP_Hammer_C"));
+	if (!TestNotNull(TEXT("Hammer Blueprint"), HammerClass))
+	{
+		return false;
+	}
+	AMeleeWeaponBase* Hammer = World->SpawnActor<AMeleeWeaponBase>(HammerClass, Spawn);
+	if (!TestNotNull(TEXT("Hammer fixture"), Hammer))
+	{
+		return false;
+	}
+	Inventory->HandleEquipWeapon(Hammer);
+	Shooter->UpdateLocalProceduralWeaponSwitch(0.0f);
+	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+	TickTimers(0.0f);
+	TickTimers(3.0f);
+	if (!TestEqual(TEXT("Melee-to-pistol fixture starts with the hammer equipped"), Shooter->GetCurrentWeapon(),
+		static_cast<AWeaponBase*>(Hammer)))
+	{
+		return false;
+	}
+	Combat->TryStartAttack();
+	TestTrue(TEXT("Melee starts before the slot change"), Hammer->IsAttacking());
+	Inventory->SelectWeaponSlot(EWeaponSlot::Secondary);
+	Shooter->HandleAimPressed();
+	TestFalse(TEXT("Aim does not start during Lower from melee"), Combat->IsAiming());
+	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+	Shooter->UpdateLocalProceduralWeaponSwitch(0.0f);
+	TestEqual(TEXT("Local Raise waits for the pistol"), Shooter->FirstPersonSwitchVisualPhase,
+		EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon);
+	Shooter->HandleAimReleased();
+	Shooter->HandleAimPressed();
+	TickTimers(0.0f);
+	TickTimers(1.0f);
+	Movement->SetMovementMode(MOVE_Falling);
+	Shooter->UpdateLocalProceduralWeaponSwitch(0.0f);
+	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+	TickTimers(0.0f);
+	TickTimers(3.0f);
+	TestFalse(TEXT("Completed slot change cannot start ADS in the air"), Combat->IsAiming());
+	TestTrue(TEXT("The latest press remains held after airborne completion"), Combat->WantsToAim());
+	Movement->SetMovementMode(MOVE_Walking);
+	TestTrue(TEXT("Landing starts pistol ADS after the melee transition"), Combat->IsAiming());
+	const uint32 BufferedPress = Movement->GetActionInputRequest();
+	Shooter->HandleAimReleased();
+	Movement->ApplyMovementInput();
+	TestFalse(TEXT("A delayed buffered press cannot override the newer Release"),
+		Movement->ApplyActionInput(BufferedPress, Movement->GetMovementInputEpoch(), false, true,
+			UShooterCharacterMovementComponent::BufferedEquipAimInput, false, false, Shooter->GetEquipActionGeneration()));
+	TestFalse(TEXT("Late Press leaves ADS off"), Combat->IsAiming());
+
+	Inventory->SelectWeaponSlot(EWeaponSlot::Primary);
+	Shooter->HandleAimPressed();
+	Shooter->HandleAimReleased();
+	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+	TickTimers(0.0f);
+	TickTimers(1.0f);
+	Shooter->UpdateLocalProceduralWeaponSwitch(0.0f);
+	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+	TickTimers(0.0f);
+	TickTimers(3.0f);
+	TestFalse(TEXT("Press and Release during Equip never starts ADS"), Combat->IsAiming() || Combat->WantsToAim());
+
+	Shooter->HandleAimPressed();
+	TestTrue(TEXT("The old rifle is aiming before the next switch"), Combat->IsAiming());
+	Inventory->SelectWeaponSlot(EWeaponSlot::Secondary);
+	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+	TickTimers(0.0f);
+	TickTimers(1.0f);
+	Shooter->UpdateLocalProceduralWeaponSwitch(0.0f);
+	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+	TickTimers(0.0f);
+	TickTimers(3.0f);
+	TestFalse(TEXT("Holding the old rifle's Aim cannot start pistol ADS"), Combat->IsAiming() || Combat->WantsToAim());
+	Shooter->HandleAimReleased();
+	Shooter->HandleAimPressed();
+	TestTrue(TEXT("One press after a completed switch starts pistol ADS normally"), Combat->IsAiming());
+	Shooter->HandleAimReleased();
+
+	Inventory->SelectWeaponSlot(EWeaponSlot::Primary);
+	Shooter->HandleAimPressed();
+	Inventory->CancelPendingWeaponSwitch();
+	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+	TestFalse(TEXT("Failure's recovery Raise cannot consume the cancelled Aim"), Combat->IsAiming() || Combat->WantsToAim());
+	TestEqual(TEXT("Failed switch discards server authorization"), Shooter->ServerEquipAim.Request, 0u);
+	Shooter->HandleAimReleased();
+
+	// 물리 키가 교체 전에 눌렸다면 같은 프레임에 Started가 늦게 처리돼도 선입력 대상이 아니다.
+	{
+		TGuardValue<TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem>> InputSubsystem(Shooter->ActionInputSubsystem,
+			NewObject<UEnhancedInputLocalPlayerSubsystem>(Controller->GetLocalPlayer()));
+		TGuardValue<TArray<FKey>> AimKeys(Shooter->AimInputKeys, {EKeys::RightMouseButton});
+		ARangedWeaponBase* Pickup = World->SpawnActor<ARangedWeaponBase>(PistolClass, Spawn);
+		Shooter->NotifyAimKeyEvent(EKeys::RightMouseButton, true);
+		const uint32 AimRequest = Shooter->BeginWeaponPickupInput(Pickup);
+		Shooter->HandleAimPressed();
+		Inventory->HandleEquipWeapon(Pickup, AimRequest);
+		Shooter->UpdateLocalProceduralWeaponSwitch(0.0f);
+		Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
+		TickTimers(0.0f);
+		TickTimers(3.0f);
+		TestFalse(TEXT("A delayed Started cannot turn a pre-equip raw press into a buffered Aim"), Combat->IsAiming());
+		Shooter->NotifyAimKeyEvent(EKeys::RightMouseButton, false);
+		Shooter->HandleAimReleased();
 	}
 
 	// CurrentWeapon 복제가 시작 RPC보다 먼저 온 순서를 재현한다. 이전 무기는 RPC의 참조를 따른다.
@@ -165,6 +295,29 @@ bool FShooterEquipLifecycleTest::RunTest(const FString& Parameters)
 		EFirstPersonWeaponSwitchVisualPhase::Raising);
 	Shooter->UpdateLocalProceduralWeaponSwitch(1.0f);
 	TestFalse(TEXT("Earlier weapon replication cannot strand local switching"), Shooter->IsWeaponSwitchInProgress());
+
+	// 원격 소유자의 준비 표시가 이동에 먼저 실려도 서버는 자기 Equip을 끝낼 때까지 ADS를 차단한다.
+	Controller->UnPossess();
+	AWeaponBase* RemoteTarget = Shooter->GetCurrentWeapon() == Rifle ? Inventory->GetWeaponInSlot(EWeaponSlot::Secondary) : Rifle;
+	const EWeaponSlot RemoteSlot = RemoteTarget == Rifle ? EWeaponSlot::Primary : EWeaponSlot::Secondary;
+	Inventory->SelectWeaponSlot(RemoteSlot, 901);
+	const uint32 RemoteGeneration = Shooter->GetEquipActionGeneration();
+	const uint32 RemoteEpoch = Movement->GetMovementInputEpoch();
+	const int32 BufferedAim = UShooterCharacterMovementComponent::BufferedEquipAimInput;
+	Movement->ApplyActionInput(1001, RemoteEpoch, false, true, BufferedAim, false, false, RemoteGeneration);
+	TestFalse(TEXT("Early owner readiness cannot start server ADS"), Combat->WantsToAim() || Combat->IsAiming());
+	TickTimers(0.0f);
+	TickTimers(1.0f);
+	TickTimers(0.0f);
+	TickTimers(3.0f);
+	TestTrue(TEXT("The server can now validate the target generation"), Shooter->ServerEquipAim.bCompleted);
+	Movement->SetMovementMode(MOVE_Walking);
+	Movement->ApplyActionInput(1002, RemoteEpoch, false, true, BufferedAim, false, false, RemoteGeneration);
+	TestTrue(TEXT("The server starts ADS after validating readiness"), Combat->IsAiming());
+	Movement->ApplyActionInput(1004, RemoteEpoch, false, false, 0, false, false, RemoteGeneration);
+	TestFalse(TEXT("Buffered input with an older sequence cannot overtake Release"),
+		Movement->ApplyActionInput(1003, RemoteEpoch, false, true, BufferedAim, false, false, RemoteGeneration));
+	TestFalse(TEXT("Remote Release keeps ADS off after late packets"), Combat->IsAiming());
 	return true;
 }
 
