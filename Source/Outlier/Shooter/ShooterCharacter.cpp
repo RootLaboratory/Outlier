@@ -1773,6 +1773,7 @@ void AShooterCharacter::HandleControlMappingsRebuilt()
 	if (bMissingAttack && CombatComponent)
 	{
 		// 컨텍스트 종료는 일반 Release와 다르다. 예약 첫 발까지 폐기한 뒤 홀드를 내린다.
+		ResetEquipFireInput();
 		CombatComponent->CancelPendingSprintExitFire();
 		CombatComponent->TryStopAttack();
 	}
@@ -1793,7 +1794,13 @@ void AShooterCharacter::ResetActionInput()
 {
 	if (!IsLocallyControlled()) return;
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->RequireFreshSprintPress();
+	const bool bHasEquipFireInput = LocalEquipFire.Request != 0 || IsWeaponEquipInputBlocked();
 	ClearInputIntent();
+	if (bHasEquipFireInput)
+	{
+		// 포커스 초기화는 예약과 함께 이전 장착의 Release 대기도 해제한다.
+		TryStopAttack();
+	}
 	StopSprintInternal();
 	RefreshActionIntentsAfterEquip();
 	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
@@ -2701,7 +2708,7 @@ void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
 {
 	if (InventoryComponent)
 	{
-		InventoryComponent->HandleEquipWeapon(Weapon);
+		InventoryComponent->HandleEquipWeapon(Weapon, GetActiveWeaponPickupRequest());
 	}
 }
 
@@ -2785,6 +2792,7 @@ bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPr
 	if (bPresentationChanged || bAnimationChanged)
 	{
 		// 이전 Skeleton의 종료 콜백이 새 상태를 완료하지 않도록 교체 전에 액션과 연결을 정리한다.
+		CancelServerEquipFire();
 		if (CombatComponent)
 		{
 			CombatComponent->CancelReloadInternal();
@@ -3233,17 +3241,35 @@ bool AShooterCharacter::IsWeaponEquipInputBlocked() const
 		|| ActionLock == EShooterActionLock::Equip || IsWeaponSwitchInProgress();
 }
 
-void AShooterCharacter::BeginWeaponEquip()
+void AShooterCharacter::BeginWeaponEquip(uint32 FireRequest, AWeaponBase* TargetWeapon)
 {
 	// 유효성 검사가 끝난 요청만 진입한다. 세대/잠금을 먼저 바꿔 취소 콜백의 행동 복원을 막는다.
+	CancelServerEquipFire();
 	BeginActionLock(EShooterActionLock::Equip);
 	MulticastPrepareWeaponEquip(EquipActionGeneration);
+
+	const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(TargetWeapon);
+	if (!HasAuthority() || FireRequest == 0 || !IsValid(CurrentWeapon) || !IsValid(RangedWeapon)
+		|| !RangedWeapon->IsAutomaticFire())
+	{
+		return;
+	}
+
+	// 서버가 실제 교체를 수락한 뒤에만 요청을 장착 세대와 목적지 무기에 연결한다.
+	const float Lifetime = GetEquipFireRequestLifetime();
+	ServerEquipFire = {FireRequest, EquipActionGeneration, GetWorld()->GetTimeSeconds() + Lifetime, false};
+	ServerEquipFireWeapon = TargetWeapon;
+	ClientAcceptEquipFire(EquipActionGeneration, FireRequest, Lifetime);
 }
 
 void AShooterCharacter::MulticastPrepareWeaponEquip_Implementation(uint32 Generation)
 {
-	if (Generation < EquipActionGeneration || IsDead() || IsSuitTransitionBlocked()) return;
+	if (Generation < EquipActionGeneration || IsDead() || IsSuitTransitionBlocked())
+	{
+		return;
+	}
 	EquipActionGeneration = Generation;
+	LocalEquipFire = {};
 	TGuardValue<bool> PreparingGuard(bPreparingWeaponEquip, true);
 	bAwaitingServerEquipCompletion = IsLocallyControlled();
 	WeaponActionNotifyContexts.Reset();
@@ -3287,8 +3313,12 @@ void AShooterCharacter::ResetWeaponEquipForLifecycle()
 
 void AShooterCharacter::MulticastCancelWeaponEquip_Implementation(uint32 Generation)
 {
-	if (Generation < EquipActionGeneration) return;
+	if (Generation < EquipActionGeneration)
+	{
+		return;
+	}
 	TGuardValue<bool> PreparingGuard(bPreparingWeaponEquip, true);
+	ResetEquipFireInput();
 	EquipActionGeneration = Generation;
 	bAwaitingServerEquipCompletion = false;
 	WeaponActionNotifyContexts.Reset();
@@ -3355,12 +3385,20 @@ void AShooterCharacter::RefreshActionIntentsAfterEquip()
 		// 정리 콜백을 벗어난 다음 프레임에 서버에서 수행한다.
 		CombatComponent->RequestAutoReloadRecovery();
 	}
+	TryResolveLocalEquipFire();
 }
 
 void AShooterCharacter::FinishEquipAction(uint32 Generation)
 {
 	// 이전 교체의 지연 완료가 새 Equip 잠금을 풀지 못하게 한다.
-	if (Generation != EquipActionGeneration) return;
+	if (Generation != EquipActionGeneration)
+	{
+		return;
+	}
+	if (HasAuthority() && ServerEquipFire.Generation == Generation && ServerEquipFire.Request != 0)
+	{
+		ServerEquipFire.bCompleted = CurrentWeapon == ServerEquipFireWeapon.Get();
+	}
 	EndActionLock(EShooterActionLock::Equip);
 	if (HasAuthority()) ClientFinishWeaponEquip(Generation);
 }
@@ -3904,10 +3942,33 @@ void AShooterCharacter::Die()
 
 void AShooterCharacter::TryStartAttack()
 {
+	if (IsLocallyControlled())
+	{
+		if (!bAttackButtonHeld)
+		{
+			bAttackButtonHeld = true;
+			LastEquipFirePress = IssueEquipFireInputSequence();
+		}
+		if (TryResolveLocalEquipFire())
+		{
+			return;
+		}
+	}
+
 	if (CombatComponent)
 	{
 		CombatComponent->TryStartAttack();
 	}
+}
+
+void AShooterCharacter::HandleAttackInputReleased()
+{
+	if (IsLocallyControlled() && bAttackButtonHeld)
+	{
+		bAttackButtonHeld = false;
+		LastEquipFireRelease = IssueEquipFireInputSequence();
+	}
+	TryStopAttack();
 }
 
 void AShooterCharacter::ServerStartAttack_Implementation(AWeaponBase* ExpectedWeapon, uint32 EquipGeneration)
@@ -4095,6 +4156,7 @@ void AShooterCharacter::HandleDeath()
 
 void AShooterCharacter::ClearInputIntent()
 {
+	ResetEquipFireInput();
 	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
 	Movement->RequireFreshSprintPress();
 	Movement->CancelActionInput(true, true);
@@ -4645,6 +4707,7 @@ void AShooterCharacter::StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeap
 
 void AShooterCharacter::CancelLocalProceduralWeaponSwitch()
 {
+	LocalEquipFire = {};
 	FirstPersonSwitchRaiseStartAlpha = FirstPersonSwitchLowerAlpha;
 	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::Raising;
 	FirstPersonSwitchVisualElapsed = 0.0f;
@@ -4703,6 +4766,11 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 			(1.0f - FMath::SmoothStep(0.0f, 1.0f, T));
 		if (T >= 1.0f)
 		{
+			// 취소 복구 Raise는 예약을 먼저 비운다. 정상 Raise만 발사 준비를 완료한다.
+			if (LocalEquipFire.Request != 0 && LocalEquipFire.Generation == EquipActionGeneration)
+			{
+				LocalEquipFire.bCompleted = true;
+			}
 			FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::None;
 			FirstPersonSwitchLowerAlpha = 0.0f;
 			WeaponAtSwitchStart.Reset();
@@ -4787,12 +4855,132 @@ void AShooterCharacter::PlayProceduralSwitchThirdPersonEquip(EWeaponType Previou
 	}
 }
 
-void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex)
+void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex, uint32 FireRequest)
 {
 	if (InventoryComponent)
 	{
-		InventoryComponent->SelectWeaponByIndex(SlotIndex);
+		InventoryComponent->SelectWeaponByIndex(SlotIndex, FireRequest);
 	}
+}
+
+uint32 AShooterCharacter::IssueEquipFireInputSequence()
+{
+	if (++EquipFireInputSequence == 0)
+	{
+		++EquipFireInputSequence;
+	}
+	return EquipFireInputSequence;
+}
+
+uint32 AShooterCharacter::BeginWeaponPickupInput(AWeaponBase* Pickup)
+{
+	return IsValid(Pickup) && IsValid(CurrentWeapon) && !IsWeaponEquipInputBlocked() ? IssueEquipFireInputSequence() : 0;
+}
+
+float AShooterCharacter::GetEquipFireRequestLifetime() const
+{
+	const auto ValidDuration = [](float Duration)
+	{
+		return FMath::IsFinite(Duration) ? FMath::Max(Duration, 0.0f) : 0.0f;
+	};
+	const UAnimMontage* SwitchMontage = GetThirdPersonSwitchMontage();
+	const float LocalRaise = ValidDuration(FirstPersonSwitchRaiseDuration);
+	const float ServerRaise = SwitchMontage ? ValidDuration(SwitchMontage->GetPlayLength()) : 0.0f;
+	// 무기 참조 대기 상한과 전송 여유는 Lower/Raise 시간에 별도로 더한다.
+	return ValidDuration(FirstPersonSwitchLowerDuration) + FMath::Max(LocalRaise, ServerRaise) + 3.5f + 3.0f;
+}
+
+void AShooterCharacter::ClientAcceptEquipFire_Implementation(uint32 Generation, uint32 Request, float Lifetime)
+{
+	if (!IsLocallyControlled() || IsDead() || IsSuitTransitionBlocked() || Generation != EquipActionGeneration
+		|| Request == 0 || static_cast<int32>(Request - InvalidatedEquipFireRequests) <= 0)
+	{
+		return;
+	}
+
+	// 요청을 보낸 뒤 수락 통지를 받기 전의 Press도 같은 물리 입력 순번으로 확인한다.
+	LocalEquipFire = {Request, Generation, GetWorld()->GetTimeSeconds() + Lifetime, false};
+}
+
+bool AShooterCharacter::TryResolveLocalEquipFire()
+{
+	if (!IsLocallyControlled() || LocalEquipFire.Request == 0)
+	{
+		return false;
+	}
+	if (LocalEquipFire.Generation != EquipActionGeneration || GetWorld()->GetTimeSeconds() >= LocalEquipFire.Deadline)
+	{
+		LocalEquipFire = {};
+		return false;
+	}
+	if (!LocalEquipFire.bCompleted || IsWeaponEquipInputBlocked() || !IsValid(CurrentWeapon) || !CombatComponent)
+	{
+		return true;
+	}
+
+	// 서버 완료·로컬 Raise 완료·현재 무기가 모두 준비된 순간에만 한 번 전달한다.
+	const FEquipFireRequest Completed = LocalEquipFire;
+	LocalEquipFire = {};
+	const uint32 Press = LastEquipFirePress != 0 && static_cast<int32>(LastEquipFirePress - Completed.Request) > 0
+		? LastEquipFirePress : 0;
+	const bool bReleased = LastEquipFireRelease != 0 && static_cast<int32>(LastEquipFireRelease - Completed.Request) > 0;
+	if (Press == 0 && !bReleased)
+	{
+		return true;
+	}
+
+	// Release만 있었더라도 새 세대로 전달해야 이후 정상 Press가 서버의 이전 래치에 막히지 않는다.
+	const bool bHeld = Press != 0 && bAttackButtonHeld;
+	if (!HasAuthority())
+	{
+		CombatComponent->ApplyBufferedEquipFireIntent(bHeld);
+	}
+	ServerResolveEquipFire(CurrentWeapon, Completed.Generation, Completed.Request, Press, bHeld);
+	return true;
+}
+
+void AShooterCharacter::ServerResolveEquipFire_Implementation(AWeaponBase* Weapon, uint32 Generation,
+	uint32 Request, uint32 Press, bool bHeld)
+{
+	if (!HasAuthority() || !CombatComponent || Request == 0 || Request != ServerEquipFire.Request
+		|| Generation != EquipActionGeneration || Generation != ServerEquipFire.Generation
+		|| !ServerEquipFire.bCompleted || IsWeaponEquipInputBlocked() || IsDead() || IsSuitTransitionBlocked()
+		|| GetWorld()->GetTimeSeconds() >= ServerEquipFire.Deadline
+		|| !IsValid(Weapon) || Weapon != CurrentWeapon || Weapon != ServerEquipFireWeapon.Get())
+	{
+		return;
+	}
+	if ((Press == 0 && bHeld) || (Press != 0 && static_cast<int32>(Press - Request) <= 0))
+	{
+		return;
+	}
+
+	// 발사 또는 StopAttack 콜백이 다른 행동을 갱신하기 전에 같은 요청을 소비한다.
+	CancelServerEquipFire();
+	if (Press != 0)
+	{
+		CombatComponent->StartBufferedEquipFire(bHeld);
+	}
+	else
+	{
+		CombatComponent->TryStopAttack();
+	}
+}
+
+void AShooterCharacter::CancelServerEquipFire()
+{
+	ServerEquipFire = {};
+	ServerEquipFireWeapon.Reset();
+}
+
+void AShooterCharacter::ResetEquipFireInput()
+{
+	LocalEquipFire = {};
+	InvalidatedEquipFireRequests = EquipFireInputSequence;
+	LastEquipFirePress = 0;
+	LastEquipFireRelease = 0;
+	bAttackButtonHeld = false;
+	CancelServerEquipFire();
 }
 
 void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId, bool bHoldSprint, bool bFireHeld, uint32 EquipGeneration)

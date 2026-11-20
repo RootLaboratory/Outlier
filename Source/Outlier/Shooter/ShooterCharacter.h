@@ -260,6 +260,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
 	friend class FShooterEquipLifecycleTest;
+	friend class FShooterEquipFireTest;
 	friend class FShooterEquipReloadTest;
 	friend class FShooterAutoReloadRecoveryTest;
 	friend class FShooterWeaponActionNotifyTest;
@@ -592,6 +593,31 @@ protected:
 	FTimerHandle ActionLockTimerHandle;
 	UPROPERTY(Replicated)
 	uint32 EquipActionGeneration = 0;
+
+	struct FEquipFireRequest
+	{
+		uint32 Request = 0;
+		uint32 Generation = 0;
+		double Deadline = 0.0;
+		bool bCompleted = false;
+	};
+
+	FEquipFireRequest LocalEquipFire;
+	FEquipFireRequest ServerEquipFire;
+	TWeakObjectPtr<AWeaponBase> ServerEquipFireWeapon;
+	uint32 EquipFireInputSequence = 0;
+	uint32 LastEquipFirePress = 0;
+	uint32 LastEquipFireRelease = 0;
+	uint32 InvalidatedEquipFireRequests = 0;
+	bool bAttackButtonHeld = false;
+
+	uint32 IssueEquipFireInputSequence();
+	float GetEquipFireRequestLifetime() const;
+	bool TryResolveLocalEquipFire();
+	void CancelServerEquipFire();
+	void ResetEquipFireInput();
+	virtual uint32 BeginWeaponPickupInput(AWeaponBase* Pickup) override;
+	virtual void HandleAttackInputReleased() override;
 	bool bPreparingWeaponEquip = false;
 	bool bAwaitingServerEquipCompletion = false;
 	struct FWeaponActionNotifyContext
@@ -1148,7 +1174,13 @@ protected:
 	void MulticastCancelWeaponEquip(uint32 Generation);
 
 	UFUNCTION(Server, Reliable)
-	void ServerSelectWeaponByIndex(int32 SlotIndex);
+	void ServerSelectWeaponByIndex(int32 SlotIndex, uint32 FireRequest = 0);
+
+	UFUNCTION(Client, Reliable)
+	void ClientAcceptEquipFire(uint32 Generation, uint32 Request, float Lifetime);
+
+	UFUNCTION(Server, Reliable)
+	void ServerResolveEquipFire(AWeaponBase* Weapon, uint32 Generation, uint32 Request, uint32 Press, bool bHeld);
 
 	UFUNCTION(Server, Reliable)
 	void ServerConfirmProceduralWeaponLowered(int32 SwitchId);
@@ -1220,7 +1252,7 @@ public:
 	void FinishReloadInternal();
 	bool CanStartAction(EShooterActionLock NextLock) const;
 	bool CanBeginWeaponEquip() const;
-	void BeginWeaponEquip();
+	void BeginWeaponEquip(uint32 FireRequest = 0, AWeaponBase* TargetWeapon = nullptr);
 	uint32 GetEquipActionGeneration() const { return EquipActionGeneration; }
 	bool IsPreparingWeaponEquip() const { return bPreparingWeaponEquip; }
 	bool IsWeaponEquipInputBlocked() const;

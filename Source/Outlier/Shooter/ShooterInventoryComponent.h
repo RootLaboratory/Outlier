@@ -66,13 +66,13 @@ public:
 	void TrySwitchWeapon1();
 	void TrySwitchWeapon2();
 	void TrySwitchWeapon3();
-	void SelectWeaponByIndex(int32 SlotIndex);
+	void SelectWeaponByIndex(int32 SlotIndex, uint32 FireRequest = 0);
 
-	void HandleEquipWeapon(AWeaponBase* Weapon);
+	void HandleEquipWeapon(AWeaponBase* Weapon, uint32 FireRequest = 0);
 	// 최초 지급은 Possess 전에도 실행된다. GameMode가 확정한 PlayerState에 초기 장비를 남긴다.
 	bool InitializeDefaultMeleeWeapon(AOutlierPlayerState* PlayerState);
 	bool EquipSuitRifle(AWeaponBase* RifleWeapon);
-	void SelectWeaponSlot(EWeaponSlot Slot);
+	void SelectWeaponSlot(EWeaponSlot Slot, uint32 FireRequest = 0);
 	void FinishPendingWeaponSwitch(int32 SwitchId);
 	void ExpirePendingWeaponSwitch();
 	void CancelPendingWeaponSwitch();

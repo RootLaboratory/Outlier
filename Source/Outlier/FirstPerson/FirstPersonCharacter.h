@@ -152,6 +152,7 @@ protected:
 	virtual void TryStartAttack();
 
 	virtual void TryStopAttack();
+	virtual void HandleAttackInputReleased();
 
 	void MoveInput(const FInputActionValue& Value);
 	void StopMoveInput();
@@ -174,8 +175,12 @@ protected:
 	virtual bool CanRestoreFlyingAfterSuitTransition() const { return false; }
 	virtual void UnPossessed() override;
 
+	virtual uint32 BeginWeaponPickupInput(AWeaponBase* Pickup) { return 0; }
+	uint32 GetActiveWeaponPickupRequest() const { return ActiveWeaponPickupRequest; }
+
 	UFUNCTION(Server, Reliable)
-	void ServerInteract(AActor* TargetActor, int32 HoldAttemptId = 0, FVector_NetQuantizeNormal NodeAimDirection = FVector::ZeroVector);
+	void ServerInteract(AActor* TargetActor, int32 HoldAttemptId = 0,
+		FVector_NetQuantizeNormal NodeAimDirection = FVector::ZeroVector, uint32 WeaponPickupRequest = 0);
 
 	UFUNCTION(Server, Reliable)
 	void ServerBeginHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0, FVector_NetQuantizeNormal NodeAimDirection = FVector::ZeroVector);
@@ -249,6 +254,7 @@ public:
 
 private:
 	float InteractionTraceInterval = 0.1f;
+	uint32 ActiveWeaponPickupRequest = 0;
 
 private:
 	void CancelLocalHoldInteract(bool bNotifyServer);

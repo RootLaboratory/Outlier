@@ -99,9 +99,9 @@ void UShooterInventoryComponent::TrySwitchWeapon3()
 	SelectWeaponSlot(EWeaponSlot::Melee);
 }
 
-void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex)
+void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex, uint32 FireRequest)
 {
-	SelectWeaponSlot(static_cast<EWeaponSlot>(SlotIndex));
+	SelectWeaponSlot(static_cast<EWeaponSlot>(SlotIndex), FireRequest);
 }
 
 bool UShooterInventoryComponent::InitializeDefaultMeleeWeapon(AOutlierPlayerState* PlayerState)
@@ -167,7 +167,7 @@ bool UShooterInventoryComponent::InitializeDefaultMeleeWeapon(AOutlierPlayerStat
 	return true;
 }
 
-void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
+void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon, uint32 FireRequest)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 
@@ -237,7 +237,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 	}
 
 	// 모든 검증을 통과한 요청만 기존 행동을 종료한다. Drop과 새 무기 부착은 그 다음이다.
-	ShooterCharacter->BeginWeaponEquip();
+	ShooterCharacter->BeginWeaponEquip(FireRequest, Weapon);
 	if (Slot != EWeaponSlot::Primary)
 	{
 		ShooterCharacter->EndActiveWeaponOvercharge(true);
@@ -305,7 +305,7 @@ bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
 	return ShooterCharacter->CurrentWeapon == RifleWeapon;
 }
 
-void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
+void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot, uint32 FireRequest)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || ShooterCharacter->IsDead())
@@ -320,9 +320,14 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 
 	const int32 WeaponIndex = static_cast<int32>(Slot);
 
+	if (FireRequest == 0 && ShooterCharacter->IsLocallyControlled() && ShooterCharacter->CurrentWeapon)
+	{
+		FireRequest = ShooterCharacter->IssueEquipFireInputSequence();
+	}
+
 	if (!ShooterCharacter->HasAuthority())
 	{
-		ShooterCharacter->ServerSelectWeaponByIndex(WeaponIndex);
+		ShooterCharacter->ServerSelectWeaponByIndex(WeaponIndex, FireRequest);
 		return;
 	}
 
@@ -338,7 +343,7 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 	}
 
 	// 빈 슬롯/동일 무기 입력은 행동을 유지한다. 실제 교체가 확정된 뒤 취소 경계를 연다.
-	ShooterCharacter->BeginWeaponEquip();
+	ShooterCharacter->BeginWeaponEquip(FireRequest, TargetWeapon);
 	if (Slot != EWeaponSlot::Primary)
 	{
 		ShooterCharacter->EndActiveWeaponOvercharge(true);
@@ -426,6 +431,7 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
 	{
 		// 실패/timeout은 정상 완료 복구와 구분한다. 잠금을 풀기 전에 예약을 버린다.
+		ShooterCharacter->CancelServerEquipFire();
 		ShooterCharacter->FailedProceduralSwitchId = PendingSwitchId;
 		ShooterCharacter->StopAimInternal();
 		if (ShooterCharacter->HasAuthority() && !ShooterCharacter->IsDead() &&

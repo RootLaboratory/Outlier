@@ -145,7 +145,7 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 
 	// Attack
 	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryStartAttack);
-	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::TryStopAttack);
+	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::HandleAttackInputReleased);
 
 	// Interaction
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::HandleInteractionInputStarted);
@@ -406,9 +406,9 @@ void AFirstPersonCharacter::TryInteract()
 		}
 	}
 
-	//Hold Interaction Actor의 판정은 Hold Actor가 ServerInteract를 실행하는 식으로 처리. 업데이트는 해당 Actor에서 처리. 판정은 Character 에서
-	//Hold or 즉발
-	ServerInteract(TargetActor, 0, NodeAimDirection);
+	AWeaponBase* Pickup = Cast<AWeaponBase>(TargetActor);
+	const uint32 PickupRequest = Pickup ? BeginWeaponPickupInput(Pickup) : 0;
+	ServerInteract(TargetActor, 0, NodeAimDirection, PickupRequest);
 }
 
 void AFirstPersonCharacter::EndInteract()
@@ -437,7 +437,10 @@ void AFirstPersonCharacter::NotifyHoldInteractCompleted(AActor* CompletedActor)
 	}
 
 	bAwaitingHoldInteractResult = true;
-	ServerInteract(CompletedActor, Node ? Node->GetLocalHoldAttemptId(this) : 0);
+	AWeaponBase* Pickup = Cast<AWeaponBase>(CompletedActor);
+	const uint32 PickupRequest = Pickup ? BeginWeaponPickupInput(Pickup) : 0;
+	ServerInteract(CompletedActor, Node ? Node->GetLocalHoldAttemptId(this) : 0,
+		FVector::ZeroVector, PickupRequest);
 }
 
 void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
@@ -521,7 +524,7 @@ void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* Targe
 }
 
 void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId,
-	FVector_NetQuantizeNormal NodeAimDirection)
+	FVector_NetQuantizeNormal NodeAimDirection, uint32 WeaponPickupRequest)
 {
 	const AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
 	const bool bNodeInteraction = Node != nullptr;
@@ -590,7 +593,15 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, i
 			return;
 		}
 
-		if (!Interactable->Interact(this))
+		const uint32 PickupRequest = WeaponPickupRequest != 0 && TargetActor->IsA<AWeaponBase>()
+			? WeaponPickupRequest : 0;
+		bool bInteractionAccepted;
+		{
+			// 검증된 획득 호출에서만 요청을 노출해 월드 원본과 장착되는 지급 사본을 연결한다.
+			TGuardValue<uint32> PickupRequestScope(ActiveWeaponPickupRequest, PickupRequest);
+			bInteractionAccepted = Interactable->Interact(this);
+		}
+		if (!bInteractionAccepted)
 		{
 			UE_LOG(LogTemp, Warning,
 				TEXT("[Server] %s ServerInteract rejected by target Target=%s"),
@@ -767,6 +778,11 @@ void AFirstPersonCharacter::TryStartAttack()
 
 	OUTLIER_LOG(Core, LogTemp, Log, TEXT("%s %s TryStartAttack Weapon=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StartAttack();
+}
+
+void AFirstPersonCharacter::HandleAttackInputReleased()
+{
+	TryStopAttack();
 }
 
 void AFirstPersonCharacter::TryStopAttack()

@@ -759,6 +759,52 @@ void UShooterCombatComponent::TryStartAttack()
 	StartAttackInternal();
 }
 
+void UShooterCombatComponent::ApplyBufferedEquipFireIntent(bool bHeld)
+{
+	// 교체 요청에 연결된 새 Press가 확인된 뒤에만 이전 장착의 Release 대기를 해제한다.
+	bRequireFireRelease = false;
+	UpdateFireInput(bHeld);
+}
+
+void UShooterCombatComponent::StartBufferedEquipFire(bool bHeld)
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	ARangedWeaponBase* Weapon = Shooter ? Cast<ARangedWeaponBase>(Shooter->CurrentWeapon) : nullptr;
+	if (!Shooter || !Shooter->HasAuthority() || Shooter->IsWeaponEquipInputBlocked()
+		|| !IsValid(Weapon) || !Weapon->IsAutomaticFire() || Weapon->IsAttacking() || bPendingSprintExitFire)
+	{
+		return;
+	}
+
+	// 예약한 첫 발과 실행 시점의 버튼 상태를 따로 적용한다. 짧은 클릭을 새 홀드로 바꾸지 않는다.
+	bRequireFireRelease = false;
+	if (Shooter->IsLocallyControlled())
+	{
+		UpdateFireInput(bHeld);
+	}
+	else
+	{
+		ApplyFireInput(bHeld);
+	}
+
+	if (!Weapon->HasUsableAmmo())
+	{
+		RequestAutoReloadRecovery();
+		return;
+	}
+	if (!CanFireInCurrentState() || !Weapon->CanAttack())
+	{
+		return;
+	}
+
+	StartAttackInternal();
+	if (!bHeld && IsValid(Weapon) && Weapon == Shooter->CurrentWeapon && Weapon->IsAttacking())
+	{
+		// 첫 발의 쿨다운은 보존하고 이 요청에서 만든 연사만 닫는다.
+		Weapon->ReleaseAttack();
+	}
+}
+
 void UShooterCombatComponent::StartAttackInternal()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
