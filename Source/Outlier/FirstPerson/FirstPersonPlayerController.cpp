@@ -843,6 +843,8 @@ void AFirstPersonPlayerController::ClientCloseGameOverPending_Implementation()
 
 void AFirstPersonPlayerController::BeginGameOverRespawnTransition_Implementation()
 {
+	StopClientGameOverStreaming();
+	ReleaseGameOverStreamingSources(GameOverStreamingSourceRound);
 	GameOverRoundId.Invalidate();
 	bGameOverReadySent = false;
 	bHasQueuedGameOverPendingRequest = false;
@@ -868,7 +870,8 @@ void AFirstPersonPlayerController::ClientBeginCheckpointRestartTransition_Implem
 	}
 }
 
-void AFirstPersonPlayerController::ClientRestoreGameOverSelection_Implementation(const FGuid& RoundId)
+void AFirstPersonPlayerController::ClientRestoreGameOverSelection_Implementation(
+	const FGuid& RoundId, const FGuid& StreamingScopeId)
 {
 	if (!IsLocalController() || !RoundId.IsValid())
 	{
@@ -878,7 +881,139 @@ void AFirstPersonPlayerController::ClientRestoreGameOverSelection_Implementation
 	GameOverRoundId = RoundId;
 	bGameOverReadySent = false;
 	bHasQueuedGameOverPendingRequest = false;
+	StartClientGameOverStreaming(RoundId, StreamingScopeId);
 	PushGameOverWidget();
+}
+
+void AFirstPersonPlayerController::FreezeGameOverStreamingSources(const FGuid& RoundId)
+{
+	if (GameOverStreamingSourceRound == RoundId)
+	{
+		return;
+	}
+	// 기존 볼륨 요청의 비동기 처리는 유지하고, 사망 시점부터 카메라로 요청을 다시 계산하지 않는다.
+	if (!GameOverStreamingSourceRound.IsValid())
+	{
+		bGameOverWasUsingStreamingVolumes = bIsUsingStreamingVolumes;
+		bIsUsingStreamingVolumes = false;
+	}
+	GameOverStreamingSourceRound = RoundId;
+	GameOverStreamingSources.Reset();
+	Super::GetStreamingSourcesInternal(GameOverStreamingSources);
+	// 사망 카메라가 먼저 바뀐 경우에도 유지 중인 게임플레이 Pawn을 기준으로 셀을 요청한다.
+	if (const APawn* GameplayPawn = GetPawn(); GameplayPawn && GetViewTarget() != GameplayPawn)
+	{
+		for (FWorldPartitionStreamingSource& Source : GameOverStreamingSources)
+		{
+			GameplayPawn->GetActorEyesViewPoint(Source.Location, Source.Rotation);
+		}
+	}
+}
+
+void AFirstPersonPlayerController::ReleaseGameOverStreamingSources(const FGuid& RoundId)
+{
+	if (GameOverStreamingSourceRound == RoundId)
+	{
+		if (GameOverStreamingSourceRound.IsValid())
+		{
+			bIsUsingStreamingVolumes = bGameOverWasUsingStreamingVolumes;
+		}
+		GameOverStreamingSourceRound.Invalidate();
+		GameOverStreamingSources.Reset();
+	}
+}
+
+bool AFirstPersonPlayerController::GetStreamingSourcesInternal(
+	TArray<FWorldPartitionStreamingSource>& OutStreamingSources) const
+{
+	if (GameOverStreamingSourceRound.IsValid())
+	{
+		OutStreamingSources.Append(GameOverStreamingSources);
+		return !GameOverStreamingSources.IsEmpty();
+	}
+	return Super::GetStreamingSourcesInternal(OutStreamingSources);
+}
+
+void AFirstPersonPlayerController::StartClientGameOverStreaming(const FGuid& RoundId, const FGuid& ScopeId)
+{
+	StopClientGameOverStreaming();
+	if (!ScopeId.IsValid())
+	{
+		return;
+	}
+	if (!HasAuthority() && !GameOverStreamingSourceRound.IsValid() && GetWorld())
+	{
+		GetWorld()->ProcessLevelStreamingVolumes();
+	}
+	FreezeGameOverStreamingSources(RoundId);
+	GameOverClientStreamingScopeId = ScopeId;
+	GameOverClientStreaming = {};
+	GameOverLastReportedGeneration.Reset();
+	GameOverNextStreamingDiagnosticTime = 0.0;
+	bGameOverStreamingReportedReady = false;
+	bGameOverStreamingReportedFailure = false;
+	GameOverClientStreamingTicker = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &AFirstPersonPlayerController::TickClientGameOverStreaming));
+}
+
+void AFirstPersonPlayerController::ClientRefreshGameOverStreaming_Implementation(const FGuid& RoundId, const FGuid& ScopeId)
+{
+	if (RoundId == GameOverRoundId && ScopeId != GameOverClientStreamingScopeId)
+	{
+		StartClientGameOverStreaming(RoundId, ScopeId);
+	}
+}
+
+void AFirstPersonPlayerController::StopClientGameOverStreaming()
+{
+	if (GameOverClientStreamingTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(GameOverClientStreamingTicker);
+		GameOverClientStreamingTicker.Reset();
+	}
+}
+
+void AFirstPersonPlayerController::ClientStopGameOverStreaming_Implementation(const FGuid& RoundId, bool bKeepSources)
+{
+	if (RoundId != GameOverStreamingSourceRound)
+	{
+		return;
+	}
+	StopClientGameOverStreaming();
+	if (!bKeepSources)
+	{
+		ReleaseGameOverStreamingSources(RoundId);
+	}
+}
+
+bool AFirstPersonPlayerController::TickClientGameOverStreaming(float DeltaTime)
+{
+	const UOutlierArenaSubsystem* Arena = GetWorld() ? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!Arena || !GameOverRoundId.IsValid() || GameOverRoundId != GameOverStreamingSourceRound)
+	{
+		GameOverClientStreamingTicker.Reset();
+		return false;
+	}
+
+	const uint32 Generation = Arena->GetGameplayGeneration();
+	const FGameOverStreamingStatus Status = Arena->GetGameOverStreamingStatus(GameOverStreamingSources);
+	const bool bReady = GameOverClientStreaming.Observe(Generation, Status, GFrameCounter);
+	const double Now = FPlatformTime::Seconds();
+	// 같은 컨트롤러의 Reliable RPC로 준비와 철회를 순서대로 전달한다. 미완료 목록은 낮은 빈도로 갱신한다.
+	if (!GameOverLastReportedGeneration.IsSet() || GameOverLastReportedGeneration.GetValue() != Generation
+		|| bReady != bGameOverStreamingReportedReady || Status.bFailed != bGameOverStreamingReportedFailure
+		|| (!bReady && Now >= GameOverNextStreamingDiagnosticTime))
+	{
+		GameOverLastReportedGeneration = Generation;
+		bGameOverStreamingReportedReady = bReady;
+		bGameOverStreamingReportedFailure = Status.bFailed;
+		GameOverNextStreamingDiagnosticTime = Now + 2.0;
+		const FString Pending = !bReady && Status.PendingContent.IsEmpty()
+			? TEXT("waiting for three stable frames") : FString::Join(Status.PendingContent, TEXT(", "));
+		ServerNotifyGameOverStreaming(GameOverRoundId, GameOverClientStreamingScopeId,
+			Generation, bReady, Status.bFailed, Pending.Left(1024));
+	}
+	return GameOverClientStreamingTicker.IsValid();
 }
 
 void AFirstPersonPlayerController::RequestOpenInGameSetting()
@@ -1192,7 +1327,7 @@ void AFirstPersonPlayerController::ClientPopInGameSettingLayer_Implementation(
 }
 
 void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation(
-	const FGuid& RoundId, bool bImmediateSelections)
+	const FGuid& RoundId, const FGuid& StreamingScopeId, bool bImmediateSelections)
 {
 	if (IsEndingPresentationActive()) return;
 	if (!IsLocalController() || !RoundId.IsValid() || GameOverRoundId == RoundId)
@@ -1203,6 +1338,7 @@ void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation(
 	GameOverRoundId = RoundId;
 	bGameOverReadySent = false;
 	bGameOverImmediateSelections = bImmediateSelections;
+	StartClientGameOverStreaming(RoundId, StreamingScopeId);
 	CollapseMainWidgetForDeath();
 
 	// 사망 연출을 먼저 돌리고, Black 패스의 Noise 텍스처가 나타나는 순간 위젯을 띄운다.
@@ -1346,10 +1482,21 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 void AFirstPersonPlayerController::NotifyGameOverUIUnavailable()
 {
 	const FGuid RoundId = GameOverRoundId;
+	StopClientGameOverStreaming();
+	ReleaseGameOverStreamingSources(GameOverStreamingSourceRound);
 	GameOverRoundId.Invalidate();
 	if (RoundId.IsValid())
 	{
 		ServerNotifyGameOverUnavailable(RoundId);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifyGameOverStreaming_Implementation(const FGuid& RoundId,
+	const FGuid& ScopeId, uint32 Generation, bool bReady, bool bFailed, const FString& PendingContent)
+{
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GM->OnClientGameOverStreaming(this, RoundId, ScopeId, Generation, bReady, bFailed, PendingContent);
 	}
 }
 
@@ -2100,6 +2247,8 @@ void AFirstPersonPlayerController::Destroyed()
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	ClearPairMarkerSources();
+	StopClientGameOverStreaming();
+	ReleaseGameOverStreamingSources(GameOverStreamingSourceRound);
 	EndPresetTransition(PresetTransitionRequestId);
 	ClearPendingPresetUpgradeUI();
 	ClearDeveloperHitPresentation();

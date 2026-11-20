@@ -5,6 +5,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
 #include "Network/OutlierMatchRequest.h"
+#include "Network/OutlierGameOverStreaming.h"
 #include "Network/OutlierArenaProcessTypes.h"
 #include "OutlierPlayerState.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -25,6 +26,7 @@ class AOutlierCheckpoint;
 class AOutlierPlayerState;
 class AOutlierArenaPausePlayerState;
 class UDataTable;
+class UPlayer;
 class UUpgradeMachineWidget;
 enum class EOutlierPlayerRole : uint8;
 enum class EOutlierGameplayReloadPhase : uint8;
@@ -47,10 +49,18 @@ struct FGameOverWorldPauseState
 {
 	bool Begin(const TArray<APlayerController*>& Controllers);
 	bool NotifyReady(APlayerController* Controller, const FGuid& InRoundId, UWorld* World);
+	void SetServerStreamingReady(uint32 Generation, bool bReady);
+	void InvalidatePlayerStreaming() { StreamingReadyControllers.Reset(); }
+	bool SetPlayerStreamingReady(APlayerController* Controller, const FGuid& InRoundId, uint32 Generation, bool bReady);
+	bool IsStreamingReady() const;
+	bool CanMonitorStreaming() const { return IsActive() && !bTransitioning && bPauseAllowed && !PauseOwner.IsValid(); }
+	void CancelStreamingWait();
 	bool NotifyUnavailable(APlayerController* Controller, const FGuid& InRoundId);
 	bool AreAllUIsUnavailable() const { return IsActive() && UnavailableControllers.Num() == ExpectedControllers.Num(); }
 	bool HasUnavailableUI() const { return !UnavailableControllers.IsEmpty(); }
 	bool HasReadyUI() const { return !ReadyControllers.IsEmpty(); }
+	bool AreAllUIsReady() const { return IsActive() && ReadyControllers.Num() == ExpectedControllers.Num(); }
+	bool IsUIReady(const APlayerController* Controller) const { return ReadyControllers.Contains(Controller); }
 	bool TryPause(UWorld* World);
 	bool CanSelect(const AController* Controller, const FGuid& InRoundId) const;
 	bool BeginTransition(UWorld* World);
@@ -68,7 +78,10 @@ private:
 	TSet<TWeakObjectPtr<APlayerController>> ExpectedControllers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyControllers;
 	TSet<TWeakObjectPtr<APlayerController>> UnavailableControllers;
+	TSet<TWeakObjectPtr<APlayerController>> StreamingReadyControllers;
 	TWeakObjectPtr<APlayerState> PauseOwner;
+	uint32 StreamingGeneration = 0;
+	bool bServerStreamingReady = false;
 	bool bTransitioning = false;
 	bool bPauseAllowed = true;
 };
@@ -135,6 +148,8 @@ public:
 	bool RespondGameOverPending(AFirstPersonPlayerController* Responder,
 		const FGuid& RoundId, const FGuid& ProposalId, bool bApprove);
 	void OnClientGameOverReady(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
+	void OnClientGameOverStreaming(AFirstPersonPlayerController* Controller, const FGuid& RoundId,
+		const FGuid& ScopeId, uint32 Generation, bool bReady, bool bFailed, const FString& PendingContent);
 	void OnClientGameOverUnavailable(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
 	void OnClientGameOverPendingUnavailable(AFirstPersonPlayerController* Controller,
 		const FGuid& RoundId, const FGuid& ProposalId);
@@ -240,6 +255,7 @@ private:
 	bool BuildFixedRestoreLoadout(FOutlierLoadoutSnapshot& Snapshot) const;
 	friend class FOutlierGenerationNetworkProbe;
 	friend class FOutlierGameOverPendingFailureTest;
+	friend class FOutlierGameOverStreamingVisibilityTest;
 	friend class FOutlierArenaGenerationTransitionTest;
 	friend class FOutlierSettingsPauseTest;
 	friend class FOutlierDirectPairTest;
@@ -252,6 +268,12 @@ private:
 	TArray<TWeakObjectPtr<APlayerController>> DirectPairTestPlayers;
 	bool bDirectPairTestStarted = false;
 	bool BeginGameOverTransition();
+	void StartGameOverStreamingMonitor();
+	void StopGameOverStreamingMonitor(bool bKeepSources = false);
+	bool TickGameOverStreaming(float DeltaTime);
+	void EvaluateGameOverPause();
+	FGameOverStreamingStatus ObserveGameOverServerStreaming();
+	bool IsCurrentGameOverParticipant(const AFirstPersonPlayerController* Controller) const;
 	void RestoreGameOverSelection();
 	void FinishGameOverFlow();
 	void FailGameOverTransition();
@@ -262,6 +284,13 @@ private:
 	TMap<int32, FGameOverPendingServerState> GameOverPendingByPair;
 	TSet<int32> GameOverActivePairs;
 	FGameOverWorldPauseState GameOverWorldPause;
+	FGameOverStreamingReadiness GameOverServerStreaming;
+	FTSTicker::FDelegateHandle GameOverStreamingTicker;
+	FGuid GameOverStreamingScopeId;
+	TMap<TWeakObjectPtr<APlayerController>, TWeakObjectPtr<UPlayer>> GameOverStreamingConnections;
+	TMap<TWeakObjectPtr<APlayerController>, FString> GameOverStreamingDiagnostics;
+	FGameOverStreamingWait GameOverStreamingWait;
+	bool bGameOverStreamingWarningLogged = false;
 	TWeakObjectPtr<APlayerState> SettingsPauseOwner;
 	TWeakObjectPtr<AActor> SettingsPauseLayerOwner;
 	TWeakObjectPtr<AFirstPersonPlayerController> SettingsPauseController;

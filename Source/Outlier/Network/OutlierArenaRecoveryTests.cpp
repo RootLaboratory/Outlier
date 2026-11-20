@@ -111,6 +111,10 @@ bool FOutlierArenaRecoveryWatchdogTest::RunTest(const FString& Parameters)
 	const FGuid RoundId = Pause.GetRoundId();
 	Pause.NotifyReady(First, RoundId, World);
 	Pause.NotifyReady(Second, RoundId, World);
+	Pause.SetServerStreamingReady(Generation, true);
+	Pause.SetPlayerStreamingReady(First, RoundId, Generation, true);
+	Pause.SetPlayerStreamingReady(Second, RoundId, Generation, true);
+	Pause.TryPause(World);
 	TestTrue(TEXT("Recovery fixture is actually paused"), World->IsPaused());
 	World->GetWorldSettings()->TimeDilation = 0.0f;
 	Mode->EnsureArenaRecoveryWatchdog();

@@ -11,6 +11,8 @@
 
 class ULevel;
 class ULevelStreaming;
+struct FGameOverStreamingStatus;
+struct FWorldPartitionStreamingSource;
 class ULevelStreamingDynamic;
 class AActor;
 class FDataValidationContext;
@@ -100,6 +102,8 @@ public:
 	const UWorld* GetArenaWorld() const;
 	bool IsArenaReady() const;
 	bool IsArenaContentReady() const;
+	FGameOverStreamingStatus GetGameOverStreamingStatus(
+		const TArray<FWorldPartitionStreamingSource>& Sources) const;
 	uint32 GetGameplayGeneration() const { return GameplayGeneration; }
 	EOutlierGameplayReloadPhase GetGameplayReloadPhase() const;
 	bool IsGameplayReloadStalled(uint32 Generation) const;

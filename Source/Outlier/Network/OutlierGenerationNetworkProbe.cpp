@@ -559,6 +559,16 @@ private:
 		{
 			return Mode->RequestCheckpointRestart(Shooter);
 		}
+		if (Action == TEXT("GameOverStreaming"))
+		{
+			if (!Mode->IsPairGameplayReady() || Mode->GameOverWorldPause.IsActive())
+			{
+				return false;
+			}
+			// 권위 흐름만 시작한다. UI와 스트리밍 준비는 실제 참가자의 RPC를 기다린다.
+			Mode->BeginPresetRespawnSelection(Shooter);
+			return Mode->GameOverWorldPause.IsActive();
+		}
 		if (Action == TEXT("Continue") || Action == TEXT("UnavailableOne") || Action == TEXT("UnavailableBoth"))
 		{
 			if (!Mode->IsPairGameplayReady() && !Mode->GameOverWorldPause.IsActive()) return false;
@@ -646,6 +656,8 @@ private:
 		State->SetNumberField(TEXT("HandoffExposedFrames"), HandoffExposedFrames);
 		State->SetBoolField(TEXT("Reloading"), Mode && Mode->bArenaReloadInProgress);
 		State->SetBoolField(TEXT("GameOverActive"), Mode && Mode->GameOverWorldPause.IsActive());
+		State->SetBoolField(TEXT("GameOverStreamingReady"), Mode && Mode->GameOverWorldPause.IsStreamingReady());
+		State->SetBoolField(TEXT("GameOverUIReady"), Mode && Mode->GameOverWorldPause.AreAllUIsReady());
 		State->SetNumberField(TEXT("VoiceStarted"), VoiceStarted);
 		State->SetNumberField(TEXT("VoiceFinished"), VoiceFinished);
 		State->SetNumberField(TEXT("VoiceUnavailable"), VoiceUnavailable);

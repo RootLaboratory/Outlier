@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include "Network/OutlierGameOverStreaming.h"
+#include "WorldPartition/WorldPartitionStreamingSource.h"
+
 #include "CoreMinimal.h"
 #include "Components/SlateWrapperTypes.h"
 #include "GameFramework/PlayerController.h"
@@ -296,7 +299,15 @@ public:
 	void ClientBeginCheckpointRestartTransition();
 
 	UFUNCTION(Client, Reliable)
-	void ClientRestoreGameOverSelection(const FGuid& RoundId);
+	void ClientRestoreGameOverSelection(const FGuid& RoundId, const FGuid& StreamingScopeId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientRefreshGameOverStreaming(const FGuid& RoundId, const FGuid& ScopeId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientStopGameOverStreaming(const FGuid& RoundId, bool bKeepSources);
+	void FreezeGameOverStreamingSources(const FGuid& RoundId);
+	void ReleaseGameOverStreamingSources(const FGuid& RoundId);
 
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestOpenInGameSetting();
@@ -442,10 +453,14 @@ public:
 
 	// 사망 시 게임오버 화면을 띄운다 (페어 양쪽 컨트롤러에 각각 호출됨).
 	UFUNCTION(Client, Reliable)
-	void Client_ShowPresetSelect(const FGuid& RoundId, bool bImmediateSelections = false);
+	void Client_ShowPresetSelect(const FGuid& RoundId, const FGuid& StreamingScopeId, bool bImmediateSelections = false);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyGameOverReady(const FGuid& RoundId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyGameOverStreaming(const FGuid& RoundId, const FGuid& ScopeId, uint32 Generation,
+		bool bReady, bool bFailed, const FString& PendingContent);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyGameOverUnavailable(const FGuid& RoundId);
@@ -518,6 +533,7 @@ protected:
 	virtual void Destroyed() override;
 	virtual void PawnLeavingGame() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual bool GetStreamingSourcesInternal(TArray<FWorldPartitionStreamingSource>& OutStreamingSources) const override;
 	virtual void AcknowledgePossession(APawn* P) override;
 
 	virtual void OnPossess(APawn* InPawn) override;
@@ -543,6 +559,9 @@ protected:
 	// 리로드 RPC가 실어 보낸 새 스폰 위치를 기록한다.
 	void ApplyServerArenaSpawnLocation(const FVector& InSpawnLocation);
 	bool TickClientArenaContentReady(float DeltaTime);
+	void StartClientGameOverStreaming(const FGuid& RoundId, const FGuid& ScopeId);
+	void StopClientGameOverStreaming();
+	bool TickClientGameOverStreaming(float DeltaTime);
 	void ClearClientArenaContentWait();
 	void ContinueClientGameplayReload();
 	bool TickClientGameplayReloadWatchdog(float DeltaTime);
@@ -855,6 +874,16 @@ protected:
 	bool bHasQueuedGameOverPendingRequest = false;
 	bool bGameOverImmediateSelections = false;
 	FGuid GameOverRoundId;
+	FGuid GameOverStreamingSourceRound;
+	FGuid GameOverClientStreamingScopeId;
+	TArray<FWorldPartitionStreamingSource> GameOverStreamingSources;
+	FGameOverStreamingReadiness GameOverClientStreaming;
+	FTSTicker::FDelegateHandle GameOverClientStreamingTicker;
+	TOptional<uint32> GameOverLastReportedGeneration;
+	double GameOverNextStreamingDiagnosticTime = 0.0;
+	bool bGameOverWasUsingStreamingVolumes = false;
+	bool bGameOverStreamingReportedReady = false;
+	bool bGameOverStreamingReportedFailure = false;
 	bool bGameOverReadySent = false;
 	bool bQueuedGameOverPendingRequester = false;
 
