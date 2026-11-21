@@ -33,6 +33,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
@@ -57,6 +58,229 @@
 #include "Components/StaticMeshComponent.h"
 #include "Interaction/PanelMover.h"
 #include "Room/RoomCombatBarrier.h"
+#include "Blueprint/WidgetBlueprintLibrary.h"
+#include "Components/ChildActorComponent.h"
+#include "InputCoreTypes.h"
+#include "Interaction/InteractableDoor.h"
+#include "Interaction/InteractableSwitchBase.h"
+#include "Interaction/PassageHatch.h"
+#include "Level/Elevator/ElevatorShaftController.h"
+#include "Level/Elevator/ElevatorShaftSection.h"
+#include "UI/DeveloperConvenienceWidget.h"
+#include "UI/GameOverPendingWidget.h"
+#include "UI/GameOverWidget.h"
+#include "UI/PreSetLoadWidget.h"
+
+namespace
+{
+	TAutoConsoleVariable<bool> CVarHoldArenaPlacement(
+		TEXT("Outlier.Test.HoldArenaPlacement"), false,
+		TEXT("Hold the local Arena placement condition for the transition regression."));
+	bool SelectStage03(UPreSetLoadWidget* Preset)
+	{
+		if (!Preset || !Preset->IsVisible())
+		{
+			return false;
+		}
+		Preset->SelectFirstStage();
+		Preset->MoveStageSelection(2);
+		return Preset->GetChosenStageIndex() == 2 && Preset->ConfirmStageSelection();
+	}
+
+	bool ExecuteStage03DeveloperMenu(UWorld* World, const FString& Action)
+	{
+		auto* Controller = Cast<AFirstPersonPlayerController>(World->GetFirstPlayerController());
+		if (!Controller || !Controller->IsLocalController())
+		{
+			return false;
+		}
+		if (Action == TEXT("Stage03OpenDeveloperMenu"))
+		{
+			return Controller->HandleDeveloperConvenienceKey(EKeys::O, true, false);
+		}
+
+		// 열린 WBP와 실제 레벨 선택 모듈을 거쳐 확인한다. 서버 프리셋 호출은 별도 명령이다.
+		TArray<UUserWidget*> Widgets;
+		UWidgetBlueprintLibrary::GetAllWidgetsOfClass(World, Widgets, UDeveloperConvenienceWidget::StaticClass(), false);
+		for (UUserWidget* Widget : Widgets)
+		{
+			auto* Menu = Cast<UDeveloperConvenienceWidget>(Widget);
+			if (!Menu || Menu->GetOwningPlayer() != Controller || !Menu->GetDeveloperConvenienceContext().bIsOperator)
+			{
+				continue;
+			}
+			Menu->ExecuteDeveloperConvenienceAction(EDeveloperConvenienceAction::LevelSelection);
+			auto* Preset = Cast<UPreSetLoadWidget>(Menu->GetWidgetFromName(TEXT("PresetLoad")));
+			if (Menu->GetDeveloperConveniencePage() != EDeveloperConveniencePage::LevelSelection
+				|| !SelectStage03(Preset) || Menu->GetPendingStageId() != OutlierPresetStageIds::Level3)
+			{
+				return false;
+			}
+			Menu->ConfirmSelectedStage();
+			return true;
+		}
+		return false;
+	}
+
+	bool ExecuteStage03GameOver(UWorld* World, bool bApprove)
+	{
+		auto* Controller = World->GetFirstPlayerController();
+		if (!Controller || !Controller->IsLocalController())
+		{
+			return false;
+		}
+		TArray<UUserWidget*> Widgets;
+		UWidgetBlueprintLibrary::GetAllWidgetsOfClass(World, Widgets, bApprove
+			? UGameOverPendingWidget::StaticClass() : UGameOverWidget::StaticClass(), false);
+		for (UUserWidget* Widget : Widgets)
+		{
+			if (Widget->GetOwningPlayer() != Controller || !Widget->IsVisible())
+			{
+				continue;
+			}
+			if (bApprove)
+			{
+				return IUILayerInputReceiver::Execute_HandleUILayerConfirmed(Widget);
+			}
+			// 구형 버튼과 ChoiceMenu 모두 이 경로에서 같은 레벨 선택 모듈을 연다.
+			UFunction* SelectLevel = Widget->FindFunction(TEXT("HandleLevelSelectButtonClicked"));
+			auto* Preset = Cast<UPreSetLoadWidget>(Widget->GetWidgetFromName(TEXT("PresetLoad")));
+			if (!SelectLevel || !Preset)
+			{
+				return false;
+			}
+			Widget->ProcessEvent(SelectLevel, nullptr);
+			return SelectStage03(Preset);
+		}
+		return false;
+	}
+
+	AInteractableDoor* GetElevatorArrivalDoor(const AElevatorShaftController& Controller)
+	{
+		const auto* Property = FindFProperty<FObjectProperty>(Controller.GetClass(), TEXT("ArrivalDoor"));
+		return Property ? Cast<AInteractableDoor>(Property->GetObjectPropertyValue_InContainer(&Controller)) : nullptr;
+	}
+
+	void ObserveStage03(UWorld* World, FJsonObject& State)
+	{
+		TArray<TSharedPtr<FJsonValue>> Actors;
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* Actor = *It;
+			if (!Actor->GetLevel()->GetOutermost()->GetName().Contains(TEXT("D_L_Stage03_Gameplay")))
+			{
+				continue;
+			}
+
+			auto* Door = Cast<AInteractableDoor>(Actor);
+			auto* Switch = Cast<AInteractableSwitchBase>(Actor);
+			auto* Hatch = Cast<APassageHatch>(Actor);
+			auto* Barrier = Cast<ARoomCombatBarrier>(Actor);
+			bool bElevator = Actor->IsA<AElevatorShaftController>();
+			for (const AActor* Parent = Actor; Parent && !bElevator; Parent = Parent->GetParentActor())
+			{
+				bElevator = Parent->IsA<AElevatorShaftSection>();
+			}
+			if (!Door && !Switch && !Hatch && !Barrier && !bElevator && !Actor->IsA<APanelMover>())
+			{
+				continue;
+			}
+
+			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("Path"), Actor->GetPathName());
+			Entry->SetStringField(TEXT("Class"), Actor->GetClass()->GetName());
+			Entry->SetStringField(TEXT("ParentComponent"), GetPathNameSafe(Actor->GetParentComponent()));
+			Entry->SetStringField(TEXT("AttachedTo"), GetPathNameSafe(Actor->GetAttachParentActor()));
+			Entry->SetStringField(TEXT("Transform"), Actor->GetActorTransform().ToString());
+			const FVector Position = Actor->GetActorLocation();
+			Entry->SetArrayField(TEXT("Position"), { MakeShared<FJsonValueNumber>(Position.X),
+				MakeShared<FJsonValueNumber>(Position.Y), MakeShared<FJsonValueNumber>(Position.Z) });
+			Entry->SetNumberField(TEXT("LocalRole"), Actor->GetLocalRole());
+			Entry->SetBoolField(TEXT("Hidden"), Actor->IsHidden());
+			Entry->SetBoolField(TEXT("ActorCollision"), Actor->GetActorEnableCollision());
+			if (const auto* Controller = Cast<AElevatorShaftController>(Actor))
+			{
+				Entry->SetStringField(TEXT("ArrivalDoor"), GetPathNameSafe(GetElevatorArrivalDoor(*Controller)));
+			}
+			if (Door)
+			{
+				Entry->SetBoolField(TEXT("DoorOpen"), Door->IsDoorOpen());
+				Entry->SetBoolField(TEXT("DoorMoving"), Door->IsDoorMoving());
+				Entry->SetBoolField(TEXT("DoorPresentationOnly"), Door->IsPresentationOnly());
+			}
+			if (Switch)
+			{
+				const auto* Activated = FindFProperty<FBoolProperty>(Switch->GetClass(), TEXT("bIsActivated"));
+				Entry->SetBoolField(TEXT("SwitchActive"), Activated && Activated->GetPropertyValue_InContainer(Switch));
+				Entry->SetBoolField(TEXT("SwitchBlocked"), Switch->IsInteractionBlocked());
+			}
+			if (Hatch)
+			{
+				Entry->SetBoolField(TEXT("HatchClosed"), Hatch->IsClosed());
+			}
+			if (Barrier)
+			{
+				Entry->SetBoolField(TEXT("BarrierBlocked"), Barrier->IsBlocked());
+			}
+
+			// 문 이름만 같아도 복제 참조와 표시·충돌은 인스턴스마다 다를 수 있다.
+			TArray<TSharedPtr<FJsonValue>> Components;
+			TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
+			for (const UPrimitiveComponent* Primitive : Primitives)
+			{
+				TSharedRef<FJsonObject> Component = MakeShared<FJsonObject>();
+				Component->SetStringField(TEXT("Name"), Primitive->GetName());
+				Component->SetStringField(TEXT("Transform"), Primitive->GetComponentTransform().ToString());
+				Component->SetBoolField(TEXT("Visible"), Primitive->IsVisible());
+				Component->SetBoolField(TEXT("HiddenInGame"), Primitive->bHiddenInGame);
+				Component->SetNumberField(TEXT("Collision"), int32(Primitive->GetCollisionEnabled()));
+				Component->SetNumberField(TEXT("PawnResponse"), int32(Primitive->GetCollisionResponseToChannel(ECC_Pawn)));
+				Components.Add(MakeShared<FJsonValueObject>(Component));
+			}
+			Entry->SetArrayField(TEXT("Components"), Components);
+			Actors.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+		State.SetArrayField(TEXT("Stage03Actors"), Actors);
+	}
+
+	TSharedPtr<FJsonObject> SweepStage03Passage(UWorld* World, const FJsonObject& Command)
+	{
+		TActorIterator<AShooterCharacter> Shooters(World);
+		const UCapsuleComponent* Capsule = Shooters ? Shooters->GetCapsuleComponent() : nullptr;
+		FString StartText;
+		FString EndText;
+		FVector Start;
+		FVector End;
+		if (!Capsule || !Command.TryGetStringField(TEXT("Start"), StartText)
+			|| !Command.TryGetStringField(TEXT("End"), EndText) || !Start.InitFromString(StartText)
+			|| !End.InitFromString(EndText) || Start.ContainsNaN() || End.ContainsNaN())
+		{
+			return nullptr;
+		}
+
+		// 이동하는 Pawn과 같은 프로필·캡슐을 사용하고, 페어끼리의 충돌은 통로 검사에서 제외한다.
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(Stage03Passage));
+		for (TActorIterator<APawn> Pawn(World); Pawn; ++Pawn)
+		{
+			if (Pawn->IsA<AShooterCharacter>() || Pawn->IsA<APartnerCharacter>())
+			{
+				Params.AddIgnoredActor(*Pawn);
+			}
+		}
+		FHitResult Hit;
+		const bool bBlocked = World->SweepSingleByProfile(Hit, Start, End, Capsule->GetComponentQuat(),
+			Capsule->GetCollisionProfileName(),
+			FCollisionShape::MakeCapsule(Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight()), Params);
+		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+		Result->SetStringField(TEXT("Start"), Start.ToString());
+		Result->SetStringField(TEXT("End"), End.ToString());
+		Result->SetBoolField(TEXT("Blocked"), bBlocked);
+		Result->SetStringField(TEXT("Actor"), GetPathNameSafe(Hit.GetActor()));
+		Result->SetStringField(TEXT("Component"), GetPathNameSafe(Hit.GetComponent()));
+		Result->SetBoolField(TEXT("StartPenetrating"), Hit.bStartPenetrating);
+		return Result;
+	}
+}
 
 // 실제 게임 클래스/스트리밍을 그대로 사용한다. 명시적인 검증 인자가 없는 실행에는 등록하지 않는다.
 class FOutlierGenerationNetworkProbe
@@ -91,6 +315,9 @@ public:
 	FVector InputBaseDelta = FVector::ZeroVector;
 	int32 InputFrames = 0;
 	bool bStage02 = FParse::Param(FCommandLine::Get(), TEXT("OutlierStage02Validation"));
+	bool bStage03 = FParse::Param(FCommandLine::Get(), TEXT("OutlierStage03Validation"));
+	TSharedPtr<FJsonObject> Stage03Sweep;
+	int32 Stage03SweepCommandId = 0;
 	int32 IntroPreplayFrames = 0;
 	int32 IntroPreplayExposedFrames = 0;
 	int32 IntroPlayingFrames = 0;
@@ -366,6 +593,38 @@ private:
 	bool Execute(UWorld* World, AOutlierGameMode* Mode, UOutlierArenaSubsystem* Arena,
 		const FString& Action, const TSharedPtr<FJsonObject>& Command)
 	{
+		if (bStage03 && (Action == TEXT("Stage03OpenDeveloperMenu") || Action == TEXT("Stage03ConfirmDeveloperPreset")))
+		{
+			return ExecuteStage03DeveloperMenu(World, Action);
+		}
+		if (bStage03 && (Action == TEXT("Stage03HoldPlacement") || Action == TEXT("Stage03ReleasePlacement")))
+		{
+			IConsoleManager::Get().FindConsoleVariable(TEXT("Outlier.Test.HoldArenaPlacement"))
+				->Set(Action == TEXT("Stage03HoldPlacement"), ECVF_SetByConsole);
+			return true;
+		}
+		if (bStage03 && (Action == TEXT("Stage03SelectGameOverPreset") || Action == TEXT("Stage03ApproveGameOverPreset")))
+		{
+			return ExecuteStage03GameOver(World, Action == TEXT("Stage03ApproveGameOverPreset"));
+		}
+		if (bStage03 && Action == TEXT("Stage03OpenArrivalDoor") && World->GetNetMode() != NM_Client)
+		{
+			// 운행 전체와 분리해 서버 문이 열린 뒤 남는 클라이언트 통로 충돌을 재현한다.
+			for (TActorIterator<AElevatorShaftController> Elevator(World); Elevator; ++Elevator)
+			{
+				if (AInteractableDoor* Door = GetElevatorArrivalDoor(**Elevator))
+				{
+					return Door->TrySetDoorOpen(true);
+				}
+			}
+			return false;
+		}
+		if (bStage03 && Action == TEXT("Stage03Sweep"))
+		{
+			Stage03Sweep = SweepStage03Passage(World, *Command);
+			Stage03SweepCommandId = LastCommand;
+			return Stage03Sweep.IsValid();
+		}
 		if (bStage02 && Action == TEXT("MoveInput"))
 		{
 			for (auto It = World->GetPlayerControllerIterator(); It; ++It)
@@ -676,6 +935,11 @@ private:
 			Player->SetStringField(TEXT("Controller"), PC->GetClass()->GetName());
 			Player->SetStringField(TEXT("Pawn"), GetNameSafe(PC->GetPawn()));
 			Player->SetBoolField(TEXT("Local"), PC->IsLocalController());
+			if (bStage03)
+			{
+				Player->SetBoolField(TEXT("MoveInputIgnored"), PC->IsMoveInputIgnored());
+				Player->SetBoolField(TEXT("LookInputIgnored"), PC->IsLookInputIgnored());
+			}
 			if (APawn* Pawn = PC->GetPawn())
 			{
 				Player->SetStringField(TEXT("Location"), Pawn->GetActorLocation().ToString());
@@ -703,6 +967,23 @@ private:
 			Players.Add(MakeShared<FJsonValueObject>(Player));
 		}
 		State->SetArrayField(TEXT("Players"), Players);
+		if (bStage03)
+		{
+			ObserveStage03(World, *State);
+			if (Stage03Sweep.IsValid() && Stage03SweepCommandId == LastCommand)
+			{
+				State->SetObjectField(TEXT("Stage03Sweep"), Stage03Sweep);
+			}
+			TArray<UUserWidget*> PendingWidgets;
+			if (World->GetFirstLocalPlayerFromController())
+			{
+				UWidgetBlueprintLibrary::GetAllWidgetsOfClass(World, PendingWidgets, UGameOverPendingWidget::StaticClass(), false);
+			}
+			State->SetBoolField(TEXT("HasGameOverPending"), PendingWidgets.ContainsByPredicate([](const UUserWidget* Widget)
+			{
+				return Widget && Widget->IsVisible() && Widget->GetOwningPlayer() && Widget->GetOwningPlayer()->IsLocalController();
+			}));
+		}
 		if (bStage02)
 		{
 			Stage02PlacementProbe::Observe(World, State);
