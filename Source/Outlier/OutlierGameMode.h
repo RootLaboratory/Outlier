@@ -7,6 +7,7 @@
 #include "Network/OutlierMatchRequest.h"
 #include "Network/OutlierGameOverStreaming.h"
 #include "Network/OutlierArenaProcessTypes.h"
+#include "Network/ArenaTransitionPlacement.h"
 #include "OutlierPlayerState.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Save/OutlierCheckpointRestartVote.h"
@@ -355,6 +356,24 @@ private:
 	TSet<TWeakObjectPtr<APlayerController>> PendingGameplayUnloadPlayers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayUnloadPlayers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayPossessPlayers;
+	FArenaTransitionPlacementSnapshot ArenaPlacementSnapshot;
+	TArray<TWeakObjectPtr<AActor>> ArenaPlacementInstances;
+	TSet<TWeakObjectPtr<APlayerController>> ReadyArenaPlacementPlayers;
+	TMap<TWeakObjectPtr<APlayerController>, uint32> AwaitingArenaPlacementPossession;
+	TSet<TWeakObjectPtr<APlayerController>> ConfirmedArenaPlacementPossession;
+	TArray<TWeakObjectPtr<APlayerController>> ArenaPlacementReleasePlayers;
+	uint32 ArenaPlacementRevision = 0;
+	FString ArenaPlacementPendingReason;
+	void UpdateArenaPlacementReadiness();
+	void SendArenaPlacementSnapshot(APlayerController* Controller) const;
+	void ResetArenaPlacementReadiness();
+
+public:
+	void OnClientArenaPlacementReady(APlayerController* Controller, uint32 Generation,
+		uint32 ReconnectRequestId, uint32 Revision, bool bReady, const APawn* ConfirmedPawn);
+	bool IsArenaGameplayTransitionLocked() const { return bArenaReloadInProgress; }
+
+private:
 	// TMap<TWeakObjectPtr<APlayerController>, double> ClientUnloadRequestedAt;
 	// TMap<TWeakObjectPtr<APlayerController>, double> ClientLoadAuthorizedAt;
 	double ArenaReloadStartedAt = 0.0;
@@ -447,7 +466,8 @@ protected:
 		const FTransform& ShooterSpawn,
 		const FTransform& PartnerSpawn,
 		bool bRestoreCheckpointSnapshot = false, int32 PresetNodeCount = INDEX_NONE,
-		TFunction<bool()> BeforeRespawn = {}, TFunction<void()> ApplyRestore = {});
+		TFunction<bool()> BeforeRespawn = {}, TFunction<void()> ApplyRestore = {},
+		FName PresetId = NAME_None, FName CheckpointId = NAME_None);
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;

@@ -1811,7 +1811,7 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
-		|| ShooterCharacter->IsWeaponEquipInputBlocked() || bRequireFireRelease
+		|| ShooterCharacter->IsArenaPlacementInputLocked() || ShooterCharacter->IsWeaponEquipInputBlocked() || bRequireFireRelease
 		|| ShooterCharacter->CurrentWeapon == nullptr)
 	{
 		return false;

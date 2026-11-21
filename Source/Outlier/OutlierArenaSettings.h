@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
 #include "GameplayTagContainer.h"
+#include "Network/ArenaTransitionPlacement.h"
 #include "OutlierArenaSettings.generated.h"
 
 class UWorld;
@@ -52,6 +53,10 @@ public:
 	// Listen/Dedicated 모두 최초 리로드 시작부터 적용하는 전체 제한이다. 재시도로 연장하지 않는다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Levels", meta = (ClampMin = "1.0"))
 	float ArenaGameplayReloadFailureSeconds = 60.0f;
+
+	/** 프리셋·체크포인트 전환에서 조작권을 돌려주기 전에 확인할 배치 액터 목록. */
+	UPROPERTY(Config, EditAnywhere, Category = "Arena|Respawn")
+	TArray<FArenaTransitionPlacementBinding> TransitionPlacementBindings;
 
 	// 프리셋 스테이지별 업그레이드 노드 지급량(FPresetNodeProvideRow). RowName은
 	// OutlierPresetStageIds.h의 상수와 같아야 한다.

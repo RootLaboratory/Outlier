@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Network/OutlierGameOverStreaming.h"
+#include "Network/ArenaTransitionPlacement.h"
 #include "WorldPartition/WorldPartitionStreamingSource.h"
 
 #include "CoreMinimal.h"
@@ -358,6 +359,18 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady(uint32 GameplayGeneration, uint32 ReconnectRequestId = 0);
 
+	UFUNCTION(Client, Reliable)
+	void ClientReceiveArenaPlacement(uint32 Generation, const FArenaTransitionPlacementSnapshot& Snapshot);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyArenaPlacement(uint32 Generation, uint32 ReconnectRequestId, uint32 Revision,
+		bool bReady, APawn* ConfirmedPawn);
+
+	UFUNCTION(Client, Reliable)
+	void ClientReleaseArenaPlacement(uint32 Generation, uint32 Revision);
+
+	bool IsArenaPlacementInputLocked() const;
+
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaGameplayUnloaded(uint32 GameplayGeneration);
 
@@ -535,6 +548,8 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual bool GetStreamingSourcesInternal(TArray<FWorldPartitionStreamingSource>& OutStreamingSources) const override;
 	virtual void AcknowledgePossession(APawn* P) override;
+	virtual bool IsMoveInputIgnored() const override;
+	virtual bool IsLookInputIgnored() const override;
 
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnRep_PlayerState() override;
@@ -799,6 +814,17 @@ protected:
 	bool bClientReloadBootstrapPending = false;
 	bool bClientGameplayLoadAuthorized = false;
 	bool bClientArenaReadyReported = false;
+	FArenaTransitionPlacementSnapshot ClientArenaPlacement;
+	TArray<TWeakObjectPtr<AActor>> ClientArenaPlacementInstances;
+	bool bClientArenaPlacementReady = false;
+	bool bClientArenaPlacementPossessionSent = false;
+	bool bClientArenaPlacementInputLocked = false;
+	uint32 ClientArenaPlacementReleaseRevision = 0;
+	TWeakObjectPtr<APawn> ClientArenaPlacementPawn;
+	FString ClientArenaPlacementPendingReason;
+	void UpdateClientArenaPlacement();
+	void ResetClientArenaPlacement();
+	void ApplyLocalArenaPossessionPresentation(APawn* Pawn);
 	bool bClientGameplayReloadFailed = false;
 	bool bClientArenaExitPrepared = false;
 	FTSTicker::FDelegateHandle ClientGameplayReloadWatchdogHandle;

@@ -3078,7 +3078,7 @@ bool AShooterCharacter::CanFireInCurrentState() const
 
 bool AShooterCharacter::CanInteract() const
 {
-	return !IsDead() && !IsSuitTransitionBlocked();
+	return !IsDead() && Super::CanInteract();
 }
 
 bool AShooterCharacter::CanLean() const

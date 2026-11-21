@@ -358,11 +358,17 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 
 bool AFirstPersonCharacter::CanInteract() const
 {
-	if (IsSuitTransitionBlocked())
+	if (IsSuitTransitionBlocked() || IsArenaPlacementInputLocked())
 	{
 		return false;
 	}
 	return true;
+}
+
+bool AFirstPersonCharacter::IsArenaPlacementInputLocked() const
+{
+	const AFirstPersonPlayerController* Player = Cast<AFirstPersonPlayerController>(GetController());
+	return Player && Player->IsArenaPlacementInputLocked();
 }
 
 void AFirstPersonCharacter::TryInteract()

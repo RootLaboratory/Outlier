@@ -1061,7 +1061,7 @@ bool AOutlierGameMode::StartCheckpointRestart(
 			PartnerPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
 
 			ResetRuntimeCombatStateForRespawn();
-		});
+		}, Snapshot.bInitialSnapshot ? OutlierPresetStageIds::Start : NAME_None, Snapshot.CheckpointId);
 }
 
 void AOutlierGameMode::FinishCheckpointRestart()
@@ -2574,7 +2574,7 @@ bool AOutlierGameMode::RequestPresetRespawn(AController* Requester, FName StageI
 
 	const int32 NewNodeCount = ResolvePresetNodeCount(StageId);
 	return ReloadArenaAndRespawnPair(ShooterPS, PartnerPS, ShooterSpawn, PartnerSpawn, false, NewNodeCount,
-		MoveTemp(BeforeReload));
+		MoveTemp(BeforeReload), {}, StageId);
 }
 
 void AOutlierGameMode::StartMatchedPair(AController* FirstController, AController* SecondController, int32 PairId, EOutlierPlayerRole FirstRole, EOutlierPlayerRole SecondRole)
@@ -3058,7 +3058,8 @@ void AOutlierGameMode::TryStartInitialSaveRestore()
 	// 최초 Arena 준비 뒤에만 Generation 리로드를 시작해 클라이언트의 ArenaLoaded 선행 조건을 지킨다.
 	bPendingInitialSaveRestore = false;
 	if (!ReloadArenaAndRespawnPair(ShooterPS, PartnerPS,
-		Snapshot.ShooterSpawnTransform, Snapshot.PartnerSpawnTransform, true))
+		Snapshot.ShooterSpawnTransform, Snapshot.PartnerSpawnTransform, true, INDEX_NONE, {}, {},
+		Snapshot.bInitialSnapshot ? OutlierPresetStageIds::Start : NAME_None, Snapshot.CheckpointId))
 	{
 		UE_LOG(LogTemp, Error, TEXT("[Checkpoint] Initial save restore failed to start"));
 		if (IsArenaWorkerProcess())
@@ -3326,6 +3327,10 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 	{
 		if (!ReadyGameplayPossessPlayers.Contains(PC)) MarkArenaReloadProgress();
 		ReadyGameplayPossessPlayers.Add(PC);
+		if (!ReadyArenaPlacementPlayers.Contains(PC))
+		{
+			SendArenaPlacementSnapshot(PC);
+		}
 		OUTLIER_LOG(Core, LogTemp, Display,
 			TEXT("[ArenaReload][Server] HoldPossessUntilServerReady PC=%s Gen=%u"),
 			*GetNameSafe(PC), GameplayGeneration);
@@ -3345,6 +3350,11 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 	if (!ValidateReconnectPawn(PC, Pawn))
 	{
 		return;
+	}
+	if (bArenaReloadInProgress)
+	{
+		AwaitingArenaPlacementPossession.Add(PC, ExpectedRequest);
+		ArenaPlacementReleasePlayers.AddUnique(PC);
 	}
 	PendingPossessions.Remove(PC);
 	PendingReconnectRequestIds.Remove(PC);
@@ -3804,6 +3814,19 @@ bool AOutlierGameMode::PreserveGameplayPawnForReconnect(APlayerController* Playe
 void AOutlierGameMode::Logout(AController* Exiting)
 {
 	APlayerController* ExitingPlayer = Cast<APlayerController>(Exiting);
+	if (ExitingPlayer && bArenaReloadInProgress && AwaitingArenaPlacementPossession.Contains(ExitingPlayer))
+	{
+		// 빙의 확인 단계에 끊겨도 기존 재접속 경로에 같은 Pawn을 돌려준다.
+		if (APawn* Pawn = ExitingPlayer->GetPawn())
+		{
+			ExitingPlayer->UnPossess();
+			PendingPossessions.Add(ExitingPlayer, Pawn);
+		}
+		AwaitingArenaPlacementPossession.Remove(ExitingPlayer);
+		ConfirmedArenaPlacementPossession.Remove(ExitingPlayer);
+		ArenaPlacementReleasePlayers.Remove(ExitingPlayer);
+	}
+	ReadyArenaPlacementPlayers.Remove(ExitingPlayer);
 	if (bPendingInitialIntro && (Exiting == InitialIntroShooter.Get() || Exiting == InitialIntroPartner.Get()))
 	{
 		// 연결이 끊긴 Controller의 늦은 ACK로 이번 라운드가 완료되지 않게 한다.
@@ -3839,7 +3862,8 @@ void AOutlierGameMode::Logout(AController* Exiting)
 
 	if (bArenaReloadInProgress && !bWaitForArenaWorkerReconnect && !bKeepListenGuest)
 	{
-		if (ExitingPlayer && PendingGameplayUnloadPlayers.Contains(ExitingPlayer))
+		if (ExitingPlayer && (PendingGameplayUnloadPlayers.Contains(ExitingPlayer)
+			|| PendingPossessions.Contains(ExitingPlayer)))
 		{
 			if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 				? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
@@ -4275,11 +4299,19 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	const FTransform& ShooterSpawn,
 	const FTransform& PartnerSpawn,
 	bool bRestoreCheckpointSnapshot, int32 PresetNodeCount, TFunction<bool()> BeforeRespawn,
-	TFunction<void()> ApplyRestore)
+	TFunction<void()> ApplyRestore, FName PresetId, FName CheckpointId)
 {
 	if (!HasAuthority() || !ShooterPlayerState || !ShooterClass || !PartnerClass
 		|| ShooterClass->HasAnyClassFlags(CLASS_Abstract) || PartnerClass->HasAnyClassFlags(CLASS_Abstract))
 	{
+		return false;
+	}
+	TArray<FArenaTransitionPlacementTarget> PlacementTargets;
+	if (!IsDirectPairTestWorld(GetWorld())
+		&& !OutlierArenaTransitionPlacement::ResolveTargets(PresetId, CheckpointId, PlacementTargets))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ArenaPlacement] Missing binding Preset=%s Checkpoint=%s"),
+			*PresetId.ToString(), *CheckpointId.ToString());
 		return false;
 	}
 	// 고정 지급은 프리셋 선택에만 적용한다. 이어하기는 저장 장비/슈트 상태를 그대로 복원한다.
@@ -4349,6 +4381,8 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		ArmPresetUpgradeUI(ShooterPlayerState->GetPairId(), ReloadGeneration);
 	}
 	InvalidateDeveloperConvenienceSession();
+	ResetArenaPlacementReadiness();
+	ArenaPlacementSnapshot.Targets = MoveTemp(PlacementTargets);
 	PendingGameplayGeneration = ReloadGeneration;
 	bArenaReloadInProgress = true;
 	bClearPresetGuidesAfterReload = bApplyPresetLoadout;
@@ -5477,6 +5511,10 @@ bool AOutlierGameMode::TickArenaRecovery(float DeltaTime)
 	}
 	if (bArenaReloadInProgress)
 	{
+		if (bServerArenaReloadReady)
+		{
+			UpdateArenaPlacementReadiness();
+		}
 		const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 		const double TotalLimit = Settings ? FMath::Max(double(Settings->ArenaGameplayReloadFailureSeconds), 1.0) : 60.0;
 		const double StallLimit = Settings ? FMath::Max(double(Settings->ArenaGameplayReloadStallSeconds), 1.0) : 15.0;
@@ -5528,6 +5566,7 @@ void AOutlierGameMode::RetryArenaReload()
 		AFirstPersonPlayerController* PC = Cast<AFirstPersonPlayerController>(Entry.Key.Get());
 		if (!PC || PC->IsLocalController()) continue;
 		PC->ClientRetryArenaGameplayReload(PendingGameplayGeneration);
+		SendArenaPlacementSnapshot(PC);
 		if (!PendingGameplayUnloadPlayers.Contains(PC))
 		{
 			PC->ClientActivateArenaGameplayLevels(PendingGameplayGeneration);
@@ -5601,6 +5640,7 @@ void AOutlierGameMode::HandleArenaGameplayReloadFailed(
 	PendingGameplayUnloadPlayers.Reset();
 	ReadyGameplayUnloadPlayers.Reset();
 	ReadyGameplayPossessPlayers.Reset();
+	ResetArenaPlacementReadiness();
 	// ClientUnloadRequestedAt.Reset();
 	// ClientLoadAuthorizedAt.Reset();
 	ArenaReloadStartedAt = 0.0;
@@ -5840,21 +5880,54 @@ void AOutlierGameMode::CompleteServerArenaReload()
 	// 모두 이 경로를 공유하며, 방은 저장된 전투 태그가 아니라 현재 overlap으로 결정한다.
 	RefreshRoomOverlapAssignments();
 	bServerArenaReloadReady = true;
-	TryCompleteArenaPossessions();
+	UpdateArenaPlacementReadiness();
+}
+
+namespace
+{
+	bool ValidateArenaSpawnCapsule(APawn* Pawn);
 }
 
 void AOutlierGameMode::TryCompleteArenaPossessions()
 {
 	if (!bArenaReloadInProgress || !bServerArenaReloadReady || bDispatchingArenaPossessions
+		|| ArenaPlacementSnapshot.Revision == 0
 		|| ReadyGameplayPossessPlayers.Num() < PendingPossessions.Num()
 		|| !ArenaWorkerDisconnectedPlayerIds.IsEmpty()
-		|| (bListenGuestDisconnected && !PendingPossessions.FindKey(ListenGuestReconnectPawn.Get()))) return;
+		|| (bListenGuestDisconnected && !PendingPossessions.FindKey(ListenGuestReconnectPawn.Get())))
+	{
+		return;
+	}
 	for (const auto& Entry : PendingPossessions)
 	{
+		if (!ReadyArenaPlacementPlayers.Contains(Entry.Key))
+		{
+			return;
+		}
 		if (!ValidateReconnectPawn(Entry.Key.Get(), Entry.Value.Get()))
 		{
 			ReadyGameplayPossessPlayers.Remove(Entry.Key);
+			ReadyArenaPlacementPlayers.Remove(Entry.Key);
 			return;
+		}
+	}
+	if (!ArenaPlacementSnapshot.Targets.IsEmpty())
+	{
+		for (const auto& Entry : PendingPossessions)
+		{
+			if (!ValidateArenaSpawnCapsule(Entry.Value.Get()))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[ArenaPlacement] Spawn capsule pending Gen=%u Pawn=%s"),
+					PendingGameplayGeneration, *GetNameSafe(Entry.Value.Get()));
+				return;
+			}
+		}
+		for (const auto& Entry : PendingLocalPossessions)
+		{
+			if (!ValidateArenaSpawnCapsule(Entry.Value.Get()))
+			{
+				return;
+			}
 		}
 	}
 	// 서버와 원격 페어가 모두 준비된 뒤 한 경계에서 Possess한다. 빠른 한쪽만 먼저 입력을 재개하지 않는다.
@@ -5869,6 +5942,8 @@ void AOutlierGameMode::TryCompleteArenaPossessions()
 		{
 			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PC))
 			{
+				ArenaPlacementReleasePlayers.AddUnique(PC);
+				FPC->ClientReceiveArenaPlacement(PendingGameplayGeneration, ArenaPlacementSnapshot);
 				FPC->ArmDeathTransitionReleaseOnPossess();
 			}
 			PC->Possess(Pawn);
@@ -5898,6 +5973,7 @@ void AOutlierGameMode::TryFinishArenaReload()
 		|| !PendingLocalPossessions.IsEmpty()
 		|| !PendingPossessions.IsEmpty()
 		|| !ReadyGameplayPossessPlayers.IsEmpty()
+		|| AwaitingArenaPlacementPossession.Num() != ConfirmedArenaPlacementPossession.Num()
 		|| bListenGuestDisconnected
 		|| !ArenaWorkerDisconnectedPlayerIds.IsEmpty()
 		|| !ArenaWorkerReconnectPawns.IsEmpty())
@@ -5914,6 +5990,14 @@ void AOutlierGameMode::TryFinishArenaReload()
 	ClearArenaGameplayReloadDelegates();
 	bArenaReloadInProgress = false;
 	bServerArenaReloadReady = false;
+	for (const TWeakObjectPtr<APlayerController>& Player : ArenaPlacementReleasePlayers)
+	{
+		if (AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(Player.Get()))
+		{
+			Controller->ClientReleaseArenaPlacement(PendingGameplayGeneration, ArenaPlacementSnapshot.Revision);
+		}
+	}
+	ResetArenaPlacementReadiness();
 	// ClientUnloadRequestedAt.Reset();
 	// ClientLoadAuthorizedAt.Reset();
 	ArenaReloadStartedAt = 0.0;
@@ -5938,6 +6022,146 @@ void AOutlierGameMode::TryFinishArenaReload()
 		ScheduleArenaWorkerGameplayStart();
 	}
 	BroadcastPairGameplayReadyIfReady();
+}
+
+void AOutlierGameMode::SendArenaPlacementSnapshot(APlayerController* Controller) const
+{
+	if (AFirstPersonPlayerController* Player = Cast<AFirstPersonPlayerController>(Controller))
+	{
+		Player->ClientReceiveArenaPlacement(PendingGameplayGeneration, ArenaPlacementSnapshot);
+	}
+}
+
+void AOutlierGameMode::ResetArenaPlacementReadiness()
+{
+	ArenaPlacementSnapshot = {};
+	ArenaPlacementInstances.Reset();
+	ReadyArenaPlacementPlayers.Reset();
+	AwaitingArenaPlacementPossession.Reset();
+	ConfirmedArenaPlacementPossession.Reset();
+	ArenaPlacementReleasePlayers.Reset();
+	ArenaPlacementPendingReason.Reset();
+}
+
+void AOutlierGameMode::UpdateArenaPlacementReadiness()
+{
+	TArray<FArenaTransitionPlacementPart> Parts;
+	TArray<TWeakObjectPtr<AActor>> Instances;
+	FString PendingTarget;
+	const bool bReady = OutlierArenaTransitionPlacement::ReadTargets(*GetWorld(),
+		ArenaPlacementSnapshot.Targets, Parts, PendingTarget, &Instances);
+	if (!bReady)
+	{
+		if (ArenaPlacementPendingReason != PendingTarget)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[ArenaPlacement][Server] Waiting Gen=%u Target=%s"),
+				PendingGameplayGeneration, *PendingTarget);
+			ArenaPlacementPendingReason = MoveTemp(PendingTarget);
+		}
+		if (ArenaPlacementSnapshot.Revision == 0)
+		{
+			return;
+		}
+	}
+
+	// 같은 레벨이 다시 표시돼도 이전 인스턴스를 확인한 ACK는 재사용하지 않는다.
+	if (!bReady || ArenaPlacementSnapshot.Revision == 0 || ArenaPlacementInstances != Instances
+		|| !OutlierArenaTransitionPlacement::Matches(ArenaPlacementSnapshot.Parts, Parts, PendingTarget))
+	{
+		ReadyArenaPlacementPlayers.Reset();
+		ConfirmedArenaPlacementPossession.Reset();
+		ArenaPlacementSnapshot.Revision = bReady ? ++ArenaPlacementRevision : 0;
+		ArenaPlacementSnapshot.Parts = bReady ? MoveTemp(Parts) : TArray<FArenaTransitionPlacementPart>{};
+		ArenaPlacementInstances = bReady ? MoveTemp(Instances) : TArray<TWeakObjectPtr<AActor>>{};
+		if (bReady)
+		{
+			MarkArenaReloadProgress();
+			UE_LOG(LogTemp, Display, TEXT("[ArenaPlacement][Server] Ready Gen=%u Revision=%u Parts=%d"),
+				PendingGameplayGeneration, ArenaPlacementSnapshot.Revision, ArenaPlacementSnapshot.Parts.Num());
+		}
+		for (const auto& Entry : PendingPossessions)
+		{
+			SendArenaPlacementSnapshot(Entry.Key.Get());
+		}
+		for (const TWeakObjectPtr<APlayerController>& Player : ArenaPlacementReleasePlayers)
+		{
+			SendArenaPlacementSnapshot(Player.Get());
+		}
+	}
+	TryCompleteArenaPossessions();
+}
+
+namespace
+{
+	bool ValidateArenaSpawnCapsule(APawn* Pawn)
+	{
+		if (!IsValid(Pawn))
+		{
+			return false;
+		}
+		const FVector Original = Pawn->GetActorLocation();
+		// 배치점의 작은 바닥 관통은 바로 위에서 검사한다. 벽 너머의 대체 위치는 찾지 않는다.
+		for (const double Adjustment : { 0.0, 8.0, 16.0, 24.0, 32.0 })
+		{
+			const FVector Position = Original + FVector(0, 0, Adjustment);
+			if (!OutlierArenaTransitionPlacement::IsSpawnCapsuleReady(*Pawn, Position))
+			{
+				continue;
+			}
+			if (Adjustment == 0.0)
+			{
+				return true;
+			}
+			return Pawn->SetActorLocation(Position, false, nullptr, ETeleportType::TeleportPhysics);
+		}
+		return false;
+	}
+}
+
+void AOutlierGameMode::OnClientArenaPlacementReady(APlayerController* Controller, uint32 Generation,
+	uint32 ReconnectRequestId, uint32 Revision, bool bReady, const APawn* ConfirmedPawn)
+{
+	if (!IsGameplayReloadInProgress(Generation) || !Controller || Controller->IsLocalController()
+		|| Revision == 0 || Revision != ArenaPlacementSnapshot.Revision)
+	{
+		return;
+	}
+	const uint32* PossessedRequest = AwaitingArenaPlacementPossession.Find(Controller);
+	if (PossessedRequest)
+	{
+		if (*PossessedRequest != ReconnectRequestId || !Controller->GetPawn())
+		{
+			return;
+		}
+		if (!bReady)
+		{
+			ConfirmedArenaPlacementPossession.Remove(Controller);
+		}
+		else if (ConfirmedPawn == Controller->GetPawn() && !ConfirmedArenaPlacementPossession.Contains(Controller))
+		{
+			ConfirmedArenaPlacementPossession.Add(Controller);
+			MarkArenaReloadProgress();
+			TryFinishArenaReload();
+		}
+		return;
+	}
+	if (!PendingPossessions.Contains(Controller) || PendingGameplayUnloadPlayers.Contains(Controller)
+		|| PendingReconnectRequestIds.FindRef(Controller) != ReconnectRequestId || ConfirmedPawn)
+	{
+		return;
+	}
+	if (!bReady)
+	{
+		ReadyArenaPlacementPlayers.Remove(Controller);
+	}
+	else if (!ReadyArenaPlacementPlayers.Contains(Controller))
+	{
+		ReadyArenaPlacementPlayers.Add(Controller);
+		MarkArenaReloadProgress();
+		UE_LOG(LogTemp, Display, TEXT("[ArenaPlacement][Server] ACK Gen=%u Revision=%u PC=%s"),
+			Generation, Revision, *GetNameSafe(Controller));
+		TryCompleteArenaPossessions();
+	}
 }
 
 bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const

@@ -177,6 +177,7 @@ protected:
 	void HandleInteractionInputStarted();
 
 	virtual bool CanInteract() const;
+	bool IsArenaPlacementInputLocked() const;
 	virtual void PrepareForSuitTransition();
 	virtual void OnSuitTransitionBlockChanged() {}
 	virtual bool CanResumeMovementAfterSuitTransition() const { return true; }
