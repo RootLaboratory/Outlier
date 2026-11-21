@@ -64,6 +64,48 @@ void AElevatorShaftSection::RefreshChildActors()
 			EntranceDoor = Door;
 		}
 	}
+	if (AInteractableDoor* Door = ReplicatedArrivalDoor.Get())
+	{
+		SetReplicatedArrivalDoor(Door);
+	}
+}
+
+void AElevatorShaftSection::SetReplicatedArrivalDoor(AInteractableDoor* Door)
+{
+	ReplicatedArrivalDoor = Door;
+	// 비복제 Section은 클라이언트에서도 배치된 Child Actor 문을 생성한다. 서버 문이 도착하면 그 문만 통로를 제어한다.
+	for (const TWeakObjectPtr<AActor>& Child : SectionChildren)
+	{
+		AActor* Actor = Child.Get();
+		if (Actor && IsLocalArrivalDoorDuplicate(*Actor))
+		{
+			Actor->SetActorEnableCollision(false);
+			Actor->SetActorHiddenInGame(true);
+		}
+	}
+}
+
+bool AElevatorShaftSection::IsLocalArrivalDoorDuplicate(const AActor& Actor) const
+{
+	const AInteractableDoor* Door = ReplicatedArrivalDoor.Get();
+	return Door && Door != &Actor && Actor.HasAuthority() && Actor.IsA<AInteractableDoor>();
+}
+
+bool AElevatorShaftSection::HasResolvedArrivalDoor(const AInteractableDoor* Door) const
+{
+	if (!Door || ReplicatedArrivalDoor.Get() != Door)
+	{
+		return false;
+	}
+	for (const TWeakObjectPtr<AActor>& Child : SectionChildren)
+	{
+		const AActor* Actor = Child.Get();
+		if (Actor && IsLocalArrivalDoorDuplicate(*Actor) && (Actor->GetActorEnableCollision() || !Actor->IsHidden()))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 AInteractableDoor* AElevatorShaftSection::GetEntranceDoor() const
@@ -117,14 +159,17 @@ AInteractableDoor* AElevatorShaftSection::FindCurrentDoor(FString& OutError, boo
 
 void AElevatorShaftSection::SetSectionVisible(bool bVisible)
 {
-	if (IsHidden() == !bVisible) return;
+	if (IsHidden() == !bVisible)
+	{
+		return;
+	}
 	SetActorHiddenInGame(!bVisible);
 	// Actor 숨김은 Child Actor의 독립 렌더 컴포넌트에 전파되지 않으므로 초기화 캐시를 함께 갱신한다.
 	for (const TWeakObjectPtr<AActor>& Child : SectionChildren)
 	{
 		if (AActor* Actor = Child.Get())
 		{
-			Actor->SetActorHiddenInGame(!bVisible);
+			Actor->SetActorHiddenInGame(!bVisible || IsLocalArrivalDoorDuplicate(*Actor));
 		}
 	}
 }

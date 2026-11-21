@@ -4,8 +4,10 @@
 #include "Level/Elevator/ElevatorShaftSection.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Components/AudioComponent.h"
+#include "Components/ChildActorComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Interaction/InteractableDoor.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 
@@ -28,6 +30,111 @@ bool FElevatorPresentationLifecycleTest::RunTest(const FString& Parameters)
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
 	};
+
+	const FTransform EntrancePlacement(FRotator(0, 90, 0), FVector(5000, 1000, 200));
+	const FTransform ArrivalPlacement(FRotator(0, 90, 0), FVector(7000, 1500, -2000));
+	const FTransform ServerEntrance(FRotator(0, 90, 0), FVector(5100, 1000, 200));
+	AElevatorShaftSection* DuplicateDoorSection = World->SpawnActor<AElevatorShaftSection>();
+	AInteractableDoor* ReplicatedDoor = World->SpawnActor<AInteractableDoor>();
+	if (!TestNotNull(TEXT("Arrival section exists"), DuplicateDoorSection)
+		|| !TestNotNull(TEXT("Replicated door exists"), ReplicatedDoor))
+	{
+		return false;
+	}
+	UChildActorComponent* ChildDoorComponent = NewObject<UChildActorComponent>(DuplicateDoorSection);
+	DuplicateDoorSection->AddInstanceComponent(ChildDoorComponent);
+	ChildDoorComponent->SetupAttachment(DuplicateDoorSection->GetRootComponent());
+	ChildDoorComponent->SetChildActorClass(AInteractableDoor::StaticClass());
+	ChildDoorComponent->RegisterComponent();
+	AActor* LocalDoor = ChildDoorComponent->GetChildActor();
+	if (!TestNotNull(TEXT("Locally constructed arrival door exists"), LocalDoor))
+	{
+		return false;
+	}
+	DuplicateDoorSection->RefreshChildActors();
+	TestFalse(TEXT("Local door is visible before the replicated reference is resolved"), LocalDoor->IsHidden());
+	TestTrue(TEXT("Local door has collision before the replicated reference is resolved"), LocalDoor->GetActorEnableCollision());
+	DuplicateDoorSection->SetReplicatedArrivalDoor(ReplicatedDoor);
+	DuplicateDoorSection->RefreshChildActors();
+	DuplicateDoorSection->SetSectionVisible(false);
+	DuplicateDoorSection->SetSectionVisible(true);
+	TestTrue(TEXT("Showing the section again keeps the duplicate door hidden"), LocalDoor->IsHidden());
+	TestFalse(TEXT("The duplicate stops blocking the local pawn"), LocalDoor->GetActorEnableCollision());
+	TestFalse(TEXT("The replicated door stays visible"), ReplicatedDoor->IsHidden());
+	TestTrue(TEXT("The replicated door still owns passage collision"), ReplicatedDoor->GetActorEnableCollision());
+
+	for (const bool bMotionArrivesFirst : {false, true})
+	{
+		AElevatorShaftController* StreamingController = World->SpawnActor<AElevatorShaftController>();
+		if (!TestNotNull(TEXT("Streaming controller exists"), StreamingController))
+		{
+			return false;
+		}
+		StreamingController->EntranceSection = World->SpawnActor<AElevatorShaftSection>();
+		StreamingController->ArrivalSection = World->SpawnActor<AElevatorShaftSection>();
+		if (!TestNotNull(TEXT("Streaming entrance exists"), StreamingController->EntranceSection.Get())
+			|| !TestNotNull(TEXT("Streaming arrival exists"), StreamingController->ArrivalSection.Get()))
+		{
+			return false;
+		}
+		StreamingController->EntranceSection->SetActorTransform(EntrancePlacement);
+		StreamingController->ArrivalSection->SetActorTransform(ArrivalPlacement);
+		StreamingController->LoopSectionClass = AElevatorShaftSection::StaticClass();
+
+		// 복제와 로컬 참조 준비 중 하나만 끝난 시점의 호출을 각각 재현한다.
+		FElevatorShaftMotion InitialMotion;
+		InitialMotion.ExecutionId = FGuid::NewGuid();
+		InitialMotion.EntranceTransform = ServerEntrance;
+		InitialMotion.ArrivalTransform = ArrivalPlacement;
+		if (bMotionArrivesFirst)
+		{
+			StreamingController->Motion = InitialMotion;
+		}
+		else
+		{
+			StreamingController->bInitialized = true;
+		}
+		StreamingController->OnRep_Motion();
+		StreamingController->UpdateVisuals();
+		StreamingController->InitializeVisualPool();
+		TestTrue(TEXT("Before readiness the entrance stays at its authored transform"),
+			StreamingController->EntranceSection->GetActorTransform().Equals(EntrancePlacement));
+		TestTrue(TEXT("Before readiness the arrival stays at its authored transform"),
+			StreamingController->ArrivalSection->GetActorTransform().Equals(ArrivalPlacement));
+		TestFalse(TEXT("Before readiness the entrance remains visible"), StreamingController->EntranceSection->IsHidden());
+		TestTrue(TEXT("Before readiness no loop sections are spawned"), StreamingController->LoopSections.IsEmpty());
+		TestFalse(TEXT("Before readiness the incoming execution is not presented"),
+			StreamingController->PresentationExecutionId.IsValid());
+
+		if (!bMotionArrivesFirst)
+		{
+			StreamingController->Motion = InitialMotion;
+		}
+		StreamingController->bInitialized = true;
+		StreamingController->OnRep_Motion();
+		TestTrue(TEXT("Once ready the entrance applies the authoritative transform"),
+			StreamingController->EntranceSection->GetActorTransform().Equals(ServerEntrance));
+		TestEqual(TEXT("Once ready the visual pool is created"),
+			StreamingController->LoopSections.Num(), StreamingController->LoopSectionCount);
+		StreamingController->OnRep_Motion();
+		TestEqual(TEXT("Reapplying motion does not duplicate loop sections"),
+			StreamingController->LoopSections.Num(), StreamingController->LoopSectionCount);
+	}
+
+	// 먼저 언로드되는 Controller가 아직 로드된 별도 도착층의 배치를 덮어쓰지 않아야 한다.
+	AElevatorShaftController* UnloadingController = World->SpawnActor<AElevatorShaftController>();
+	AElevatorShaftSection* RemainingArrival = World->SpawnActor<AElevatorShaftSection>();
+	if (!TestNotNull(TEXT("Unloading controller exists"), UnloadingController)
+		|| !TestNotNull(TEXT("Remaining arrival exists"), RemainingArrival))
+	{
+		return false;
+	}
+	RemainingArrival->SetActorTransform(ArrivalPlacement);
+	UnloadingController->bInitialized = true;
+	UnloadingController->ArrivalSection = RemainingArrival;
+	UnloadingController->EndPlay(EEndPlayReason::RemovedFromWorld);
+	TestTrue(TEXT("Unloading before replication preserves the authored arrival transform"),
+		RemainingArrival->GetActorTransform().Equals(ArrivalPlacement));
 
 	AElevatorShaftController* Controller = World->SpawnActor<AElevatorShaftController>();
 	if (!TestNotNull(TEXT("Controller exists"), Controller)) return false;
