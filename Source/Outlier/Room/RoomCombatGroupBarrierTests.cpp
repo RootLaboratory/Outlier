@@ -2,11 +2,16 @@
 
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "HAL/IConsoleManager.h"
+#include "Interaction/InteractableComponent.h"
+#include "Interaction/InteractableDoor.h"
+#include "Interaction/InteractableSwitch.h"
 #include "Misc/AutomationTest.h"
 #include "NativeGameplayTags.h"
 #include "Room/RoomCombatBarrier.h"
@@ -14,6 +19,7 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -222,6 +228,77 @@ bool FGroupBarrierParticipationTest::RunTest(const FString& Parameters)
 	CheckBarrierPresentation(*this, OuterC, false);
 	TestEqual(TEXT("Nonparticipant C still waits for its own event"), Test.Combat->GetRoomState(BarrierC), ERoomCombatState::WaitingForTrigger);
 	TestFalse(TEXT("Group completion does not reserve nonparticipant C"), Test.Combat->IsRoomCombatReserved(BarrierC));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCombatDoorSwitchTest, "Outlier.Interaction.Switch.RoomCombatLock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatDoorSwitchTest::RunTest(const FString& Parameters)
+{
+	FGroupBarrierWorld Test;
+	Test.AddRoom(BarrierA);
+	Test.AddRoom(BarrierB);
+	AEnemyBase* EnemyA = Test.AddEnemy(BarrierA);
+	AEnemyBase* EnemyB = Test.AddEnemy(BarrierB);
+
+	APartnerCharacter* Interactor = Test.World->SpawnActor<APartnerCharacter>(
+		APartnerCharacter::StaticClass(), FVector(10000, 0, 0), FRotator::ZeroRotator);
+	AInteractableDoor* Door = Test.World->SpawnActor<AInteractableDoor>();
+	AInteractableSwitch* Tagged = Test.World->SpawnActor<AInteractableSwitch>();
+	AInteractableSwitch* Untagged = Test.World->SpawnActor<AInteractableSwitch>();
+	UOutlierSaveSubSystem* Save = Test.GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	if (!TestNotNull(TEXT("Interactor exists"), Interactor) || !TestNotNull(TEXT("Door exists"), Door)
+		|| !TestNotNull(TEXT("Tagged switch exists"), Tagged) || !TestNotNull(TEXT("Untagged switch exists"), Untagged)
+		|| !TestNotNull(TEXT("Save subsystem exists"), Save))
+	{
+		return false;
+	}
+
+	Door->DoorId = TEXT("RoomCombatSwitchTestDoor");
+	Door->DispatchBeginPlay();
+	Tagged->TargetDoor = Door;
+	Tagged->SwitchId = TEXT("RoomCombatSwitchTestTagged");
+	Tagged->CombatRoomTag = BarrierA;
+	Tagged->DispatchBeginPlay();
+	Untagged->TargetDoor = Door;
+	Untagged->SwitchId = TEXT("RoomCombatSwitchTestUntagged");
+	Untagged->DispatchBeginPlay();
+
+	if (!TestTrue(TEXT("Tagged room starts"), Test.Start(BarrierA))
+		|| !TestTrue(TEXT("Sibling room starts"), Test.Start(BarrierB)))
+	{
+		return false;
+	}
+	TestFalse(TEXT("Tagged switch cannot open during its room blockade"), Tagged->Interact(Interactor));
+	TestFalse(TEXT("Rejected request leaves the door closed"), Door->IsDoorOpen());
+	TestFalse(TEXT("Rejected request does not activate the switch"), Tagged->bIsActivated);
+	TestFalse(TEXT("Rejected request does not record switch progress"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::ActivatedSwitch, Tagged->SwitchId));
+	TestTrue(TEXT("Untagged switch can open the same door"), Untagged->Interact(Interactor));
+	TestFalse(TEXT("Tagged switch cannot toggle the door closed during its room blockade"), Tagged->Interact(Interactor));
+	TestTrue(TEXT("Rejected toggle leaves the door open"), Door->IsDoorOpen());
+
+	// 형제 방이 그룹 봉쇄를 유지해도 지정 방의 봉쇄만 스위치에 영향을 준다.
+	Test.Combat->NotifyEnemyDefeated(EnemyA);
+	TestFalse(TEXT("Tagged room no longer blocks its exit"), Test.Combat->IsExitBlocked(BarrierA));
+	TestTrue(TEXT("Sibling still blocks the group exit"), Test.Combat->IsGroupExitBlocked(BarrierA));
+	const FGameplayTag HackLock = OutlierGameplayTags::State::Locked();
+	Tagged->InteractableComponent->InteractableTags.AddTag(HackLock);
+	TestFalse(TEXT("Hack lock still rejects interaction after combat"), Tagged->Interact(Interactor));
+	Tagged->InteractableComponent->InteractableTags.RemoveTag(HackLock);
+	TestTrue(TEXT("The same tagged switch can close the door on the next request"), Tagged->Interact(Interactor));
+	TestFalse(TEXT("Successful retry closes the door"), Door->IsDoorOpen());
+
+	Tagged->AdditionalCombatRoomTags.AddTag(BarrierB);
+	Interactor->GetRoomTagComp()->AssignDefaultRoomTag(BarrierA);
+	TestTrue(TEXT("The shared switch can open from the cleared room"), Tagged->Interact(Interactor));
+	Interactor->GetRoomTagComp()->AssignDefaultRoomTag(BarrierB);
+	TestFalse(TEXT("The same shared switch rejects a request from the blocked room"), Tagged->Interact(Interactor));
+	TestTrue(TEXT("The blocked side leaves the door open"), Door->IsDoorOpen());
+	Test.Combat->NotifyEnemyDefeated(EnemyB);
+	TestTrue(TEXT("The formerly blocked side can use the shared switch after clear"), Tagged->Interact(Interactor));
+	TestFalse(TEXT("The shared switch closes the door after clear"), Door->IsDoorOpen());
 	return true;
 }
 

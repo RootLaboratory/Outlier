@@ -1,12 +1,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameplayTagContainer.h"
 #include "Interaction/InteractableSwitchBase.h"
 #include "InteractableSwitch.generated.h"
 
 class AInteractableDoor;
 class AElevatorShaftController;
 class AElevatorShaftSection;
+class URoomCombatSubsystem;
 
 UENUM(BlueprintType)
 enum class EInteractableSwitchDoorSource : uint8
@@ -27,16 +29,26 @@ class OUTLIER_API AInteractableSwitch : public AInteractableSwitchBase
 	GENERATED_BODY()
 
 protected:
+	virtual void BeginPlay() override;
 	virtual bool ActivateTarget() override;
 
 public:
 	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
 
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch")
 	EInteractableSwitchDoorSource DoorSource = EInteractableSwitchDoorSource::DirectDoor;
 
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch", meta = (EditCondition = "DoorSource == EInteractableSwitchDoorSource::DirectDoor"))
 	TObjectPtr<AInteractableDoor> TargetDoor;
+
+	// 지정한 방의 출입이 봉쇄된 동안 이 스위치의 조작을 막는다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch", meta = (Categories = "Room"))
+	FGameplayTag CombatRoomTag;
+
+	// 공유 출입구에서는 주 Room과 이 목록 중 조작자가 현재 있는 방을 검사한다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch", meta = (Categories = "Room"))
+	FGameplayTagContainer AdditionalCombatRoomTags;
 
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch", meta = (EditCondition = "DoorSource == EInteractableSwitchDoorSource::ElevatorEntrance || DoorSource == EInteractableSwitchDoorSource::ElevatorArrival"))
 	TObjectPtr<AElevatorShaftController> TargetElevator;
@@ -64,4 +76,5 @@ public:
 
 private:
 	AInteractableDoor* ResolveTargetDoor(FString& OutError, bool& bOutPendingConstruction) const;
+	TWeakObjectPtr<URoomCombatSubsystem> RoomCombatSubsystem;
 };
