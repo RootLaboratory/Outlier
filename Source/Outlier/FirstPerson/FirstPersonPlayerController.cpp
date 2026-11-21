@@ -1233,7 +1233,7 @@ void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 	{
 		Arena->OnArenaShown.RemoveAll(this);
 		Arena->OnArenaGameplayUnloaded.RemoveAll(this);
-		Arena->OnArenaGameplayReady.RemoveAll(this);
+		ClearClientArenaGameplayReadyBinding(*Arena);
 	}
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
@@ -2294,7 +2294,7 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 		: nullptr)
 	{
 		ArenaSubsystem->OnArenaGameplayUnloaded.RemoveAll(this);
-		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
+		ClearClientArenaGameplayReadyBinding(*ArenaSubsystem);
 		ArenaSubsystem->OnArenaShown.RemoveAll(this);
 	}
 
@@ -3168,9 +3168,10 @@ void AFirstPersonPlayerController::ContinueClientGameplayReload()
 	}
 	// 재접속으로 Controller만 바뀌어도 진행 중인 세대의 unload/ready 통보를 다시 받아야 한다.
 	ArenaSubsystem->OnArenaGameplayUnloaded.RemoveAll(this);
-	ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
+	ClearClientArenaGameplayReadyBinding(*ArenaSubsystem);
 	ArenaSubsystem->OnArenaGameplayUnloaded.AddUObject(this, &AFirstPersonPlayerController::HandleArenaGameplayUnloaded);
-	ArenaSubsystem->OnArenaGameplayReady.AddUObject(this, &AFirstPersonPlayerController::HandleArenaGameplayReady);
+	ClientArenaGameplayReadyHandle = ArenaSubsystem->OnArenaGameplayReady.AddUObject(
+		this, &AFirstPersonPlayerController::HandleArenaGameplayReady);
 	if (ArenaSubsystem->GetGameplayGeneration() == PendingGameplayGeneration)
 	{
 		bClientReloadBootstrapPending = false;
@@ -3264,6 +3265,16 @@ void AFirstPersonPlayerController::ClientActivateArenaGameplayLevels_Implementat
 	}
 }
 
+void AFirstPersonPlayerController::ClearClientArenaGameplayReadyBinding(UOutlierArenaSubsystem& ArenaSubsystem)
+{
+	// 마커도 같은 Ready 이벤트를 구독하므로 클라이언트 로딩에 쓰는 핸들만 해제한다.
+	if (ClientArenaGameplayReadyHandle.IsValid())
+	{
+		ArenaSubsystem.OnArenaGameplayReady.Remove(ClientArenaGameplayReadyHandle);
+		ClientArenaGameplayReadyHandle.Reset();
+	}
+}
+
 void AFirstPersonPlayerController::HandleArenaShown()
 {
 	if (!bHasPendingArenaRequest)
@@ -3279,7 +3290,7 @@ void AFirstPersonPlayerController::HandleArenaShown()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
 	{
 		ArenaSubsystem->OnArenaShown.RemoveAll(this);
-		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
+		ClearClientArenaGameplayReadyBinding(*ArenaSubsystem);
 	}
 	bWaitingForArenaStart = true;
 	TryNotifyArenaStartReady();

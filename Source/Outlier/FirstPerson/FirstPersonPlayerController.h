@@ -579,6 +579,7 @@ protected:
 	bool TickClientGameOverStreaming(float DeltaTime);
 	void ClearClientArenaContentWait();
 	void ContinueClientGameplayReload();
+	void ClearClientArenaGameplayReadyBinding(UOutlierArenaSubsystem& ArenaSubsystem);
 	bool TickClientGameplayReloadWatchdog(float DeltaTime);
 	void ClearClientGameplayReloadWatchdog();
 	void FailClientGameplayReload(const FString& Reason);
@@ -828,6 +829,7 @@ protected:
 	bool bClientGameplayReloadFailed = false;
 	bool bClientArenaExitPrepared = false;
 	FTSTicker::FDelegateHandle ClientGameplayReloadWatchdogHandle;
+	FDelegateHandle ClientArenaGameplayReadyHandle;
 	// 서버가 계산한 실제 스폰 위치. 클라이언트 준비 진단에도 사용한다.
 	FVector PendingArenaSpawnLocation = FVector::ZeroVector;
 	bool bWaitingForArenaStart = false;

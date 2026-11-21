@@ -14,6 +14,7 @@
 #include "GameFramework/GameStateBase.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
+#include "Network/OutlierArenaSubsystem.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPairPositionMarkerLifecycleTest,
 	"Outlier.UI.PairPositionMarker.TargetLifecycle",
@@ -125,6 +126,32 @@ bool FPairPositionMarkerLifecycleTest::RunTest(const FString& Parameters)
 	Widget->SetRearIndicatorVisible(false);
 	TestEqual(TEXT("The bound rear indicator is collapsed when cleared"),
 		Widget->RearIndicator->GetVisibility(), ESlateVisibility::Collapsed);
+
+	UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+	if (!TestNotNull(TEXT("Arena subsystem"), Arena))
+	{
+		return false;
+	}
+	Controller->BindPairMarkerSources(State);
+	for (uint32 Generation = 1; Generation <= 2; ++Generation)
+	{
+		Controller->PendingGameplayGeneration = Generation;
+		Controller->bHasPendingArenaRequest = true;
+		Controller->ContinueClientGameplayReload();
+		TestTrue(TEXT("Client reload registers its own Ready callback"),
+			Controller->ClientArenaGameplayReadyHandle.IsValid());
+
+		// 임시 월드에는 스트리밍 레벨이 없으므로 레벨 준비 완료 이벤트를 직접 전달한다.
+		Controller->bClientReloadBootstrapPending = false;
+		Arena->OnArenaGameplayReloadStarted.Broadcast(Generation);
+		TestTrue(TEXT("Reload start suspends the pair marker"), Controller->bPairMarkerReloading);
+		Arena->OnArenaGameplayReady.Broadcast(Generation);
+		TestFalse(TEXT("Arena Ready resumes the pair marker"), Controller->bPairMarkerReloading);
+		TestFalse(TEXT("Client Ready removes its own callback"),
+			Controller->ClientArenaGameplayReadyHandle.IsValid());
+	}
+	Controller->ClearClientArenaContentWait();
+	Controller->ClearPairMarkerSources();
 	return true;
 }
 
