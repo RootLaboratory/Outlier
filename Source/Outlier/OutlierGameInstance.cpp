@@ -70,7 +70,7 @@ void UOutlierGameInstance::Init()
 	// Attribute / Effect / Ability 는 이것 없이도 돌기 때문에 GameplayCue 를 붙이기 전까지는 드러나지 않는다.
 	UAbilitySystemGlobals::Get().InitGlobalData();
 
-	FCoreUObjectDelegates::PreLoadMap.AddUObject(this, &UOutlierGameInstance::HandlePreLoadMap);
+	FCoreUObjectDelegates::PreLoadMapWithContext.AddUObject(this, &UOutlierGameInstance::HandlePreLoadMap);
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UOutlierGameInstance::HandlePostLoadMap);
 	if (GEngine)
 	{
@@ -525,6 +525,17 @@ void UOutlierGameInstance::HandleTravelFailure(
 		FinishTitleReturn();
 		return;
 	}
+	if (!bArenaReconnectActive)
+	{
+		// 로드가 중단되면 가림을 넘겨받을 Arena Controller가 없다.
+		for (ULocalPlayer* Local : GetLocalPlayers())
+		{
+			if (UOutlierCinematicSubsystem* Cinematic = Local->GetSubsystem<UOutlierCinematicSubsystem>())
+			{
+				Cinematic->EndInitialIntroBlackout();
+			}
+		}
+	}
 	if (bLobbyReturnInFlight)
 	{
 		bLobbyReturnInFlight = false;
@@ -732,12 +743,28 @@ bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
 	return false;
 }
 
-void UOutlierGameInstance::HandlePreLoadMap(const FString& MapName)
+void UOutlierGameInstance::HandlePreLoadMap(const FWorldContext& LoadingWorldContext, const FString& MapName)
 {
 	RemoveArenaRecoveryFailureNotice();
-	if (IsRunningDedicatedServer()) return;
-	// Loading Widget 표시
+	if (!LoadingWorldContext.PendingNetGame || !GetDefault<UOutlierArenaSettings>()->MatchesArenaPackageName(MapName))
+	{
+		return;
+	}
+
+	// 직접 접속도 첫 Arena 프레임 전에 가린다. 이후 첫 Possess 또는 체크포인트 배치 해제가 가림을 넘겨받는다.
+	for (ULocalPlayer* Local : GetLocalPlayers())
+	{
+		if (UOutlierCinematicSubsystem* Cinematic = Local->GetSubsystem<UOutlierCinematicSubsystem>())
+		{
+			Cinematic->BeginInitialIntroBlackout(true);
+		}
+	}
 }
+
+	if (LoadingWorldContext.OwningGameInstance != this)
+	{
+		return;
+	}
 
 bool UOutlierGameInstance::TryQueueLobbyRecovery()
 {

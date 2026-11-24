@@ -2935,6 +2935,17 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		if (InitialIntroShooter.IsValid()) InitialIntroShooter->ClientPrepareArenaIntro(InitialIntroId);
 		if (InitialIntroPartner.IsValid()) InitialIntroPartner->ClientPrepareArenaIntro(InitialIntroId);
 	}
+	else
+	{
+		// 같은 Controller의 첫 Possess 알림보다 먼저 복원 대기를 전달한다.
+		for (AFirstPersonPlayerController* Controller : { InitialIntroShooter.Get(), InitialIntroPartner.Get() })
+		{
+			if (Controller)
+			{
+				Controller->ClientPrepareForInitialCheckpointRestore();
+			}
+		}
+	}
 	if (bDirectTest && Shooter && Partner)
 	{
 		// DirectPair PIE에서만 서버가 무기한 무적을 부여한다. 개별 능력의 보호 효과와
@@ -3072,10 +3083,8 @@ void AOutlierGameMode::TryStartInitialSaveRestore()
 		NAME_None, &Snapshot))
 	{
 		UE_LOG(LogTemp, Error, TEXT("[Checkpoint] Initial save restore failed to start"));
-		if (IsArenaWorkerProcess())
-		{
-			BeginArenaWorkerReleaseShutdown();
-		}
+		// 최초 준비 화면에는 복귀할 선택 UI가 없다. 기존 복구 실패 안내와 복귀 경로를 사용한다.
+		FailGameOverTransition();
 	}
 }
 
@@ -3835,6 +3844,8 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		AwaitingArenaPlacementPossession.Remove(ExitingPlayer);
 		ConfirmedArenaPlacementPossession.Remove(ExitingPlayer);
 		ArenaPlacementReleasePlayers.Remove(ExitingPlayer);
+		AppliedArenaPlacementRelease.Remove(ExitingPlayer);
+		bArenaPlacementReleaseSent = false;
 	}
 	ReadyArenaPlacementPlayers.Remove(ExitingPlayer);
 	if (bPendingInitialIntro && (Exiting == InitialIntroShooter.Get() || Exiting == InitialIntroPartner.Get()))
@@ -3844,8 +3855,6 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		UE_LOG(LogTemp, Error, TEXT("[Cinematic] Initial Intro interrupted by disconnect: %s"), *GetNameSafe(Exiting));
 	}
 	CancelCheckpointRestartVoteForDisconnect(ExitingPlayer);
-		AppliedArenaPlacementRelease.Remove(ExitingPlayer);
-		bArenaPlacementReleaseSent = false;
 	CancelGameOverPendingForDisconnect(Exiting);
 	// Frontend PC가 역할별 Gameplay PC로 교체될 때도 Logout이 호출된다. 실제 플레이 중인
 	// 로컬 FirstPerson PC만 Host 이탈로 봐야 정상적인 Listen 시작을 세션 종료로 오인하지 않는다.
@@ -4305,15 +4314,6 @@ void AOutlierGameMode::DebugReloadArena(AController* Requester)
 }
 */
 
-bool AOutlierGameMode::ReloadArenaAndRespawnPair(
-	AOutlierPlayerState* ShooterPlayerState,
-	AOutlierPlayerState* PartnerPlayerState,
-	const FTransform& ShooterSpawn,
-	const FTransform& PartnerSpawn,
-	bool bRestoreCheckpointSnapshot, int32 PresetNodeCount, TFunction<bool()> BeforeRespawn,
-	TFunction<void()> ApplyRestore, FName PresetId, const FOutlierCheckpointSnapshot* RestoreSnapshot)
-{
-	if (!HasAuthority() || !ShooterPlayerState || !ShooterClass || !PartnerClass
 bool AOutlierGameMode::ResolveArenaPlacementTargets(FName PresetId, const FOutlierCheckpointSnapshot* RestoreSnapshot,
 	TArray<FArenaTransitionPlacementTarget>& OutTargets) const
 {
@@ -4337,6 +4337,15 @@ bool AOutlierGameMode::ResolveArenaPlacementTargets(FName PresetId, const FOutli
 	return false;
 }
 
+bool AOutlierGameMode::ReloadArenaAndRespawnPair(
+	AOutlierPlayerState* ShooterPlayerState,
+	AOutlierPlayerState* PartnerPlayerState,
+	const FTransform& ShooterSpawn,
+	const FTransform& PartnerSpawn,
+	bool bRestoreCheckpointSnapshot, int32 PresetNodeCount, TFunction<bool()> BeforeRespawn,
+	TFunction<void()> ApplyRestore, FName PresetId, const FOutlierCheckpointSnapshot* RestoreSnapshot)
+{
+	if (!HasAuthority() || !ShooterPlayerState || !ShooterClass || !PartnerClass
 		|| ShooterClass->HasAnyClassFlags(CLASS_Abstract) || PartnerClass->HasAnyClassFlags(CLASS_Abstract))
 	{
 		return false;
@@ -4415,22 +4424,13 @@ bool AOutlierGameMode::ResolveArenaPlacementTargets(FName PresetId, const FOutli
 	InvalidateDeveloperConvenienceSession();
 	ResetArenaPlacementReadiness();
 	ArenaPlacementSnapshot.Targets = MoveTemp(PlacementTargets);
-	PendingGameplayGeneration = ReloadGeneration;
-	bArenaReloadInProgress = true;
-	bClearPresetGuidesAfterReload = bApplyPresetLoadout;
-	bPresetGuideCleanupDeferred = false;
-	ArenaReloadStartedAt = FPlatformTime::Seconds();
-	ArenaReloadLastProgressAt = ArenaReloadStartedAt;
-	ArenaReloadLastRecoveryAt = ArenaReloadStartedAt;
-	ArenaReloadRecoveryAttempts = 0;
-	LastObservedReloadPhase = EOutlierGameplayReloadPhase::WaitingForUnload;
 	if (RestoreSnapshot)
 	{
 		ArenaPlacementSnapshot.CheckpointId = RestoreSnapshot->CheckpointId;
 		ArenaPlacementSnapshot.SaveReason = FName(*UEnum::GetValueAsString(RestoreSnapshot->SaveReason));
 		ArenaPlacementSnapshot.RoomTag = RestoreSnapshot->RoomTag;
 	}
-	EnsureArenaRecoveryWatchdog();
+	PendingGameplayGeneration = ReloadGeneration;
 	if (OUTLIER_LOG_ACTIVE(Core, LogTemp, Display))
 	{
 		UE_LOG(LogTemp, Display, TEXT("[ArenaPlacement][Server] Selected Gen=%u Preset=%s Checkpoint=%s SaveReason=%s Room=%s Targets=%d"),
@@ -4443,6 +4443,15 @@ bool AOutlierGameMode::ResolveArenaPlacementTargets(FName PresetId, const FOutli
 				ReloadGeneration, *Target.LevelPackage.ToString(), *Target.ActorTag.ToString());
 		}
 	}
+	bArenaReloadInProgress = true;
+	bClearPresetGuidesAfterReload = bApplyPresetLoadout;
+	bPresetGuideCleanupDeferred = false;
+	ArenaReloadStartedAt = FPlatformTime::Seconds();
+	ArenaReloadLastProgressAt = ArenaReloadStartedAt;
+	ArenaReloadLastRecoveryAt = ArenaReloadStartedAt;
+	ArenaReloadRecoveryAttempts = 0;
+	LastObservedReloadPhase = EOutlierGameplayReloadPhase::WaitingForUnload;
+	EnsureArenaRecoveryWatchdog();
 	if (!GameplayReadyHandle.IsValid())
 	{
 		GameplayReadyHandle = ArenaSubsystem->OnArenaGameplayReady.AddUObject(
@@ -5630,15 +5639,6 @@ void AOutlierGameMode::RetryArenaReload()
 			PC->ClientActivateArenaGameplayLevels(PendingGameplayGeneration);
 		}
 	}
-}
-
-void AOutlierGameMode::OnClientArenaGameplayReloadFailed(APlayerController* PC, uint32 GameplayGeneration)
-{
-	if (!bArenaReloadInProgress && GameplayGeneration == 0 && PC
-		&& (PendingReconnectRequestIds.Contains(PC) || PendingReconnectContexts.Contains(PC)))
-	{
-		FailGameOverTransition();
-		return;
 	// Possess가 끝난 연결에는 레벨 대신 아직 확인되지 않은 단계만 다시 요청한다.
 	for (const auto& Entry : AwaitingArenaPlacementPossession)
 	{
@@ -5657,6 +5657,15 @@ void AOutlierGameMode::OnClientArenaGameplayReloadFailed(APlayerController* PC, 
 			SendArenaPlacementRelease(PC);
 		}
 	}
+}
+
+void AOutlierGameMode::OnClientArenaGameplayReloadFailed(APlayerController* PC, uint32 GameplayGeneration)
+{
+	if (!bArenaReloadInProgress && GameplayGeneration == 0 && PC
+		&& (PendingReconnectRequestIds.Contains(PC) || PendingReconnectContexts.Contains(PC)))
+	{
+		FailGameOverTransition();
+		return;
 	}
 	if (!bArenaReloadInProgress || GameplayGeneration != PendingGameplayGeneration || !PC)
 	{
@@ -6026,6 +6035,7 @@ void AOutlierGameMode::TryCompleteArenaPossessions()
 		{
 			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PC))
 			{
+				AwaitingArenaPlacementPossession.Add(PC, 0);
 				ArenaPlacementReleasePlayers.AddUnique(PC);
 				FPC->ClientReceiveArenaPlacement(PendingGameplayGeneration, ArenaPlacementSnapshot);
 				FPC->ArmDeathTransitionReleaseOnPossess();
@@ -6035,7 +6045,6 @@ void AOutlierGameMode::TryCompleteArenaPossessions()
 				TEXT("[ArenaReload][Server] PossessedLocal PC=%s Pawn=%s Gen=%u"),
 				*GetNameSafe(PC), *GetNameSafe(Pawn), PendingGameplayGeneration);
 		}
-				AwaitingArenaPlacementPossession.Add(PC, 0);
 	}
 	PendingLocalPossessions.Empty();
 	bServerArenaReloadReady = true;
@@ -6066,15 +6075,6 @@ void AOutlierGameMode::TryFinishArenaReload()
 		return;
 	}
 
-	GetWorldTimerManager().ClearTimer(ArenaWorkerReloadFailureTimerHandle);
-	OUTLIER_LOG(Core, LogTemp, Display,
-		TEXT("[ArenaReload][Server] Gen=%u PairReloadComplete TotalMs=%.1f"),
-		PendingGameplayGeneration,
-		ArenaReloadStartedAt > 0.0
-			? (FPlatformTime::Seconds() - ArenaReloadStartedAt) * 1000.0 : -1.0);
-	ClearArenaGameplayReloadDelegates();
-	bArenaReloadInProgress = false;
-	bServerArenaReloadReady = false;
 	if (!bArenaPlacementReleaseSent)
 	{
 		bArenaPlacementReleaseSent = true;
@@ -6091,6 +6091,15 @@ void AOutlierGameMode::TryFinishArenaReload()
 		return;
 	}
 
+	GetWorldTimerManager().ClearTimer(ArenaWorkerReloadFailureTimerHandle);
+	OUTLIER_LOG(Core, LogTemp, Display,
+		TEXT("[ArenaReload][Server] Gen=%u PairReloadComplete TotalMs=%.1f"),
+		PendingGameplayGeneration,
+		ArenaReloadStartedAt > 0.0
+			? (FPlatformTime::Seconds() - ArenaReloadStartedAt) * 1000.0 : -1.0);
+	ClearArenaGameplayReloadDelegates();
+	bArenaReloadInProgress = false;
+	bServerArenaReloadReady = false;
 	ResetArenaPlacementReadiness();
 	// ClientUnloadRequestedAt.Reset();
 	// ClientLoadAuthorizedAt.Reset();
@@ -6126,6 +6135,13 @@ void AOutlierGameMode::SendArenaPlacementSnapshot(APlayerController* Controller)
 	}
 }
 
+void AOutlierGameMode::SendArenaPlacementRelease(AFirstPersonPlayerController* Controller) const
+{
+	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] Release Gen=%u Revision=%u PC=%s"),
+		PendingGameplayGeneration, ArenaPlacementSnapshot.Revision, *GetNameSafe(Controller));
+	Controller->ClientReleaseArenaPlacement(PendingGameplayGeneration, ArenaPlacementSnapshot.Revision);
+}
+
 void AOutlierGameMode::ResetArenaPlacementReadiness()
 {
 	ArenaPlacementSnapshot = {};
@@ -6134,14 +6150,9 @@ void AOutlierGameMode::ResetArenaPlacementReadiness()
 	AwaitingArenaPlacementPossession.Reset();
 	ConfirmedArenaPlacementPossession.Reset();
 	ArenaPlacementReleasePlayers.Reset();
+	AppliedArenaPlacementRelease.Reset();
+	bArenaPlacementReleaseSent = false;
 	ArenaPlacementPendingReason.Reset();
-void AOutlierGameMode::SendArenaPlacementRelease(AFirstPersonPlayerController* Controller) const
-{
-	OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] Release Gen=%u Revision=%u PC=%s"),
-		PendingGameplayGeneration, ArenaPlacementSnapshot.Revision, *GetNameSafe(Controller));
-	Controller->ClientReleaseArenaPlacement(PendingGameplayGeneration, ArenaPlacementSnapshot.Revision);
-}
-
 }
 
 void AOutlierGameMode::UpdateArenaPlacementReadiness()
@@ -6150,8 +6161,6 @@ void AOutlierGameMode::UpdateArenaPlacementReadiness()
 	TArray<TWeakObjectPtr<AActor>> Instances;
 	FString PendingTarget;
 	const bool bReady = OutlierArenaTransitionPlacement::ReadTargets(*GetWorld(),
-	AppliedArenaPlacementRelease.Reset();
-	bArenaPlacementReleaseSent = false;
 		ArenaPlacementSnapshot.Targets, Parts, PendingTarget, &Instances);
 	if (!bReady)
 	{
@@ -6173,6 +6182,8 @@ void AOutlierGameMode::UpdateArenaPlacementReadiness()
 	{
 		ReadyArenaPlacementPlayers.Reset();
 		ConfirmedArenaPlacementPossession.Reset();
+		AppliedArenaPlacementRelease.Reset();
+		bArenaPlacementReleaseSent = false;
 		ArenaPlacementSnapshot.Revision = bReady ? ++ArenaPlacementRevision : 0;
 		ArenaPlacementSnapshot.Parts = bReady ? MoveTemp(Parts) : TArray<FArenaTransitionPlacementPart>{};
 		ArenaPlacementInstances = bReady ? MoveTemp(Instances) : TArray<TWeakObjectPtr<AActor>>{};
@@ -6182,8 +6193,6 @@ void AOutlierGameMode::UpdateArenaPlacementReadiness()
 			UE_LOG(LogTemp, Display, TEXT("[ArenaPlacement][Server] Ready Gen=%u Revision=%u Parts=%d"),
 				PendingGameplayGeneration, ArenaPlacementSnapshot.Revision, ArenaPlacementSnapshot.Parts.Num());
 		}
-		AppliedArenaPlacementRelease.Reset();
-		bArenaPlacementReleaseSent = false;
 		for (const auto& Entry : PendingPossessions)
 		{
 			SendArenaPlacementSnapshot(Entry.Key.Get());
@@ -6196,15 +6205,6 @@ void AOutlierGameMode::UpdateArenaPlacementReadiness()
 	TryCompleteArenaPossessions();
 }
 
-namespace
-{
-	bool ValidateArenaSpawnCapsule(APawn* Pawn)
-	{
-		if (!IsValid(Pawn))
-		{
-			return false;
-		}
-		const FVector Original = Pawn->GetActorLocation();
 void AOutlierGameMode::OnClientArenaPlacementReleased(APlayerController* Controller, uint32 Generation,
 	uint32 ReconnectRequestId, uint32 Revision, const APawn* ReleasedPawn)
 {
@@ -6228,6 +6228,15 @@ void AOutlierGameMode::OnClientArenaPlacementReleased(APlayerController* Control
 	TryFinishArenaReload();
 }
 
+namespace
+{
+	bool ValidateArenaSpawnCapsule(APawn* Pawn)
+	{
+		if (!IsValid(Pawn))
+		{
+			return false;
+		}
+		const FVector Original = Pawn->GetActorLocation();
 		// 배치점의 작은 바닥 관통은 바로 위에서 검사한다. 벽 너머의 대체 위치는 찾지 않는다.
 		for (const double Adjustment : { 0.0, 8.0, 16.0, 24.0, 32.0 })
 		{
@@ -6252,6 +6261,11 @@ void AOutlierGameMode::OnClientArenaPlacementReady(APlayerController* Controller
 	if (!IsGameplayReloadInProgress(Generation) || !Controller
 		|| Revision == 0 || Revision != ArenaPlacementSnapshot.Revision)
 	{
+		if (ConfirmedPawn)
+		{
+			OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] RejectPawn Gen=%u Revision=%u Request=%u PC=%s Reason=GenerationOrRevision"),
+				Generation, Revision, ReconnectRequestId, *GetNameSafe(Controller));
+		}
 		return;
 	}
 	const uint32* PossessedRequest = AwaitingArenaPlacementPossession.Find(Controller);
@@ -6259,12 +6273,9 @@ void AOutlierGameMode::OnClientArenaPlacementReady(APlayerController* Controller
 	{
 		if (*PossessedRequest != ReconnectRequestId || !Controller->GetPawn())
 		{
-			return;
-		}
-		if (ConfirmedPawn)
-		{
-			OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] RejectPawn Gen=%u Revision=%u Request=%u PC=%s Reason=GenerationOrRevision"),
+			OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] RejectPawn Gen=%u Revision=%u Request=%u PC=%s Reason=ConnectionOrPawn"),
 				Generation, Revision, ReconnectRequestId, *GetNameSafe(Controller));
+			return;
 		}
 		if (!bReady)
 		{
@@ -6273,10 +6284,15 @@ void AOutlierGameMode::OnClientArenaPlacementReady(APlayerController* Controller
 		else if (ConfirmedPawn == Controller->GetPawn() && !ConfirmedArenaPlacementPossession.Contains(Controller))
 		{
 			ConfirmedArenaPlacementPossession.Add(Controller);
-			OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] RejectPawn Gen=%u Revision=%u Request=%u PC=%s Reason=ConnectionOrPawn"),
-				Generation, Revision, ReconnectRequestId, *GetNameSafe(Controller));
+			OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] ConfirmPawn Gen=%u Revision=%u Request=%u PC=%s Pawn=%s"),
+				Generation, Revision, ReconnectRequestId, *GetNameSafe(Controller), *GetNameSafe(ConfirmedPawn));
 			MarkArenaReloadProgress();
 			TryFinishArenaReload();
+		}
+		else if (ConfirmedPawn && ConfirmedPawn != Controller->GetPawn())
+		{
+			OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] RejectPawn Gen=%u Revision=%u Request=%u PC=%s Reason=DifferentPawn"),
+				Generation, Revision, ReconnectRequestId, *GetNameSafe(Controller));
 		}
 		return;
 	}
@@ -6284,16 +6300,9 @@ void AOutlierGameMode::OnClientArenaPlacementReady(APlayerController* Controller
 		|| PendingReconnectRequestIds.FindRef(Controller) != ReconnectRequestId || ConfirmedPawn)
 	{
 		return;
-			OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] ConfirmPawn Gen=%u Revision=%u Request=%u PC=%s Pawn=%s"),
-				Generation, Revision, ReconnectRequestId, *GetNameSafe(Controller), *GetNameSafe(ConfirmedPawn));
 	}
 	if (!bReady)
 	{
-		else if (ConfirmedPawn && ConfirmedPawn != Controller->GetPawn())
-		{
-			OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Server] RejectPawn Gen=%u Revision=%u Request=%u PC=%s Reason=DifferentPawn"),
-				Generation, Revision, ReconnectRequestId, *GetNameSafe(Controller));
-		}
 		ReadyArenaPlacementPlayers.Remove(Controller);
 	}
 	else if (!ReadyArenaPlacementPlayers.Contains(Controller))

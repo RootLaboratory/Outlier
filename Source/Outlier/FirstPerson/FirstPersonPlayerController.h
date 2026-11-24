@@ -433,6 +433,9 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForArenaStart(FVector InSpawnLocation);
 
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareForInitialCheckpointRestore();
+
 	// 로딩 ACK는 빙의를 진행하고, 시네마틱 ACK는 별도로 최초 게임 시작 조건을 제어한다.
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareArenaIntro(const FGuid& IntroId);
@@ -506,6 +509,9 @@ public:
 	// 사유별로 카메라 암전을 켜고 끈다. 로컬 Controller에서만 동작한다.
 	void AddCameraBlackoutReason(ECameraBlackoutReason Reason);
 	void RemoveCameraBlackoutReason(ECameraBlackoutReason Reason);
+	void SetInitialCheckpointRestoreBlackout(bool bEnabled);
+	void SetViewportTransitionCover(bool bEnabled, TSharedPtr<SWidget>& Cover,
+		TWeakObjectPtr<UGameViewportClient>& Viewport);
 	// 인트로의 Fade/시점을 정리한 뒤 로딩·GameOver 등 현재 암전 사유를 다시 적용한다.
 	void RestoreCameraAfterCinematic();
 	bool HasCameraBlackoutReason(ECameraBlackoutReason Reason) const
@@ -825,14 +831,17 @@ protected:
 	bool bClientArenaPlacementPossessionSent = false;
 	bool bClientArenaPlacementInputLocked = false;
 	uint32 ClientArenaPlacementReleaseRevision = 0;
+	double ClientArenaPlacementOriginalStartAt = 0.0;
 	TWeakObjectPtr<APawn> ClientArenaPlacementPawn;
 	FString ClientArenaPlacementPendingReason;
 	void UpdateClientArenaPlacement(bool bFromWatchdog = false);
 	void ResetClientArenaPlacement();
 	void ApplyLocalArenaPossessionPresentation(APawn* Pawn);
 	bool bClientGameplayReloadFailed = false;
-	double ClientArenaPlacementOriginalStartAt = 0.0;
 	bool bClientArenaExitPrepared = false;
+	bool bClientAwaitingInitialCheckpointPlacement = false;
+	TSharedPtr<SWidget> InitialCheckpointRestoreCover;
+	TWeakObjectPtr<UGameViewportClient> InitialCheckpointRestoreViewport;
 	FTSTicker::FDelegateHandle ClientGameplayReloadWatchdogHandle;
 	FDelegateHandle ClientArenaGameplayReadyHandle;
 	// 서버가 계산한 실제 스폰 위치. 클라이언트 준비 진단에도 사용한다.

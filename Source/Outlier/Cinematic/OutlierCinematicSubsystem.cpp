@@ -89,7 +89,8 @@ void UOutlierCinematicSubsystem::BeginInitialIntroBlackout(bool bAcrossWorldTrav
 	InitialIntroBlackoutViewport = Viewport;
 	InitialIntroBlackoutWorld = GetWorld();
 	bInitialIntroBlackoutAcrossTravel = bAcrossWorldTravel;
-	Viewport->AddViewportWidgetForPlayer(Local, InitialIntroBlackoutWidget.ToSharedRef(), 10000);
+	// 맵 로드 직후 Player 레이어가 다시 만들어져도 전체 화면을 계속 가린다.
+	Viewport->AddViewportWidgetContent(InitialIntroBlackoutWidget.ToSharedRef(), 10000);
 }
 
 bool UOutlierCinematicSubsystem::HasInitialIntroBlackout() const
@@ -103,7 +104,9 @@ void UOutlierCinematicSubsystem::EndInitialIntroBlackout()
 	if (InitialIntroBlackoutWidget.IsValid())
 	{
 		if (UGameViewportClient* Viewport = InitialIntroBlackoutViewport.Get())
-			Viewport->RemoveViewportWidgetForPlayer(GetLocalPlayer(), InitialIntroBlackoutWidget.ToSharedRef());
+		{
+			Viewport->RemoveViewportWidgetContent(InitialIntroBlackoutWidget.ToSharedRef());
+		}
 	}
 	InitialIntroBlackoutWidget.Reset();
 	InitialIntroBlackoutViewport.Reset();

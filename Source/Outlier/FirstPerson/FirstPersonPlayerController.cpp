@@ -1217,6 +1217,7 @@ void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 	ClearDeveloperConveniencePresentation();
 	ClearPendingPresetUpgradeUI();
 	bClientArenaExitPrepared = true;
+	SetInitialCheckpointRestoreBlackout(false);
 	if (auto* Cinematic = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>() : nullptr)
 	{
@@ -1932,6 +1933,12 @@ void AFirstPersonPlayerController::RestoreCameraAfterCinematic()
 
 void AFirstPersonPlayerController::ReleaseLevelLoadBlackoutIfNoIntroPending()
 {
+	// 첫 Pawn은 Arena 준비 확인용이다. 저장 복원 세대의 배치 해제까지 화면을 가린다.
+	if (bClientAwaitingInitialCheckpointPlacement)
+	{
+		return;
+	}
+
 	// 인트로 준비 RPC는 Possess보다 먼저 도착한다. 준비 중이면 시네마틱 시작 시점에 해제한다.
 	UOutlierCinematicSubsystem* Cinematic = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<UOutlierCinematicSubsystem>()
@@ -2272,6 +2279,7 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 	StopClientGameOverStreaming();
 	ReleaseGameOverStreamingSources(GameOverStreamingSourceRound);
 	EndPresetTransition(PresetTransitionRequestId);
+	SetInitialCheckpointRestoreBlackout(false);
 	ClearPendingPresetUpgradeUI();
 	ClearDeveloperHitPresentation();
 	ClearDeveloperConveniencePresentation();
@@ -3358,24 +3366,16 @@ void AFirstPersonPlayerController::ClientReceiveArenaPlacement_Implementation(
 		PendingGameplayGeneration = Generation;
 		bClientArenaPlacementInputLocked = true;
 		bClientArenaReadyReported = true;
-	}
-	if (Generation != PendingGameplayGeneration)
-	{
-		return;
-	}
-	if (Snapshot.Revision != ClientArenaPlacement.Revision)
-	{
-		ClientArenaPlacement = Snapshot;
 		PendingArenaReconnectRequestId = 0;
 		ClearClientGameplayReloadWatchdog();
 		ClientGameplayReloadStartedAt = FPlatformTime::Seconds();
 		ClientGameplayReloadWatchdogHandle = FTSTicker::GetCoreTicker().AddTicker(
 			FTickerDelegate::CreateUObject(this, &AFirstPersonPlayerController::TickClientGameplayReloadWatchdog), 0.25f);
-		ClientArenaPlacementInstances.Reset();
-		bClientArenaPlacementReady = false;
-		bClientArenaPlacementPossessionSent = false;
 	}
-	UpdateClientArenaPlacement();
+	if (Generation != PendingGameplayGeneration)
+	{
+		return;
+	}
 	if (!bClientArenaPlacementInputLocked)
 	{
 		if (ClientArenaPlacementOriginalStartAt <= 0.0 || Snapshot.Revision == ClientArenaPlacement.Revision)
@@ -3390,16 +3390,24 @@ void AFirstPersonPlayerController::ClientReceiveArenaPlacement_Implementation(
 		ClientGameplayReloadWatchdogHandle = FTSTicker::GetCoreTicker().AddTicker(
 			FTickerDelegate::CreateUObject(this, &AFirstPersonPlayerController::TickClientGameplayReloadWatchdog), 0.25f);
 	}
+	if (Snapshot.Revision != ClientArenaPlacement.Revision)
+	{
+		ClientArenaPlacement = Snapshot;
+		ClientArenaPlacementInstances.Reset();
+		bClientArenaPlacementReady = false;
+		bClientArenaPlacementPossessionSent = false;
+		OUTLIER_LOG(Core, LogTemp, Display,
+			TEXT("[ArenaPlacement][Client] Snapshot Gen=%u Revision=%u Request=%u PC=%s Checkpoint=%s SaveReason=%s Room=%s Targets=%d"),
+			Generation, Snapshot.Revision, PendingArenaReconnectRequestId, *GetNameSafe(this),
+			*Snapshot.CheckpointId.ToString(), *Snapshot.SaveReason.ToString(), *Snapshot.RoomTag.ToString(), Snapshot.Targets.Num());
+	}
+	UpdateClientArenaPlacement();
 }
 
 void AFirstPersonPlayerController::ServerNotifyArenaPlacement_Implementation(uint32 Generation,
 	uint32 ReconnectRequestId, uint32 Revision, bool bReady, APawn* ConfirmedPawn)
 {
 	if (AOutlierGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
-		OUTLIER_LOG(Core, LogTemp, Display,
-			TEXT("[ArenaPlacement][Client] Snapshot Gen=%u Revision=%u Request=%u PC=%s Checkpoint=%s SaveReason=%s Room=%s Targets=%d"),
-			Generation, Snapshot.Revision, PendingArenaReconnectRequestId, *GetNameSafe(this),
-			*Snapshot.CheckpointId.ToString(), *Snapshot.SaveReason.ToString(), *Snapshot.RoomTag.ToString(), Snapshot.Targets.Num());
 	{
 		Mode->OnClientArenaPlacementReady(this, Generation, ReconnectRequestId, Revision, bReady, ConfirmedPawn);
 	}
@@ -3417,14 +3425,6 @@ void AFirstPersonPlayerController::ClientReleaseArenaPlacement_Implementation(ui
 		ClientArenaPlacementReleaseRevision = Revision;
 		UpdateClientArenaPlacement();
 	}
-}
-
-void AFirstPersonPlayerController::UpdateClientArenaPlacement(bool bFromWatchdog)
-{
-	if (!bClientArenaPlacementInputLocked || !bClientArenaReadyReported || ClientArenaPlacement.Revision == 0)
-	{
-		return;
-	}
 	else if (ClientArenaPlacementReleaseRevision == Revision
 		&& ClientArenaPlacementPawn.IsValid() && ClientArenaPlacementPawn.Get() == GetPawn())
 	{
@@ -3439,6 +3439,20 @@ void AFirstPersonPlayerController::ServerNotifyArenaPlacementReleased_Implementa
 	{
 		Mode->OnClientArenaPlacementReleased(this, Generation, ReconnectRequestId, Revision, ReleasedPawn);
 	}
+}
+
+void AFirstPersonPlayerController::UpdateClientArenaPlacement(bool bFromWatchdog)
+{
+	if (!bClientArenaPlacementInputLocked || !bClientArenaReadyReported || ClientArenaPlacement.Revision == 0)
+	{
+		return;
+	}
+	// Listen 호스트의 로컬 RPC는 서버 호출 안에서 즉시 실행된다. 배치 배포·Possess가 끝난
+	// 뒤 기존 감시 루프에서 확인을 보고해, 아직 순회 중인 서버 대기 목록을 변경하지 않는다.
+	if (HasAuthority() && !bFromWatchdog)
+	{
+		return;
+	}
 	TArray<FArenaTransitionPlacementPart> Parts;
 	TArray<TWeakObjectPtr<AActor>> Instances;
 	FString PendingTarget;
@@ -3447,12 +3461,6 @@ void AFirstPersonPlayerController::ServerNotifyArenaPlacementReleased_Implementa
 	if (const IConsoleVariable* Hold = IConsoleManager::Get().FindConsoleVariable(TEXT("Outlier.Test.HoldArenaPlacement")))
 	{
 		bHoldForTest = Hold->GetBool();
-	// Listen 호스트의 로컬 RPC는 서버 호출 안에서 즉시 실행된다. 배치 배포·Possess가 끝난
-	// 뒤 기존 감시 루프에서 확인을 보고해, 아직 순회 중인 서버 대기 목록을 변경하지 않는다.
-	if (HasAuthority() && !bFromWatchdog)
-	{
-		return;
-	}
 	}
 	if (bHoldForTest)
 	{
@@ -3500,31 +3508,32 @@ void AFirstPersonPlayerController::ServerNotifyArenaPlacementReleased_Implementa
 	{
 		// 서버가 두 Pawn의 실제 도착도 확인할 때까지 입력과 로딩 화면을 유지한다.
 		bClientArenaPlacementPossessionSent = true;
+		OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Client] ConfirmPawn Gen=%u Revision=%u Request=%u PC=%s Pawn=%s"),
+			PendingGameplayGeneration, ClientArenaPlacement.Revision, PendingArenaReconnectRequestId,
+			*GetNameSafe(this), *GetNameSafe(ClientArenaPlacementPawn.Get()));
 		ServerNotifyArenaPlacement(PendingGameplayGeneration, PendingArenaReconnectRequestId,
 			ClientArenaPlacement.Revision, true, ClientArenaPlacementPawn.Get());
 	}
 	if (ClientArenaPlacementReleaseRevision == ClientArenaPlacement.Revision)
 	{
 		APawn* NewPawn = ClientArenaPlacementPawn.Get();
+		ClientArenaPlacementOriginalStartAt = ClientGameplayReloadStartedAt;
 		bClientArenaPlacementInputLocked = false;
+		SetInitialCheckpointRestoreBlackout(false);
 		ApplyLocalArenaPossessionPresentation(NewPawn);
-		OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Client] ConfirmPawn Gen=%u Revision=%u Request=%u PC=%s Pawn=%s"),
-			PendingGameplayGeneration, ClientArenaPlacement.Revision, PendingArenaReconnectRequestId,
-			*GetNameSafe(this), *GetNameSafe(ClientArenaPlacementPawn.Get()));
+		OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Client] ReleaseApplied Gen=%u Revision=%u Request=%u PC=%s"),
+			PendingGameplayGeneration, ClientArenaPlacement.Revision, PendingArenaReconnectRequestId, *GetNameSafe(this));
+		ServerNotifyArenaPlacementReleased(PendingGameplayGeneration, PendingArenaReconnectRequestId,
+			ClientArenaPlacement.Revision, NewPawn);
 	}
 }
 
 bool AFirstPersonPlayerController::IsArenaPlacementInputLocked() const
 {
 	const AOutlierGameMode* Mode = HasAuthority() && GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
-		ClientArenaPlacementOriginalStartAt = ClientGameplayReloadStartedAt;
 	return bClientArenaPlacementInputLocked || (Mode && Mode->IsArenaGameplayTransitionLocked());
 }
 
-		OUTLIER_LOG(Core, LogTemp, Display, TEXT("[ArenaPlacement][Client] ReleaseApplied Gen=%u Revision=%u Request=%u PC=%s"),
-			PendingGameplayGeneration, ClientArenaPlacement.Revision, PendingArenaReconnectRequestId, *GetNameSafe(this));
-		ServerNotifyArenaPlacementReleased(PendingGameplayGeneration, PendingArenaReconnectRequestId,
-			ClientArenaPlacement.Revision, NewPawn);
 bool AFirstPersonPlayerController::IsMoveInputIgnored() const
 {
 	// ClientRestart가 엔진 입력 카운터를 초기화해도 페어의 준비 잠금을 유지한다.
@@ -3543,6 +3552,7 @@ void AFirstPersonPlayerController::ResetClientArenaPlacement()
 	ClientArenaPlacementInstances.Reset();
 	ClientArenaPlacementPawn.Reset();
 	ClientArenaPlacementReleaseRevision = 0;
+	ClientArenaPlacementOriginalStartAt = 0.0;
 	bClientArenaPlacementReady = false;
 	bClientArenaPlacementPossessionSent = false;
 	ClientArenaPlacementPendingReason.Reset();
@@ -3552,7 +3562,6 @@ void AFirstPersonPlayerController::ServerNotifyArenaGameplayUnloaded_Implementat
 	uint32 GameplayGeneration)
 {
 	if (AOutlierGameMode* GameMode = GetWorld()
-	ClientArenaPlacementOriginalStartAt = 0.0;
 		? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
 	{
 		GameMode->OnClientArenaGameplayUnloaded(this, GameplayGeneration);
@@ -3566,6 +3575,14 @@ void AFirstPersonPlayerController::ClientRetryArenaGameplayReload_Implementation
 	{
 		return;
 	}
+	if (bClientArenaPlacementInputLocked && ClientArenaPlacementPawn.IsValid()
+		&& ClientArenaPlacementPawn.Get() == GetPawn())
+	{
+		// 이미 받은 Pawn은 유지하고 현재 리비전에서 로컬 충돌을 다시 확인한 뒤 보고한다.
+		bClientArenaPlacementPossessionSent = false;
+		UpdateClientArenaPlacement();
+		return;
+	}
 	if (bClientArenaReadyReported)
 	{
 		ServerNotifyArenaReady(GameplayGeneration, PendingArenaReconnectRequestId);
@@ -3575,14 +3592,6 @@ void AFirstPersonPlayerController::ClientRetryArenaGameplayReload_Implementation
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
 	if (!ArenaSubsystem)
-	if (bClientArenaPlacementInputLocked && ClientArenaPlacementPawn.IsValid()
-		&& ClientArenaPlacementPawn.Get() == GetPawn())
-	{
-		// 이미 받은 Pawn은 유지하고 현재 리비전에서 로컬 충돌을 다시 확인한 뒤 보고한다.
-		bClientArenaPlacementPossessionSent = false;
-		UpdateClientArenaPlacement();
-		return;
-	}
 	{
 		return;
 	}
@@ -3618,6 +3627,29 @@ void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(
 		ArenaSubsystem->EnsureArenaLoaded();
 	}
 	TryNotifyArenaStartReady();
+}
+
+void AFirstPersonPlayerController::ClientPrepareForInitialCheckpointRestore_Implementation()
+{
+	if (!IsLocalController() || bClientArenaExitPrepared || bClientGameplayReloadFailed)
+	{
+		return;
+	}
+
+	AddCameraBlackoutReason(ECameraBlackoutReason::LevelLoad);
+	SetInitialCheckpointRestoreBlackout(true);
+}
+
+void AFirstPersonPlayerController::SetInitialCheckpointRestoreBlackout(bool bEnabled)
+{
+	if (bClientAwaitingInitialCheckpointPlacement == bEnabled)
+	{
+		return;
+	}
+
+	// 서브레벨 리로드가 인트로를 정리해도 HUD 가림은 배치 해제 또는 Arena 이탈까지 남는다.
+	bClientAwaitingInitialCheckpointPlacement = bEnabled;
+	SetViewportTransitionCover(bEnabled, InitialCheckpointRestoreCover, InitialCheckpointRestoreViewport);
 }
 
 void AFirstPersonPlayerController::ClientPrepareArenaIntro_Implementation(const FGuid& IntroId)

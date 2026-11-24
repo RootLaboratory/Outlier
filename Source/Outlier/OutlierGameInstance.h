@@ -17,6 +17,7 @@ class UNetDriver;
 class UWorld;
 class UGameViewportClient;
 class SWidget;
+struct FWorldContext;
 
 UCLASS()
 class OUTLIER_API UOutlierGameInstance : public UGameInstance
@@ -53,7 +54,7 @@ private:
 	double TitleReturnDeadlineSeconds = 0.0;
 
 	void HandlePostLoadMap(UWorld* LoadedWorld);
-	void HandlePreLoadMap(const FString& MapName);
+	void HandlePreLoadMap(const FWorldContext& LoadingWorldContext, const FString& MapName);
 	void HandleNetworkFailure(
 		UWorld* World,
 		UNetDriver* NetDriver,

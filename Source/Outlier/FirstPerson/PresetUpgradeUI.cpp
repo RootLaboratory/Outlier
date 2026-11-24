@@ -81,17 +81,7 @@ void AFirstPersonPlayerController::ClientBeginPresetTransition_Implementation(FG
 	PresetTransitionGeneration = GameplayGeneration;
 	AddCameraBlackoutReason(ECameraBlackoutReason::PresetTransition);
 	ULocalPlayer* Local = GetLocalPlayer();
-	if (Local && Local->ViewportClient && !PresetTransitionCover.IsValid())
-	{
-		// 화면 전체의 최상단에 붙인다. AddToViewport로 등록된 HUD·자막·강화 UI까지 덮고 숨은 클릭도 막는다.
-		PresetTransitionCover = SNew(SBorder)
-			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(FLinearColor::Black)
-			.Visibility(EVisibility::Visible)
-			.Cursor(EMouseCursor::None);
-		PresetTransitionViewport = Local->ViewportClient;
-		Local->ViewportClient->AddViewportWidgetContent(PresetTransitionCover.ToSharedRef(), 10001);
-	}
+	SetViewportTransitionCover(true, PresetTransitionCover, PresetTransitionViewport);
 	if (ULocalPlayerUISubSystem* UI = Local ? Local->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr)
 	{
 		UI->SetTransientWidgetsSuppressed(true);
@@ -111,15 +101,7 @@ void AFirstPersonPlayerController::EndPresetTransition(const FGuid& RequestId)
 	}
 	PresetTransitionRequestId.Invalidate();
 	// 요청 소유권이 일치할 때만 가림을 걷는다. 이전 요청의 늦은 취소는 새 전환을 복구하지 않는다.
-	if (PresetTransitionCover.IsValid())
-	{
-		if (UGameViewportClient* Viewport = PresetTransitionViewport.Get())
-		{
-			Viewport->RemoveViewportWidgetContent(PresetTransitionCover.ToSharedRef());
-		}
-	}
-	PresetTransitionCover.Reset();
-	PresetTransitionViewport.Reset();
+	SetViewportTransitionCover(false, PresetTransitionCover, PresetTransitionViewport);
 	if (UOutlierAudioSubsystem* Audio = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr)
 	{
 		Audio->SetPresetTransitionSuppressed(this, false);
@@ -130,6 +112,34 @@ void AFirstPersonPlayerController::EndPresetTransition(const FGuid& RequestId)
 		UI->SetTransientWidgetsSuppressed(bHudHiddenForDeath);
 	}
 	RefreshHudVisibility();
+}
+
+void AFirstPersonPlayerController::SetViewportTransitionCover(bool bEnabled, TSharedPtr<SWidget>& Cover,
+	TWeakObjectPtr<UGameViewportClient>& Viewport)
+{
+	if (bEnabled)
+	{
+		ULocalPlayer* Local = GetLocalPlayer();
+		if (Local && Local->ViewportClient && !Cover.IsValid())
+		{
+			// 최상단에서 AddToViewport로 등록된 HUD와 자막까지 덮고 숨은 클릭을 막는다.
+			Cover = SNew(SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+				.BorderBackgroundColor(FLinearColor::Black)
+				.Visibility(EVisibility::Visible)
+				.Cursor(EMouseCursor::None);
+			Viewport = Local->ViewportClient;
+			Local->ViewportClient->AddViewportWidgetContent(Cover.ToSharedRef(), 10001);
+		}
+		return;
+	}
+
+	if (Cover.IsValid() && Viewport.IsValid())
+	{
+		Viewport->RemoveViewportWidgetContent(Cover.ToSharedRef());
+	}
+	Cover.Reset();
+	Viewport.Reset();
 }
 
 void AFirstPersonPlayerController::ClientPreparePresetUpgradeUI_Implementation(
