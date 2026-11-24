@@ -1061,7 +1061,7 @@ bool AOutlierGameMode::StartCheckpointRestart(
 			PartnerPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
 
 			ResetRuntimeCombatStateForRespawn();
-		}, Snapshot.bInitialSnapshot ? OutlierPresetStageIds::Start : NAME_None, Snapshot.CheckpointId);
+		}, NAME_None, &Snapshot);
 }
 
 void AOutlierGameMode::FinishCheckpointRestart()
@@ -2648,6 +2648,16 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 			}
 			return;
 		}
+		if (bResuming)
+		{
+			// 최초 매치에서는 복원 위치에 임시 Pawn을 만들기 전에 같은 배치 규칙으로 저장을 검증한다.
+			TArray<FArenaTransitionPlacementTarget> PlacementTargets;
+			if (!ResolveArenaPlacementTargets(NAME_None, &ResumeSnapshot, PlacementTargets))
+			{
+				FailGameOverTransition();
+				return;
+			}
+		}
 	}
 
 	ResetDeveloperConvenienceState();
@@ -3059,7 +3069,7 @@ void AOutlierGameMode::TryStartInitialSaveRestore()
 	bPendingInitialSaveRestore = false;
 	if (!ReloadArenaAndRespawnPair(ShooterPS, PartnerPS,
 		Snapshot.ShooterSpawnTransform, Snapshot.PartnerSpawnTransform, true, INDEX_NONE, {}, {},
-		Snapshot.bInitialSnapshot ? OutlierPresetStageIds::Start : NAME_None, Snapshot.CheckpointId))
+		NAME_None, &Snapshot))
 	{
 		UE_LOG(LogTemp, Error, TEXT("[Checkpoint] Initial save restore failed to start"));
 		if (IsArenaWorkerProcess())
@@ -4299,19 +4309,39 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	const FTransform& ShooterSpawn,
 	const FTransform& PartnerSpawn,
 	bool bRestoreCheckpointSnapshot, int32 PresetNodeCount, TFunction<bool()> BeforeRespawn,
-	TFunction<void()> ApplyRestore, FName PresetId, FName CheckpointId)
+	TFunction<void()> ApplyRestore, FName PresetId, const FOutlierCheckpointSnapshot* RestoreSnapshot)
 {
 	if (!HasAuthority() || !ShooterPlayerState || !ShooterClass || !PartnerClass
 		|| ShooterClass->HasAnyClassFlags(CLASS_Abstract) || PartnerClass->HasAnyClassFlags(CLASS_Abstract))
 	{
+bool AOutlierGameMode::ResolveArenaPlacementTargets(FName PresetId, const FOutlierCheckpointSnapshot* RestoreSnapshot,
+	TArray<FArenaTransitionPlacementTarget>& OutTargets) const
+{
+	if (IsDirectPairTestWorld(GetWorld()))
+	{
+		OutTargets.Reset();
+		return true;
+	}
+
+	FString PlacementError;
+	if (OutlierArenaTransitionPlacement::ResolveTargets(GetDefault<UOutlierArenaSettings>()->TransitionPlacementBindings,
+		PresetId, RestoreSnapshot, OutTargets, PlacementError))
+	{
+		return true;
+	}
+
+	UE_LOG(LogTemp, Error, TEXT("[ArenaPlacement][Server] ResolveFailed Preset=%s Checkpoint=%s SaveReason=%s Room=%s Reason=%s"),
+		*PresetId.ToString(), RestoreSnapshot ? *RestoreSnapshot->CheckpointId.ToString() : TEXT("None"),
+		RestoreSnapshot ? *UEnum::GetValueAsString(RestoreSnapshot->SaveReason) : TEXT("None"),
+		RestoreSnapshot ? *RestoreSnapshot->RoomTag.ToString() : TEXT("None"), *PlacementError);
+	return false;
+}
+
 		return false;
 	}
 	TArray<FArenaTransitionPlacementTarget> PlacementTargets;
-	if (!IsDirectPairTestWorld(GetWorld())
-		&& !OutlierArenaTransitionPlacement::ResolveTargets(PresetId, CheckpointId, PlacementTargets))
+	if (!ResolveArenaPlacementTargets(PresetId, RestoreSnapshot, PlacementTargets))
 	{
-		UE_LOG(LogTemp, Error, TEXT("[ArenaPlacement] Missing binding Preset=%s Checkpoint=%s"),
-			*PresetId.ToString(), *CheckpointId.ToString());
 		return false;
 	}
 	// 고정 지급은 프리셋 선택에만 적용한다. 이어하기는 저장 장비/슈트 상태를 그대로 복원한다.
@@ -4394,7 +4424,25 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	LastObservedReloadPhase = EOutlierGameplayReloadPhase::WaitingForUnload;
 	EnsureArenaRecoveryWatchdog();
 	if (!GameplayReadyHandle.IsValid())
+	if (RestoreSnapshot)
 	{
+		ArenaPlacementSnapshot.CheckpointId = RestoreSnapshot->CheckpointId;
+		ArenaPlacementSnapshot.SaveReason = FName(*UEnum::GetValueAsString(RestoreSnapshot->SaveReason));
+		ArenaPlacementSnapshot.RoomTag = RestoreSnapshot->RoomTag;
+	}
+	{
+	if (OUTLIER_LOG_ACTIVE(Core, LogTemp, Display))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[ArenaPlacement][Server] Selected Gen=%u Preset=%s Checkpoint=%s SaveReason=%s Room=%s Targets=%d"),
+			ReloadGeneration, *PresetId.ToString(),
+			*ArenaPlacementSnapshot.CheckpointId.ToString(), *ArenaPlacementSnapshot.SaveReason.ToString(),
+			*ArenaPlacementSnapshot.RoomTag.ToString(), ArenaPlacementSnapshot.Targets.Num());
+		for (const FArenaTransitionPlacementTarget& Target : ArenaPlacementSnapshot.Targets)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[ArenaPlacement][Server] SelectedTarget Gen=%u Level=%s Tag=%s"),
+				ReloadGeneration, *Target.LevelPackage.ToString(), *Target.ActorTag.ToString());
+		}
+	}
 		GameplayReadyHandle = ArenaSubsystem->OnArenaGameplayReady.AddUObject(
 			this, &AOutlierGameMode::HandleServerArenaGameplayReady);
 		ArenaReloadStalledHandle = ArenaSubsystem->OnArenaGameplayReloadStalled.AddUObject(

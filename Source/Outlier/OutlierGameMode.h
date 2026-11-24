@@ -467,7 +467,9 @@ protected:
 		const FTransform& PartnerSpawn,
 		bool bRestoreCheckpointSnapshot = false, int32 PresetNodeCount = INDEX_NONE,
 		TFunction<bool()> BeforeRespawn = {}, TFunction<void()> ApplyRestore = {},
-		FName PresetId = NAME_None, FName CheckpointId = NAME_None);
+		FName PresetId = NAME_None, const FOutlierCheckpointSnapshot* RestoreSnapshot = nullptr);
+	bool ResolveArenaPlacementTargets(FName PresetId, const FOutlierCheckpointSnapshot* RestoreSnapshot,
+		TArray<FArenaTransitionPlacementTarget>& OutTargets) const;
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;

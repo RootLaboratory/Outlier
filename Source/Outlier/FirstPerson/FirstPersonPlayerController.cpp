@@ -3396,6 +3396,10 @@ void AFirstPersonPlayerController::UpdateClientArenaPlacement()
 	if (!bClientArenaPlacementInputLocked || !bClientArenaReadyReported || ClientArenaPlacement.Revision == 0)
 	{
 		return;
+		OUTLIER_LOG(Core, LogTemp, Display,
+			TEXT("[ArenaPlacement][Client] Snapshot Gen=%u Revision=%u Request=%u PC=%s Checkpoint=%s SaveReason=%s Room=%s Targets=%d"),
+			Generation, Snapshot.Revision, PendingArenaReconnectRequestId, *GetNameSafe(this),
+			*Snapshot.CheckpointId.ToString(), *Snapshot.SaveReason.ToString(), *Snapshot.RoomTag.ToString(), Snapshot.Targets.Num());
 	}
 	TArray<FArenaTransitionPlacementPart> Parts;
 	TArray<TWeakObjectPtr<AActor>> Instances;

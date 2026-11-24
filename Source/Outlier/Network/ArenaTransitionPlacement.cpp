@@ -3,6 +3,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/ChildActorComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/Level.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/World.h"
@@ -13,8 +14,8 @@
 #include "Interaction/PanelMoverSwitch.h"
 #include "Level/Elevator/ElevatorShaftController.h"
 #include "Level/Elevator/ElevatorShaftSection.h"
-#include "OutlierArenaSettings.h"
 #include "Room/RoomCombatBarrier.h"
+#include "Upgrade/OutlierPresetStageIds.h"
 
 namespace
 {
@@ -229,6 +230,11 @@ bool OutlierArenaTransitionPlacement::IsSpawnCapsuleReady(const APawn& Pawn, con
 	{
 		return false;
 	}
+	// Partner는 공중 위치도 저장한다. 바닥이 멀어도 캡슐이 비어 있으면 그 위치를 복원할 수 있다.
+	if (Pawn.IsA<APartnerCharacter>())
+	{
+		return true;
+	}
 
 	FHitResult Floor;
 	const FVector Below = Position - FVector(0, 0, Capsule->GetScaledCapsuleHalfHeight() + 150.0);
@@ -236,31 +242,95 @@ bool OutlierArenaTransitionPlacement::IsSpawnCapsuleReady(const APawn& Pawn, con
 		&& Floor.ImpactNormal.Z >= 0.5;
 }
 
-bool OutlierArenaTransitionPlacement::ResolveTargets(FName PresetId, FName CheckpointId,
-	TArray<FArenaTransitionPlacementTarget>& OutTargets)
+bool OutlierArenaTransitionPlacement::ResolveTargets(TConstArrayView<FArenaTransitionPlacementBinding> Bindings,
+	FName PresetId, const FOutlierCheckpointSnapshot* RestoreSnapshot,
+	TArray<FArenaTransitionPlacementTarget>& OutTargets, FString& OutReason)
 {
 	OutTargets.Reset();
-	if (PresetId.IsNone() && CheckpointId.IsNone())
+	OutReason.Reset();
+	if (!RestoreSnapshot && PresetId.IsNone())
 	{
 		// 개발용 현재 위치 리로드에는 별도로 지정된 필수 대상이 없다.
 		return true;
 	}
-	const FArenaTransitionPlacementBinding* Match = nullptr;
-	for (const FArenaTransitionPlacementBinding& Binding : GetDefault<UOutlierArenaSettings>()->TransitionPlacementBindings)
+
+	const bool bTrigger = RestoreSnapshot && !RestoreSnapshot->bInitialSnapshot
+		&& RestoreSnapshot->SaveReason == EOutlierCheckpointSaveReason::Trigger;
+	const bool bRoomSave = RestoreSnapshot && !RestoreSnapshot->bInitialSnapshot
+		&& (RestoreSnapshot->SaveReason == EOutlierCheckpointSaveReason::PhaseTransition
+			|| RestoreSnapshot->SaveReason == EOutlierCheckpointSaveReason::EncounterCleared);
+	if (RestoreSnapshot && RestoreSnapshot->bInitialSnapshot)
 	{
-		const bool bMatches = CheckpointId.IsNone()
-			? Binding.PresetIds.Contains(PresetId) : Binding.CheckpointIds.Contains(CheckpointId);
-		if (bMatches)
+		PresetId = OutlierPresetStageIds::Start;
+	}
+	else if (RestoreSnapshot && !bTrigger && !bRoomSave)
+	{
+		OutReason = TEXT("InvalidSaveReason");
+		return false;
+	}
+	if (bRoomSave && !RestoreSnapshot->RoomTag.IsValid())
+	{
+		OutReason = TEXT("InvalidRoomTag");
+		return false;
+	}
+	if (bTrigger && RestoreSnapshot->CheckpointId.IsNone())
+	{
+		OutReason = TEXT("MissingCheckpointId");
+		return false;
+	}
+
+	const FArenaTransitionPlacementBinding* Match = nullptr;
+	FGameplayTag BestRoomTag;
+	bool bBestHasSaveReason = false;
+	bool bAmbiguous = false;
+	for (const FArenaTransitionPlacementBinding& Binding : Bindings)
+	{
+		if (!bRoomSave)
 		{
-			if (Match)
+			const bool bMatches = bTrigger ? Binding.CheckpointIds.Contains(RestoreSnapshot->CheckpointId)
+				: Binding.PresetIds.Contains(PresetId);
+			if (bMatches)
 			{
-				return false;
+				bAmbiguous = Match != nullptr;
+				Match = &Binding;
 			}
-			Match = &Binding;
+			continue;
+		}
+
+		const bool bHasSaveReason = !Binding.RoomSaveReasons.IsEmpty();
+		if (bHasSaveReason && !Binding.RoomSaveReasons.Contains(RestoreSnapshot->SaveReason))
+		{
+			continue;
+		}
+		for (const FGameplayTag& RoomTag : Binding.RoomTags)
+		{
+			if (!RestoreSnapshot->RoomTag.MatchesTag(RoomTag))
+			{
+				continue;
+			}
+
+			// 같은 방의 상위 태그는 한 계층에 있다. 더 구체적인 방을 우선하고,
+			// 같은 방에서만 저장 종류를 지정한 정의를 공통 정의보다 우선한다.
+			const bool bSameRoom = RoomTag == BestRoomTag;
+			const bool bMoreSpecific = !Match || (bSameRoom ? bHasSaveReason && !bBestHasSaveReason
+				: RoomTag.MatchesTag(BestRoomTag));
+			if (bMoreSpecific)
+			{
+				Match = &Binding;
+				BestRoomTag = RoomTag;
+				bBestHasSaveReason = bHasSaveReason;
+				bAmbiguous = false;
+			}
+			else if (bSameRoom && bHasSaveReason == bBestHasSaveReason && Match != &Binding)
+			{
+				bAmbiguous = true;
+			}
 		}
 	}
-	if (!Match)
+
+	if (!Match || bAmbiguous)
 	{
+		OutReason = bAmbiguous ? TEXT("DuplicateBinding") : TEXT("MissingBinding");
 		return false;
 	}
 	TSet<FName> Tags;
@@ -268,6 +338,8 @@ bool OutlierArenaTransitionPlacement::ResolveTargets(FName PresetId, FName Check
 	{
 		if (Target.LevelPackage.IsNone() || Target.ActorTag.IsNone() || Tags.Contains(Target.ActorTag))
 		{
+			OutReason = FString::Printf(TEXT("InvalidTarget:%s/%s"),
+				*Target.LevelPackage.ToString(), *Target.ActorTag.ToString());
 			return false;
 		}
 		Tags.Add(Target.ActorTag);

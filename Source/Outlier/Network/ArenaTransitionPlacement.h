@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Save/OutlierCheckpointSnapshot.h"
 #include "ArenaTransitionPlacement.generated.h"
 
 class AActor;
@@ -39,6 +40,13 @@ struct FArenaTransitionPlacementBinding
 	TArray<FName> CheckpointIds;
 
 	UPROPERTY(EditAnywhere, Category = "Placement")
+	TArray<FGameplayTag> RoomTags;
+
+	// 비어 있으면 해당 방의 모든 전투 자동저장에 적용한다.
+	UPROPERTY(EditAnywhere, Category = "Placement")
+	TArray<EOutlierCheckpointSaveReason> RoomSaveReasons;
+
+	UPROPERTY(EditAnywhere, Category = "Placement")
 	TArray<FArenaTransitionPlacementTarget> Targets;
 };
 
@@ -65,6 +73,16 @@ struct FArenaTransitionPlacementSnapshot
 	UPROPERTY()
 	uint32 Revision = 0;
 
+	// 이어하기 로그에서 서버와 클라이언트가 같은 저장과 배치 대상을 확인할 수 있게 한다.
+	UPROPERTY()
+	FName CheckpointId;
+
+	UPROPERTY()
+	FName SaveReason;
+
+	UPROPERTY()
+	FGameplayTag RoomTag;
+
 	UPROPERTY()
 	TArray<FArenaTransitionPlacementTarget> Targets;
 
@@ -74,8 +92,9 @@ struct FArenaTransitionPlacementSnapshot
 
 namespace OutlierArenaTransitionPlacement
 {
-	bool ResolveTargets(FName PresetId, FName CheckpointId,
-		TArray<FArenaTransitionPlacementTarget>& OutTargets);
+	bool ResolveTargets(TConstArrayView<FArenaTransitionPlacementBinding> Bindings, FName PresetId,
+		const FOutlierCheckpointSnapshot* RestoreSnapshot,
+		TArray<FArenaTransitionPlacementTarget>& OutTargets, FString& OutReason);
 	bool ReadTargets(const UWorld& World, const TArray<FArenaTransitionPlacementTarget>& Targets,
 		TArray<FArenaTransitionPlacementPart>& OutParts, FString& OutPendingTarget,
 		TArray<TWeakObjectPtr<AActor>>* OutInstances = nullptr);
