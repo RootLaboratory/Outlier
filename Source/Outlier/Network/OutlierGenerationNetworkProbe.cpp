@@ -122,7 +122,7 @@ namespace
 		return false;
 	}
 
-	bool ExecuteStage03GameOver(UWorld* World, bool bApprove)
+	bool ExecuteGameOverWidget(UWorld* World, bool bApprove, bool bContinue)
 	{
 		auto* Controller = World->GetFirstPlayerController();
 		if (!Controller || !Controller->IsLocalController())
@@ -141,6 +141,16 @@ namespace
 			if (bApprove)
 			{
 				return IUILayerInputReceiver::Execute_HandleUILayerConfirmed(Widget);
+			}
+			if (bContinue)
+			{
+				UFunction* Continue = Widget->FindFunction(TEXT("HandleContinueButtonClicked"));
+				if (!Continue)
+				{
+					return false;
+				}
+				Widget->ProcessEvent(Continue, nullptr);
+				return true;
 			}
 			// 구형 버튼과 ChoiceMenu 모두 이 경로에서 같은 레벨 선택 모듈을 연다.
 			UFunction* SelectLevel = Widget->FindFunction(TEXT("HandleLevelSelectButtonClicked"));
@@ -603,9 +613,11 @@ private:
 				->Set(Action == TEXT("Stage03HoldPlacement"), ECVF_SetByConsole);
 			return true;
 		}
-		if (bStage03 && (Action == TEXT("Stage03SelectGameOverPreset") || Action == TEXT("Stage03ApproveGameOverPreset")))
+		if (bStage03 && (Action == TEXT("Stage03SelectGameOverPreset") || Action == TEXT("Stage03ApproveGameOverPreset")
+			|| Action == TEXT("GameOverChooseContinue") || Action == TEXT("GameOverApproveContinue")))
 		{
-			return ExecuteStage03GameOver(World, Action == TEXT("Stage03ApproveGameOverPreset"));
+			const bool bApprove = Action == TEXT("Stage03ApproveGameOverPreset") || Action == TEXT("GameOverApproveContinue");
+			return ExecuteGameOverWidget(World, bApprove, Action == TEXT("GameOverChooseContinue"));
 		}
 		if (bStage03 && Action == TEXT("Stage03OpenArrivalDoor") && World->GetNetMode() != NM_Client)
 		{
@@ -859,6 +871,18 @@ private:
 					return It->RefreshSnapshot(Shooter);
 			}
 			return false;
+		}
+		if (bStage03 && Action == TEXT("SaveRoomClear"))
+		{
+			UOutlierSaveSubSystem* Saves = World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>();
+			const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(Command->GetStringField(TEXT("Room"))), false);
+			if (!Room.IsValid() || !Saves || !Mode->IsPairGameplayReady())
+			{
+				return false;
+			}
+			// 테스트에서 방 완료 상태를 준비한 뒤, 실제 자동저장 경로에 페어 위치와 진행을 맡긴다.
+			Saves->SetWorldProgressState(EOutlierWorldProgressType::CompletedEncounter, Room.GetTagName(), true);
+			return Mode->CommitCombatPhaseCheckpoint(Room, INDEX_NONE, true, Arena->GetGameplayGeneration());
 		}
 		if (Action == TEXT("StaleAck"))
 		{

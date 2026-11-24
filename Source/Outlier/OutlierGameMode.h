@@ -362,15 +362,20 @@ private:
 	TMap<TWeakObjectPtr<APlayerController>, uint32> AwaitingArenaPlacementPossession;
 	TSet<TWeakObjectPtr<APlayerController>> ConfirmedArenaPlacementPossession;
 	TArray<TWeakObjectPtr<APlayerController>> ArenaPlacementReleasePlayers;
+	TSet<TWeakObjectPtr<APlayerController>> AppliedArenaPlacementRelease;
+	bool bArenaPlacementReleaseSent = false;
 	uint32 ArenaPlacementRevision = 0;
 	FString ArenaPlacementPendingReason;
 	void UpdateArenaPlacementReadiness();
 	void SendArenaPlacementSnapshot(APlayerController* Controller) const;
+	void SendArenaPlacementRelease(AFirstPersonPlayerController* Controller) const;
 	void ResetArenaPlacementReadiness();
 
 public:
 	void OnClientArenaPlacementReady(APlayerController* Controller, uint32 Generation,
 		uint32 ReconnectRequestId, uint32 Revision, bool bReady, const APawn* ConfirmedPawn);
+	void OnClientArenaPlacementReleased(APlayerController* Controller, uint32 Generation,
+		uint32 ReconnectRequestId, uint32 Revision, const APawn* ReleasedPawn);
 	bool IsArenaGameplayTransitionLocked() const { return bArenaReloadInProgress; }
 
 private:

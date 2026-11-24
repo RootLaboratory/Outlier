@@ -136,7 +136,7 @@ bool FOutlierArenaRecoveryWatchdogTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Second recovery preserves the original operation"), Mode->PendingGameplayGeneration, Generation);
 	TestEqual(TEXT("Second recovery still preserves total deadline"), Mode->ArenaReloadStartedAt, StartedAt);
 	Mode->ArenaReloadLastRecoveryAt = FPlatformTime::Seconds() - StallLimit - 1.0;
-	AddExpectedError(TEXT("Failed Gen="), EAutomationExpectedErrorFlags::Contains, 1);
+	AddExpectedError(TEXT("Reason=RecoveryExhausted"), EAutomationExpectedErrorFlags::Contains, 1);
 	AddExpectedError(TEXT("Reload failed:"), EAutomationExpectedErrorFlags::Contains, 1);
 	TestFalse(TEXT("A third stall ends the watchdog instead of retrying"), Mode->TickArenaRecovery(0.0f));
 	TestEqual(TEXT("No third recovery is dispatched"), Mode->ArenaReloadRecoveryAttempts, 2);
@@ -149,7 +149,7 @@ bool FOutlierArenaRecoveryWatchdogTest::RunTest(const FString& Parameters)
 	Mode->ArenaReloadStartedAt = FPlatformTime::Seconds() - TotalLimit - 1.0;
 	Mode->ArenaReloadLastProgressAt = FPlatformTime::Seconds();
 	Mode->ArenaReloadLastRecoveryAt = FPlatformTime::Seconds();
-	AddExpectedError(TEXT("Failed Gen="), EAutomationExpectedErrorFlags::Contains, 1);
+	AddExpectedError(TEXT("Reason=TotalDeadline"), EAutomationExpectedErrorFlags::Contains, 2);
 	AddExpectedError(TEXT("Reload failed:"), EAutomationExpectedErrorFlags::Contains, 1);
 	TestFalse(TEXT("Recent progress cannot extend the total timeout"), Mode->TickArenaRecovery(0.0f));
 	TestEqual(TEXT("Total timeout does not spend another recovery"), Mode->ArenaReloadRecoveryAttempts, 0);
@@ -185,9 +185,42 @@ bool FOutlierArenaRecoveryWatchdogTest::RunTest(const FString& Parameters)
 		TestNull(TEXT("Ready ACK does not partially possess before pair readiness"), First->GetPawn());
 	}
 
-	Arena->OnArenaGameplayReloadFailed.Remove(FailureHandle);
+	// Possess dispatch moves the current connection out of PendingPossessions.
 	Mode->PendingPossessions.Reset();
+	Mode->AwaitingArenaPlacementPossession.Add(First, 7);
+	Mode->OnClientArenaGameplayReloadFailed(OldController, Generation);
+	Mode->OnClientArenaGameplayReloadFailed(First, Generation - 1);
+	TestEqual(TEXT("An old connection or generation cannot fail the active pair"), Failures, 2);
+
+	AddExpectedError(TEXT("Reload failed:"), EAutomationExpectedErrorFlags::Contains, 1);
+	Mode->OnClientArenaGameplayReloadFailed(First, Generation);
+	Mode->OnClientArenaGameplayReloadFailed(First, Generation);
+	TestEqual(TEXT("A failure while awaiting Pawn confirmation is reported once"), Failures, 3);
+	TestEqual(TEXT("A current client failure is classified as invalid runtime"),
+		LastFailure, EOutlierGameplayReloadFailure::InvalidRuntime);
+
+	BeginReload();
 	Mode->bArenaReloadInProgress = false;
+	Mode->OnClientArenaGameplayReloadFailed(First, Generation);
+	TestEqual(TEXT("A late client failure cannot interrupt completed gameplay"), Failures, 3);
+
+	BeginReload();
+	Mode->bServerArenaReloadReady = true;
+	Mode->ArenaPlacementSnapshot.Revision = 1;
+	Mode->ArenaReloadRecoveryAttempts = 2;
+	TestTrue(TEXT("Pawn confirmation can still arrive after the last retry stalls"), Mode->TickArenaRecovery(0.0f));
+	TestEqual(TEXT("Waiting for Pawn confirmation does not dispatch a third retry"),
+		Mode->ArenaReloadRecoveryAttempts, 2);
+	TestEqual(TEXT("The retry limit does not fail a pair awaiting Pawn confirmation"), Failures, 3);
+
+	Mode->ArenaReloadStartedAt = FPlatformTime::Seconds() - TotalLimit - 1.0;
+	AddExpectedError(TEXT("Reload failed:"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Missing Pawn confirmation fails at the original total deadline"), Mode->TickArenaRecovery(0.0f));
+	TestEqual(TEXT("The total deadline reports one additional failure"), Failures, 4);
+	Mode->bArenaReloadInProgress = false;
+	Mode->bServerArenaReloadReady = false;
+	Mode->AwaitingArenaPlacementPossession.Reset();
+	Arena->OnArenaGameplayReloadFailed.Remove(FailureHandle);
 	Arena->PendingGameplayReload.Reset();
 	Mode->ArenaReconnectDeadline = FPlatformTime::Seconds() + 30.0;
 	TestFalse(TEXT("No pending reconnect stops the watcher"), Mode->TickArenaRecovery(0.0f));

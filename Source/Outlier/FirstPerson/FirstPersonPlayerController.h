@@ -369,6 +369,10 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientReleaseArenaPlacement(uint32 Generation, uint32 Revision);
 
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyArenaPlacementReleased(uint32 Generation, uint32 ReconnectRequestId,
+		uint32 Revision, APawn* ReleasedPawn);
+
 	bool IsArenaPlacementInputLocked() const;
 
 	UFUNCTION(Server, Reliable)
@@ -823,10 +827,11 @@ protected:
 	uint32 ClientArenaPlacementReleaseRevision = 0;
 	TWeakObjectPtr<APawn> ClientArenaPlacementPawn;
 	FString ClientArenaPlacementPendingReason;
-	void UpdateClientArenaPlacement();
+	void UpdateClientArenaPlacement(bool bFromWatchdog = false);
 	void ResetClientArenaPlacement();
 	void ApplyLocalArenaPossessionPresentation(APawn* Pawn);
 	bool bClientGameplayReloadFailed = false;
+	double ClientArenaPlacementOriginalStartAt = 0.0;
 	bool bClientArenaExitPrepared = false;
 	FTSTicker::FDelegateHandle ClientGameplayReloadWatchdogHandle;
 	FDelegateHandle ClientArenaGameplayReadyHandle;
