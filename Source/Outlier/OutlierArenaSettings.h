@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
 #include "GameplayTagContainer.h"
+#include "Network/ArenaTransitionPlacement.h"
 #include "OutlierArenaSettings.generated.h"
 
 class UWorld;
@@ -53,6 +54,10 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Levels", meta = (ClampMin = "1.0"))
 	float ArenaGameplayReloadFailureSeconds = 60.0f;
 
+	/** 프리셋·체크포인트 전환에서 조작권을 돌려주기 전에 확인할 배치 액터 목록. */
+	UPROPERTY(Config, EditAnywhere, Category = "Arena|Respawn")
+	TArray<FArenaTransitionPlacementBinding> TransitionPlacementBindings;
+
 	// 프리셋 스테이지별 업그레이드 노드 지급량(FPresetNodeProvideRow). RowName은
 	// OutlierPresetStageIds.h의 상수와 같아야 한다.
 	//
@@ -79,7 +84,9 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process")
 	FString ArenaWorkerHost = TEXT("127.0.0.1");
 
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (ClampMin = "1", ClampMax = "16"))
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (
+		DisplayName = "Arena Count", ClampMin = "1", ClampMax = "16",
+		ToolTip = "Dedicated Lobby 시작 시 실행할 Arena Worker 수입니다. 변경 사항을 적용하려면 Dedicated Lobby를 재시작하세요."))
 	int32 StaticArenaSlots = 4;
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (ClampMin = "1", ClampMax = "65535"))

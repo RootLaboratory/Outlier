@@ -25,12 +25,17 @@ struct OUTLIER_API FTargetPointHudSettings
 	// 방향 마커에만 선택적으로 사용한다. 기본값은 투영 실패 시 숨김이다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HUD")
 	bool bKeepBehindCamera = false;
-	static FVector2D GetScreenEdgePoint(const FVector& CameraLocalDirection, FVector2D ViewportSize);
 	float GetDistanceScale(float Distance) const;
 	void CalculateLayout(FVector2D ScreenPoint, FVector2D ViewportSize, FVector2D ContentSize,
 		float Distance, FVector2D& OutPosition, float& OutScale, FVector2D Pivot = FVector2D(0.5)) const;
 	bool Project(APlayerController* Controller, const FVector& WorldPoint, FVector2D ContentSize,
-		FVector2D& OutPosition, float& OutScale, FVector2D Pivot = FVector2D(0.5)) const;
+		FVector2D& OutPosition, float& OutScale, FVector2D Pivot = FVector2D(0.5), bool* bOutShowRearIndicator = nullptr) const;
+
+private:
+	friend class FTargetPointHudLayoutTest;
+	bool ResolveWorldLayout(bool bProjected, FVector2D ScreenPoint, FVector2D RearDirection, double RearAngle, double RearDepth,
+		FVector2D ViewportSize, FVector2D ContentSize, float Distance, FVector2D Pivot,
+		FVector2D& OutPosition, float& OutScale, bool* bOutShowRearIndicator) const;
 };
 
 // 같은 위젯 BP를 쓰는 모든 대상이 표시 설정을 공유한다. Actor는 기준점 위치만 제공한다.
@@ -55,7 +60,7 @@ public:
 	void UpdateContent(UTargetPointWidget* Content, bool bShown, const FVector& WorldPoint, FVector2D FallbackSize);
 	// Fixed-size content also supports existing WorldGuide UserWidget blueprints.
 	void UpdateContent(UUserWidget* Content, bool bShown, const FVector& WorldPoint, FVector2D Size,
-		const FTargetPointHudSettings& Settings, FVector2D Pivot);
+		const FTargetPointHudSettings& Settings, FVector2D Pivot, bool* bOutShowRearIndicator = nullptr);
 protected:
 	virtual void NativeOnInitialized() override;
 private:

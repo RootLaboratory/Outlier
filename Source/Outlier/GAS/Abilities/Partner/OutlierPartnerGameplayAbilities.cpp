@@ -398,7 +398,7 @@ void UOutlierPartnerHackAbility::EndAbility(
 
 void UOutlierPartnerHackAbility::HandleHackFinished(
 	EHackResult Result,
-	bool bPossessionTarget)
+	EPartnerHackTargetType TargetType)
 {
 	if (!IsActive() || bHackResultHandled)
 	{
@@ -426,18 +426,28 @@ void UOutlierPartnerHackAbility::HandleHackFinished(
 	UOutlierAbilitySystemComponent* AbilitySystem = GetOutlierAbilitySystem();
 	const APartnerPlayerController* Controller = HackController.Get();
 	// 대상 효과 처리 중 전환이 즉시 취소되었을 수도 있다. 실제 대기/빙의 세션이 있을 때만 충전을 미룬다.
-	const bool bDeferRecharge = Result == EHackResult::Success && bPossessionTarget
+	const bool bDeferRecharge = Result == EHackResult::Success && TargetType == EPartnerHackTargetType::Possession
 		&& Controller && Controller->ShouldDeferPartnerHackRecharge(GetPartnerCharacter());
-	// 확정 결과에서만 한 번 소모한다. 빙의 성공은 복귀 때 충전을 시작하고, 취소는 횟수를 유지한다.
-	const bool bCommitted = AbilitySystem && (Result == EHackResult::Cancelled
-		? AbilitySystem->CommitPartnerHackRetryDelay()
-		: AbilitySystem->CommitPartnerHackCharge(bDeferRecharge));
+	const bool bRetryableFailure = Result == EHackResult::Fail && TargetType == EPartnerHackTargetType::RetryableObject;
+	bool bFinalized = false;
+	if (AbilitySystem)
+	{
+		if (Result == EHackResult::Cancelled)
+		{
+			bFinalized = AbilitySystem->CommitPartnerHackRetryDelay();
+		}
+		else
+		{
+			// 오브젝트 실패는 시도만 종료한다. 이미 진행 중인 충전도 그대로 이어진다.
+			bFinalized = bRetryableFailure || AbilitySystem->CommitPartnerHackCharge(bDeferRecharge);
+		}
+	}
 	EndAbility(
 		CurrentSpecHandle,
 		CurrentActorInfo,
 		CurrentActivationInfo,
 		true,
-		Result != EHackResult::Success || !bCommitted);
+		Result != EHackResult::Success || !bFinalized);
 }
 
 UOutlierPartnerScanAbility::UOutlierPartnerScanAbility()

@@ -200,7 +200,10 @@ void UHackCandidateMarkerWidget::SetInfoShown(bool bShown)
 void UHackCandidateMarkerWidget::UpdateHudLayout(const FTargetPointHudSettings& Settings)
 {
 	CurrentHudSettings = Settings;
-	if (!HackableInfoWidget || !HackableInfoWidget->IsVisible()) return;
+	if (!HackableInfoWidget || !HackableInfoWidget->IsVisible())
+	{
+		return;
+	}
 	if (HackableInfoWidget->HasHudTracking())
 	{
 		HackableInfoWidget->UpdateHudTracking();
@@ -208,27 +211,31 @@ void UHackCandidateMarkerWidget::UpdateHudLayout(const FTargetPointHudSettings& 
 	}
 	const UCanvasPanelSlot* MarkerSlot = Cast<UCanvasPanelSlot>(Slot);
 	APlayerController* PC = GetOwningPlayer();
-	if (!MarkerSlot || !PC) return;
+	if (!MarkerSlot || !PC)
+	{
+		return;
+	}
 	const FVector2D ViewportSize = UWidgetLayoutLibrary::GetPlayerScreenWidgetGeometry(PC).GetLocalSize();
-	if (ViewportSize.X <= 0 || ViewportSize.Y <= 0) return;
+	if (ViewportSize.X <= 0 || ViewportSize.Y <= 0)
+	{
+		return;
+	}
 	const FVector Target = IHackableInterface::ResolveHackTargetLocation(TargetActor);
-	FVector2D ScreenPoint;
-	if (!UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(PC, Target, ScreenPoint, true))
+	const FVector2D MarkerDrawSize = MarkerSlot->GetSize();
+	FTargetPointHudSettings PopupTrackingSettings = Settings;
+	// 후보 마커의 설정과 무관하게 팝업은 전방 투영에 성공할 때만 표시한다.
+	PopupTrackingSettings.bKeepBehindCamera = false;
+	FVector2D MarkerPosition;
+	float MarkerScale;
+	if (!PopupTrackingSettings.Project(PC, Target, MarkerDrawSize, MarkerPosition, MarkerScale))
 	{
 		HackableInfoWidget->SetVisibility(ESlateVisibility::Collapsed);
 		return;
 	}
-	FVector ViewLocation;
-	FRotator ViewRotation;
-	PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
-	FVector2D MarkerPosition;
-	float MarkerScale;
-	Settings.CalculateLayout(ScreenPoint, ViewportSize, MarkerSlot->GetSize(),
-		FVector::Distance(ViewLocation, Target), MarkerPosition, MarkerScale);
 	FVector2D Size = HackableInfoWidget->GetDesiredSize();
 	Size.X = FMath::Max(Size.X, double(HackableInfoWidget->GetWidgetWidth()));
 	Size.Y = FMath::Max(Size.Y, double(HackableInfoWidget->GetMinWidgetHeight()));
-	const FVector2D MarkerSize = MarkerSlot->GetSize() * MarkerScale;
+	const FVector2D MarkerSize = MarkerDrawSize * MarkerScale;
 	// 최초 팝업만 화면 안에 배치한다. 이후에는 이때 정한 화면 오프셋을 유지한다.
 	const float Gap = 8.0f * MarkerScale;
 	FVector2D Center(MarkerPosition.X + MarkerSize.X * 0.5,
@@ -243,5 +250,6 @@ void UHackCandidateMarkerWidget::UpdateHudLayout(const FTargetPointHudSettings& 
 	FVector2D Position;
 	float InfoScale;
 	LayoutSettings.CalculateLayout(Center, ViewportSize, Size, Settings.ReferenceDistance, Position, InfoScale);
-	HackableInfoWidget->InitializeHudTracking(ScreenPoint, Position, Size, InfoScale);
+	HackableInfoWidget->InitializeHudTracking(PopupTrackingSettings, MarkerDrawSize, MarkerPosition,
+		Position, Size, InfoScale);
 }

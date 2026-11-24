@@ -1,11 +1,22 @@
 #include "Interaction/InteractableSwitch.h"
 
+#include "FirstPerson/FirstPersonCharacter.h"
 #include "Interaction/InteractableDoor.h"
 #include "Level/Elevator/ElevatorShaftController.h"
 #include "Level/Elevator/ElevatorShaftSection.h"
+#include "Room/RoomCombatSubsystem.h"
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
 #endif
+
+void AInteractableSwitch::BeginPlay()
+{
+	if (HasAuthority() && CombatRoomTag.IsValid())
+	{
+		RoomCombatSubsystem = GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	}
+	Super::BeginPlay();
+}
 
 void AInteractableSwitch::OnConstruction(const FTransform& Transform)
 {
@@ -73,9 +84,37 @@ AInteractableDoor* AInteractableSwitch::ResolveTargetDoor(FString& OutError, boo
 	return Door;
 }
 
+bool AInteractableSwitch::Interact(AFirstPersonCharacter* Interactor)
+{
+	if (!HasAuthority() || !Interactor)
+	{
+		return false;
+	}
+
+	if (const URoomCombatSubsystem* Combat = RoomCombatSubsystem.Get())
+	{
+		FGameplayTag RoomToCheck = CombatRoomTag;
+		if (!AdditionalCombatRoomTags.IsEmpty())
+		{
+			// 공유 출입구에서는 조작자가 빠져나가려는 방만 검사한다.
+			const FGameplayTag CurrentRoom = Interactor->GetCurrentRoomTag();
+			RoomToCheck = CurrentRoom == CombatRoomTag || AdditionalCombatRoomTags.HasTagExact(CurrentRoom)
+				? CurrentRoom : FGameplayTag();
+		}
+		if (RoomToCheck.IsValid() && Combat->IsExitBlocked(RoomToCheck))
+		{
+			return false;
+		}
+	}
+	return Super::Interact(Interactor);
+}
+
 bool AInteractableSwitch::ActivateTarget()
 {
-	if (!HasAuthority()) return false;
+	if (!HasAuthority())
+	{
+		return false;
+	}
 
 	// 비활성 방식의 참조로 대체하지 않는다. 재생성된 Child Actor는 이번 요청에서 다시 찾는다.
 	FString Error;

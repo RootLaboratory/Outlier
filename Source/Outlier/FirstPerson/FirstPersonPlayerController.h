@@ -2,6 +2,10 @@
 
 #pragma once
 
+#include "Network/OutlierGameOverStreaming.h"
+#include "Network/ArenaTransitionPlacement.h"
+#include "WorldPartition/WorldPartitionStreamingSource.h"
+
 #include "CoreMinimal.h"
 #include "Components/SlateWrapperTypes.h"
 #include "GameFramework/PlayerController.h"
@@ -14,6 +18,7 @@
 #include "UI/UILayerTypes.h"
 #include "UI/GameOverPendingTypes.h"
 #include "UI/DeveloperConvenienceTypes.h"
+#include "UI/PairPositionMarkerTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
@@ -28,6 +33,8 @@ class UInGameSettingWidget;
 class UDeveloperConvenienceWidget;
 class UUpgradeMachineWidget;
 class ULocalPlayerUILayerSubsystem;
+class UPairPositionMarkerWidget;
+class UTargetPointHudWidget;
 class UDamageFeedbackLayer;
 class UCameraShakeBase;
 class UOutlierUpgradeSetData;
@@ -293,7 +300,15 @@ public:
 	void ClientBeginCheckpointRestartTransition();
 
 	UFUNCTION(Client, Reliable)
-	void ClientRestoreGameOverSelection(const FGuid& RoundId);
+	void ClientRestoreGameOverSelection(const FGuid& RoundId, const FGuid& StreamingScopeId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientRefreshGameOverStreaming(const FGuid& RoundId, const FGuid& ScopeId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientStopGameOverStreaming(const FGuid& RoundId, bool bKeepSources);
+	void FreezeGameOverStreamingSources(const FGuid& RoundId);
+	void ReleaseGameOverStreamingSources(const FGuid& RoundId);
 
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestOpenInGameSetting();
@@ -343,6 +358,22 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady(uint32 GameplayGeneration, uint32 ReconnectRequestId = 0);
+
+	UFUNCTION(Client, Reliable)
+	void ClientReceiveArenaPlacement(uint32 Generation, const FArenaTransitionPlacementSnapshot& Snapshot);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyArenaPlacement(uint32 Generation, uint32 ReconnectRequestId, uint32 Revision,
+		bool bReady, APawn* ConfirmedPawn);
+
+	UFUNCTION(Client, Reliable)
+	void ClientReleaseArenaPlacement(uint32 Generation, uint32 Revision);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyArenaPlacementReleased(uint32 Generation, uint32 ReconnectRequestId,
+		uint32 Revision, APawn* ReleasedPawn);
+
+	bool IsArenaPlacementInputLocked() const;
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaGameplayUnloaded(uint32 GameplayGeneration);
@@ -402,6 +433,9 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForArenaStart(FVector InSpawnLocation);
 
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareForInitialCheckpointRestore();
+
 	// 로딩 ACK는 빙의를 진행하고, 시네마틱 ACK는 별도로 최초 게임 시작 조건을 제어한다.
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareArenaIntro(const FGuid& IntroId);
@@ -439,10 +473,14 @@ public:
 
 	// 사망 시 게임오버 화면을 띄운다 (페어 양쪽 컨트롤러에 각각 호출됨).
 	UFUNCTION(Client, Reliable)
-	void Client_ShowPresetSelect(const FGuid& RoundId, bool bImmediateSelections = false);
+	void Client_ShowPresetSelect(const FGuid& RoundId, const FGuid& StreamingScopeId, bool bImmediateSelections = false);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyGameOverReady(const FGuid& RoundId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyGameOverStreaming(const FGuid& RoundId, const FGuid& ScopeId, uint32 Generation,
+		bool bReady, bool bFailed, const FString& PendingContent);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyGameOverUnavailable(const FGuid& RoundId);
@@ -471,6 +509,9 @@ public:
 	// 사유별로 카메라 암전을 켜고 끈다. 로컬 Controller에서만 동작한다.
 	void AddCameraBlackoutReason(ECameraBlackoutReason Reason);
 	void RemoveCameraBlackoutReason(ECameraBlackoutReason Reason);
+	void SetInitialCheckpointRestoreBlackout(bool bEnabled);
+	void SetViewportTransitionCover(bool bEnabled, TSharedPtr<SWidget>& Cover,
+		TWeakObjectPtr<UGameViewportClient>& Viewport);
 	// 인트로의 Fade/시점을 정리한 뒤 로딩·GameOver 등 현재 암전 사유를 다시 적용한다.
 	void RestoreCameraAfterCinematic();
 	bool HasCameraBlackoutReason(ECameraBlackoutReason Reason) const
@@ -515,7 +556,10 @@ protected:
 	virtual void Destroyed() override;
 	virtual void PawnLeavingGame() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual bool GetStreamingSourcesInternal(TArray<FWorldPartitionStreamingSource>& OutStreamingSources) const override;
 	virtual void AcknowledgePossession(APawn* P) override;
+	virtual bool IsMoveInputIgnored() const override;
+	virtual bool IsLookInputIgnored() const override;
 
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnRep_PlayerState() override;
@@ -540,8 +584,12 @@ protected:
 	// 리로드 RPC가 실어 보낸 새 스폰 위치를 기록한다.
 	void ApplyServerArenaSpawnLocation(const FVector& InSpawnLocation);
 	bool TickClientArenaContentReady(float DeltaTime);
+	void StartClientGameOverStreaming(const FGuid& RoundId, const FGuid& ScopeId);
+	void StopClientGameOverStreaming();
+	bool TickClientGameOverStreaming(float DeltaTime);
 	void ClearClientArenaContentWait();
 	void ContinueClientGameplayReload();
+	void ClearClientArenaGameplayReadyBinding(UOutlierArenaSubsystem& ArenaSubsystem);
 	bool TickClientGameplayReloadWatchdog(float DeltaTime);
 	void ClearClientGameplayReloadWatchdog();
 	void FailClientGameplayReload(const FString& Reason);
@@ -571,7 +619,69 @@ protected:
 	virtual void RequestSuitFadeIn(const FGuid& TransitionId, float Duration);
 	virtual void RequestSuitTransitionCleanup(const FGuid& TransitionId);
 
+	void RefreshPairMarkerPresentation();
+
 private:
+	friend class FPairPositionMarkerLifecycleTest;
+	friend class FPairPositionMarkerDamageTest;
+	virtual void UpdateCameraManager(float DeltaSeconds) override;
+	void BindPairMarkerSources(AOutlierPlayerState* State);
+	void ClearPairMarkerSources();
+	void BindPairMarkerPeer(AOutlierPlayerState* Peer);
+	void HandlePairMarkerLinksChanged(AOutlierPlayerState* State);
+	void HandlePairMarkerReload(uint32 GameplayGeneration);
+	void HandlePairMarkerReady(uint32 GameplayGeneration);
+	UFUNCTION()
+	void HandlePairMarkerTargetDestroyed(AActor* Actor);
+	void RefreshPairMarkerTarget();
+	void SamplePairMarkerPosition();
+	void SetPairMarkerTarget(AFirstPersonCharacter* Target, const AOutlierPlayerState* Peer);
+	void BindPairMarkerDamageSource(APawn* Target);
+	void HandlePairMarkerDamageApplied();
+	UFUNCTION(Client, Reliable)
+	void ClientShowPairMarkerHit(const FPairPositionMarkerHit& Hit);
+	void UpdatePairMarkerDamageAvailability(bool bAvailable);
+	bool QueuePairMarkerHit(const FPairPositionMarkerHit& Hit, double ServerTime, double Duration);
+	void ApplyPendingPairMarkerHit();
+	UFUNCTION()
+	void OnRep_PairMarkerState();
+	void UpdatePairMarkerPlacement();
+	void ReleasePairMarkerHud();
+	bool CanPresentPairMarker() const;
+	bool ResolvePairMarkerPosition(FVector& OutPosition) const;
+	bool IsPairMarkerTargetVisible() const;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PairMarkerState)
+	FPairPositionMarkerSnapshot PairMarkerSnapshot;
+	UPROPERTY(ReplicatedUsing = OnRep_PairMarkerState)
+	FPairPositionMarkerTarget PairMarkerTarget;
+	UPROPERTY(Transient)
+	TObjectPtr<UTargetPointHudWidget> PairMarkerHud;
+	UPROPERTY(Transient)
+	TObjectPtr<UPairPositionMarkerWidget> PairMarkerWidget;
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Pair Marker")
+	TSubclassOf<UPairPositionMarkerWidget> PairMarkerWidgetClass;
+	TWeakObjectPtr<AOutlierPlayerState> PairMarkerPlayerState;
+	TWeakObjectPtr<AOutlierPlayerState> PairMarkerPeer;
+	TWeakObjectPtr<const AOutlierPlayerState> PairMarkerTargetPeer;
+	TWeakObjectPtr<UOutlierAbilitySystemComponent> PairMarkerDamageSource;
+	TWeakObjectPtr<UOutlierArenaSubsystem> PairMarkerArena;
+	TWeakObjectPtr<ULocalPlayerUILayerSubsystem> PairMarkerLayers;
+	FDelegateHandle PairMarkerCharactersHandle;
+	FDelegateHandle PairMarkerRoleHandle;
+	FDelegateHandle PairMarkerPeerCharactersHandle;
+	FDelegateHandle PairMarkerPeerRoleHandle;
+	FDelegateHandle PairMarkerReloadHandle;
+	FDelegateHandle PairMarkerReadyHandle;
+	FDelegateHandle PairMarkerDamageHandle;
+	FTimerHandle PairMarkerSampleTimer;
+	bool bPairMarkerReloading = false;
+	bool bPairMarkerDamageHudAvailable = false;
+	uint32 PairMarkerHitSequence = 0;
+	uint32 LastPairMarkerHitSequence = 0;
+	uint32 PresentedPairMarkerGeneration = 0;
+	double PairMarkerDamageAcceptAfter = 0.0;
+	FPairPositionMarkerHit PendingPairMarkerHit;
 	// 두 역할의 Controller가 같은 서버 연출 스트림을 사용한다. Pawn 빙의와 원래 Partner HP는 별개다.
 	void RefreshVitalitySources(AOutlierPlayerState* ChangedPlayerState);
 	void ClearVitalitySources();
@@ -715,9 +825,25 @@ protected:
 	bool bClientReloadBootstrapPending = false;
 	bool bClientGameplayLoadAuthorized = false;
 	bool bClientArenaReadyReported = false;
+	FArenaTransitionPlacementSnapshot ClientArenaPlacement;
+	TArray<TWeakObjectPtr<AActor>> ClientArenaPlacementInstances;
+	bool bClientArenaPlacementReady = false;
+	bool bClientArenaPlacementPossessionSent = false;
+	bool bClientArenaPlacementInputLocked = false;
+	uint32 ClientArenaPlacementReleaseRevision = 0;
+	double ClientArenaPlacementOriginalStartAt = 0.0;
+	TWeakObjectPtr<APawn> ClientArenaPlacementPawn;
+	FString ClientArenaPlacementPendingReason;
+	void UpdateClientArenaPlacement(bool bFromWatchdog = false);
+	void ResetClientArenaPlacement();
+	void ApplyLocalArenaPossessionPresentation(APawn* Pawn);
 	bool bClientGameplayReloadFailed = false;
 	bool bClientArenaExitPrepared = false;
+	bool bClientAwaitingInitialCheckpointPlacement = false;
+	TSharedPtr<SWidget> InitialCheckpointRestoreCover;
+	TWeakObjectPtr<UGameViewportClient> InitialCheckpointRestoreViewport;
 	FTSTicker::FDelegateHandle ClientGameplayReloadWatchdogHandle;
+	FDelegateHandle ClientArenaGameplayReadyHandle;
 	// 서버가 계산한 실제 스폰 위치. 클라이언트 준비 진단에도 사용한다.
 	FVector PendingArenaSpawnLocation = FVector::ZeroVector;
 	bool bWaitingForArenaStart = false;
@@ -790,6 +916,16 @@ protected:
 	bool bHasQueuedGameOverPendingRequest = false;
 	bool bGameOverImmediateSelections = false;
 	FGuid GameOverRoundId;
+	FGuid GameOverStreamingSourceRound;
+	FGuid GameOverClientStreamingScopeId;
+	TArray<FWorldPartitionStreamingSource> GameOverStreamingSources;
+	FGameOverStreamingReadiness GameOverClientStreaming;
+	FTSTicker::FDelegateHandle GameOverClientStreamingTicker;
+	TOptional<uint32> GameOverLastReportedGeneration;
+	double GameOverNextStreamingDiagnosticTime = 0.0;
+	bool bGameOverWasUsingStreamingVolumes = false;
+	bool bGameOverStreamingReportedReady = false;
+	bool bGameOverStreamingReportedFailure = false;
 	bool bGameOverReadySent = false;
 	bool bQueuedGameOverPendingRequester = false;
 

@@ -164,6 +164,8 @@ void AOutlierStunCueNotify::ApplyOverlayMaterials(AActor* Target)
 			{
 				Layer->SetMaterial(Slot, LayerMaterial);
 			}
+			// The looping cue does not run the base actor's WhileActive visibility reset.
+			SetActorHiddenInGame(false);
 			Layer->AttachToComponent(Mesh, FAttachmentTransformRules::SnapToTargetIncludingScale);
 			OverlayLayers.Add(Layer);
 			Layer->RegisterComponent();

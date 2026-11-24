@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "GameplayTagContainer.h"
+#include "UI/TargetPointHudWidget.h"
 #include "HackableInfoWidget.generated.h"
 
 class UBorder;
@@ -23,7 +24,8 @@ public:
 	void SetHackProgress(float InProgress);
 	void PlayPopup();
 	void ResetPopup();
-	void InitializeHudTracking(FVector2D TargetScreenPoint, FVector2D Position, FVector2D Size, float Scale);
+	void InitializeHudTracking(const FTargetPointHudSettings& Settings, FVector2D MarkerSize,
+		FVector2D MarkerPosition, FVector2D Position, FVector2D Size, float Scale);
 	void UpdateHudTracking();
 	bool HasHudTracking() const { return bHasHudTracking; }
 
@@ -90,6 +92,8 @@ private:
 	bool bPopupAudioOpen = false;
 	bool bHasHudTracking = false;
 	FVector2D HudScreenOffset = FVector2D::ZeroVector;
+	FTargetPointHudSettings HudTrackingSettings;
+	FVector2D HudTrackingMarkerSize = FVector2D::ZeroVector;
 
 	void SetPopupAudioOpen(bool bOpen);
 	bool ResolveHackInfoTag(FGameplayTag& OutHackInfoTag) const;

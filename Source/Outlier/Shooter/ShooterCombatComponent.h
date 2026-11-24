@@ -134,6 +134,9 @@ public:
 	void ApplyAimInput(bool bNewWantsToAim);
 	void TryStartAttack();
 	void TryStopAttack();
+	void ApplyBufferedEquipFireIntent(bool bHeld);
+	void ApplyBufferedEquipAim();
+	void StartBufferedEquipFire(bool bHeld);
 	// 소유자는 복귀 준비만 알린다. 요청 수락/취소와 실제 발사는 서버가 검증한다.
 	bool BeginSprintExitFire(AWeaponBase* Weapon, uint32 Request, uint32 Epoch);
 	void ResolveSprintExitFire(uint32 Request, uint32 Epoch, bool bFire);

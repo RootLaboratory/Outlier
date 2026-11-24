@@ -22,9 +22,11 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Engine.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "EngineGlobals.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "Misc/AutomationTest.h"
 #include "TimerManager.h"
 
@@ -90,6 +92,72 @@ struct FEnemyHackEffectTestWorld
 		World->GetTimerManager().Tick(Seconds);
 	}
 };
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHackPossessionPresentationRateTest,
+	"Outlier.Hack.Possession.PresentationRate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FHackPossessionPresentationRateTest::RunTest(const FString& Parameters)
+{
+	ULocalPlayer* Player = NewObject<ULocalPlayer>(GEngine);
+	ULocalPlayerPostProcessSubsystem* PostProcess = NewObject<ULocalPlayerPostProcessSubsystem>(Player);
+	PostProcess->SetPixelSortingMinThreshold(100);
+	PostProcess->SetPixelSortingScale(100.0f);
+	PostProcess->SetZoomBlurTriggerThreshold(200);
+	PostProcess->SetZoomBlurBlackoutStartProgress(0.5f);
+	FSplitPrismSettings SplitPrism = PostProcess->GetSplitPrismSettings();
+	SplitPrism.bDepthSplit = true;
+	SplitPrism.bPersistDepthSplit = false;
+	PostProcess->SetSplitPrismSettings(SplitPrism);
+
+	const auto RunPresentation = [this, PostProcess](float PlayRate)
+	{
+		constexpr float Step = 0.01f;
+		constexpr int32 MaxTicks = 1000;
+		int32 CoveredNotifications = 0;
+		const FDelegateHandle CoveredHandle = PostProcess->OnHackTransitionCovered.AddLambda([&CoveredNotifications]()
+		{
+			++CoveredNotifications;
+		});
+		PostProcess->StartHackPossessionTransition(PlayRate);
+		int32 CoverTicks = 0;
+		for (; CoverTicks < MaxTicks && CoveredNotifications == 0; ++CoverTicks)
+		{
+			PostProcess->Tick(Step);
+		}
+
+		// 서버 응답이 늦어도 완전히 가린 상태에서 완료 통지는 한 번만 발생한다.
+		PostProcess->Tick(1.0f);
+		TestEqual(TEXT("Cover notification waits for and fires once per transition"), CoveredNotifications, 1);
+		TestTrue(TEXT("Cover requires an explicit reveal after possession"), PostProcess->StartHackPossessionReveal());
+		int32 RevealTicks = 0;
+		for (; RevealTicks < MaxTicks && PostProcess->IsHackPossessionTransitionActive(); ++RevealTicks)
+		{
+			PostProcess->Tick(Step);
+		}
+		TestTrue(TEXT("Reveal finishes"), RevealTicks < MaxTicks);
+
+		PostProcess->StartSplitPrism(/*bUseHackPossessionPlayRate=*/true);
+		int32 FocusTicks = 0;
+		for (; FocusTicks < MaxTicks && PostProcess->IsSplitPrismActive(); ++FocusTicks)
+		{
+			PostProcess->Tick(Step);
+		}
+		TestTrue(TEXT("Split Prism finishes focusing and settling"), FocusTicks < MaxTicks);
+		PostProcess->OnHackTransitionCovered.Remove(CoveredHandle);
+		PostProcess->CancelHackPossessionTransition();
+		return FIntVector(CoverTicks, RevealTicks, FocusTicks);
+	};
+
+	const FIntVector Normal = RunPresentation(1.0f);
+	const FIntVector Fast = RunPresentation(2.0f);
+	const FIntVector Invalid = RunPresentation(0.0f);
+	TestTrue(TEXT("Double speed roughly halves cover time"), FMath::Abs(Normal.X - 2 * Fast.X) <= 5);
+	TestTrue(TEXT("Double speed roughly halves reveal time"), FMath::Abs(Normal.Y - 2 * Fast.Y) <= 2);
+	TestTrue(TEXT("Double speed roughly halves focus and settle time"), FMath::Abs(Normal.Z - 2 * Fast.Z) <= 3);
+	TestTrue(TEXT("Out-of-range rate uses normal speed"), Invalid == Normal);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyHackEffectTimeTest,

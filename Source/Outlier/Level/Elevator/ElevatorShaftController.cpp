@@ -224,6 +224,7 @@ void AElevatorShaftController::BeginPlay()
 	bInitialized = true;
 	if (!HasAuthority())
 	{
+		// 초기 복제가 먼저 왔다면 여기서 적용하고, 늦게 오면 RepNotify까지 배치 상태를 유지한다.
 		OnRep_Motion();
 		return;
 	}
@@ -279,7 +280,8 @@ void AElevatorShaftController::EndPlay(const EEndPlayReason::Type Reason)
 	GetWorldTimerManager().ClearAllTimersForObject(this);
 	SetControllerAtArrival(false);
 	RollbackPair();
-	if (IsValid(ArrivalSection))
+	// 첫 상태를 받기 전에 언로드되면 도착층도 배치 좌표에 둔다.
+	if (bInitialized && Motion.ExecutionId.IsValid() && IsValid(ArrivalSection))
 	{
 		ArrivalSection->SetActorTransform(Motion.ArrivalTransform);
 		ArrivalSection->SetSectionVisible(true);
@@ -932,7 +934,8 @@ double AElevatorShaftController::CalculateLoopOffset(double Distance, int32 Slot
 
 void AElevatorShaftController::InitializeVisualPool()
 {
-	if (GetNetMode() == NM_DedicatedServer || !LoopSections.IsEmpty() || !LoopSectionClass || !EntranceSection)
+	if (!bInitialized || !Motion.ExecutionId.IsValid() || GetNetMode() == NM_DedicatedServer
+		|| !LoopSections.IsEmpty() || !LoopSectionClass || !EntranceSection)
 	{
 		return;
 	}
@@ -961,7 +964,7 @@ void AElevatorShaftController::InitializeVisualPool()
 
 void AElevatorShaftController::UpdateVisuals()
 {
-	if (!EntranceSection)
+	if (!bInitialized || !Motion.ExecutionId.IsValid() || !EntranceSection)
 	{
 		return;
 	}
@@ -992,7 +995,7 @@ void AElevatorShaftController::UpdateVisuals()
 	}
 	// 취소/Reload의 서버 Transform 변경은 시각 전용 Section에 복제되지 않는다.
 	// 출발 좌표계로 돌아온 각 클라이언트도 도착층을 제작된 최종 위치로 복구한다.
-	if (ArrivalSection && Motion.ExecutionId.IsValid())
+	if (ArrivalSection)
 	{
 		if (!ArrivalSection->GetActorTransform().Equals(Motion.ArrivalTransform))
 		{
@@ -1039,9 +1042,14 @@ void AElevatorShaftController::Tick(float DeltaSeconds)
 
 void AElevatorShaftController::OnRep_Motion()
 {
-	if (!bInitialized)
+	// 서버는 배치 좌표를 채운 뒤 운행 ID를 부여한다. 기본 상태로 위치·충돌·연출을 덮어쓰지 않는다.
+	if (!bInitialized || !Motion.ExecutionId.IsValid())
 	{
 		return;
+	}
+	if (!HasAuthority() && IsValid(ArrivalSection) && IsValid(ArrivalDoor) && !ArrivalDoor->HasAuthority())
+	{
+		ArrivalSection->SetReplicatedArrivalDoor(ArrivalDoor);
 	}
 	// 위치 복제 대신 같은 상태와 도착층 기준으로 서버/클라이언트의 전체 구조물을 맞춘다.
 	SetControllerAtArrival(Motion.bArrival);
@@ -1590,6 +1598,24 @@ FString AElevatorShaftController::DescribeArrivalReadiness(const FGuid& Executio
 		ArrivalDoor && ArrivalDoor->IsPresentationOnly(), *GetNameSafe(EntranceSection), *GetNameSafe(EntranceDoor),
 		Clock.IsValid(), LoopSections.Num(), LoopSectionCount, *GetNameSafe(Pawn),
 		IsValid(Pawn) && Pawn->GetWorld() == GetWorld(), *GetNameSafe(ExitRoom), IsArrivalPawnReady(Pawn));
+}
+
+bool AElevatorShaftController::IsInitialArenaPlacementReady() const
+{
+	if (!bInitialized || !Motion.ExecutionId.IsValid()
+		|| (Arena.IsValid() && Arena->GetGameplayGeneration() != Motion.Generation)
+		|| !IsValid(EntranceSection) || !IsValid(ArrivalSection)
+		|| !IsValid(EntranceDoor) || !IsValid(ArrivalDoor))
+	{
+		return false;
+	}
+	if (HasAuthority())
+	{
+		return bConfigurationValid;
+	}
+	// 도착 섹션의 로컬 ChildActor가 남아 있으면 실제 서버 문과 충돌이 겹칠 수 있다.
+	return PresentationExecutionId == Motion.ExecutionId && !ArrivalDoor->HasAuthority()
+		&& ArrivalSection->HasResolvedArrivalDoor(ArrivalDoor);
 }
 
 bool AElevatorShaftController::AreArrivalVisualsReady(const FGuid& ExecutionId)

@@ -58,7 +58,8 @@ private:
 	};
 
 	bool Tick(float DeltaTime);
-	bool StartLobbyManager();
+	void HandleLobbyMapLoaded(UWorld* LobbyWorld);
+	void StartLobbyManager(int32 LobbyPort);
 	bool StartControlListener();
 	bool LaunchWorker(int32 SlotId);
 	void PollLobby(double CurrentTime);

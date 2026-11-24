@@ -359,8 +359,11 @@ void UShooterCombatComponent::PrepareForWeaponEquip()
 void UShooterCombatComponent::HandleAimPressed()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
-		|| bRequireAimRelease)
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
+	{
+		return;
+	}
+	if (ShooterCharacter->TryBufferEquipAimPress() || bRequireAimRelease)
 	{
 		return;
 	}
@@ -461,6 +464,7 @@ void UShooterCombatComponent::HandleAimReleased()
 		return;
 	}
 	bRequireAimRelease = false;
+	ShooterCharacter->ReleaseEquipAimInput();
 
 	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement());
 	const uint32 InputSequence = Movement->RecordActionInput(false);
@@ -504,6 +508,13 @@ void UShooterCombatComponent::ApplyAimInput(bool bNewWantsToAim)
 	ShooterCharacter->RefreshMovementState();
 	RestoreAimIfRequested();
 	RefreshCombatState();
+}
+
+void UShooterCombatComponent::ApplyBufferedEquipAim()
+{
+	// 교체 전 홀드의 Release가 이전 세대에서 폐기됐어도 검증된 새 Press는 적용한다.
+	bRequireAimRelease = false;
+	ApplyAimInput(true);
 }
 
 bool UShooterCombatComponent::ShouldDelayFireForSprintExit(const AShooterCharacter& ShooterCharacter) const
@@ -757,6 +768,52 @@ void UShooterCombatComponent::TryStartAttack()
 	}
 
 	StartAttackInternal();
+}
+
+void UShooterCombatComponent::ApplyBufferedEquipFireIntent(bool bHeld)
+{
+	// 교체 요청에 연결된 새 Press가 확인된 뒤에만 이전 장착의 Release 대기를 해제한다.
+	bRequireFireRelease = false;
+	UpdateFireInput(bHeld);
+}
+
+void UShooterCombatComponent::StartBufferedEquipFire(bool bHeld)
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	ARangedWeaponBase* Weapon = Shooter ? Cast<ARangedWeaponBase>(Shooter->CurrentWeapon) : nullptr;
+	if (!Shooter || !Shooter->HasAuthority() || Shooter->IsWeaponEquipInputBlocked()
+		|| !IsValid(Weapon) || !Weapon->IsAutomaticFire() || Weapon->IsAttacking() || bPendingSprintExitFire)
+	{
+		return;
+	}
+
+	// 예약한 첫 발과 실행 시점의 버튼 상태를 따로 적용한다. 짧은 클릭을 새 홀드로 바꾸지 않는다.
+	bRequireFireRelease = false;
+	if (Shooter->IsLocallyControlled())
+	{
+		UpdateFireInput(bHeld);
+	}
+	else
+	{
+		ApplyFireInput(bHeld);
+	}
+
+	if (!Weapon->HasUsableAmmo())
+	{
+		RequestAutoReloadRecovery();
+		return;
+	}
+	if (!CanFireInCurrentState() || !Weapon->CanAttack())
+	{
+		return;
+	}
+
+	StartAttackInternal();
+	if (!bHeld && IsValid(Weapon) && Weapon == Shooter->CurrentWeapon && Weapon->IsAttacking())
+	{
+		// 첫 발의 쿨다운은 보존하고 이 요청에서 만든 연사만 닫는다.
+		Weapon->ReleaseAttack();
+	}
 }
 
 void UShooterCombatComponent::StartAttackInternal()
@@ -1754,7 +1811,7 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
-		|| ShooterCharacter->IsWeaponEquipInputBlocked() || bRequireFireRelease
+		|| ShooterCharacter->IsArenaPlacementInputLocked() || ShooterCharacter->IsWeaponEquipInputBlocked() || bRequireFireRelease
 		|| ShooterCharacter->CurrentWeapon == nullptr)
 	{
 		return false;

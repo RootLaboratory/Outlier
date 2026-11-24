@@ -77,8 +77,7 @@ void UEMPMarkWidget::HandleClicked()
 	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.Player.02.Skill.Emp.Select"), TEXT("Audio.Type.Player"));
 	PlayAutomaticSelection();
 
-	EMPComponent->TryMarkEMPTarget(TargetActor);
-	EMPComponent->RefocusEMPInput();
+	EMPComponent->MarkDisplayedEMPTarget(TargetActor);
 }
 
 void UEMPMarkWidget::PlayAutomaticSelection()

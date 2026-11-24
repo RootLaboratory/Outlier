@@ -5,7 +5,9 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
 #include "Network/OutlierMatchRequest.h"
+#include "Network/OutlierGameOverStreaming.h"
 #include "Network/OutlierArenaProcessTypes.h"
+#include "Network/ArenaTransitionPlacement.h"
 #include "OutlierPlayerState.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Save/OutlierCheckpointRestartVote.h"
@@ -25,6 +27,7 @@ class AOutlierCheckpoint;
 class AOutlierPlayerState;
 class AOutlierArenaPausePlayerState;
 class UDataTable;
+class UPlayer;
 class UUpgradeMachineWidget;
 enum class EOutlierPlayerRole : uint8;
 enum class EOutlierGameplayReloadPhase : uint8;
@@ -47,10 +50,18 @@ struct FGameOverWorldPauseState
 {
 	bool Begin(const TArray<APlayerController*>& Controllers);
 	bool NotifyReady(APlayerController* Controller, const FGuid& InRoundId, UWorld* World);
+	void SetServerStreamingReady(uint32 Generation, bool bReady);
+	void InvalidatePlayerStreaming() { StreamingReadyControllers.Reset(); }
+	bool SetPlayerStreamingReady(APlayerController* Controller, const FGuid& InRoundId, uint32 Generation, bool bReady);
+	bool IsStreamingReady() const;
+	bool CanMonitorStreaming() const { return IsActive() && !bTransitioning && bPauseAllowed && !PauseOwner.IsValid(); }
+	void CancelStreamingWait();
 	bool NotifyUnavailable(APlayerController* Controller, const FGuid& InRoundId);
 	bool AreAllUIsUnavailable() const { return IsActive() && UnavailableControllers.Num() == ExpectedControllers.Num(); }
 	bool HasUnavailableUI() const { return !UnavailableControllers.IsEmpty(); }
 	bool HasReadyUI() const { return !ReadyControllers.IsEmpty(); }
+	bool AreAllUIsReady() const { return IsActive() && ReadyControllers.Num() == ExpectedControllers.Num(); }
+	bool IsUIReady(const APlayerController* Controller) const { return ReadyControllers.Contains(Controller); }
 	bool TryPause(UWorld* World);
 	bool CanSelect(const AController* Controller, const FGuid& InRoundId) const;
 	bool BeginTransition(UWorld* World);
@@ -68,7 +79,10 @@ private:
 	TSet<TWeakObjectPtr<APlayerController>> ExpectedControllers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyControllers;
 	TSet<TWeakObjectPtr<APlayerController>> UnavailableControllers;
+	TSet<TWeakObjectPtr<APlayerController>> StreamingReadyControllers;
 	TWeakObjectPtr<APlayerState> PauseOwner;
+	uint32 StreamingGeneration = 0;
+	bool bServerStreamingReady = false;
 	bool bTransitioning = false;
 	bool bPauseAllowed = true;
 };
@@ -112,6 +126,7 @@ public:
 	FOnPairGameplayReady OnPairGameplayReady;
 	bool IsRestoringClearedEncounter(FGameplayTag RoomTag) const;
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
+	AOutlierPlayerState* FindPairedPlayerState(const AOutlierPlayerState& State) const;
 
 	UFUNCTION()
 	void HandlePlayerDeath(AShooterCharacter* Character);
@@ -134,6 +149,8 @@ public:
 	bool RespondGameOverPending(AFirstPersonPlayerController* Responder,
 		const FGuid& RoundId, const FGuid& ProposalId, bool bApprove);
 	void OnClientGameOverReady(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
+	void OnClientGameOverStreaming(AFirstPersonPlayerController* Controller, const FGuid& RoundId,
+		const FGuid& ScopeId, uint32 Generation, bool bReady, bool bFailed, const FString& PendingContent);
 	void OnClientGameOverUnavailable(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
 	void OnClientGameOverPendingUnavailable(AFirstPersonPlayerController* Controller,
 		const FGuid& RoundId, const FGuid& ProposalId);
@@ -239,6 +256,7 @@ private:
 	bool BuildFixedRestoreLoadout(FOutlierLoadoutSnapshot& Snapshot) const;
 	friend class FOutlierGenerationNetworkProbe;
 	friend class FOutlierGameOverPendingFailureTest;
+	friend class FOutlierGameOverStreamingVisibilityTest;
 	friend class FOutlierArenaGenerationTransitionTest;
 	friend class FOutlierSettingsPauseTest;
 	friend class FOutlierDirectPairTest;
@@ -251,6 +269,12 @@ private:
 	TArray<TWeakObjectPtr<APlayerController>> DirectPairTestPlayers;
 	bool bDirectPairTestStarted = false;
 	bool BeginGameOverTransition();
+	void StartGameOverStreamingMonitor();
+	void StopGameOverStreamingMonitor(bool bKeepSources = false);
+	bool TickGameOverStreaming(float DeltaTime);
+	void EvaluateGameOverPause();
+	FGameOverStreamingStatus ObserveGameOverServerStreaming();
+	bool IsCurrentGameOverParticipant(const AFirstPersonPlayerController* Controller) const;
 	void RestoreGameOverSelection();
 	void FinishGameOverFlow();
 	void FailGameOverTransition();
@@ -261,6 +285,13 @@ private:
 	TMap<int32, FGameOverPendingServerState> GameOverPendingByPair;
 	TSet<int32> GameOverActivePairs;
 	FGameOverWorldPauseState GameOverWorldPause;
+	FGameOverStreamingReadiness GameOverServerStreaming;
+	FTSTicker::FDelegateHandle GameOverStreamingTicker;
+	FGuid GameOverStreamingScopeId;
+	TMap<TWeakObjectPtr<APlayerController>, TWeakObjectPtr<UPlayer>> GameOverStreamingConnections;
+	TMap<TWeakObjectPtr<APlayerController>, FString> GameOverStreamingDiagnostics;
+	FGameOverStreamingWait GameOverStreamingWait;
+	bool bGameOverStreamingWarningLogged = false;
 	TWeakObjectPtr<APlayerState> SettingsPauseOwner;
 	TWeakObjectPtr<AActor> SettingsPauseLayerOwner;
 	TWeakObjectPtr<AFirstPersonPlayerController> SettingsPauseController;
@@ -325,6 +356,29 @@ private:
 	TSet<TWeakObjectPtr<APlayerController>> PendingGameplayUnloadPlayers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayUnloadPlayers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayPossessPlayers;
+	FArenaTransitionPlacementSnapshot ArenaPlacementSnapshot;
+	TArray<TWeakObjectPtr<AActor>> ArenaPlacementInstances;
+	TSet<TWeakObjectPtr<APlayerController>> ReadyArenaPlacementPlayers;
+	TMap<TWeakObjectPtr<APlayerController>, uint32> AwaitingArenaPlacementPossession;
+	TSet<TWeakObjectPtr<APlayerController>> ConfirmedArenaPlacementPossession;
+	TArray<TWeakObjectPtr<APlayerController>> ArenaPlacementReleasePlayers;
+	TSet<TWeakObjectPtr<APlayerController>> AppliedArenaPlacementRelease;
+	bool bArenaPlacementReleaseSent = false;
+	uint32 ArenaPlacementRevision = 0;
+	FString ArenaPlacementPendingReason;
+	void UpdateArenaPlacementReadiness();
+	void SendArenaPlacementSnapshot(APlayerController* Controller) const;
+	void SendArenaPlacementRelease(AFirstPersonPlayerController* Controller) const;
+	void ResetArenaPlacementReadiness();
+
+public:
+	void OnClientArenaPlacementReady(APlayerController* Controller, uint32 Generation,
+		uint32 ReconnectRequestId, uint32 Revision, bool bReady, const APawn* ConfirmedPawn);
+	void OnClientArenaPlacementReleased(APlayerController* Controller, uint32 Generation,
+		uint32 ReconnectRequestId, uint32 Revision, const APawn* ReleasedPawn);
+	bool IsArenaGameplayTransitionLocked() const { return bArenaReloadInProgress; }
+
+private:
 	// TMap<TWeakObjectPtr<APlayerController>, double> ClientUnloadRequestedAt;
 	// TMap<TWeakObjectPtr<APlayerController>, double> ClientLoadAuthorizedAt;
 	double ArenaReloadStartedAt = 0.0;
@@ -417,7 +471,10 @@ protected:
 		const FTransform& ShooterSpawn,
 		const FTransform& PartnerSpawn,
 		bool bRestoreCheckpointSnapshot = false, int32 PresetNodeCount = INDEX_NONE,
-		TFunction<bool()> BeforeRespawn = {}, TFunction<void()> ApplyRestore = {});
+		TFunction<bool()> BeforeRespawn = {}, TFunction<void()> ApplyRestore = {},
+		FName PresetId = NAME_None, const FOutlierCheckpointSnapshot* RestoreSnapshot = nullptr);
+	bool ResolveArenaPlacementTargets(FName PresetId, const FOutlierCheckpointSnapshot* RestoreSnapshot,
+		TArray<FArenaTransitionPlacementTarget>& OutTargets) const;
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;

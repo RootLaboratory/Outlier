@@ -24,6 +24,12 @@
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Cinematic/OutlierCinematicSubsystem.h"
+#include "Network/OutlierGameOverStreaming.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
+#include "WorldPartition/HLOD/HLODRuntimeSubsystem.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionRuntimeCell.h"
+#include "WorldPartition/WorldPartitionStreamingSource.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -583,6 +589,128 @@ bool UOutlierArenaSubsystem::IsGameplayReloadBootstrapReady() const
 bool UOutlierArenaSubsystem::IsArenaContentReady() const
 {
 	return Arena.bReady && IsGameplayLevelsReady();
+}
+
+FGameOverStreamingStatus UOutlierArenaSubsystem::GetGameOverStreamingStatus(
+	const TArray<FWorldPartitionStreamingSource>& Sources) const
+{
+	FGameOverStreamingStatus Status;
+	const UWorld* World = GetWorld();
+	const ULevel* LoadedArenaLevel = GetArenaLoadedLevel();
+	if (!World || !LoadedArenaLevel)
+	{
+		Status.PendingContent.Add(TEXT("Arena persistent level"));
+	}
+	if (!IsArenaContentReady() || PendingGameplayReload.IsSet())
+	{
+		Status.PendingContent.Add(TEXT("Arena gameplay levels or reload"));
+		Status.bFailed = GetGameplayReloadPhase() == EOutlierGameplayReloadPhase::Failed;
+	}
+
+	auto AddRequiredLevel = [&Status](const ULevelStreaming* Level)
+	{
+		if (!Level)
+		{
+			return;
+		}
+		const FName Package = Level->GetWorldAssetPackageFName();
+		if (Status.RequiredContent.Contains(Package))
+		{
+			return;
+		}
+		Status.RequiredContent.Add(Package);
+		if (!IsGameplayLevelShown(Level) || Level->GetLevelStreamingState() != ELevelStreamingState::LoadedVisible
+			|| Level->IsStreamingStatePending())
+		{
+			Status.PendingContent.Add(Package.ToString());
+			Status.bFailed |= Level->GetLevelStreamingState() == ELevelStreamingState::FailedToLoad;
+		}
+	};
+	AddRequiredLevel(Arena.StreamingLevel);
+	if (LoadedArenaLevel)
+	{
+		Status.RequiredContent.Add(LoadedArenaLevel->GetOutermost()->GetFName());
+	}
+	for (const ULevelStreaming* Level : GameplayStreamingLevels)
+	{
+		AddRequiredLevel(Level);
+	}
+	if (!World)
+	{
+		return Status;
+	}
+	for (const ULevelStreaming* Level : World->GetStreamingLevels())
+	{
+		// WP 셀은 요청 플래그 대신 아래에서 사망 시점에 고정한 소스 범위로 확인한다.
+		if (Level && !Level->GetWorldPartitionCell() && Level->ShouldBeLoaded() && Level->ShouldBeVisible())
+		{
+			AddRequiredLevel(Level);
+		}
+	}
+
+	const UWorldPartition* Partition = LoadedArenaLevel ? LoadedArenaLevel->GetWorldPartition() : nullptr;
+	if (!Partition)
+	{
+		return Status;
+	}
+	const UDataLayerManager* DataLayers = Partition->GetDataLayerManager();
+	if (!Partition->IsInitialized() || !DataLayers || Sources.IsEmpty())
+	{
+		Status.PendingContent.Add(TEXT("World Partition or gameplay streaming source"));
+		return Status;
+	}
+
+	const TArray<FName> ActiveDataLayers = DataLayers->GetEffectiveActiveDataLayerNames().Array();
+	const FTransform WorldToPartition = Partition->GetInstanceTransform().Inverse();
+	TArray<FWorldPartitionStreamingQuerySource> Queries;
+	FWorldPartitionStreamingQuerySource& AlwaysLoaded = Queries.AddDefaulted_GetRef();
+	AlwaysLoaded.bSpatialQuery = false;
+	AlwaysLoaded.DataLayers = ActiveDataLayers;
+	for (const FWorldPartitionStreamingSource& Source : Sources)
+	{
+		if (Source.TargetState != EStreamingSourceTargetState::Activated)
+		{
+			continue;
+		}
+		FWorldPartitionStreamingQuerySource& Query = Queries.AddDefaulted_GetRef();
+		Query.Location = WorldToPartition.TransformPosition(Source.Location);
+		Query.Rotation = WorldToPartition.TransformRotation(Source.Rotation.Quaternion()).Rotator();
+		Query.TargetBehavior = Source.TargetBehavior;
+		Query.TargetGrids = Source.TargetGrids;
+		Query.Shapes = Source.Shapes;
+		Query.DataLayers = ActiveDataLayers;
+	}
+	const bool bCellsReady = Partition->IsStreamingCompleted(EWorldPartitionRuntimeCellState::Activated, Queries, true);
+	TArray<const IWorldPartitionCell*> Cells;
+	Partition->GetIntersectingCells(Queries, Cells);
+	for (const IWorldPartitionCell* Cell : Cells)
+	{
+		const UWorldPartitionRuntimeCell* RuntimeCell = Cast<const UWorldPartitionRuntimeCell>(Cell);
+		if (!RuntimeCell || (RuntimeCell->GetIsHLOD() && !UWorldPartitionHLODRuntimeSubsystem::IsHLODEnabled()))
+		{
+			continue;
+		}
+		Status.RequiredContent.Add(RuntimeCell->GetFName());
+		if (!bCellsReady && RuntimeCell->GetCurrentState() != EWorldPartitionRuntimeCellState::Activated)
+		{
+			Status.PendingContent.Add(RuntimeCell->GetDebugName());
+		}
+	}
+	if (!bCellsReady)
+	{
+		Status.PendingContent.Add(TEXT("World Partition activation"));
+		for (const ULevelStreaming* Level : World->GetStreamingLevels())
+		{
+			const UWorldPartitionRuntimeCell* Cell = Level
+				? Cast<const UWorldPartitionRuntimeCell>(Level->GetWorldPartitionCell()) : nullptr;
+			if (Cell && Status.RequiredContent.Contains(Cell->GetFName())
+				&& Level->GetLevelStreamingState() == ELevelStreamingState::FailedToLoad)
+			{
+				Status.bFailed = true;
+			}
+		}
+	}
+	return Status;
 }
 
 bool UOutlierArenaSubsystem::IsArenaReady() const

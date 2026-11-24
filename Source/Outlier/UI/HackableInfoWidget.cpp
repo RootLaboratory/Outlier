@@ -1,7 +1,6 @@
 #include "UI/HackableInfoWidget.h"
 
 #include "Audio/OutlierAudioFeedback.h"
-#include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Border.h"
 #include "Components/Image.h"
@@ -52,12 +51,18 @@ void UHackableInfoWidget::ResetPopup()
 	SetPopupAudioOpen(false);
 }
 
-void UHackableInfoWidget::InitializeHudTracking(FVector2D TargetScreenPoint, FVector2D Position, FVector2D Size, float Scale)
+void UHackableInfoWidget::InitializeHudTracking(const FTargetPointHudSettings& Settings, FVector2D MarkerSize,
+	FVector2D MarkerPosition, FVector2D Position, FVector2D Size, float Scale)
 {
 	UCanvasPanelSlot* InfoSlot = Cast<UCanvasPanelSlot>(Slot);
-	if (!InfoSlot) return;
-	// 최초 배치의 화면 오프셋과 크기를 홀드 전환 후에도 그대로 사용한다.
-	HudScreenOffset = Position - TargetScreenPoint;
+	if (!InfoSlot)
+	{
+		return;
+	}
+	// 홀드로 넘어가면 후보 마커가 제거되어도 같은 배치 설정과 오프셋으로 추적한다.
+	HudTrackingSettings = Settings;
+	HudTrackingMarkerSize = MarkerSize;
+	HudScreenOffset = Position - MarkerPosition;
 	bHasHudTracking = true;
 	InfoSlot->SetAutoSize(false);
 	InfoSlot->SetAlignment(FVector2D::ZeroVector);
@@ -70,11 +75,15 @@ void UHackableInfoWidget::InitializeHudTracking(FVector2D TargetScreenPoint, FVe
 
 void UHackableInfoWidget::UpdateHudTracking()
 {
-	if (!bHasHudTracking) return;
-	FVector2D ScreenPoint;
+	if (!bHasHudTracking)
+	{
+		return;
+	}
+	FVector2D MarkerPosition;
+	float MarkerScale;
 	if (!IsValid(TargetActor)
-		|| !UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(GetOwningPlayer(),
-			IHackableInterface::ResolveHackTargetLocation(TargetActor), ScreenPoint, true))
+		|| !HudTrackingSettings.Project(GetOwningPlayer(), IHackableInterface::ResolveHackTargetLocation(TargetActor),
+			HudTrackingMarkerSize, MarkerPosition, MarkerScale))
 	{
 		SetVisibility(ESlateVisibility::Collapsed);
 		return;
@@ -82,8 +91,8 @@ void UHackableInfoWidget::UpdateHudTracking()
 	SetVisibility(ESlateVisibility::HitTestInvisible);
 	if (UCanvasPanelSlot* InfoSlot = Cast<UCanvasPanelSlot>(Slot))
 	{
-		// 최초 배치 이후에는 화면 경계를 제한하지 않고 대상의 화면 이동을 따라간다.
-		InfoSlot->SetPosition(ScreenPoint + HudScreenOffset);
+		// 팝업의 첫 배치만 화면에 맞춘다. 이후에는 공통 앵커와의 간격을 유지한다.
+		InfoSlot->SetPosition(MarkerPosition + HudScreenOffset);
 	}
 }
 

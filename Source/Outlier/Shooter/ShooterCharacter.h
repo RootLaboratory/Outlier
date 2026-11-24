@@ -260,6 +260,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterActionIntentTest;
 	friend class FShooterEquipLifecycleTest;
+	friend class FShooterEquipFireTest;
 	friend class FShooterEquipReloadTest;
 	friend class FShooterAutoReloadRecoveryTest;
 	friend class FShooterWeaponActionNotifyTest;
@@ -592,6 +593,58 @@ protected:
 	FTimerHandle ActionLockTimerHandle;
 	UPROPERTY(Replicated)
 	uint32 EquipActionGeneration = 0;
+
+	struct FEquipFireRequest
+	{
+		uint32 Request = 0;
+		uint32 Generation = 0;
+		double Deadline = 0.0;
+		bool bCompleted = false;
+	};
+
+	FEquipFireRequest LocalEquipFire;
+	FEquipFireRequest ServerEquipFire;
+	TWeakObjectPtr<AWeaponBase> ServerEquipFireWeapon;
+	uint32 EquipInputSequence = 0;
+	uint32 LastEquipFirePress = 0;
+	uint32 LastEquipFireRelease = 0;
+	uint32 InvalidatedEquipFireRequests = 0;
+	bool bAttackButtonHeld = false;
+
+	struct FEquipAimRequest
+	{
+		uint32 Request = 0;
+		uint32 Generation = 0;
+		double Deadline = 0.0;
+		TWeakObjectPtr<AWeaponBase> Weapon;
+		bool bCompleted = false;
+	};
+
+	FEquipAimRequest LocalEquipAim;
+	FEquipAimRequest ServerEquipAim;
+	uint32 PendingEquipAimRequest = 0;
+	double PendingEquipAimDeadline = 0.0;
+	uint32 LastEquipAimPress = 0;
+	uint32 InvalidatedEquipAimRequests = 0;
+	bool bAimButtonHeld = false;
+	bool bFreshAimKeyPress = false;
+
+	uint32 IssueEquipInputSequence();
+	float GetEquipInputRequestLifetime() const;
+	bool TryResolveLocalEquipFire();
+	void CancelServerEquipFire();
+	void ResetEquipFireInput();
+	uint32 BeginEquipInputRequest();
+	bool TryBufferEquipAimPress();
+	void ReleaseEquipAimInput();
+	void ResetLocalEquipAimInput();
+	void TryResolveLocalEquipAim();
+	bool AcceptBufferedEquipAimInput();
+	void CancelServerEquipAim();
+	virtual uint32 BeginWeaponPickupInput(AWeaponBase* Pickup) override;
+	virtual void ServerInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId,
+		FVector_NetQuantizeNormal NodeAimDirection, uint32 WeaponPickupRequest) override;
+	virtual void HandleAttackInputReleased() override;
 	bool bPreparingWeaponEquip = false;
 	bool bAwaitingServerEquipCompletion = false;
 	struct FWeaponActionNotifyContext
@@ -608,6 +661,7 @@ protected:
 	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> ActionInputSubsystem;
 	TWeakObjectPtr<ULocalPlayerSettingsSubsystem> SprintSettingsSubsystem;
 	TArray<FKey> SprintInputKeys;
+	TArray<FKey> AimInputKeys;
 	void BindActionInputReset();
 	void UnbindSprintSettings();
 	void HandleSprintSettingsContextChanged(EOutlierPlayerRole SettingsRole);
@@ -896,6 +950,7 @@ public:
 	bool IsWeaponSwitchInProgress() const;
 	void ResetActionInput();
 	void NotifySprintKeyPressed(FKey Key);
+	void NotifyAimKeyEvent(FKey Key, bool bPressed);
 	bool IsSliding() const;
 	bool AllowsMeleeAttackWhileSliding() const { return bAllowMeleeAttackWhileSliding; }
 	bool IsSprinting() const;
@@ -1148,7 +1203,18 @@ protected:
 	void MulticastCancelWeaponEquip(uint32 Generation);
 
 	UFUNCTION(Server, Reliable)
-	void ServerSelectWeaponByIndex(int32 SlotIndex);
+	void ServerSelectWeaponByIndex(int32 SlotIndex, uint32 FireRequest = 0);
+
+	UFUNCTION(Client, Reliable)
+	void ClientAcceptEquipFire(uint32 Generation, uint32 Request, float Lifetime);
+
+	UFUNCTION(Client, Reliable)
+	void ClientAcceptEquipAim(uint32 Generation, uint32 Request, float Lifetime, AWeaponBase* TargetWeapon);
+	UFUNCTION(Client, Reliable)
+	void ClientRejectEquipAim(uint32 Request);
+
+	UFUNCTION(Server, Reliable)
+	void ServerResolveEquipFire(AWeaponBase* Weapon, uint32 Generation, uint32 Request, uint32 Press, bool bHeld);
 
 	UFUNCTION(Server, Reliable)
 	void ServerConfirmProceduralWeaponLowered(int32 SwitchId);
@@ -1220,7 +1286,7 @@ public:
 	void FinishReloadInternal();
 	bool CanStartAction(EShooterActionLock NextLock) const;
 	bool CanBeginWeaponEquip() const;
-	void BeginWeaponEquip();
+	void BeginWeaponEquip(uint32 FireRequest = 0, AWeaponBase* TargetWeapon = nullptr);
 	uint32 GetEquipActionGeneration() const { return EquipActionGeneration; }
 	bool IsPreparingWeaponEquip() const { return bPreparingWeaponEquip; }
 	bool IsWeaponEquipInputBlocked() const;

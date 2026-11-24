@@ -70,7 +70,7 @@ void UOutlierGameInstance::Init()
 	// Attribute / Effect / Ability 는 이것 없이도 돌기 때문에 GameplayCue 를 붙이기 전까지는 드러나지 않는다.
 	UAbilitySystemGlobals::Get().InitGlobalData();
 
-	FCoreUObjectDelegates::PreLoadMap.AddUObject(this, &UOutlierGameInstance::HandlePreLoadMap);
+	FCoreUObjectDelegates::PreLoadMapWithContext.AddUObject(this, &UOutlierGameInstance::HandlePreLoadMap);
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UOutlierGameInstance::HandlePostLoadMap);
 	if (GEngine)
 	{
@@ -293,7 +293,10 @@ void UOutlierGameInstance::RemoveArenaRecoveryFailureNotice()
 void UOutlierGameInstance::ShowArenaRecoveryFailureNotice()
 {
 	UGameViewportClient* Viewport = GetGameViewportClient();
-	if (ArenaRecoveryFailureReason.IsEmpty() || !Viewport || ArenaRecoveryFailureNotice.IsValid()) return;
+	if (ArenaRecoveryFailureReason.IsEmpty() || !Viewport || ArenaRecoveryFailureNotice.IsValid())
+	{
+		return;
+	}
 	const TWeakObjectPtr<UOutlierGameInstance> WeakThis(this);
 	// 기존 GameOver UI가 없어도 복귀한 화면에서 실패 이유를 확인할 수 있다.
 	// 명시적 이탈 정리는 이 문구를 지우지 않고, 확인하거나 새 매치에 진입할 때만 끝낸다.
@@ -322,7 +325,9 @@ void UOutlierGameInstance::ShowArenaRecoveryFailureNotice()
 			]
 		];
 	ArenaRecoveryFailureViewport = Viewport;
-	Viewport->AddViewportWidgetContent(ArenaRecoveryFailureNotice.ToSharedRef(), 1000);
+	// AddToViewport는 메뉴 루트의 ZOrder에 10을 더한다. 안내를 그 위에 배치해 확인 버튼이 클릭을 받게 한다.
+	constexpr int32 RecoveryNoticeZOrder = 2000;
+	Viewport->AddViewportWidgetContent(ArenaRecoveryFailureNotice.ToSharedRef(), RecoveryNoticeZOrder);
 }
 
 void UOutlierGameInstance::ReturnAfterArenaRecoveryFailure(bool bReturnToLobby)
@@ -519,6 +524,17 @@ void UOutlierGameInstance::HandleTravelFailure(
 	if (World && World->GetGameInstance() != this)
 	{
 		return;
+	}
+	if (!bArenaReconnectActive)
+	{
+		// 로드가 중단되면 가림을 넘겨받을 Arena Controller가 없다.
+		for (ULocalPlayer* Local : GetLocalPlayers())
+		{
+			if (UOutlierCinematicSubsystem* Cinematic = Local->GetSubsystem<UOutlierCinematicSubsystem>())
+			{
+				Cinematic->EndInitialIntroBlackout();
+			}
+		}
 	}
 	if (bTitleReturnPending)
 	{
@@ -732,11 +748,27 @@ bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
 	return false;
 }
 
-void UOutlierGameInstance::HandlePreLoadMap(const FString& MapName)
+void UOutlierGameInstance::HandlePreLoadMap(const FWorldContext& LoadingWorldContext, const FString& MapName)
 {
+	if (LoadingWorldContext.OwningGameInstance != this)
+	{
+		return;
+	}
+
 	RemoveArenaRecoveryFailureNotice();
-	if (IsRunningDedicatedServer()) return;
-	// Loading Widget 표시
+	if (!LoadingWorldContext.PendingNetGame || !GetDefault<UOutlierArenaSettings>()->MatchesArenaPackageName(MapName))
+	{
+		return;
+	}
+
+	// 직접 접속도 첫 Arena 프레임 전에 가린다. 이후 첫 Possess 또는 체크포인트 배치 해제가 가림을 넘겨받는다.
+	for (ULocalPlayer* Local : GetLocalPlayers())
+	{
+		if (UOutlierCinematicSubsystem* Cinematic = Local->GetSubsystem<UOutlierCinematicSubsystem>())
+		{
+			Cinematic->BeginInitialIntroBlackout(true);
+		}
+	}
 }
 
 bool UOutlierGameInstance::TryQueueLobbyRecovery()

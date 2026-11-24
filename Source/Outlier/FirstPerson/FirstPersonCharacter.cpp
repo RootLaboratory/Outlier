@@ -10,6 +10,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/SkeletalMesh.h"
 #include "FirstPersonInputConfig.h"
 #include "Interface/InteractableInterface.h"
 #include "Interaction/InteractableComponent.h"
@@ -87,10 +88,34 @@ AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectIni
 
 	GetCapsuleComponent()->SetCapsuleSize(34.0f, 96.0f);
 
+	PairMarkerAnchor = CreateDefaultSubobject<USceneComponent>(TEXT("PairMarkerAnchor"));
+	PairMarkerAnchor->SetupAttachment(GetCapsuleComponent());
+	PairMarkerAnchor->SetRelativeLocation(FVector(0.0, 0.0, 116.0));
+	PairMarkerAnchor->bEditableWhenInherited = true;
+
 	// configure character movement
 	// 공중 자동 제동은 적용하지 않는다. Slide 점프의 초과 속도 감속은 전용 커브가 담당한다.
 	GetCharacterMovement()->BrakingDecelerationFalling = 0.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+}
+
+FVector AFirstPersonCharacter::GetPairMarkerAnchorLocation() const
+{
+	if (bUseAutomaticPairMarkerAnchor)
+	{
+		const USkeletalMeshComponent* BodyMesh = GetMesh();
+		if (const USkeletalMesh* BodyAsset = BodyMesh ? BodyMesh->GetSkeletalMeshAsset() : nullptr)
+		{
+			// 서버와 클라이언트가 애니메이션 본 갱신 여부에 관계없이 같은 메시 기준을 사용한다.
+			const FBoxSphereBounds BodyBounds = BodyAsset->GetImportedBounds().TransformBy(BodyMesh->GetComponentTransform());
+			if (BodyBounds.BoxExtent.Z > UE_KINDA_SMALL_NUMBER)
+			{
+				constexpr double ClearanceAboveBody = 8.0;
+				return BodyBounds.Origin + FVector(0.0, 0.0, BodyBounds.BoxExtent.Z + ClearanceAboveBody);
+			}
+		}
+	}
+	return PairMarkerAnchor->GetComponentLocation();
 }
 
 FGenericTeamId AFirstPersonCharacter::GetGenericTeamId() const
@@ -145,7 +170,7 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 
 	// Attack
 	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryStartAttack);
-	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::TryStopAttack);
+	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::HandleAttackInputReleased);
 
 	// Interaction
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::HandleInteractionInputStarted);
@@ -333,11 +358,17 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 
 bool AFirstPersonCharacter::CanInteract() const
 {
-	if (IsSuitTransitionBlocked())
+	if (IsSuitTransitionBlocked() || IsArenaPlacementInputLocked())
 	{
 		return false;
 	}
 	return true;
+}
+
+bool AFirstPersonCharacter::IsArenaPlacementInputLocked() const
+{
+	const AFirstPersonPlayerController* Player = Cast<AFirstPersonPlayerController>(GetController());
+	return Player && Player->IsArenaPlacementInputLocked();
 }
 
 void AFirstPersonCharacter::TryInteract()
@@ -406,9 +437,9 @@ void AFirstPersonCharacter::TryInteract()
 		}
 	}
 
-	//Hold Interaction Actor의 판정은 Hold Actor가 ServerInteract를 실행하는 식으로 처리. 업데이트는 해당 Actor에서 처리. 판정은 Character 에서
-	//Hold or 즉발
-	ServerInteract(TargetActor, 0, NodeAimDirection);
+	AWeaponBase* Pickup = Cast<AWeaponBase>(TargetActor);
+	const uint32 PickupRequest = Pickup ? BeginWeaponPickupInput(Pickup) : 0;
+	ServerInteract(TargetActor, 0, NodeAimDirection, PickupRequest);
 }
 
 void AFirstPersonCharacter::EndInteract()
@@ -437,7 +468,10 @@ void AFirstPersonCharacter::NotifyHoldInteractCompleted(AActor* CompletedActor)
 	}
 
 	bAwaitingHoldInteractResult = true;
-	ServerInteract(CompletedActor, Node ? Node->GetLocalHoldAttemptId(this) : 0);
+	AWeaponBase* Pickup = Cast<AWeaponBase>(CompletedActor);
+	const uint32 PickupRequest = Pickup ? BeginWeaponPickupInput(Pickup) : 0;
+	ServerInteract(CompletedActor, Node ? Node->GetLocalHoldAttemptId(this) : 0,
+		FVector::ZeroVector, PickupRequest);
 }
 
 void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
@@ -521,7 +555,7 @@ void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* Targe
 }
 
 void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId,
-	FVector_NetQuantizeNormal NodeAimDirection)
+	FVector_NetQuantizeNormal NodeAimDirection, uint32 WeaponPickupRequest)
 {
 	const AInteractionNode* Node = Cast<AInteractionNode>(TargetActor);
 	const bool bNodeInteraction = Node != nullptr;
@@ -590,7 +624,15 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, i
 			return;
 		}
 
-		if (!Interactable->Interact(this))
+		const uint32 PickupRequest = WeaponPickupRequest != 0 && TargetActor->IsA<AWeaponBase>()
+			? WeaponPickupRequest : 0;
+		bool bInteractionAccepted;
+		{
+			// 검증된 획득 호출에서만 요청을 노출해 월드 원본과 장착되는 지급 사본을 연결한다.
+			TGuardValue<uint32> PickupRequestScope(ActiveWeaponPickupRequest, PickupRequest);
+			bInteractionAccepted = Interactable->Interact(this);
+		}
+		if (!bInteractionAccepted)
 		{
 			UE_LOG(LogTemp, Warning,
 				TEXT("[Server] %s ServerInteract rejected by target Target=%s"),
@@ -767,6 +809,11 @@ void AFirstPersonCharacter::TryStartAttack()
 
 	OUTLIER_LOG(Core, LogTemp, Log, TEXT("%s %s TryStartAttack Weapon=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StartAttack();
+}
+
+void AFirstPersonCharacter::HandleAttackInputReleased()
+{
+	TryStopAttack();
 }
 
 void AFirstPersonCharacter::TryStopAttack()

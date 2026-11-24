@@ -116,8 +116,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	const TArray<AActor*>& GetEMPCandidateActors() const { return EMPCandidateActors; }
 
+	void MarkDisplayedEMPTarget(AActor* TargetActor);
+
 	UFUNCTION(Server, Reliable)
-	void TryMarkEMPTarget(AActor* TargetActor);
+	void TryMarkEMPTarget(AActor* TargetActor, const TArray<AActor*>& CompletedDisplayedTargets);
 
 	// 위젯에서 타이머 완료 or Tab confirm 시 호출
 	bool NotifyEMPConfirmed();

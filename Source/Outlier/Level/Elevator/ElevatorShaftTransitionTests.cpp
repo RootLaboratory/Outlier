@@ -225,7 +225,10 @@ bool FElevatorControllerTransportTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Rollback restores collision placement"), Collision->GetComponentTransform().Equals(OriginalCollision, 0.001));
 	Controller->SetControllerAtArrival(true);
 	TestTrue(TEXT("Retry uses the original coordinate frame"), Controller->GetActorTransform().Equals(Arrived, 0.001));
+	// 실제 초기 복제처럼 좌표와 운행 ID가 채워진 상태에서 도착·복귀를 전달한다.
 	Controller->bInitialized = true;
+	Controller->Motion.EntranceTransform = Entrance;
+	Controller->Motion.ExecutionId = FGuid::NewGuid();
 	Controller->Motion.bArrival = true;
 	Controller->Motion.State = EElevatorShaftState::Completed;
 	Controller->OnRep_Motion();

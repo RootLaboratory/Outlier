@@ -251,7 +251,8 @@ void FOutlierArenaSlotRegistry::Initialize(
 	{
 		FOutlierArenaSlotRecord& Slot = Slots.AddDefaulted_GetRef();
 		Slot.SlotId = SlotId;
-		Slot.Address = FString::Printf(TEXT("%s:%d"), *NormalizedHost, BasePort + SlotId);
+		Slot.Port = BasePort + SlotId;
+		Slot.Address = FString::Printf(TEXT("%s:%d"), *NormalizedHost, Slot.Port);
 	}
 }
 

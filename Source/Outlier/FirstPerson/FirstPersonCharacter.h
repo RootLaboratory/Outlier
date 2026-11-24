@@ -68,6 +68,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USceneComponent* FirstPersonViewModelRoot;
 
+	/** 동료 마커를 3인칭 메시 상단에 자동으로 배치한다. */
+	UPROPERTY(EditDefaultsOnly, Category = "Pair Marker")
+	bool bUseAutomaticPairMarkerAnchor = true;
+
+	/** 자동 배치를 끄거나 메시가 없을 때 사용하는 동료 마커 기준점. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components)
+	TObjectPtr<USceneComponent> PairMarkerAnchor;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	URoomTagComponent* RoomTagComponent;
 
@@ -152,6 +160,7 @@ protected:
 	virtual void TryStartAttack();
 
 	virtual void TryStopAttack();
+	virtual void HandleAttackInputReleased();
 
 	void MoveInput(const FInputActionValue& Value);
 	void StopMoveInput();
@@ -168,14 +177,19 @@ protected:
 	void HandleInteractionInputStarted();
 
 	virtual bool CanInteract() const;
+	bool IsArenaPlacementInputLocked() const;
 	virtual void PrepareForSuitTransition();
 	virtual void OnSuitTransitionBlockChanged() {}
 	virtual bool CanResumeMovementAfterSuitTransition() const { return true; }
 	virtual bool CanRestoreFlyingAfterSuitTransition() const { return false; }
 	virtual void UnPossessed() override;
 
+	virtual uint32 BeginWeaponPickupInput(AWeaponBase* Pickup) { return 0; }
+	uint32 GetActiveWeaponPickupRequest() const { return ActiveWeaponPickupRequest; }
+
 	UFUNCTION(Server, Reliable)
-	void ServerInteract(AActor* TargetActor, int32 HoldAttemptId = 0, FVector_NetQuantizeNormal NodeAimDirection = FVector::ZeroVector);
+	void ServerInteract(AActor* TargetActor, int32 HoldAttemptId = 0,
+		FVector_NetQuantizeNormal NodeAimDirection = FVector::ZeroVector, uint32 WeaponPickupRequest = 0);
 
 	UFUNCTION(Server, Reliable)
 	void ServerBeginHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0, FVector_NetQuantizeNormal NodeAimDirection = FVector::ZeroVector);
@@ -220,6 +234,8 @@ public:
 
 	USceneComponent* GetFirstPersonViewModelRoot() const { return FirstPersonViewModelRoot; }
 
+	FVector GetPairMarkerAnchorLocation() const;
+
 	virtual void EquipWeapon(AWeaponBase* Weapon);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -249,6 +265,7 @@ public:
 
 private:
 	float InteractionTraceInterval = 0.1f;
+	uint32 ActiveWeaponPickupRequest = 0;
 
 private:
 	void CancelLocalHoldInteract(bool bNotifyServer);

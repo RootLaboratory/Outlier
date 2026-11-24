@@ -20,7 +20,14 @@ class UMaterialInstanceDynamic;
 class UMeshComponent;
 class UPrimitiveComponent;
 
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPartnerHackFinished, EHackResult, bool);
+enum class EPartnerHackTargetType : uint8
+{
+	Other,
+	Possession,
+	RetryableObject
+};
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPartnerHackFinished, EHackResult, EPartnerHackTargetType);
 
 USTRUCT()
 struct FPartnerHackCursorHighlightState
@@ -239,6 +246,7 @@ private:
 	uint32 ServerHoldId = 0;
 	uint32 NextHackRequestId = 0;
 	uint32 ActiveHackRequestId = 0;
+	EPartnerHackTargetType ActiveHackTargetType = EPartnerHackTargetType::Other;
 	TWeakObjectPtr<AEnemyBase> ActivePoolHackEnemy;
 	int32 ActiveHackGeneration = 0;
 	int32 ActiveHackLease = 0;

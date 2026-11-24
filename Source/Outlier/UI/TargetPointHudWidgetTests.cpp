@@ -32,6 +32,100 @@ bool FTargetPointHudLayoutTest::RunTest(const FString& Parameters)
 	Settings.CalculateLayout(FVector2D(2000, -200), FVector2D(1000, 800), FVector2D(100, 40),
 		200, Position, Scale, FVector2D(0, 1));
 	TestEqual(TEXT("WorldGuide pivot still keeps the full widget within screen padding"), Position, FVector2D(884, 16));
+
+	FTargetPointHudSettings OffscreenSettings = Settings;
+	OffscreenSettings.bKeepBehindCamera = true;
+	const FVector2D ViewportSize(1920, 1080);
+	const FVector2D ContentSize(100, 40);
+	const FVector2D HeadPivot(0.5, 1.0);
+	FVector2D PairPoint;
+	FVector2D GuidePoint;
+	bool bShowRearIndicator = false;
+	TestTrue(TEXT("A directly rear pair marker resolves"), OffscreenSettings.ResolveWorldLayout(false,
+		FVector2D::ZeroVector, FVector2D::ZeroVector, 0, 1, ViewportSize, ContentSize, 200, HeadPivot,
+		PairPoint, Scale, &bShowRearIndicator));
+	TestTrue(TEXT("A directly rear target shows the rear indicator"), bShowRearIndicator);
+	TestTrue(TEXT("A directly rear guide marker resolves"), OffscreenSettings.ResolveWorldLayout(false,
+		FVector2D::ZeroVector, FVector2D::ZeroVector, 0, 1, ViewportSize, ContentSize, 200, HeadPivot,
+		GuidePoint, Scale, nullptr));
+	TestEqual(TEXT("Pair and guide markers use the same rear point"), PairPoint, GuidePoint);
+	TestEqual(TEXT("Directly behind sits inside the bottom padding"), PairPoint, FVector2D(910, 1024));
+
+	for (const FVector2D Direction : { FVector2D(-1, -4), FVector2D(1, -4), FVector2D(-1, 4), FVector2D(1, 4) })
+	{
+		FVector2D NearRearPosition;
+		OffscreenSettings.ResolveWorldLayout(false, FVector2D::ZeroVector, Direction, 1, 0.9,
+			ViewportSize, ContentSize, 200, HeadPivot, NearRearPosition, Scale, &bShowRearIndicator);
+		TestEqual(TEXT("Both sides of directly behind use bottom center"), NearRearPosition, PairPoint);
+		TestTrue(TEXT("A directly rear target retains its rear indicator"), bShowRearIndicator);
+	}
+
+	for (const double RearAngle : { 14.0, 16.0 })
+	{
+		OffscreenSettings.ResolveWorldLayout(false, FVector2D::ZeroVector, FVector2D(1, 0), RearAngle, 0.9,
+			ViewportSize, ContentSize, 200, HeadPivot, Position, Scale, &bShowRearIndicator);
+		TestEqual(TEXT("The rear indicator keeps its 15 degree boundary"), bShowRearIndicator, RearAngle < 15.0);
+	}
+
+	for (const FVector2D Direction : { FVector2D(-1, -0.6), FVector2D(1, -0.6), FVector2D(-1, -4), FVector2D(1, 4) })
+	{
+		FVector2D Previous;
+		OffscreenSettings.ResolveWorldLayout(false, FVector2D::ZeroVector, Direction, 60.001, 0.9,
+			ViewportSize, ContentSize, 200, HeadPivot, Previous, Scale, nullptr);
+		OffscreenSettings.ResolveWorldLayout(false, FVector2D::ZeroVector, Direction, 59.999, 0.9,
+			ViewportSize, ContentSize, 200, HeadPivot, Position, Scale, nullptr);
+		TestTrue(TEXT("The rear path starts at the projected edge point"), Position.Equals(Previous, 0.01));
+
+		// 일정한 각도로 양쪽에서 정후방까지 돌면서 좌표와 표시 상태를 따로 검사한다.
+		Previous = Position;
+		for (double RearAngle = 59.75; RearAngle >= 0.0; RearAngle -= 0.25)
+		{
+			OffscreenSettings.ResolveWorldLayout(false, FVector2D::ZeroVector, Direction, RearAngle, 0.9,
+				ViewportSize, ContentSize, 200, HeadPivot, Position, Scale, &bShowRearIndicator);
+			TestTrue(TEXT("The marker does not reverse upward on its way to the bottom"), Position.Y >= Previous.Y - 0.001);
+			TestTrue(TEXT("A small yaw step makes a bounded move along the edge"), FVector2D::Distance(Position, Previous) <= 20.0);
+			TestTrue(TEXT("The widget stays on the padded perimeter"),
+				FMath::IsNearlyEqual(Position.X, 16.0) || FMath::IsNearlyEqual(Position.X, 1804.0)
+				|| FMath::IsNearlyEqual(Position.Y, 16.0) || FMath::IsNearlyEqual(Position.Y, 1024.0));
+			TestEqual(TEXT("The rear indicator uses the existing threshold during the sweep"), bShowRearIndicator, RearAngle <= 15.0);
+			Previous = Position;
+		}
+		TestEqual(TEXT("The path ends at bottom center from either side"), Position, PairPoint);
+	}
+
+	// 좌우 가장자리에서 같은 투영 방향으로 카메라 평면을 통과한다.
+	for (const FVector2D Size : { ViewportSize, FVector2D(1280, 960), FVector2D(960, 540) })
+	{
+		for (const FVector2D Direction : { FVector2D(-1, -0.3), FVector2D(1, 0.25) })
+		{
+			const FVector2D FrontProjection = Size * 0.5 + Direction * 100000.0;
+			OffscreenSettings.ResolveWorldLayout(true, FrontProjection, FVector2D::ZeroVector, 180, 0,
+				Size, ContentSize, 200, HeadPivot, Position, Scale, nullptr);
+			OffscreenSettings.ResolveWorldLayout(false, FVector2D::ZeroVector, Direction, 90, 0.0001,
+				Size, ContentSize, 200, HeadPivot, GuidePoint, Scale, nullptr);
+			TestTrue(TEXT("Projection success and failure meet at the same edge"), Position.Equals(GuidePoint, 0.01));
+			TestTrue(TEXT("The whole edge marker fits vertically"), Position.Y >= 16.0
+				&& Position.Y + ContentSize.Y * Scale <= Size.Y - 16.0);
+			TestEqual(TEXT("The marker reaches the correct side"), Position.X,
+				Direction.X < 0.0 ? 16.0 : Size.X - 16.0 - ContentSize.X * Scale);
+		}
+	}
+
+	TestFalse(TEXT("Default content still hides when projection fails"), Settings.ResolveWorldLayout(false,
+		FVector2D::ZeroVector, FVector2D(-1, 0), 90, 0.5, ViewportSize, ContentSize, 200, HeadPivot,
+		Position, Scale, &bShowRearIndicator));
+	TestTrue(TEXT("Default content still shows when a front target is offscreen"), Settings.ResolveWorldLayout(true,
+		FVector2D(2000, 400), FVector2D::ZeroVector, 180, 0, ViewportSize, ContentSize, 200, HeadPivot,
+		Position, Scale, &bShowRearIndicator));
+	TestEqual(TEXT("The front offscreen icon sits inside the right padding"), Position.X, 1804.0);
+
+	bShowRearIndicator = true;
+	const FVector2D OnScreenPoint(940, 450);
+	TestTrue(TEXT("The target resolves on screen after the rear marker"), OffscreenSettings.ResolveWorldLayout(true,
+		OnScreenPoint, FVector2D::ZeroVector, 180, 0, ViewportSize, ContentSize, 200, HeadPivot,
+		Position, Scale, &bShowRearIndicator));
+	TestEqual(TEXT("Returning to screen uses the projected head point"), Position, FVector2D(890, 410));
+	TestFalse(TEXT("Returning to screen clears the rear indicator"), bShowRearIndicator);
 	for (const FVector2D Point : { FVector2D(-200, -200), FVector2D(2000, 2000), FVector2D(0, 800) })
 	{
 		Settings.CalculateLayout(Point, FVector2D(1000, 800), FVector2D(400, 200), 1, Position, Scale);

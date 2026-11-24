@@ -28,6 +28,7 @@ struct FUILayerEntry
 	EUILayerFocusTarget FocusTarget = EUILayerFocusTarget::Widget;
 	bool bShowCursor = true;
 	bool bReceivesInput = true;
+	bool bCenterCursorOnFirstInput = false;
 };
 
 UCLASS()
@@ -41,6 +42,7 @@ public:
 
 	void RegisterMainUI(UMainUIBase* MainUI);
 	void UnregisterMainUI(UMainUIBase* MainUI);
+	bool IsMainUIRegistered(const UMainUIBase* MainUI) const;
 
 	bool EnsureLayerRoot();
 	void DestroyLayerRoot();
@@ -57,7 +59,8 @@ public:
 		UObject* RequestOwner,
 		EUILayerFocusTarget FocusTarget = EUILayerFocusTarget::Widget,
 		bool bShowCursor = true,
-		bool bReceivesInput = true);
+		bool bReceivesInput = true,
+		bool bCenterCursorOnFirstInput = false);
 
 	FUILayerHandle PushInputScope(
 		FGameplayTag LayerTag,

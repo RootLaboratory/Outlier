@@ -115,6 +115,7 @@ public:
 	void FinishIntro(FGuid ExecutionId);
 
 	bool AreArrivalVisualsReady(const FGuid& ExecutionId);
+	bool IsInitialArenaPlacementReady() const;
 	bool IsArrivalPawnReady(const APawn* Pawn) const;
 	FString DescribeArrivalReadiness(const FGuid& ExecutionId, const APawn* Pawn) const;
 	void NotifyClientArrivalReady(AFirstPersonPlayerController* Player, const FGuid& ExecutionId);
