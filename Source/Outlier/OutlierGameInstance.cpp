@@ -293,7 +293,10 @@ void UOutlierGameInstance::RemoveArenaRecoveryFailureNotice()
 void UOutlierGameInstance::ShowArenaRecoveryFailureNotice()
 {
 	UGameViewportClient* Viewport = GetGameViewportClient();
-	if (ArenaRecoveryFailureReason.IsEmpty() || !Viewport || ArenaRecoveryFailureNotice.IsValid()) return;
+	if (ArenaRecoveryFailureReason.IsEmpty() || !Viewport || ArenaRecoveryFailureNotice.IsValid())
+	{
+		return;
+	}
 	const TWeakObjectPtr<UOutlierGameInstance> WeakThis(this);
 	// 기존 GameOver UI가 없어도 복귀한 화면에서 실패 이유를 확인할 수 있다.
 	// 명시적 이탈 정리는 이 문구를 지우지 않고, 확인하거나 새 매치에 진입할 때만 끝낸다.
@@ -322,7 +325,9 @@ void UOutlierGameInstance::ShowArenaRecoveryFailureNotice()
 			]
 		];
 	ArenaRecoveryFailureViewport = Viewport;
-	Viewport->AddViewportWidgetContent(ArenaRecoveryFailureNotice.ToSharedRef(), 1000);
+	// AddToViewport는 메뉴 루트의 ZOrder에 10을 더한다. 안내를 그 위에 배치해 확인 버튼이 클릭을 받게 한다.
+	constexpr int32 RecoveryNoticeZOrder = 2000;
+	Viewport->AddViewportWidgetContent(ArenaRecoveryFailureNotice.ToSharedRef(), RecoveryNoticeZOrder);
 }
 
 void UOutlierGameInstance::ReturnAfterArenaRecoveryFailure(bool bReturnToLobby)
@@ -520,11 +525,6 @@ void UOutlierGameInstance::HandleTravelFailure(
 	{
 		return;
 	}
-	if (bTitleReturnPending)
-	{
-		FinishTitleReturn();
-		return;
-	}
 	if (!bArenaReconnectActive)
 	{
 		// 로드가 중단되면 가림을 넘겨받을 Arena Controller가 없다.
@@ -535,6 +535,11 @@ void UOutlierGameInstance::HandleTravelFailure(
 				Cinematic->EndInitialIntroBlackout();
 			}
 		}
+	}
+	if (bTitleReturnPending)
+	{
+		FinishTitleReturn();
+		return;
 	}
 	if (bLobbyReturnInFlight)
 	{
@@ -745,6 +750,11 @@ bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
 
 void UOutlierGameInstance::HandlePreLoadMap(const FWorldContext& LoadingWorldContext, const FString& MapName)
 {
+	if (LoadingWorldContext.OwningGameInstance != this)
+	{
+		return;
+	}
+
 	RemoveArenaRecoveryFailureNotice();
 	if (!LoadingWorldContext.PendingNetGame || !GetDefault<UOutlierArenaSettings>()->MatchesArenaPackageName(MapName))
 	{
@@ -760,11 +770,6 @@ void UOutlierGameInstance::HandlePreLoadMap(const FWorldContext& LoadingWorldCon
 		}
 	}
 }
-
-	if (LoadingWorldContext.OwningGameInstance != this)
-	{
-		return;
-	}
 
 bool UOutlierGameInstance::TryQueueLobbyRecovery()
 {
